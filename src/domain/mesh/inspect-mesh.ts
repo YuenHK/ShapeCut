@@ -1,9 +1,8 @@
 import type { MeshInspection, TriangleMesh } from './types';
-
-const AREA_TOLERANCE_SQUARED = 1e-24;
-const VOLUME_TOLERANCE = 1e-12;
+import { meshNumerics, signedTetrahedronVolume } from './numerics';
 
 export function inspectMesh(mesh: TriangleMesh): MeshInspection {
+  const { reference, areaToleranceSquared, volumeTolerance } = meshNumerics(mesh);
   const edges = new Map<string, number>();
   let degenerateTriangleCount = 0;
   let signedVolume = 0;
@@ -16,15 +15,15 @@ export function inspectMesh(mesh: TriangleMesh): MeshInspection {
     addEdge(edges, b, c);
     addEdge(edges, c, a);
 
-    const ax = mesh.positions[a * 3];
-    const ay = mesh.positions[a * 3 + 1];
-    const az = mesh.positions[a * 3 + 2];
-    const bx = mesh.positions[b * 3];
-    const by = mesh.positions[b * 3 + 1];
-    const bz = mesh.positions[b * 3 + 2];
-    const cx = mesh.positions[c * 3];
-    const cy = mesh.positions[c * 3 + 1];
-    const cz = mesh.positions[c * 3 + 2];
+    const ax = mesh.positions[a * 3] - reference[0];
+    const ay = mesh.positions[a * 3 + 1] - reference[1];
+    const az = mesh.positions[a * 3 + 2] - reference[2];
+    const bx = mesh.positions[b * 3] - reference[0];
+    const by = mesh.positions[b * 3 + 1] - reference[1];
+    const bz = mesh.positions[b * 3 + 2] - reference[2];
+    const cx = mesh.positions[c * 3] - reference[0];
+    const cy = mesh.positions[c * 3 + 1] - reference[1];
+    const cz = mesh.positions[c * 3 + 2] - reference[2];
     const abx = bx - ax;
     const aby = by - ay;
     const abz = bz - az;
@@ -34,10 +33,10 @@ export function inspectMesh(mesh: TriangleMesh): MeshInspection {
     const crossX = aby * acz - abz * acy;
     const crossY = abz * acx - abx * acz;
     const crossZ = abx * acy - aby * acx;
-    if (a === b || b === c || c === a || crossX ** 2 + crossY ** 2 + crossZ ** 2 <= AREA_TOLERANCE_SQUARED) {
+    if (a === b || b === c || c === a || crossX ** 2 + crossY ** 2 + crossZ ** 2 <= areaToleranceSquared) {
       degenerateTriangleCount += 1;
     }
-    signedVolume += (ax * (by * cz - bz * cy) + ay * (bz * cx - bx * cz) + az * (bx * cy - by * cx)) / 6;
+    signedVolume += signedTetrahedronVolume(ax, ay, az, bx, by, bz, cx, cy, cz);
   }
 
   let boundaryEdgeCount = 0;
@@ -51,7 +50,7 @@ export function inspectMesh(mesh: TriangleMesh): MeshInspection {
     boundaryEdgeCount,
     nonManifoldEdgeCount,
     degenerateTriangleCount,
-    invertedVolume: signedVolume < -VOLUME_TOLERANCE,
+    invertedVolume: signedVolume < -volumeTolerance,
   };
 }
 

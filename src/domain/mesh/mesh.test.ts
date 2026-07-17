@@ -1,8 +1,10 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, test } from 'vitest';
 import { openTetrahedron, tetrahedron } from '../../test/mesh-builders';
 import { inspectMesh } from './inspect-mesh';
 import { massProperties, MeshVolumeError } from './mass-properties';
-import { parseSTL } from './parse-stl';
+import { MAX_STL_BYTES, MAX_TRIANGLES, parseSTL } from './parse-stl';
 import type { TriangleMesh } from './types';
 
 const asciiTetrahedron = `solid tetrahedron
@@ -61,6 +63,18 @@ describe('mesh inspection', () => {
     expect(inspectMesh(mesh).nonManifoldEdgeCount).toBe(1);
   });
 
+  test.each([1e-6, 1e6])('does not mark a valid tetrahedron degenerate at scale %s', (scale) => {
+    expect(inspectMesh(transformMesh(tetrahedron(), scale)).degenerateTriangleCount).toBe(0);
+  });
+
+  test.each([1e-9, 1e9])('marks a truly collinear triangle degenerate at scale %s', (scale) => {
+    const mesh: TriangleMesh = {
+      positions: new Float64Array([0, 0, 0, scale, 0, 0, 2 * scale, 0, 0]),
+      indices: new Uint32Array([0, 1, 2]),
+    };
+    expect(inspectMesh(mesh).degenerateTriangleCount).toBe(1);
+  });
+
   test('does not modify mesh typed arrays', () => {
     const mesh = tetrahedron();
     const positions = mesh.positions.slice();
@@ -68,6 +82,21 @@ describe('mesh inspection', () => {
     inspectMesh(mesh);
     expect(mesh.positions).toEqual(positions);
     expect(mesh.indices).toEqual(indices);
+  });
+
+  test('is stable for a tetrahedron translated far from the origin', () => {
+    const result = massProperties(transformMesh(tetrahedron(), 1, 1e9));
+    expect(result.volume).toBeCloseTo(1 / 6, 10);
+    result.centroid.forEach((coordinate) => expect(coordinate).toBeCloseTo(1e9 + 0.25, 5));
+  });
+
+  test('detects inverted volume for a reversed tetrahedron translated far from the origin', () => {
+    const mesh = transformMesh(tetrahedron(), 1, 1e9);
+    const reversed = reverseMesh(mesh);
+    const result = massProperties(reversed);
+    expect(result.volume).toBeCloseTo(1 / 6, 10);
+    result.centroid.forEach((coordinate) => expect(coordinate).toBeCloseTo(1e9 + 0.25, 5));
+    expect(inspectMesh(reversed).invertedVolume).toBe(true);
   });
 });
 
@@ -92,7 +121,11 @@ describe('mass properties', () => {
   });
 
   test('throws a typed error for near-zero signed volume', () => {
-    expect(() => massProperties(openTetrahedron())).toThrow(MeshVolumeError);
+    const flatMesh: TriangleMesh = {
+      positions: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+      indices: new Uint32Array([0, 1, 2]),
+    };
+    expect(() => massProperties(flatMesh)).toThrow(MeshVolumeError);
   });
 
   test('does not modify mesh typed arrays', () => {
@@ -103,9 +136,23 @@ describe('mass properties', () => {
     expect(mesh.positions).toEqual(positions);
     expect(mesh.indices).toEqual(indices);
   });
+
+  test.each([1e-6, 1e6])('computes a valid tetrahedron volume at scale %s', (scale) => {
+    const expectedVolume = scale ** 3 / 6;
+    const result = massProperties(transformMesh(tetrahedron(), scale));
+    expect(Math.abs(result.volume / expectedVolume - 1)).toBeLessThan(1e-10);
+    expect(Math.abs(result.centroid[0] / (scale / 4) - 1)).toBeLessThan(1e-10);
+  });
 });
 
 describe('STL parsing', () => {
+  test('parses the symmetric spinner fixture as a closed positive-volume mesh', () => {
+    const input = readFileSync(resolve(process.cwd(), 'fixtures/stl/symmetric-spinner.stl'));
+    const mesh = parseSTL(input.buffer.slice(input.byteOffset, input.byteOffset + input.byteLength));
+    expect(inspectMesh(mesh).boundaryEdgeCount).toBe(0);
+    expect(massProperties(mesh).volume).toBeGreaterThan(0);
+  });
+
   test('parses ASCII STL into a stable indexed mesh', () => {
     const mesh = parseSTL(asciiTetrahedron);
     expect(mesh.positions.length / 3).toBe(4);
@@ -135,6 +182,17 @@ describe('STL parsing', () => {
 
   test('rejects truncated binary STL', () => {
     expect(() => parseSTL(binarySTL(tetrahedron()).slice(0, 90))).toThrow(/truncated/i);
+  });
+
+  test('rejects a binary triangle count above the resource limit before allocation', () => {
+    const input = new ArrayBuffer(84);
+    new DataView(input).setUint32(80, MAX_TRIANGLES + 1, true);
+    expect(() => parseSTL(input)).toThrow(/triangle.*limit/i);
+  });
+
+  test('rejects an ASCII string above the byte limit before parsing', () => {
+    const input = `solid oversized\n${' '.repeat(MAX_STL_BYTES)}endsolid oversized`;
+    expect(() => parseSTL(input)).toThrow(/byte.*limit/i);
   });
 
   test.each([
@@ -168,4 +226,21 @@ function binarySTL(mesh: TriangleMesh, header = ''): ArrayBuffer {
     }
   }
   return buffer;
+}
+
+function transformMesh(mesh: TriangleMesh, scale: number, translation = 0): TriangleMesh {
+  return {
+    positions: new Float64Array(Array.from(mesh.positions, (value) => value * scale + translation)),
+    indices: mesh.indices.slice(),
+  };
+}
+
+function reverseMesh(mesh: TriangleMesh): TriangleMesh {
+  const indices = mesh.indices.slice();
+  for (let offset = 0; offset < indices.length; offset += 3) {
+    const second = indices[offset + 1];
+    indices[offset + 1] = indices[offset + 2];
+    indices[offset + 2] = second;
+  }
+  return { positions: mesh.positions.slice(), indices };
 }
