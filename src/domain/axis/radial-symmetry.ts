@@ -52,6 +52,9 @@ export function radialSymmetry(
     direction[2] * u[0] - direction[0] * u[2],
     direction[0] * u[1] - direction[1] * u[0],
   ];
+  const angularSectorCount = 16;
+  const sectorSums = new Float64Array(binCount * angularSectorCount);
+  const sectorCounts = new Uint32Array(binCount * angularSectorCount);
   let meanU = 0;
   let meanV = 0;
   let varianceU = 0;
@@ -59,6 +62,16 @@ export function radialSymmetry(
   for (const point of projected) {
     const pu = point.dx * u[0] + point.dy * u[1] + point.dz * u[2];
     const pv = point.dx * v[0] + point.dy * v[1] + point.dz * v[2];
+    const axialFraction = (point.axial - minAxial) / Math.max(Number.MIN_VALUE, maxAxial - minAxial);
+    const axialBin = Math.min(binCount - 1, Math.floor(axialFraction * binCount));
+    const angle = Math.atan2(pv, pu);
+    const sector = Math.min(
+      angularSectorCount - 1,
+      Math.floor((angle + Math.PI) / (2 * Math.PI) * angularSectorCount),
+    );
+    const sectorIndex = axialBin * angularSectorCount + sector;
+    sectorSums[sectorIndex] += point.radius;
+    sectorCounts[sectorIndex] += 1;
     meanU += pu;
     meanV += pv;
     varianceU += pu * pu;
@@ -70,8 +83,36 @@ export function radialSymmetry(
   varianceV = varianceV / points.length - meanV * meanV;
   const centroidOffset = Math.hypot(meanU, meanV) / scale;
   const transverseAnisotropy = Math.abs(varianceU - varianceV) / Math.max(Number.MIN_VALUE, varianceU + varianceV);
+  let angularResidual = 0;
+  let angularRepresentativeCount = 0;
+  let coverageDeficit = 0;
+  let evaluatedBinCount = 0;
+  for (let bin = 0; bin < binCount; bin += 1) {
+    let occupied = 0;
+    let radiusSum = 0;
+    let radiusSquaredSum = 0;
+    for (let sector = 0; sector < angularSectorCount; sector += 1) {
+      const index = bin * angularSectorCount + sector;
+      if (sectorCounts[index] === 0) continue;
+      const representativeRadius = sectorSums[index] / sectorCounts[index];
+      occupied += 1;
+      radiusSum += representativeRadius;
+      radiusSquaredSum += representativeRadius * representativeRadius;
+    }
+    if (occupied < 4) continue;
+    angularResidual += Math.max(0, radiusSquaredSum - radiusSum * radiusSum / occupied);
+    angularRepresentativeCount += occupied;
+    coverageDeficit += 1 - occupied / angularSectorCount;
+    evaluatedBinCount += 1;
+  }
+  const angularRmsError = Math.sqrt(angularResidual / Math.max(1, angularRepresentativeCount)) / scale;
+  const angularCoverageError = evaluatedBinCount === 0 ? 1 : coverageDeficit / evaluatedBinCount;
+  const combinedRadialRmsError = Math.hypot(radialRmsError, angularRmsError);
   const confidence = Math.max(0, Math.min(1, Math.exp(
-    -8 * radialRmsError - 2.5 * transverseAnisotropy - 4 * centroidOffset,
+    -8 * combinedRadialRmsError
+    -2.5 * transverseAnisotropy
+    -4 * centroidOffset
+    -2 * angularCoverageError,
   )));
-  return { radialRmsError, centroidOffset, confidence };
+  return { radialRmsError: combinedRadialRmsError, centroidOffset, confidence };
 }

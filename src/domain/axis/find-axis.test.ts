@@ -55,6 +55,19 @@ function asymmetricBox(): TriangleMesh {
   return { positions, indices };
 }
 
+function centeredCube(): TriangleMesh {
+  const positions = new Float64Array([
+    -1, -1, -1, 1, -1, -1, 1, 1, -1, -1, 1, -1,
+    -1, -1, 1, 1, -1, 1, 1, 1, 1, -1, 1, 1,
+  ]);
+  const indices = new Uint32Array([
+    0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7,
+    0, 1, 5, 0, 5, 4, 1, 2, 6, 1, 6, 5,
+    2, 3, 7, 2, 7, 6, 3, 0, 4, 3, 4, 7,
+  ]);
+  return { positions, indices };
+}
+
 describe('findAxisCandidates', () => {
   it('ranks the rotation axis first for a lathed spinner', () => {
     const [best] = findAxisCandidates(lathedSpinner(), { sampleCount: 4096 });
@@ -84,6 +97,21 @@ describe('findAxisCandidates', () => {
   it('gives an asymmetric mesh a confidence below the confirmation threshold', () => {
     const [best] = findAxisCandidates(asymmetricBox(), { sampleCount: 4096 });
     expect(best.confidence).toBeLessThan(0.8);
+  });
+
+  it('does not mistake an equal-extent cube for a rotationally symmetric body', () => {
+    const [best] = findAxisCandidates(centeredCube(), { sampleCount: 4096 });
+    expect(best.confidence).toBeLessThan(0.8);
+  });
+
+  it('is scale-aware across microscopic and very large translated spinners', () => {
+    const results = [1e-6, 1, 1e6].map((scale) => findAxisCandidates(
+      lathedSpinner(([x, y, z]) => [scale * x + 3 * scale, scale * y - 2 * scale, scale * z + 5 * scale]),
+      { sampleCount: 4096 },
+    )[0]);
+    for (const candidate of results) expect(Math.abs(candidate.direction[2])).toBeGreaterThan(0.999);
+    const confidences = results.map(({ confidence }) => confidence);
+    expect(Math.max(...confidences) - Math.min(...confidences)).toBeLessThan(0.02);
   });
 
   it('is deterministic and does not mutate the mesh', () => {
