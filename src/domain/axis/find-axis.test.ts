@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { TriangleMesh } from '../mesh/types';
-import { findAxisCandidates } from './find-axis';
+import { findAxisCandidates, type AxisCandidate } from './find-axis';
 
 type MutableVec3 = [number, number, number];
 
@@ -68,6 +68,71 @@ function centeredCube(): TriangleMesh {
   return { positions, indices };
 }
 
+const obliqueAxis: MutableVec3 = (() => {
+  const length = Math.hypot(1, 2, 3);
+  return [1 / length, 2 / length, 3 / length];
+})();
+
+function orientToObliqueAxis([x, y, z]: MutableVec3): MutableVec3 {
+  const u: MutableVec3 = [2 / Math.sqrt(5), -1 / Math.sqrt(5), 0];
+  const v: MutableVec3 = [
+    obliqueAxis[1] * u[2] - obliqueAxis[2] * u[1],
+    obliqueAxis[2] * u[0] - obliqueAxis[0] * u[2],
+    obliqueAxis[0] * u[1] - obliqueAxis[1] * u[0],
+  ];
+  return [
+    x * u[0] + y * v[0] + z * obliqueAxis[0],
+    x * u[1] + y * v[1] + z * obliqueAxis[1],
+    x * u[2] + y * v[2] + z * obliqueAxis[2],
+  ];
+}
+
+function reverseVertexOrder(mesh: TriangleMesh): TriangleMesh {
+  const count = mesh.positions.length / 3;
+  const positions = new Float64Array(mesh.positions.length);
+  for (let oldIndex = 0; oldIndex < count; oldIndex += 1) {
+    positions.set(mesh.positions.slice(oldIndex * 3, oldIndex * 3 + 3), (count - 1 - oldIndex) * 3);
+  }
+  return {
+    positions,
+    indices: new Uint32Array(Array.from(mesh.indices, (index) => count - 1 - index)),
+  };
+}
+
+function reverseTriangleOrder(mesh: TriangleMesh): TriangleMesh {
+  const indices = new Uint32Array(mesh.indices.length);
+  const triangleCount = mesh.indices.length / 3;
+  for (let triangle = 0; triangle < triangleCount; triangle += 1) {
+    const source = (triangleCount - 1 - triangle) * 3;
+    indices.set(mesh.indices.slice(source, source + 3), triangle * 3);
+  }
+  return { positions: mesh.positions.slice(), indices };
+}
+
+function refineTriangles(mesh: TriangleMesh): TriangleMesh {
+  const positions = Array.from(mesh.positions);
+  const indices: number[] = [];
+  for (let offset = 0; offset < mesh.indices.length; offset += 3) {
+    const a = mesh.indices[offset];
+    const b = mesh.indices[offset + 1];
+    const c = mesh.indices[offset + 2];
+    const center = positions.length / 3;
+    for (let component = 0; component < 3; component += 1) {
+      positions.push((mesh.positions[a * 3 + component] + mesh.positions[b * 3 + component] + mesh.positions[c * 3 + component]) / 3);
+    }
+    indices.push(a, b, center, b, c, center, c, a, center);
+  }
+  return { positions: new Float64Array(positions), indices: new Uint32Array(indices) };
+}
+
+function expectSimilarCandidates(left: AxisCandidate, right: AxisCandidate): void {
+  const alignment = Math.abs(left.direction[0] * right.direction[0]
+    + left.direction[1] * right.direction[1]
+    + left.direction[2] * right.direction[2]);
+  expect(alignment).toBeGreaterThan(0.999);
+  expect(Math.abs(left.confidence - right.confidence)).toBeLessThan(0.03);
+}
+
 describe('findAxisCandidates', () => {
   it('ranks the rotation axis first for a lathed spinner', () => {
     const [best] = findAxisCandidates(lathedSpinner(), { sampleCount: 4096 });
@@ -114,6 +179,69 @@ describe('findAxisCandidates', () => {
     expect(Math.max(...confidences) - Math.min(...confidences)).toBeLessThan(0.02);
   });
 
+  it('uses a purely relative eigensolver tolerance across extreme scales', () => {
+    const results = [1e-10, 1, 1e10].map((scale) => findAxisCandidates(
+      lathedSpinner((point) => {
+        const [x, y, z] = orientToObliqueAxis(point);
+        return [scale * (x + 4), scale * (y - 7), scale * (z + 2)];
+      }),
+      { sampleCount: 4096 },
+    )[0]);
+    for (const candidate of results) {
+      const alignment = Math.abs(candidate.direction[0] * obliqueAxis[0]
+        + candidate.direction[1] * obliqueAxis[1]
+        + candidate.direction[2] * obliqueAxis[2]);
+      expect(alignment).toBeGreaterThan(0.999);
+    }
+    expect(Math.max(...results.map(({ confidence }) => confidence))
+      - Math.min(...results.map(({ confidence }) => confidence))).toBeLessThan(0.02);
+  });
+
+  it('ignores unreferenced vertices when finding the surface axis', () => {
+    const mesh = lathedSpinner();
+    const baseline = findAxisCandidates(mesh, { sampleCount: 4096 })[0];
+    const positions = new Float64Array(mesh.positions.length + 6);
+    positions.set(mesh.positions);
+    positions.set([1e100, -1e100, 1e100, -1e100, 1e100, -1e100], mesh.positions.length);
+    const withUnreferenced = findAxisCandidates({ positions, indices: mesh.indices }, { sampleCount: 4096 })[0];
+    expect(withUnreferenced.direction).toEqual(baseline.direction);
+    expect(withUnreferenced.confidence).toBeCloseTo(baseline.confidence, 10);
+  });
+
+  it('is invariant to vertex and triangle storage order', () => {
+    const mesh = lathedSpinner();
+    const baseline = findAxisCandidates(mesh, { sampleCount: 4096 })[0];
+    expectSimilarCandidates(baseline, findAxisCandidates(reverseVertexOrder(mesh), { sampleCount: 4096 })[0]);
+    expectSimilarCandidates(baseline, findAxisCandidates(reverseTriangleOrder(mesh), { sampleCount: 4096 })[0]);
+  });
+
+  it('is stable when the same surface triangles are locally refined', () => {
+    const mesh = lathedSpinner();
+    const baseline = findAxisCandidates(mesh, { sampleCount: 4096 })[0];
+    const refined = findAxisCandidates(refineTriangles(mesh), { sampleCount: 4096 })[0];
+    expectSimilarCandidates(baseline, refined);
+    expect(refined.confidence).toBeGreaterThan(0.8);
+  });
+
+  it('is invariant when the complete tessellation is duplicated', () => {
+    const mesh = lathedSpinner();
+    const indices = new Uint32Array(mesh.indices.length * 2);
+    indices.set(mesh.indices);
+    indices.set(mesh.indices, mesh.indices.length);
+    expectSimilarCandidates(
+      findAxisCandidates(mesh, { sampleCount: 4096 })[0],
+      findAxisCandidates({ positions: mesh.positions, indices }, { sampleCount: 4096 })[0],
+    );
+  });
+
+  it('does not let axial length hide a non-circular square cross-section', () => {
+    const longSquarePrism = centeredCube();
+    for (let offset = 2; offset < longSquarePrism.positions.length; offset += 3) {
+      longSquarePrism.positions[offset] *= 100;
+    }
+    expect(findAxisCandidates(longSquarePrism, { sampleCount: 4096 })[0].confidence).toBeLessThan(0.8);
+  });
+
   it('is deterministic and does not mutate the mesh', () => {
     const mesh = lathedSpinner();
     const before = mesh.positions.slice();
@@ -130,6 +258,10 @@ describe('findAxisCandidates', () => {
     },
   );
 
+  it('rejects excessive sample counts', () => {
+    expect(() => findAxisCandidates(lathedSpinner(), { sampleCount: 100_001 })).toThrow(/sampleCount/);
+  });
+
   it('rejects non-finite and degenerate mesh input clearly', () => {
     const nonFinite = lathedSpinner();
     nonFinite.positions[0] = Number.NaN;
@@ -141,5 +273,13 @@ describe('findAxisCandidates', () => {
     const mesh = lathedSpinner();
     mesh.indices[0] = mesh.positions.length / 3;
     expect(() => findAxisCandidates(mesh, { sampleCount: 10 })).toThrow(/index/i);
+  });
+
+  it('rejects an incomplete triangle index buffer with a typed error', () => {
+    const mesh = lathedSpinner();
+    expect(() => findAxisCandidates(
+      { positions: mesh.positions, indices: mesh.indices.slice(0, -1) },
+      { sampleCount: 10 },
+    )).toThrow(TypeError);
   });
 });
