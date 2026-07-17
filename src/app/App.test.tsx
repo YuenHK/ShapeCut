@@ -11,4 +11,10 @@ describe('App', () => {
     ).toBeInTheDocument()
     expect(screen.getAllByRole('listitem')).toHaveLength(5)
   })
+
+  it('cleans up the rendered application between tests', () => {
+    expect(
+      screen.queryByRole('heading', { name: '陀螺 Laser Kit' }),
+    ).toBeNull()
+  })
 })
