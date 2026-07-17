@@ -1,7 +1,19 @@
 import type { TriangleMesh } from './types';
 
-export const MAX_STL_BYTES = 128 * 1024 * 1024;
-export const MAX_TRIANGLES = 1_000_000;
+export type ParseLimits = {
+  readonly maxBytes: number;
+  readonly maxTriangles: number;
+  readonly maxUniqueVertices: number;
+};
+
+export const DEFAULT_PARSE_LIMITS: ParseLimits = Object.freeze({
+  maxBytes: 128 * 1024 * 1024,
+  maxTriangles: 500_000,
+  maxUniqueVertices: 300_000,
+});
+
+export const MAX_STL_BYTES = DEFAULT_PARSE_LIMITS.maxBytes;
+export const MAX_TRIANGLES = DEFAULT_PARSE_LIMITS.maxTriangles;
 
 export class STLParseError extends Error {
   constructor(message: string) {
@@ -10,14 +22,15 @@ export class STLParseError extends Error {
   }
 }
 
-export function parseSTL(input: ArrayBuffer | string): TriangleMesh {
+export function parseSTL(input: ArrayBuffer | string, limits: ParseLimits = DEFAULT_PARSE_LIMITS): TriangleMesh {
+  assertValidLimits(limits);
   if (typeof input === 'string') {
-    assertStringByteLimit(input);
-    return parseASCII(input);
+    assertStringByteLimit(input, limits);
+    return parseASCII(input, limits);
   }
   if (input.byteLength === 0) throw new STLParseError('STL input is empty');
-  if (input.byteLength > MAX_STL_BYTES) {
-    throw new STLParseError(`STL exceeds byte limit of ${MAX_STL_BYTES}`);
+  if (input.byteLength > limits.maxBytes) {
+    throw new STLParseError(`STL exceeds byte limit of ${limits.maxBytes}`);
   }
 
   let triangleCount: number | undefined;
@@ -26,15 +39,15 @@ export function parseSTL(input: ArrayBuffer | string): TriangleMesh {
     triangleCount = new DataView(input).getUint32(80, true);
     declaredBinaryLength = 84 + triangleCount * 50;
     if (declaredBinaryLength === input.byteLength) {
-      assertTriangleLimit(triangleCount);
-      return parseBinary(input, triangleCount);
+      assertTriangleLimit(triangleCount, limits);
+      return parseBinary(input, triangleCount, limits);
     }
   }
 
   try {
-    return parseASCII(new TextDecoder().decode(input));
+    return parseASCII(new TextDecoder().decode(input), limits);
   } catch (asciiError) {
-    if (triangleCount !== undefined && triangleCount > MAX_TRIANGLES) assertTriangleLimit(triangleCount);
+    if (triangleCount !== undefined && triangleCount > limits.maxTriangles) assertTriangleLimit(triangleCount, limits);
     if (declaredBinaryLength !== undefined && declaredBinaryLength > input.byteLength) {
       throw new STLParseError(
         `Binary STL is truncated: expected ${declaredBinaryLength} bytes, received ${input.byteLength}`,
@@ -44,21 +57,23 @@ export function parseSTL(input: ArrayBuffer | string): TriangleMesh {
   }
 }
 
-function parseASCII(source: string): TriangleMesh {
+function parseASCII(source: string, limits: ParseLimits): TriangleMesh {
   if (source.trim().length === 0) throw new STLParseError('STL input is empty');
-  const builder = new MeshBuilder();
+  const builder = new MeshBuilder(limits);
   let facetCount = 0;
   let vertexCount = 0;
   const tokenPattern = /\bfacet\s+normal\b|\bvertex\s+(\S+)\s+(\S+)\s+(\S+)/gi;
   for (let match = tokenPattern.exec(source); match; match = tokenPattern.exec(source)) {
     if (match[0].toLowerCase().startsWith('facet')) {
       facetCount += 1;
-      if (facetCount > MAX_TRIANGLES) throw new STLParseError(`ASCII STL exceeds triangle limit of ${MAX_TRIANGLES}`);
+      if (facetCount > limits.maxTriangles) {
+        throw new STLParseError(`ASCII STL exceeds triangle limit of ${limits.maxTriangles}`);
+      }
       continue;
     }
     vertexCount += 1;
-    if (vertexCount > MAX_TRIANGLES * 3) {
-      throw new STLParseError(`ASCII STL exceeds triangle limit of ${MAX_TRIANGLES}`);
+    if (vertexCount > limits.maxTriangles * 3) {
+      throw new STLParseError(`ASCII STL exceeds triangle limit of ${limits.maxTriangles}`);
     }
     const x = Number(match[1]);
     const y = Number(match[2]);
@@ -71,15 +86,15 @@ function parseASCII(source: string): TriangleMesh {
   return builder.finish();
 }
 
-function parseBinary(input: ArrayBuffer, triangleCount: number): TriangleMesh {
-  assertTriangleLimit(triangleCount);
+function parseBinary(input: ArrayBuffer, triangleCount: number, limits: ParseLimits): TriangleMesh {
+  assertTriangleLimit(triangleCount, limits);
   const expectedLength = 84 + triangleCount * 50;
   if (input.byteLength !== expectedLength) {
     throw new STLParseError(`Binary STL length mismatch: expected ${expectedLength} bytes, received ${input.byteLength}`);
   }
   if (triangleCount === 0) throw new STLParseError('Binary STL contains no triangles');
   const view = new DataView(input);
-  const builder = new MeshBuilder();
+  const builder = new MeshBuilder(limits);
   for (let triangle = 0; triangle < triangleCount; triangle += 1) {
     const triangleOffset = 84 + triangle * 50;
     for (let corner = 0; corner < 3; corner += 1) {
@@ -99,10 +114,17 @@ class MeshBuilder {
   private readonly indices: number[] = [];
   private readonly indexByPosition = new Map<string, number>();
 
+  constructor(private readonly limits: ParseLimits) {}
+
   addVertex(x: number, y: number, z: number): void {
     const key = `${canonical(x)},${canonical(y)},${canonical(z)}`;
     let index = this.indexByPosition.get(key);
     if (index === undefined) {
+      if (this.indexByPosition.size >= this.limits.maxUniqueVertices) {
+        throw new STLParseError(
+          `STL unique vertex count exceeds limit of ${this.limits.maxUniqueVertices}; simplify or split the mesh`,
+        );
+      }
       index = this.positions.length / 3;
       this.indexByPosition.set(key, index);
       this.positions.push(x, y, z);
@@ -115,19 +137,19 @@ class MeshBuilder {
   }
 }
 
-function assertTriangleLimit(triangleCount: number): void {
-  if (triangleCount > MAX_TRIANGLES) {
-    throw new STLParseError(`STL triangle count ${triangleCount} exceeds limit of ${MAX_TRIANGLES}`);
+function assertTriangleLimit(triangleCount: number, limits: ParseLimits): void {
+  if (triangleCount > limits.maxTriangles) {
+    throw new STLParseError(`STL triangle count ${triangleCount} exceeds limit of ${limits.maxTriangles}`);
   }
 }
 
-function assertStringByteLimit(source: string): void {
-  if (source.length > MAX_STL_BYTES || utf8ByteLength(source) > MAX_STL_BYTES) {
-    throw new STLParseError(`STL exceeds byte limit of ${MAX_STL_BYTES}`);
+function assertStringByteLimit(source: string, limits: ParseLimits): void {
+  if (source.length > limits.maxBytes || utf8ByteLength(source, limits.maxBytes) > limits.maxBytes) {
+    throw new STLParseError(`STL exceeds byte limit of ${limits.maxBytes}`);
   }
 }
 
-function utf8ByteLength(source: string): number {
+function utf8ByteLength(source: string, maxBytes: number): number {
   let bytes = 0;
   for (let index = 0; index < source.length; index += 1) {
     const codeUnit = source.charCodeAt(index);
@@ -140,9 +162,17 @@ function utf8ByteLength(source: string): number {
         index += 1;
       } else bytes += 3;
     } else bytes += 3;
-    if (bytes > MAX_STL_BYTES) return bytes;
+    if (bytes > maxBytes) return bytes;
   }
   return bytes;
+}
+
+function assertValidLimits(limits: ParseLimits): void {
+  for (const [name, value] of Object.entries(limits)) {
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new STLParseError(`Invalid parse limit ${name}: expected a non-negative safe integer`);
+    }
+  }
 }
 
 function canonical(value: number): string {

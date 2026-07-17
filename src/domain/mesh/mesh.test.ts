@@ -195,6 +195,46 @@ describe('STL parsing', () => {
     expect(() => parseSTL(input)).toThrow(/byte.*limit/i);
   });
 
+  test('applies an injected byte limit to a small input', () => {
+    expect(() => parseSTL(asciiTetrahedron, { maxBytes: 32, maxTriangles: 10, maxUniqueVertices: 10 })).toThrow(
+      /byte.*limit/i,
+    );
+  });
+
+  test('rejects binary triangle count before entering the mesh builder', () => {
+    expect(() =>
+      parseSTL(binarySTL(tetrahedron()), { maxBytes: 1024, maxTriangles: 2, maxUniqueVertices: 0 }),
+    ).toThrow(/triangle.*limit/i);
+  });
+
+  test('rejects two triangles with more unique vertices than the injected limit', () => {
+    const input = `solid four_vertices
+facet normal 0 0 1 outer loop
+vertex 0 0 0 vertex 1 0 0 vertex 0 1 0
+endloop endfacet
+facet normal 0 0 1 outer loop
+vertex 0 0 0 vertex 0 1 0 vertex 0 0 1
+endloop endfacet
+endsolid four_vertices`;
+    expect(() => parseSTL(input, { maxBytes: 1024, maxTriangles: 2, maxUniqueVertices: 3 })).toThrow(
+      /unique vertex.*limit/i,
+    );
+  });
+
+  test('welded vertices count once against the injected unique-vertex limit', () => {
+    const input = `solid welded
+facet normal 0 0 1 outer loop
+vertex 0 0 0 vertex 1 0 0 vertex 0 1 0
+endloop endfacet
+facet normal 0 0 1 outer loop
+vertex 0 1 0 vertex 1 0 0 vertex 0 0 0
+endloop endfacet
+endsolid welded`;
+    const mesh = parseSTL(input, { maxBytes: 1024, maxTriangles: 2, maxUniqueVertices: 3 });
+    expect(mesh.positions.length / 3).toBe(3);
+    expect(mesh.indices.length / 3).toBe(2);
+  });
+
   test.each([
     ['', /empty/i],
     ['solid bad\nfacet normal 0 0 1\nouter loop\nvertex NaN 0 0\nvertex 0 0 0\nvertex 1 0 0\nendloop\nendfacet\nendsolid bad', /finite/i],
