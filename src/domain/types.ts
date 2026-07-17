@@ -8,18 +8,18 @@ export type WorkflowStep =
 export type Vec3 = readonly [number, number, number];
 
 export type Axis = {
-  origin: Vec3;
-  direction: Vec3;
-  confidence: number;
-  confirmed: boolean;
+  readonly origin: Vec3;
+  readonly direction: Vec3;
+  readonly confidence: number;
+  readonly confirmed: boolean;
 };
 
 export type Severity = 'blocking' | 'confirm' | 'info';
 
 export type ProjectV1 = {
-  schemaVersion: 1;
-  id: string;
-  name: string;
-  step: WorkflowStep;
-  axis?: Axis;
+  readonly schemaVersion: 1;
+  readonly id: string;
+  readonly name: string;
+  readonly step: WorkflowStep;
+  readonly axis?: Axis;
 };

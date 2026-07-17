@@ -44,7 +44,14 @@ export function createProjectStore() {
     id: 'untitled-project',
     name: 'Untitled project',
     step: 'import',
-    setAxis: (axis) => set({ axis }),
+    setAxis: (axis) =>
+      set({
+        axis: {
+          ...axis,
+          origin: [...axis.origin],
+          direction: [...axis.direction],
+        },
+      }),
     goToStep: (target) => {
       if (!canEnterStep(get(), target)) {
         return false;

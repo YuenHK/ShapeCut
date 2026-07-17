@@ -1,8 +1,128 @@
 import { describe, expect, it } from 'vitest';
 
-import { createProjectStore } from './project-store';
+import type { Axis, ProjectV1, WorkflowStep } from '../domain/types';
+import { canEnterStep, createProjectStore } from './project-store';
+
+const confirmedAxis: Axis = Object.freeze({
+  origin: Object.freeze([0, 0, 0] as const),
+  direction: Object.freeze([0, 1, 0] as const),
+  confidence: 1,
+  confirmed: true,
+});
+
+const unconfirmedAxis: Axis = Object.freeze({
+  ...confirmedAxis,
+  confirmed: false,
+});
+
+if (false) {
+  const axis: Axis = confirmedAxis;
+  // @ts-expect-error Axis fields are immutable project data.
+  axis.confirmed = false;
+  // @ts-expect-error Vec3 entries are immutable project data.
+  axis.origin[0] = 1;
+}
+
+describe('canEnterStep', () => {
+  const cases: ReadonlyArray<{
+    name: string;
+    current: WorkflowStep;
+    target: WorkflowStep;
+    axis?: Axis;
+    expected: boolean;
+  }> = [
+    {
+      name: 'blocks decomposition without a confirmed axis',
+      current: 'axis',
+      target: 'decomposition',
+      axis: unconfirmedAxis,
+      expected: false,
+    },
+    {
+      name: 'allows decomposition with a confirmed axis',
+      current: 'axis',
+      target: 'decomposition',
+      axis: confirmedAxis,
+      expected: true,
+    },
+    {
+      name: 'allows engraving after decomposition without rechecking the axis',
+      current: 'decomposition',
+      target: 'engraving',
+      axis: unconfirmedAxis,
+      expected: true,
+    },
+    {
+      name: 'blocks engraving before decomposition',
+      current: 'axis',
+      target: 'engraving',
+      axis: confirmedAxis,
+      expected: false,
+    },
+    {
+      name: 'allows export after engraving without rechecking the axis',
+      current: 'engraving',
+      target: 'export',
+      axis: unconfirmedAxis,
+      expected: true,
+    },
+    {
+      name: 'blocks export before engraving',
+      current: 'decomposition',
+      target: 'export',
+      axis: confirmedAxis,
+      expected: false,
+    },
+    {
+      name: 'allows returning to an earlier step',
+      current: 'export',
+      target: 'import',
+      axis: unconfirmedAxis,
+      expected: true,
+    },
+  ];
+
+  it.each(cases)('$name', ({ current, target, axis, expected }) => {
+    const project: ProjectV1 = Object.freeze({
+      schemaVersion: 1,
+      id: 'frozen-project',
+      name: 'Frozen project',
+      step: current,
+      axis,
+    });
+    const before = structuredClone(project);
+
+    expect(canEnterStep(project, target)).toBe(expected);
+    expect(project).toEqual(before);
+    expect(Object.isFrozen(project)).toBe(true);
+    if (project.axis) {
+      expect(Object.isFrozen(project.axis)).toBe(true);
+    }
+  });
+});
 
 describe('project workflow store', () => {
+  it('copies an axis so later input mutations cannot change project state', () => {
+    const store = createProjectStore();
+    const input = {
+      origin: [0, 0, 0] as [number, number, number],
+      direction: [0, 1, 0] as [number, number, number],
+      confidence: 1,
+      confirmed: true,
+    };
+
+    store.getState().setAxis(input);
+    input.confirmed = false;
+    input.origin[0] = 42;
+
+    expect(store.getState().axis).toEqual({
+      origin: [0, 0, 0],
+      direction: [0, 1, 0],
+      confidence: 1,
+      confirmed: true,
+    });
+  });
+
   it('starts at import and blocks decomposition until the axis is confirmed', () => {
     const store = createProjectStore();
 
@@ -13,12 +133,7 @@ describe('project workflow store', () => {
   it('enters decomposition after confirming the axis', () => {
     const store = createProjectStore();
 
-    store.getState().setAxis({
-      origin: [0, 0, 0],
-      direction: [0, 1, 0],
-      confidence: 0.9,
-      confirmed: true,
-    });
+    store.getState().setAxis(confirmedAxis);
 
     expect(store.getState().goToStep('decomposition')).toBe(true);
     expect(store.getState().step).toBe('decomposition');
@@ -26,12 +141,7 @@ describe('project workflow store', () => {
 
   it('requires decomposition before engraving and engraving before export', () => {
     const store = createProjectStore();
-    store.getState().setAxis({
-      origin: [0, 0, 0],
-      direction: [0, 1, 0],
-      confidence: 1,
-      confirmed: true,
-    });
+    store.getState().setAxis(confirmedAxis);
 
     expect(store.getState().goToStep('engraving')).toBe(false);
     expect(store.getState().goToStep('export')).toBe(false);
@@ -48,12 +158,7 @@ describe('project workflow store', () => {
 
   it('allows returning from a later step to an earlier step', () => {
     const store = createProjectStore();
-    store.getState().setAxis({
-      origin: [0, 0, 0],
-      direction: [0, 1, 0],
-      confidence: 1,
-      confirmed: true,
-    });
+    store.getState().setAxis(confirmedAxis);
     store.getState().goToStep('decomposition');
     store.getState().goToStep('engraving');
 
@@ -63,19 +168,9 @@ describe('project workflow store', () => {
 
   it('enters engraving after decomposition even if the axis is later unconfirmed', () => {
     const store = createProjectStore();
-    store.getState().setAxis({
-      origin: [0, 0, 0],
-      direction: [0, 1, 0],
-      confidence: 1,
-      confirmed: true,
-    });
+    store.getState().setAxis(confirmedAxis);
     store.getState().goToStep('decomposition');
-    store.getState().setAxis({
-      origin: [0, 0, 0],
-      direction: [0, 1, 0],
-      confidence: 1,
-      confirmed: false,
-    });
+    store.getState().setAxis(unconfirmedAxis);
 
     expect(store.getState().goToStep('engraving')).toBe(true);
     expect(store.getState().step).toBe('engraving');
@@ -83,20 +178,10 @@ describe('project workflow store', () => {
 
   it('enters export after engraving even if the axis is later unconfirmed', () => {
     const store = createProjectStore();
-    store.getState().setAxis({
-      origin: [0, 0, 0],
-      direction: [0, 1, 0],
-      confidence: 1,
-      confirmed: true,
-    });
+    store.getState().setAxis(confirmedAxis);
     store.getState().goToStep('decomposition');
     store.getState().goToStep('engraving');
-    store.getState().setAxis({
-      origin: [0, 0, 0],
-      direction: [0, 1, 0],
-      confidence: 1,
-      confirmed: false,
-    });
+    store.getState().setAxis(unconfirmedAxis);
 
     expect(store.getState().goToStep('export')).toBe(true);
     expect(store.getState().step).toBe('export');
