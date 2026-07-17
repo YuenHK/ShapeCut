@@ -11,11 +11,23 @@ export function parseSTL(input: ArrayBuffer | string): TriangleMesh {
   if (typeof input === 'string') return parseASCII(input);
   if (input.byteLength === 0) throw new STLParseError('STL input is empty');
 
-  const prefix = new TextDecoder().decode(input.slice(0, Math.min(input.byteLength, 256))).trimStart();
-  if (prefix.startsWith('solid') && /\b(facet|vertex)\b/i.test(prefix)) {
-    return parseASCII(new TextDecoder().decode(input));
+  let declaredBinaryLength: number | undefined;
+  if (input.byteLength >= 84) {
+    const triangleCount = new DataView(input).getUint32(80, true);
+    declaredBinaryLength = 84 + triangleCount * 50;
+    if (declaredBinaryLength === input.byteLength) return parseBinary(input);
   }
-  return parseBinary(input);
+
+  try {
+    return parseASCII(new TextDecoder().decode(input));
+  } catch (asciiError) {
+    if (declaredBinaryLength !== undefined && declaredBinaryLength > input.byteLength) {
+      throw new STLParseError(
+        `Binary STL is truncated: expected ${declaredBinaryLength} bytes, received ${input.byteLength}`,
+      );
+    }
+    throw asciiError;
+  }
 }
 
 function parseASCII(source: string): TriangleMesh {

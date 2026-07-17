@@ -120,6 +120,19 @@ describe('STL parsing', () => {
     expect(massProperties(mesh).centroid[0]).toBeCloseTo(0.25);
   });
 
+  test('prefers an exact-length binary STL despite a misleading solid header', () => {
+    const mesh = parseSTL(binarySTL(tetrahedron(), 'solid facet misleading binary'));
+    expect(mesh.positions.length / 3).toBe(4);
+    expect(mesh.indices.length / 3).toBe(4);
+  });
+
+  test('parses ASCII STL whose first facet occurs beyond the detection prefix', () => {
+    const delayedASCII = asciiTetrahedron.replace('solid tetrahedron\n', `solid tetrahedron\n${' '.repeat(300)}\n`);
+    const mesh = parseSTL(new TextEncoder().encode(delayedASCII).buffer);
+    expect(mesh.positions.length / 3).toBe(4);
+    expect(mesh.indices.length / 3).toBe(4);
+  });
+
   test('rejects truncated binary STL', () => {
     expect(() => parseSTL(binarySTL(tetrahedron()).slice(0, 90))).toThrow(/truncated/i);
   });
@@ -139,10 +152,11 @@ describe('STL parsing', () => {
   });
 });
 
-function binarySTL(mesh: TriangleMesh): ArrayBuffer {
+function binarySTL(mesh: TriangleMesh, header = ''): ArrayBuffer {
   const triangleCount = mesh.indices.length / 3;
   const buffer = new ArrayBuffer(84 + triangleCount * 50);
   const view = new DataView(buffer);
+  new Uint8Array(buffer, 0, Math.min(80, header.length)).set(new TextEncoder().encode(header).slice(0, 80));
   view.setUint32(80, triangleCount, true);
   for (let triangle = 0; triangle < triangleCount; triangle += 1) {
     const base = 84 + triangle * 50;
