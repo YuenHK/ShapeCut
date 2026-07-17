@@ -23,17 +23,11 @@ export function canEnterStep(
   }
 
   if (target === 'engraving') {
-    return (
-      project.axis?.confirmed === true &&
-      stepOrder[project.step] >= stepOrder.decomposition
-    );
+    return stepOrder[project.step] >= stepOrder.decomposition;
   }
 
   if (target === 'export') {
-    return (
-      project.axis?.confirmed === true &&
-      stepOrder[project.step] >= stepOrder.engraving
-    );
+    return stepOrder[project.step] >= stepOrder.engraving;
   }
 
   return true;

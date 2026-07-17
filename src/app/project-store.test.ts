@@ -45,4 +45,60 @@ describe('project workflow store', () => {
     expect(store.getState().goToStep('export')).toBe(true);
     expect(store.getState().step).toBe('export');
   });
+
+  it('allows returning from a later step to an earlier step', () => {
+    const store = createProjectStore();
+    store.getState().setAxis({
+      origin: [0, 0, 0],
+      direction: [0, 1, 0],
+      confidence: 1,
+      confirmed: true,
+    });
+    store.getState().goToStep('decomposition');
+    store.getState().goToStep('engraving');
+
+    expect(store.getState().goToStep('axis')).toBe(true);
+    expect(store.getState().step).toBe('axis');
+  });
+
+  it('enters engraving after decomposition even if the axis is later unconfirmed', () => {
+    const store = createProjectStore();
+    store.getState().setAxis({
+      origin: [0, 0, 0],
+      direction: [0, 1, 0],
+      confidence: 1,
+      confirmed: true,
+    });
+    store.getState().goToStep('decomposition');
+    store.getState().setAxis({
+      origin: [0, 0, 0],
+      direction: [0, 1, 0],
+      confidence: 1,
+      confirmed: false,
+    });
+
+    expect(store.getState().goToStep('engraving')).toBe(true);
+    expect(store.getState().step).toBe('engraving');
+  });
+
+  it('enters export after engraving even if the axis is later unconfirmed', () => {
+    const store = createProjectStore();
+    store.getState().setAxis({
+      origin: [0, 0, 0],
+      direction: [0, 1, 0],
+      confidence: 1,
+      confirmed: true,
+    });
+    store.getState().goToStep('decomposition');
+    store.getState().goToStep('engraving');
+    store.getState().setAxis({
+      origin: [0, 0, 0],
+      direction: [0, 1, 0],
+      confidence: 1,
+      confirmed: false,
+    });
+
+    expect(store.getState().goToStep('export')).toBe(true);
+    expect(store.getState().step).toBe('export');
+  });
 });
