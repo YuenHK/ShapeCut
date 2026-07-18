@@ -5,6 +5,7 @@ import type { LathedProfile, MaterialInput, Polygon2 } from './types';
 import type { TriangleMesh } from '../mesh/types';
 import type { Axis } from '../types';
 import { isSimplePolygon } from './polygon-validation';
+import * as polygonValidation from './polygon-validation';
 import { minimumRadiusOverInterval } from './profile-geometry';
 
 const profile: LathedProfile = {
@@ -25,13 +26,251 @@ function area(polygon: Polygon2): number {
   }, 0) / 2;
 }
 
+function pointInPolygon(polygon: Polygon2, point: readonly [number, number]): boolean {
+  let inside = false;
+  for (let index = 0, previous = polygon.points.length - 1; index < polygon.points.length; previous = index++) {
+    const a = polygon.points[index], b = polygon.points[previous];
+    if ((a[1] > point[1]) !== (b[1] > point[1]) && point[0] < (b[0] - a[0]) * (point[1] - a[1]) / (b[1] - a[1]) + a[0]) inside = !inside;
+  }
+  return inside;
+}
+
+function partContains(part: { readonly outline: Polygon2; readonly holes: readonly Polygon2[] }, point: readonly [number, number]): boolean {
+  return pointInPolygon(part.outline, point) && part.holes.every((hole) => !pointInPolygon(hole, point));
+}
+
+function hasConcaveVertex(polygon: Polygon2): boolean {
+  const sign = Math.sign(area(polygon));
+  return polygon.points.some((point, index, points) => {
+    const before = points[(index + points.length - 1) % points.length], after = points[(index + 1) % points.length];
+    return sign * ((point[0] - before[0]) * (after[1] - point[1]) - (point[1] - before[1]) * (after[0] - point[0])) < -1e-10;
+  });
+}
+
+const confirmedAxis: Axis = { origin: [0, 0, 0], direction: [0, 0, 1], confidence: 1, confirmed: true };
+
+function lathedSurface(samples: LathedProfile['samples'], segments = 32): TriangleMesh {
+  const positions: number[] = [];
+  for (const { z, radius } of samples) for (let segment = 0; segment < segments; segment += 1) {
+    const angle = segment * Math.PI * 2 / segments;
+    positions.push(radius * Math.cos(angle), radius * Math.sin(angle), z);
+  }
+  const indices: number[] = [];
+  for (let ring = 0; ring + 1 < samples.length; ring += 1) for (let segment = 0; segment < segments; segment += 1) {
+    const next = (segment + 1) % segments;
+    const a = ring * segments + segment, b = ring * segments + next, c = (ring + 1) * segments + segment, d = (ring + 1) * segments + next;
+    indices.push(a, b, c, b, d, c);
+  }
+  return { positions: new Float64Array(positions), indices: new Uint32Array(indices) };
+}
+
+function regularPolygon(radius: number, segments = 32, clockwise = false): Polygon2 {
+  return { points: Array.from({ length: segments }, (_, index) => {
+    const angle = (clockwise ? -1 : 1) * index * Math.PI * 2 / segments;
+    return [radius * Math.cos(angle), radius * Math.sin(angle)] as const;
+  }) };
+}
+
+function radialFeature(center: number, width: number, depth: number, angle: number): Polygon2 {
+  const local = [[center - depth / 2, -width / 2], [center + depth / 2, -width / 2], [center + depth / 2, width / 2], [center - depth / 2, width / 2]] as const;
+  return { points: local.map(([radial, tangential]) => [radial * Math.cos(angle) - tangential * Math.sin(angle), radial * Math.sin(angle) + tangential * Math.cos(angle)] as const) };
+}
+
 describe('generateParts', () => {
+  test('hashes actual geometry, instance placement, and complete joint frames with collision guards', () => {
+    const options = { ribCount: 4 as const, ringLayers: 3, shaftMm: 3, fit: 'snug' as const };
+    const kit = generateParts(profile, material, options);
+    for (const joint of kit.joints) expect(joint.frame).toMatchObject({ materialThicknessMm: 3, fitAllowanceMm: 0.1 });
+    const ids = [
+      ...kit.parts.map(({ id }) => id),
+      ...kit.instances.map(({ id }) => id),
+      ...new Set(kit.joints.map(({ id }) => id)),
+      ...kit.assembly.filter((edge) => edge.kind === 'placement').map(({ placementId }) => placementId),
+    ];
+    expect(ids.every((id) => /[0-9a-f]{32}$/i.test(id))).toBe(true);
+    expect(new Set(ids).size).toBe(ids.length);
+    const selectiveHasher = (token: string) => {
+      const values = new Map<string, string>(); let counter = 1;
+      return (payload: string): string => {
+        if (payload.includes(token)) return '0'.repeat(32);
+        let value = values.get(payload);
+        if (!value) { value = (counter++).toString(16).padStart(32, '0'); values.set(payload, value); }
+        return value;
+      };
+    };
+    expect(() => generateParts(profile, material, options, { hasher: selectiveHasher('"placement":') })).toThrowError(expect.objectContaining({ code: 'HASH_COLLISION' }));
+    expect(() => generateParts(profile, material, options, { hasher: selectiveHasher('"frame":') })).toThrowError(expect.objectContaining({ code: 'HASH_COLLISION' }));
+  });
+
+  test.each([1e-6, 1e6])('preserves complete notch, joint, and instance similarity at scale %g', (factor) => {
+    const options = { ribCount: 6 as const, ringLayers: 3, shaftMm: 3, fit: 'snug' as const };
+    const base = generateParts(profile, material, options);
+    const scaled = generateParts(
+      { samples: profile.samples.map(({ z, radius }) => ({ z: z * factor, radius: radius * factor })) },
+      { thicknessMm: material.thicknessMm * factor, fitAllowanceMm: 0.1 * factor },
+      { ...options, shaftMm: options.shaftMm * factor },
+    );
+    const expectScaled = (actual: number, expected: number): void => expect(Math.abs(actual / factor - expected)).toBeLessThanOrEqual(Math.max(1e-10, Math.abs(expected) * 1e-10));
+    expect(scaled.parts.map(({ kind, quantity }) => ({ kind, quantity }))).toEqual(base.parts.map(({ kind, quantity }) => ({ kind, quantity })));
+    base.parts.forEach((part, partIndex) => {
+      const other = scaled.parts[partIndex];
+      [part.outline, ...part.holes].forEach((polygon, polygonIndex) => polygon.points.forEach((point, pointIndex) => {
+        const actual = [other.outline, ...other.holes][polygonIndex].points[pointIndex];
+        expectScaled(actual[0], point[0]); expectScaled(actual[1], point[1]);
+      }));
+    });
+    expect(scaled.instances).toHaveLength(base.instances.length);
+    base.instances.forEach((instance, index) => {
+      expectScaled(scaled.instances[index].axialZ, instance.axialZ);
+      expect(scaled.instances[index].angleRad).toBe(instance.angleRad);
+    });
+    base.joints.forEach((joint, index) => {
+      const other = scaled.joints[index];
+      expect(other.role).toBe(joint.role); expect(other.featureType).toBe(joint.featureType);
+      expectScaled(other.widthMm, joint.widthMm); expectScaled(other.depthMm, joint.depthMm);
+      expectScaled(other.frame.axialZ, joint.frame.axialZ); expectScaled(other.frame.radialMin, joint.frame.radialMin); expectScaled(other.frame.radialMax, joint.frame.radialMax); expectScaled(other.frame.tangentialWidth, joint.frame.tangentialWidth);
+      expect(other.frame.angleRad).toBeCloseTo(joint.frame.angleRad, 12);
+    });
+    expect(scaled.assembly.map(({ kind, order }) => ({ kind, order }))).toEqual(base.assembly.map(({ kind, order }) => ({ kind, order })));
+  });
+
+  test('resolves every physical hub layer and spacer through stable assembly instances', () => {
+    const options = { ribCount: 4 as const, ringLayers: 3, shaftMm: 3, fit: 'snug' as const };
+    const kit = generateParts(profile, material, options);
+    expect(kit).toHaveProperty('instances');
+    const instances = (kit as typeof kit & { instances: readonly { id: string; partId: string; axialZ: number; angleRad?: number }[] }).instances;
+    const partIds = new Set(kit.parts.map(({ id }) => id));
+    const instanceIds = new Set(instances.map(({ id }) => id));
+    expect(instanceIds.size).toBe(instances.length);
+    expect(instances.every(({ partId }) => partIds.has(partId))).toBe(true);
+    const hub = kit.parts.find((part) => part.kind === 'hub-layer')!;
+    const hubInstances = instances.filter(({ partId }) => partId === hub.id);
+    expect(hub.quantity).toBe(3);
+    expect(hubInstances).toHaveLength(3);
+    expect(new Set(hubInstances.map(({ axialZ }) => axialZ)).size).toBe(3);
+    for (const hubInstance of hubInstances) {
+      expect(kit.joints.filter((joint) => (joint as typeof joint & { partInstanceId?: string }).partInstanceId === hubInstance.id)).toHaveLength(options.ribCount);
+      expect(kit.assembly.some((edge) => edge.kind === 'joint' && (edge as typeof edge & { fromInstanceId?: string }).fromInstanceId === hubInstance.id)).toBe(true);
+    }
+    for (const joint of kit.joints as readonly (typeof kit.joints[number] & { partInstanceId: string; mateInstanceId: string })[]) {
+      expect(instanceIds.has(joint.partInstanceId)).toBe(true);
+      expect(instanceIds.has(joint.mateInstanceId)).toBe(true);
+    }
+    const spacer = kit.parts.find((part) => part.kind === 'spacer')!;
+    const spacerInstances = instances.filter(({ partId }) => partId === spacer.id).sort((left, right) => left.axialZ - right.axialZ);
+    expect(spacerInstances).toHaveLength(2);
+    expect(spacerInstances[0].axialZ).toBeLessThan(Math.min(...hubInstances.map(({ axialZ }) => axialZ)));
+    expect(spacerInstances[1].axialZ).toBeGreaterThan(Math.max(...hubInstances.map(({ axialZ }) => axialZ)));
+    const placements = kit.assembly.filter((edge) => edge.kind === 'placement') as readonly (Extract<typeof kit.assembly[number], { kind: 'placement' }> & { partInstanceId: string; relativeToInstanceId: string })[];
+    expect(new Set(placements.map(({ partInstanceId }) => partInstanceId))).toEqual(new Set(spacerInstances.map(({ id }) => id)));
+    expect(placements.every(({ relativeToInstanceId }) => hubInstances.some(({ id }) => id === relativeToInstanceId))).toBe(true);
+    expect(generateParts(profile, material, options)).toEqual(kit);
+  });
+
+  test.each([
+    [3, 'press', 1.5],
+    [3, 'snug', 1.55],
+    [20, 'press', 10],
+  ] as const)('cuts a %s mm %s shaft polygon whose inradius is the physical target', (shaftMm, fit, target) => {
+    const allowances = { loose: 0.4, slip: 0.25, snug: 0.1, press: 0 } as const;
+    const largeProfile: LathedProfile = { samples: [{ z: -100, radius: 80 }, { z: 0, radius: 100 }, { z: 100, radius: 80 }] };
+    const kit = generateParts(largeProfile, { thicknessMm: 3, fitAllowanceMm: allowances }, { ribCount: 4, ringLayers: 1, shaftMm, fit });
+    const hub = kit.parts.find((part) => part.kind === 'hub-layer')!;
+    const hole = hub.holes[hub.holeMetadata![0].polygonIndex];
+    const edgeDistance = (a: readonly [number, number], b: readonly [number, number]): number => Math.abs(a[0] * b[1] - a[1] * b[0]) / Math.hypot(b[0] - a[0], b[1] - a[1]);
+    const inradius = Math.min(...hole.points.map((point, index) => edgeDistance(point, hole.points[(index + 1) % hole.points.length])));
+    const circumradius = Math.max(...hole.points.map(([x, y]) => Math.hypot(x, y)));
+    expect(hub.holeMetadata![0].radiusMm).toBe(target);
+    expect(inradius).toBeCloseTo(target, 12);
+    expect(circumradius).toBeCloseTo(target / Math.cos(Math.PI / hole.points.length), 12);
+  });
+
+  test('validates notch edges against actual polygon support and complete inner-hole segments', () => {
+    expect('validateOpenRadialNotches' in polygonValidation).toBe(true);
+    if (!('validateOpenRadialNotches' in polygonValidation)) return;
+    const validateNotches = polygonValidation.validateOpenRadialNotches as (cuts: readonly Polygon2[], support: Polygon2, holes: readonly Polygon2[], margin: number) => boolean;
+    const midpointHoleBreach = radialFeature(2.169319, 0.6, 0.16, 0);
+    expect(validateNotches([midpointHoleBreach], regularPolygon(2.29, 32), [regularPolygon(2.09, 32, true)], 0.001)).toBe(false);
+    const oldHubCut = radialFeature(34.6466, 3.1, 2.4, Math.PI / 3);
+    expect(validateNotches([oldHubCut], regularPolygon(36, 32), [regularPolygon(1.55, 32, true)], 0.06)).toBe(false);
+    expect(() => generateParts({ samples: [{ z: -20, radius: 2.3 }, { z: 20, radius: 2.3 }] }, { thicknessMm: 0.2, fitAllowanceMm: 0.4 }, { ribCount: 4, ringLayers: 1, shaftMm: 0.02, fit: 'snug' })).not.toThrow();
+    expect(() => generateParts({ samples: [{ z: -135, radius: 90 }, { z: 135, radius: 90 }] }, material, { ribCount: 6, ringLayers: 1, shaftMm: 3, fit: 'snug' })).not.toThrow();
+  });
+
+  test.each([4, 6, 8, 10, 12] as const)('builds %i unique positive-radius spokes clear of the shaft', (ribCount) => {
+    const kit = generateParts(profile, material, { ribCount, ringLayers: 2, shaftMm: 3, fit: 'snug' });
+    const ribs = kit.parts.filter((part) => part.kind === 'rib');
+    const shaftRadius = kit.parts.find((part) => part.kind === 'hub-layer')!.holeMetadata![0].radiusMm;
+    expect(ribs).toHaveLength(ribCount);
+    const representative = ribs.map((rib) => {
+      const minimumRadius = Math.min(...rib.outline.points.map(([, radius]) => radius));
+      expect(minimumRadius).toBeGreaterThan(shaftRadius);
+      expect(rib.outline.points.every(([, radius]) => radius >= minimumRadius)).toBe(true);
+      const radius = Math.max(...rib.outline.points.map(([, value]) => value));
+      return [radius * Math.cos(rib.angleRad!), radius * Math.sin(rib.angleRad!)] as const;
+    });
+    expect(new Set(ribs.map((rib) => rib.angleRad)).size).toBe(ribCount);
+    expect(new Set(representative.map(([x, y]) => `${Math.round(x * 1e9)},${Math.round(y * 1e9)}`)).size).toBe(ribCount);
+    for (let index = 0; index < ribCount / 2; index += 1) {
+      const opposite = index + ribCount / 2;
+      expect(representative[index][0]).toBeCloseTo(-representative[opposite][0], 10);
+      expect(representative[index][1]).toBeCloseTo(-representative[opposite][1], 10);
+      expect(representative[index]).not.toEqual(representative[opposite]);
+    }
+  });
+
+  test('cuts real complementary open notches with no positive-area plate/rib collision', () => {
+    const thickness = 3;
+    const kit = generateParts(profile, { thicknessMm: thickness, fitAllowanceMm: 0.1 }, { ribCount: 4, ringLayers: 1, shaftMm: 3, fit: 'snug' });
+    const plates = kit.parts.filter((part) => part.kind === 'hub-layer' || part.kind === 'outer-ring');
+    expect(plates).toHaveLength(2);
+    for (const plate of plates) {
+      expect(plate.holes).toHaveLength(1);
+      expect(isSimplePolygon(plate.outline)).toBe(true);
+      expect(area(plate.outline)).toBeGreaterThan(0);
+      expect(hasConcaveVertex(plate.outline)).toBe(true);
+    }
+    const grouped = new Map<string, typeof kit.joints>();
+    for (const feature of kit.joints) grouped.set(feature.id, [...(grouped.get(feature.id) ?? []), feature]);
+    for (const pair of grouped.values()) {
+      const plateFeature = pair.find(({ role }) => role === 'slot')!;
+      const ribFeature = pair.find(({ role }) => role === 'tab')!;
+      const plate = kit.parts.find(({ id }) => id === plateFeature.partId)!;
+      const rib = kit.parts.find(({ id }) => id === ribFeature.partId)!;
+      expect(plate.holes).not.toContainEqual(plateFeature.polygon);
+      expect(plateFeature.featureType).toBe('open-notch');
+      expect(ribFeature.featureType).toBe('material-contact');
+      expect(isSimplePolygon(rib.outline)).toBe(true);
+      const frame = plateFeature.frame;
+      const radialLimit = Math.max(...plate.outline.points.map(([x, y]) => Math.hypot(x, y)));
+      for (let axialStep = 1; axialStep < 8; axialStep += 1) {
+        const z = frame.axialZ - thickness / 2 + thickness * axialStep / 8;
+        for (let radialStep = 1; radialStep < 96; radialStep += 1) {
+          const radius = radialLimit * radialStep / 96;
+          const platePoint = [radius * Math.cos(frame.angleRad), radius * Math.sin(frame.angleRad)] as const;
+          expect(partContains(plate, platePoint) && pointInPolygon(rib.outline, [z, radius])).toBe(false);
+        }
+      }
+    }
+    for (const [z, radius] of [[-4, 4.25162], [4, 15.50410]] as const) {
+      const pair = [...grouped.values()].find((features) => Math.abs(features[0].frame.axialZ - z) < 1e-9)!;
+      const plateFeature = pair.find(({ role }) => role === 'slot')!;
+      const ribFeature = pair.find(({ role }) => role === 'tab')!;
+      const plate = kit.parts.find(({ id }) => id === plateFeature.partId)!;
+      const rib = kit.parts.find(({ id }) => id === ribFeature.partId)!;
+      const point = [radius * Math.cos(plateFeature.frame.angleRad), radius * Math.sin(plateFeature.frame.angleRad)] as const;
+      expect(partContains(plate, point) && pointInPolygon(rib.outline, [z, radius])).toBe(false);
+    }
+  });
+
   test('honours a narrow inward notch anywhere inside a contact interval', () => {
     const notched: LathedProfile = { samples: [
       { z: -12, radius: 9 }, { z: 0, radius: 24 }, { z: 4.6, radius: 20 },
       { z: 4.7, radius: 4 }, { z: 4.8, radius: 20 }, { z: 12, radius: 9 },
     ] };
-    expect(() => generateParts(notched, material, { ribCount: 4, ringLayers: 1, shaftMm: 3, fit: 'snug' })).toThrowError(expect.objectContaining({ code: 'JOINT' }));
+    const kit = generateParts(notched, material, { ribCount: 4, ringLayers: 1, shaftMm: 3, fit: 'snug' });
+    const ring = kit.parts.find((part) => part.kind === 'outer-ring')!;
+    expect(Math.max(...ring.outline.points.map(([x, y]) => Math.hypot(x, y)))).toBeLessThan(4);
   });
   test('rejects radial slots whose corners breach hub/ring margins or overlap neighbours', () => {
     const large: LathedProfile = { samples: [{ z: -50, radius: 80 }, { z: 0, radius: 100 }, { z: 50, radius: 80 }] };
@@ -54,8 +293,8 @@ describe('generateParts', () => {
     expect(leftRib.outline.points).not.toEqual(rightRib.outline.points);
     for (const sample of left.samples) {
       expect(leftRib.outline.points).toContainEqual([sample.z, sample.radius]);
-      expect(leftRib.outline.points).toContainEqual([sample.z, -sample.radius]);
     }
+    expect(leftRib.outline.points.every(([, radius]) => radius > 0)).toBe(true);
   });
 
   test('maps cut slots and in-material rib contacts to one shared mating frame', () => {
@@ -66,13 +305,14 @@ describe('generateParts', () => {
       expect(pair).toHaveLength(2);
       const slot = pair.find((feature) => feature.role === 'slot')!;
       const contact = pair.find((feature) => feature.role === 'tab')!;
-      expect(slot.featureType).toBe('cut-slot');
+      const ribPart = kit.parts.find(({ id }) => id === contact.partId)!;
+      expect(slot.featureType).toBe('open-notch');
       expect(contact.featureType).toBe('material-contact');
       expect(slot.frame).toEqual(contact.frame);
       const radial = slot.polygon.points.map(([x, y]) => x * Math.cos(slot.frame.angleRad) + y * Math.sin(slot.frame.angleRad));
       const tangential = slot.polygon.points.map(([x, y]) => -x * Math.sin(slot.frame.angleRad) + y * Math.cos(slot.frame.angleRad));
       expect(Math.min(...radial)).toBeCloseTo(slot.frame.radialMin, 10);
-      expect(Math.max(...radial)).toBeCloseTo(slot.frame.radialMax, 10);
+      expect(Math.max(...radial)).toBeGreaterThan(slot.frame.radialMax);
       expect(Math.max(...tangential) - Math.min(...tangential)).toBeCloseTo(slot.frame.tangentialWidth, 10);
       const zs = contact.polygon.points.map(([z]) => z), radii = contact.polygon.points.map(([, radius]) => radius);
       expect((Math.min(...zs) + Math.max(...zs)) / 2).toBeCloseTo(slot.frame.axialZ, 10);
@@ -80,10 +320,12 @@ describe('generateParts', () => {
       expect(Math.min(...radii)).toBeCloseTo(slot.frame.radialMin, 10);
       expect(Math.max(...radii)).toBeCloseTo(slot.frame.radialMax, 10);
       expect(contact.polygon.points.every(([z, radius]) => radius <= radiusAt(profile, z) + 1e-10)).toBe(true);
-      expect(kit.parts.find(({ id }) => id === slot.partId)!.holes).toContainEqual(slot.polygon);
+      expect(kit.parts.find(({ id }) => id === slot.partId)!.holes).not.toContainEqual(slot.polygon);
+      expect(contact.polygon.points.every((point) => ribPart.outline.points.some((candidate) => candidate[0] === point[0] && candidate[1] === point[1]))).toBe(true);
     }
     const rib = kit.parts.find((part) => part.kind === 'rib')!;
-    expect(rib.outline.points).toEqual(profile.samples.map(({ z, radius }) => [z, -radius]).concat([...profile.samples].reverse().map(({ z, radius }) => [z, radius])));
+    expect(polygonValidation.isSimpleXMonotonePolygon(rib.outline)).toBe(true);
+    expect(Math.min(...rib.outline.points.map(([, radius]) => radius))).toBeGreaterThan(1.55);
   });
 
   test('uses selected fit allowance exactly for concentric shaft clearance', () => {
@@ -226,7 +468,8 @@ describe('generateParts', () => {
     expect(press.parts.find((part) => part.kind === 'spacer')?.id).not.toBe(snug.parts.find((part) => part.kind === 'spacer')?.id);
     const fewer = generateParts(profile, { thicknessMm: 3, fitAllowanceMm: fitMap }, { ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' });
     expect(fewer.parts.filter((part) => part.kind === 'spacer').map((part) => part.id)).toEqual(snug.parts.filter((part) => part.kind === 'spacer').map((part) => part.id));
-    expect(fewer.parts.filter((part) => part.kind === 'hub-layer').map((part) => part.id)).not.toEqual(snug.parts.filter((part) => part.kind === 'hub-layer').map((part) => part.id));
+    expect(fewer.parts.filter((part) => part.kind === 'hub-layer').map((part) => part.id)).toEqual(snug.parts.filter((part) => part.kind === 'hub-layer').map((part) => part.id));
+    expect(fewer.instances.filter((instance) => fewer.parts.find(({ id }) => id === instance.partId)?.kind === 'hub-layer').map(({ id }) => id)).not.toEqual(snug.instances.filter((instance) => snug.parts.find(({ id }) => id === instance.partId)?.kind === 'hub-layer').map(({ id }) => id));
     expect(fewer.parts.filter((part) => part.kind === 'rib').map((part) => part.id)).not.toEqual(snug.parts.filter((part) => part.kind === 'rib').map((part) => part.id));
     expect(fewer.parts.filter((part) => part.kind === 'outer-ring').map((part) => part.id)).not.toEqual(snug.parts.filter((part) => part.kind === 'outer-ring').slice(0, 2).map((part) => part.id));
   });
@@ -279,6 +522,78 @@ describe('minimumRadiusOverInterval', () => {
 });
 
 describe('sampleLathedProfile', () => {
+  test('derives its domain only from finite nondegenerate referenced triangles', () => {
+    const base = lathedSurface([{ z: -1, radius: 2 }, { z: 1, radius: 3 }], 8);
+    const positions = new Float64Array(base.positions.length + 6);
+    positions.set(base.positions);
+    positions.set([0, 0, 1e9, NaN, NaN, NaN], base.positions.length);
+    expect(sampleLathedProfile({ positions, indices: base.indices }, confirmedAxis, 5)).toEqual(sampleLathedProfile(base, confirmedAxis, 5));
+    const collinear: TriangleMesh = { positions: new Float64Array([1, 0, -1, 2, 0, 0, 3, 0, 1]), indices: new Uint32Array([0, 1, 2]) };
+    expect(() => sampleLathedProfile(collinear, confirmedAxis, 5)).toThrowError(expect.objectContaining({ code: 'PROFILE' }));
+    const repeated: TriangleMesh = { positions: new Float64Array([1, 0, -1, 2, 0, 1]), indices: new Uint32Array([0, 0, 1]) };
+    expect(() => sampleLathedProfile(repeated, confirmedAxis, 5)).toThrowError(expect.objectContaining({ code: 'PROFILE' }));
+  });
+
+  test('includes valid vertex planes so a narrow inward surface notch cannot be skipped', () => {
+    const narrow: LathedProfile = { samples: [
+      { z: -12, radius: 20 }, { z: 4.6, radius: 20 }, { z: 4.7, radius: 1 }, { z: 4.8, radius: 20 }, { z: 12, radius: 20 },
+    ] };
+    const sampled = sampleLathedProfile(lathedSurface(narrow.samples), confirmedAxis, 64);
+    expect(sampled.samples.length).toBeLessThanOrEqual(4096);
+    expect(sampled.samples.some(({ z, radius }) => Math.abs(z - 4.7) < 1e-12 && radius < 1.01)).toBe(true);
+    expect(() => generateParts(sampled, material, { ribCount: 4, ringLayers: 1, shaftMm: 3, fit: 'snug' })).toThrowError(expect.objectContaining({ code: 'JOINT' }));
+  });
+
+  test('is invariant when the axis origin is translated by 1e16 along its direction', () => {
+    const mesh = lathedSurface([{ z: -2, radius: 3 }, { z: 0, radius: 4 }, { z: 2, radius: 3 }], 16);
+    const base = sampleLathedProfile(mesh, confirmedAxis, 9);
+    const shifted = sampleLathedProfile(mesh, { ...confirmedAxis, origin: [0, 0, 1e16] }, 9);
+    expect(shifted.samples).toEqual(base.samples);
+  });
+
+  test('reports bounded triangle-plane intersection work and rejects over-budget workloads', () => {
+    const spanningTriangles = (count: number): TriangleMesh => {
+      const positions = new Float64Array(count * 9), indices = new Uint32Array(count * 3);
+      for (let triangle = 0; triangle < count; triangle += 1) {
+        const offset = triangle * 9, vertex = triangle * 3, angle = triangle * Math.PI * 2 / count;
+        positions.set([2 * Math.cos(angle), 2 * Math.sin(angle), -1, 3 * Math.cos(angle), 3 * Math.sin(angle), 1, 2.5 * Math.cos(angle + 0.01), 2.5 * Math.sin(angle + 0.01), 0], offset);
+        indices.set([vertex, vertex + 1, vertex + 2], triangle * 3);
+      }
+      return { positions, indices };
+    };
+    let work = -1;
+    sampleLathedProfile(spanningTriangles(10_000), confirmedAxis, 64, { onStats: (stats: { intersectionWork: number }) => { work = stats.intersectionWork; } } as never);
+    expect(work).toBeGreaterThan(0);
+    expect(work).toBeLessThanOrEqual(2_000_000);
+    expect(() => sampleLathedProfile(spanningTriangles(50_000), confirmedAxis, 64)).toThrowError(expect.objectContaining({ code: 'PROFILE' }));
+  });
+
+  test('provides a linear x-monotone validator for large rib silhouettes', () => {
+    expect('isSimpleXMonotonePolygon' in polygonValidation).toBe(true);
+    const points: [number, number][] = [];
+    for (let index = 0; index < 10_000; index += 1) points.push([index, 1]);
+    for (let index = 9_999; index >= 0; index -= 1) points.push([index, 2]);
+    const validator = (polygonValidation as unknown as { isSimpleXMonotonePolygon(value: Polygon2): boolean }).isSimpleXMonotonePolygon;
+    expect(validator({ points })).toBe(true);
+    expect(validator({ points: [[0, 0], [1, 2], [2, 0], [2, 3], [1, 1], [0, 3]] })).toBe(false);
+    const simpleNotch: Polygon2 = { points: [[0, 0], [3, 0], [3, 3], [2, 3], [2, 1], [1, 1], [1, 3], [0, 3]] };
+    for (const factor of [1e-6, 1, 1e6]) expect(isSimplePolygon({ points: simpleNotch.points.map(([x, y]) => [x * factor, y * factor]) })).toBe(true);
+  });
+
+  test('keeps a 10k-sample full kit on the linear rib-validation path', () => {
+    const samples = Array.from({ length: 10_000 }, (_, index) => {
+      const z = -100 + 200 * index / 9_999;
+      return { z, radius: 80 + 20 * (1 - (z / 100) ** 2) };
+    });
+    const started = performance.now();
+    const kit = generateParts({ samples }, material, { ribCount: 12, ringLayers: 3, shaftMm: 3, fit: 'snug' });
+    const elapsed = performance.now() - started;
+    const rib = kit.parts.find((part) => part.kind === 'rib')!;
+    expect(polygonValidation.isSimpleXMonotonePolygon(rib.outline)).toBe(true);
+    expect(rib.outline.points.length).toBeLessThan(samples.length + 100);
+    expect(elapsed).toBeLessThan(1500);
+  });
+
   test('intersects triangle surfaces at every axial plane for a coarse frustum', () => {
     const positions: number[] = [];
     for (const [z, radius] of [[-10, 2], [10, 12]] as const) for (let segment = 0; segment < 16; segment += 1) {

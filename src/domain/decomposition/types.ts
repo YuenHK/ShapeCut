@@ -23,6 +23,14 @@ export type Part2D = {
   readonly holeMetadata?: readonly HoleMetadata[];
 };
 
+export type PartInstance = {
+  readonly id: string;
+  readonly partId: string;
+  /** Assembly-space axial reference. Ribs span the profile and use zero as their frame origin. */
+  readonly axialZ: number;
+  readonly angleRad?: number;
+};
+
 export type DecompositionOptions = {
   readonly ribCount: 4 | 6 | 8 | 10 | 12;
   readonly ringLayers: number;
@@ -49,9 +57,11 @@ export type JointFeature = {
   readonly position: Point2;
   readonly direction: Point2;
   readonly polygon: Polygon2;
-  readonly featureType: 'cut-slot' | 'material-contact';
+  readonly featureType: 'cut-slot' | 'open-notch' | 'material-contact';
   readonly frame: MatingFrame;
   readonly matePartId: string;
+  readonly partInstanceId: string;
+  readonly mateInstanceId: string;
 };
 
 export type MatingFrame = {
@@ -60,6 +70,8 @@ export type MatingFrame = {
   readonly radialMin: number;
   readonly radialMax: number;
   readonly tangentialWidth: number;
+  readonly materialThicknessMm: number;
+  readonly fitAllowanceMm: number;
 };
 
 export type JointAssemblyEdge = {
@@ -67,6 +79,8 @@ export type JointAssemblyEdge = {
   readonly fromPartId: string;
   readonly toPartId: string;
   readonly jointId: string;
+  readonly fromInstanceId: string;
+  readonly toInstanceId: string;
   readonly order: number;
 };
 
@@ -75,6 +89,8 @@ export type PlacementAssemblyEdge = {
   readonly placementId: string;
   readonly partId: string;
   readonly relativeToPartId: string;
+  readonly partInstanceId: string;
+  readonly relativeToInstanceId: string;
   readonly instance: 'negative-z' | 'positive-z';
   readonly side: 'negative-z' | 'positive-z';
   readonly order: number;
@@ -92,6 +108,7 @@ export type BalanceResult = {
 
 export type SpinnerKit = {
   readonly parts: readonly Part2D[];
+  readonly instances: readonly PartInstance[];
   readonly joints: readonly JointFeature[];
   readonly assembly: readonly AssemblyEdge[];
   readonly estimatedBalance: BalanceResult;
