@@ -101,8 +101,10 @@ export type AssemblyEdge = JointAssemblyEdge | PlacementAssemblyEdge;
 /** Static ideal-symmetry estimate only; it is not a dynamic balance analysis. */
 export type BalanceResult = {
   readonly kind: 'ideal-static-estimate';
-  readonly status: 'pass' | 'fail';
+  readonly status: 'pass' | 'confirm' | 'block';
   readonly centroidOffsetMm: number;
+  /** Dimensionless normalized first angular mass moment. */
+  readonly angularMassError: number;
   readonly assumptions: readonly string[];
 };
 

@@ -319,7 +319,7 @@ export function generateParts(profileValue: unknown, materialValue: unknown, opt
     assembly.push({ kind: 'placement', placementId: `placement-${digest({ hubInstanceId: hubInstanceIds[0], spacerInstanceId: spacerInstanceIds[0], side: -1 })}`, partId: spacerId, relativeToPartId: hubId, partInstanceId: spacerInstanceIds[0], relativeToInstanceId: hubInstanceIds[0], instance: 'negative-z', side: 'negative-z', order: order++ });
     assembly.push({ kind: 'placement', placementId: `placement-${digest({ hubInstanceId: hubInstanceIds.at(-1), spacerInstanceId: spacerInstanceIds[1], side: 1 })}`, partId: spacerId, relativeToPartId: hubId, partInstanceId: spacerInstanceIds[1], relativeToInstanceId: hubInstanceIds.at(-1)!, instance: 'positive-z', side: 'positive-z', order: order++ });
   }
-  const kit: SpinnerKit = { parts, instances, joints, assembly, estimatedBalance: { kind: 'ideal-static-estimate', status: 'pass', centroidOffsetMm: 0, assumptions: ['uniform material', 'ideal cuts', 'equal angular rib spacing', 'static estimate only'] } };
+  const kit: SpinnerKit = { parts, instances, joints, assembly, estimatedBalance: { kind: 'ideal-static-estimate', status: 'pass', centroidOffsetMm: 0, angularMassError: 0, assumptions: ['uniform material', 'ideal cuts', 'equal angular rib spacing', 'static estimate only'] } };
   validateAssemblyCollisions(kit, material, profile);
   return kit;
 }

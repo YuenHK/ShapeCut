@@ -185,7 +185,7 @@ describe('assembly collision review regressions', () => {
         { id: 'right-instance', partId: rightPart.id, axialZ: 0, angleRad: Math.PI / 4 },
       ],
       joints: [], assembly: [],
-      estimatedBalance: { kind: 'ideal-static-estimate', status: 'pass', centroidOffsetMm: 0, assumptions: [] },
+      estimatedBalance: { kind: 'ideal-static-estimate', status: 'pass', centroidOffsetMm: 0, angularMassError: 0, assumptions: [] },
     };
     expect(() => validateAssemblyCollisions(ribOnlyKit, { thicknessMm: 3, fitAllowanceMm: 0 }, {
       samples: [{ z: -10, radius: 20 }, { z: 10, radius: 20 }],
@@ -204,7 +204,7 @@ describe('assembly collision review regressions', () => {
         { id: 'spacer-instance', partId: spacer.id, axialZ: 0 },
       ],
       joints: [], assembly: [],
-      estimatedBalance: { kind: 'ideal-static-estimate', status: 'pass', centroidOffsetMm: 0, assumptions: [] },
+      estimatedBalance: { kind: 'ideal-static-estimate', status: 'pass', centroidOffsetMm: 0, angularMassError: 0, assumptions: [] },
     };
     expect(() => validateAssemblyCollisions(kit, { thicknessMm: 2, fitAllowanceMm: 0 }, {
       samples: [{ z: -1, radius: 12 }, { z: 1, radius: 12 }],
@@ -223,7 +223,7 @@ describe('assembly collision review regressions', () => {
         { id: 'diamond-spacer-instance', partId: spacer.id, axialZ: 0 },
       ],
       joints: [], assembly: [],
-      estimatedBalance: { kind: 'ideal-static-estimate', status: 'pass', centroidOffsetMm: 0, assumptions: [] },
+      estimatedBalance: { kind: 'ideal-static-estimate', status: 'pass', centroidOffsetMm: 0, angularMassError: 0, assumptions: [] },
     };
     expect(() => validateAssemblyCollisions(kit, { thicknessMm: 2, fitAllowanceMm: 0 }, {
       samples: [{ z: -1, radius: 3 }, { z: 1, radius: 3 }],
@@ -245,7 +245,7 @@ describe('assembly collision review regressions', () => {
         { id: 'annulus-instance', partId: annulus.id, axialZ: 0 },
       ],
       joints: [], assembly: [],
-      estimatedBalance: { kind: 'ideal-static-estimate', status: 'pass', centroidOffsetMm: 0, assumptions: [] },
+      estimatedBalance: { kind: 'ideal-static-estimate', status: 'pass', centroidOffsetMm: 0, angularMassError: 0, assumptions: [] },
     };
     const witnessRadius = 1.407, witness: Point2 = [witnessRadius / Math.sqrt(2), witnessRadius / Math.sqrt(2)];
     expect(partContains(square, witness) && partContains(annulus, witness)).toBe(true);
