@@ -5,6 +5,7 @@ import type { LathedProfile, MaterialInput, Polygon2 } from './types';
 import type { TriangleMesh } from '../mesh/types';
 import type { Axis } from '../types';
 import { isSimplePolygon } from './polygon-validation';
+import { minimumRadiusOverInterval } from './profile-geometry';
 
 const profile: LathedProfile = {
   samples: [
@@ -25,6 +26,13 @@ function area(polygon: Polygon2): number {
 }
 
 describe('generateParts', () => {
+  test('honours a narrow inward notch anywhere inside a contact interval', () => {
+    const notched: LathedProfile = { samples: [
+      { z: -12, radius: 9 }, { z: 0, radius: 24 }, { z: 4.6, radius: 20 },
+      { z: 4.7, radius: 4 }, { z: 4.8, radius: 20 }, { z: 12, radius: 9 },
+    ] };
+    expect(() => generateParts(notched, material, { ribCount: 4, ringLayers: 1, shaftMm: 3, fit: 'snug' })).toThrowError(expect.objectContaining({ code: 'JOINT' }));
+  });
   test('rejects radial slots whose corners breach hub/ring margins or overlap neighbours', () => {
     const large: LathedProfile = { samples: [{ z: -50, radius: 80 }, { z: 0, radius: 100 }, { z: 50, radius: 80 }] };
     expect(() => generateParts(large, { thicknessMm: 38.9, fitAllowanceMm: 0.1 }, { ribCount: 12, ringLayers: 1, shaftMm: 62, fit: 'snug' })).toThrowError(expect.objectContaining({ code: 'JOINT' }));
@@ -253,6 +261,20 @@ describe('generateParts', () => {
     [profile, { thicknessMm: 30, fitAllowanceMm: 1 }, { ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' }, 'JOINT'],
   ] as const)('rejects invalid decomposition input with typed code %#', (badProfile, badMaterial, badOptions, code) => {
     expect(() => generateParts(badProfile as LathedProfile, badMaterial as MaterialInput, badOptions as never)).toThrowError(expect.objectContaining({ name: 'DecompositionError', code }));
+  });
+});
+
+describe('minimumRadiusOverInterval', () => {
+  test('includes interpolated endpoints and every interior profile sample without mutation', () => {
+    const input: LathedProfile = { samples: [{ z: 0, radius: 10 }, { z: 2, radius: 3 }, { z: 4, radius: 8 }, { z: 6, radius: 6 }] };
+    const snapshot = JSON.stringify(input);
+    expect(minimumRadiusOverInterval(input, 1, 5)).toBe(3);
+    expect(minimumRadiusOverInterval(input, 3, 5)).toBe(5.5);
+    expect(JSON.stringify(input)).toBe(snapshot);
+  });
+
+  test.each([[3, 2], [-13, 2], [2, 13]] as const)('rejects invalid interval [%s,%s]', (z0, z1) => {
+    expect(() => minimumRadiusOverInterval(profile, z0, z1)).toThrowError(expect.objectContaining({ code: 'PROFILE' }));
   });
 });
 

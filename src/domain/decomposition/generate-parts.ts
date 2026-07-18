@@ -1,6 +1,7 @@
 import { fitAllowance, jointPair, jointWidth } from './joints';
 import { DecompositionError, type AssemblyEdge, type DecompositionOptions, type LathedProfile, type MaterialInput, type MatingFrame, type Part2D, type Point2, type Polygon2, type SpinnerKit } from './types';
 import { isSimplePolygon, validateRadialSlots } from './polygon-validation';
+import { minimumRadiusOverInterval } from './profile-geometry';
 
 const RIB_COUNTS = new Set([4, 6, 8, 10, 12]);
 type Internals = { readonly hasher?: (canonicalPayload: string) => string };
@@ -61,15 +62,6 @@ function validate(profileValue: unknown, materialValue: unknown, optionsValue: u
   return { profile, material, options, hub, outer, height };
 }
 
-function interpolate(profile: LathedProfile, z: number): number {
-  if (z <= profile.samples[0].z) return profile.samples[0].radius;
-  for (let index = 1; index < profile.samples.length; index += 1) {
-    const a = profile.samples[index - 1], b = profile.samples[index];
-    if (z <= b.z) return a.radius + (b.radius - a.radius) * (z - a.z) / (b.z - a.z);
-  }
-  return profile.samples.at(-1)!.radius;
-}
-
 function ribSilhouette(profile: LathedProfile): Polygon2 {
   const lower: Point2[] = profile.samples.map(({ z, radius }) => [z, -radius]);
   const upper: Point2[] = [...profile.samples].reverse().map(({ z, radius }) => [z, radius]);
@@ -85,7 +77,7 @@ function contactPolygon(frame: MatingFrame): Polygon2 {
 
 function contactFits(profile: LathedProfile, frame: MatingFrame, margin: number): boolean {
   const half = frame.tangentialWidth / 2;
-  return frame.radialMin >= 0 && frame.radialMax + margin <= Math.min(interpolate(profile, frame.axialZ - half), interpolate(profile, frame.axialZ), interpolate(profile, frame.axialZ + half));
+  return frame.radialMin >= 0 && frame.radialMax + margin <= minimumRadiusOverInterval(profile, frame.axialZ - half, frame.axialZ + half);
 }
 
 export function generateParts(profileValue: unknown, materialValue: unknown, optionsValue: unknown, internals: Internals = {}): SpinnerKit {
@@ -113,7 +105,7 @@ export function generateParts(profileValue: unknown, materialValue: unknown, opt
   const shaftRadius = options.shaftMm / 2 + fitAllowance(material, options.fit) / 2;
   const shaftHole = circle(shaftRadius, true), hubOutline = circle(hub);
   const maxHubRadialCoordinate = Math.sqrt((hub - structuralMargin) ** 2 - (width / 2) ** 2);
-  const hubLocalLimit = Math.min(interpolate(profile, tabCenters[0] - width / 2), interpolate(profile, tabCenters[0]), interpolate(profile, tabCenters[0] + width / 2)) - structuralMargin;
+  const hubLocalLimit = minimumRadiusOverInterval(profile, tabCenters[0] - width / 2, tabCenters[0] + width / 2) - structuralMargin;
   const hubSlotRadius = Math.min(maxHubRadialCoordinate - depth / 2 - structuralMargin, hubLocalLimit - depth / 2);
   const hubSlots = Array.from({ length: options.ribCount }, (_, rib) => radialRectangle(hubSlotRadius, width, depth, rib * Math.PI * 2 / options.ribCount));
   if (!validateRadialSlots(hubSlots, shaftRadius, hub, structuralMargin)) throw new DecompositionError('JOINT', 'Hub slots breach structural margins or overlap');
@@ -130,7 +122,7 @@ export function generateParts(profileValue: unknown, materialValue: unknown, opt
   for (let layer = 0; layer < options.ringLayers; layer += 1) {
     const ringDepth = Math.min(depth, material.thicknessMm * 0.8);
     const axialZ = tabCenters[layer + 1], halfWidth = width / 2;
-    const localRadius = Math.min(interpolate(profile, axialZ - halfWidth), interpolate(profile, axialZ), interpolate(profile, axialZ + halfWidth)) - structuralMargin;
+    const localRadius = minimumRadiusOverInterval(profile, axialZ - halfWidth, axialZ + halfWidth) - structuralMargin;
     if (!(localRadius > material.thicknessMm + structuralMargin * 2)) throw new DecompositionError('JOINT', 'Local profile cannot contain ring annulus');
     const inner = localRadius - material.thicknessMm;
     const minRingCoordinate = Math.sqrt(Math.max(0, (inner + structuralMargin) ** 2 - (width / 2) ** 2));
