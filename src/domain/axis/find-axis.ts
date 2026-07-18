@@ -81,7 +81,7 @@ type WeightedTriangle = {
   readonly vertices: readonly [Vec3, Vec3, Vec3];
   readonly area: number;
   readonly priority: number;
-  readonly hash: number;
+  readonly geometryKey: string;
 };
 
 const QUADRATURE = [[2 / 3, 1 / 6, 1 / 6], [1 / 6, 2 / 3, 1 / 6], [1 / 6, 1 / 6, 2 / 3]] as const;
@@ -102,52 +102,65 @@ function triangleGeometry(mesh: TriangleMesh, offset: number): { vertices: [Vec3
   return area === 0 ? undefined : { vertices, area };
 }
 
-function canonicalHash(vertices: readonly Vec3[], center: Vec3, scale: number): number {
+function canonicalGeometryKey(vertices: readonly Vec3[], center: Vec3, scale: number): string {
   const ordered = [...vertices].sort((left, right) =>
     left[0] - right[0] || left[1] - right[1] || left[2] - right[2]
   );
   const buffer = new ArrayBuffer(8);
   const view = new DataView(buffer);
-  let hash = 2166136261;
+  const parts: string[] = [];
   for (const vertex of ordered) for (let component = 0; component < 3; component += 1) {
     const normalized = (vertex[component] - center[component]) / scale;
     view.setFloat64(0, Object.is(normalized, -0) ? 0 : normalized, true);
-    hash = Math.imul(hash ^ view.getUint32(0, true), 16777619) >>> 0;
-    hash = Math.imul(hash ^ view.getUint32(4, true), 16777619) >>> 0;
+    parts.push(view.getUint32(4, true).toString(16).padStart(8, '0'));
+    parts.push(view.getUint32(0, true).toString(16).padStart(8, '0'));
+  }
+  return parts.join('');
+}
+
+function defaultPriorityHash(geometryKey: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < geometryKey.length; index += 1) {
+    hash = Math.imul(hash ^ geometryKey.charCodeAt(index), 16777619) >>> 0;
   }
   return hash;
 }
 
+function compareRank(left: WeightedTriangle, right: WeightedTriangle): number {
+  if (left.priority !== right.priority) return left.priority - right.priority;
+  return left.geometryKey < right.geometryKey ? -1 : left.geometryKey > right.geometryKey ? 1 : 0;
+}
+
 function heapPushBounded(
   heap: WeightedTriangle[],
-  selectedHashes: Set<number>,
+  selectedKeys: Set<string>,
   triangle: WeightedTriangle,
   capacity: number,
 ): void {
-  if (selectedHashes.has(triangle.hash)) return;
+  if (selectedKeys.has(triangle.geometryKey)) return;
   if (heap.length < capacity) {
     heap.push(triangle);
-    selectedHashes.add(triangle.hash);
+    selectedKeys.add(triangle.geometryKey);
     let index = heap.length - 1;
     while (index > 0) {
       const parent = Math.floor((index - 1) / 2);
-      if (heap[parent].priority >= heap[index].priority) break;
+      if (compareRank(heap[parent], heap[index]) >= 0) break;
       [heap[parent], heap[index]] = [heap[index], heap[parent]];
       index = parent;
     }
     return;
   }
-  if (triangle.priority >= heap[0].priority) return;
-  selectedHashes.delete(heap[0].hash);
+  if (compareRank(triangle, heap[0]) >= 0) return;
+  selectedKeys.delete(heap[0].geometryKey);
   heap[0] = triangle;
-  selectedHashes.add(triangle.hash);
+  selectedKeys.add(triangle.geometryKey);
   let index = 0;
   while (true) {
     const left = index * 2 + 1;
     const right = left + 1;
     if (left >= heap.length) break;
-    const largest = right < heap.length && heap[right].priority > heap[left].priority ? right : left;
-    if (heap[index].priority >= heap[largest].priority) break;
+    const largest = right < heap.length && compareRank(heap[right], heap[left]) > 0 ? right : left;
+    if (compareRank(heap[index], heap[largest]) >= 0) break;
     [heap[index], heap[largest]] = [heap[largest], heap[index]];
     index = largest;
   }
@@ -156,11 +169,12 @@ function heapPushBounded(
 export function selectRadialSurfaceSamples(
   mesh: TriangleMesh,
   sampleCount: number,
+  options: { readonly hashFn?: (geometryKey: string) => number } = {},
 ): { readonly samples: SurfaceSample[]; readonly selectedTriangleCount: number } {
   const pointsPerTriangle = Math.min(3, sampleCount);
   const capacity = Math.max(1, Math.floor(sampleCount / pointsPerTriangle));
   const heap: WeightedTriangle[] = [];
-  const selectedHashes = new Set<number>();
+  const selectedKeys = new Set<string>();
   let minX = Infinity;
   let minY = Infinity;
   let minZ = Infinity;
@@ -187,12 +201,13 @@ export function selectRadialSurfaceSamples(
     const geometry = triangleGeometry(mesh, offset);
     if (!geometry) continue;
     totalArea += geometry.area;
-    const hash = canonicalHash(geometry.vertices, center, hashScale);
+    const geometryKey = canonicalGeometryKey(geometry.vertices, center, hashScale);
+    const hash = (options.hashFn ?? defaultPriorityHash)(geometryKey) >>> 0;
     const uniform = (hash + 0.5) / 0x1_0000_0000;
-    heapPushBounded(heap, selectedHashes, {
+    heapPushBounded(heap, selectedKeys, {
       ...geometry,
       priority: -Math.log(uniform) / geometry.area,
-      hash,
+      geometryKey,
     }, capacity);
   }
   if (heap.length === 0) throw new RangeError('Degenerate mesh surface');

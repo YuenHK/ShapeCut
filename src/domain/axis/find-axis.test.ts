@@ -253,6 +253,27 @@ describe('findAxisCandidates', () => {
     expect(selection.selectedTriangleCount).toBeLessThanOrEqual(Math.ceil(30 / 3));
   });
 
+  it('uses collision-safe geometry identity when priority hashes collide', () => {
+    const positions = new Float64Array([
+      0, 0, 0, 2, 0, 0, 0, 2, 0,
+      0, 0, 1, 1, 0, 1, 0, 1, 1,
+    ]);
+    const indices = new Uint32Array([
+      0, 1, 2,
+      3, 4, 5,
+      2, 0, 1,
+    ]);
+    let hashCalls = 0;
+    const selection = selectRadialSurfaceSamples(
+      { positions, indices },
+      6,
+      { hashFn: () => { hashCalls += 1; return 7; } },
+    );
+    expect(hashCalls).toBe(3);
+    expect(selection.selectedTriangleCount).toBe(2);
+    expect(selection.samples).toHaveLength(6);
+  });
+
   it('keeps a low-budget axis and score stable across order and local refinement', () => {
     const mesh = lathedSpinner();
     const baseline = findAxisCandidates(mesh, { sampleCount: 30 })[0];
