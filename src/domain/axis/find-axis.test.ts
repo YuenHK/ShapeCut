@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { TriangleMesh } from '../mesh/types';
-import { findAxisCandidates, type AxisCandidate } from './find-axis';
+import {
+  findAxisCandidates,
+  selectRadialSurfaceSamples,
+  type AxisCandidate,
+} from './find-axis';
 
 type MutableVec3 = [number, number, number];
 
@@ -232,6 +236,34 @@ describe('findAxisCandidates', () => {
       findAxisCandidates(mesh, { sampleCount: 4096 })[0],
       findAxisCandidates({ positions: mesh.positions, indices }, { sampleCount: 4096 })[0],
     );
+  });
+
+  it('keeps radial selection within the point budget on a large surface', () => {
+    const mesh = lathedSpinner();
+    const repeatedTriangleCount = 100_000;
+    const indices = new Uint32Array(repeatedTriangleCount * 3);
+    for (let triangle = 0; triangle < repeatedTriangleCount; triangle += 1) {
+      indices.set(mesh.indices.slice(0, 3), triangle * 3);
+    }
+    const selection = selectRadialSurfaceSamples(
+      { positions: mesh.positions, indices },
+      30,
+    );
+    expect(selection.samples.length).toBeLessThanOrEqual(30);
+    expect(selection.selectedTriangleCount).toBeLessThanOrEqual(Math.ceil(30 / 3));
+  });
+
+  it('keeps a low-budget axis and score stable across order and local refinement', () => {
+    const mesh = lathedSpinner();
+    const baseline = findAxisCandidates(mesh, { sampleCount: 30 })[0];
+    const reordered = findAxisCandidates(reverseTriangleOrder(mesh), { sampleCount: 30 })[0];
+    const refined = findAxisCandidates(refineTriangles(mesh), { sampleCount: 30 })[0];
+    expectSimilarCandidates(baseline, reordered);
+    const refinementAlignment = Math.abs(baseline.direction[0] * refined.direction[0]
+      + baseline.direction[1] * refined.direction[1]
+      + baseline.direction[2] * refined.direction[2]);
+    expect(refinementAlignment).toBeGreaterThan(0.999);
+    expect(Math.abs(baseline.confidence - refined.confidence)).toBeLessThan(0.15);
   });
 
   it('does not let axial length hide a non-circular square cross-section', () => {

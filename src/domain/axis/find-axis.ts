@@ -77,44 +77,169 @@ function referencedMesh(mesh: TriangleMesh): TriangleMesh {
   return { positions: new Float64Array(positions), indices };
 }
 
-function surfaceSamples(mesh: TriangleMesh, sampleCount: number): SurfaceSample[] {
-  const samples: SurfaceSample[] = [];
+type WeightedTriangle = {
+  readonly vertices: readonly [Vec3, Vec3, Vec3];
+  readonly area: number;
+  readonly priority: number;
+  readonly hash: number;
+};
+
+const QUADRATURE = [[2 / 3, 1 / 6, 1 / 6], [1 / 6, 2 / 3, 1 / 6], [1 / 6, 1 / 6, 2 / 3]] as const;
+
+function triangleGeometry(mesh: TriangleMesh, offset: number): { vertices: [Vec3, Vec3, Vec3]; area: number } | undefined {
+  const indices = [mesh.indices[offset], mesh.indices[offset + 1], mesh.indices[offset + 2]];
+  const vertices = indices.map((index) => [
+    mesh.positions[index * 3], mesh.positions[index * 3 + 1], mesh.positions[index * 3 + 2],
+  ] as Vec3) as [Vec3, Vec3, Vec3];
+  const [a, b, c] = vertices;
+  const abx = b[0] - a[0];
+  const aby = b[1] - a[1];
+  const abz = b[2] - a[2];
+  const acx = c[0] - a[0];
+  const acy = c[1] - a[1];
+  const acz = c[2] - a[2];
+  const area = Math.hypot(aby * acz - abz * acy, abz * acx - abx * acz, abx * acy - aby * acx) / 2;
+  return area === 0 ? undefined : { vertices, area };
+}
+
+function canonicalHash(vertices: readonly Vec3[], center: Vec3, scale: number): number {
+  const ordered = [...vertices].sort((left, right) =>
+    left[0] - right[0] || left[1] - right[1] || left[2] - right[2]
+  );
+  const buffer = new ArrayBuffer(8);
+  const view = new DataView(buffer);
+  let hash = 2166136261;
+  for (const vertex of ordered) for (let component = 0; component < 3; component += 1) {
+    const normalized = (vertex[component] - center[component]) / scale;
+    view.setFloat64(0, Object.is(normalized, -0) ? 0 : normalized, true);
+    hash = Math.imul(hash ^ view.getUint32(0, true), 16777619) >>> 0;
+    hash = Math.imul(hash ^ view.getUint32(4, true), 16777619) >>> 0;
+  }
+  return hash;
+}
+
+function heapPushBounded(
+  heap: WeightedTriangle[],
+  selectedHashes: Set<number>,
+  triangle: WeightedTriangle,
+  capacity: number,
+): void {
+  if (selectedHashes.has(triangle.hash)) return;
+  if (heap.length < capacity) {
+    heap.push(triangle);
+    selectedHashes.add(triangle.hash);
+    let index = heap.length - 1;
+    while (index > 0) {
+      const parent = Math.floor((index - 1) / 2);
+      if (heap[parent].priority >= heap[index].priority) break;
+      [heap[parent], heap[index]] = [heap[index], heap[parent]];
+      index = parent;
+    }
+    return;
+  }
+  if (triangle.priority >= heap[0].priority) return;
+  selectedHashes.delete(heap[0].hash);
+  heap[0] = triangle;
+  selectedHashes.add(triangle.hash);
+  let index = 0;
+  while (true) {
+    const left = index * 2 + 1;
+    const right = left + 1;
+    if (left >= heap.length) break;
+    const largest = right < heap.length && heap[right].priority > heap[left].priority ? right : left;
+    if (heap[index].priority >= heap[largest].priority) break;
+    [heap[index], heap[largest]] = [heap[largest], heap[index]];
+    index = largest;
+  }
+}
+
+export function selectRadialSurfaceSamples(
+  mesh: TriangleMesh,
+  sampleCount: number,
+): { readonly samples: SurfaceSample[]; readonly selectedTriangleCount: number } {
+  const pointsPerTriangle = Math.min(3, sampleCount);
+  const capacity = Math.max(1, Math.floor(sampleCount / pointsPerTriangle));
+  const heap: WeightedTriangle[] = [];
+  const selectedHashes = new Set<number>();
+  let minX = Infinity;
+  let minY = Infinity;
+  let minZ = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  let maxZ = -Infinity;
   for (let offset = 0; offset < mesh.indices.length; offset += 3) {
-    const ai = mesh.indices[offset] * 3;
-    const bi = mesh.indices[offset + 1] * 3;
-    const ci = mesh.indices[offset + 2] * 3;
-    const abx = mesh.positions[bi] - mesh.positions[ai];
-    const aby = mesh.positions[bi + 1] - mesh.positions[ai + 1];
-    const abz = mesh.positions[bi + 2] - mesh.positions[ai + 2];
-    const acx = mesh.positions[ci] - mesh.positions[ai];
-    const acy = mesh.positions[ci + 1] - mesh.positions[ai + 1];
-    const acz = mesh.positions[ci + 2] - mesh.positions[ai + 2];
-    const crossX = aby * acz - abz * acy;
-    const crossY = abz * acx - abx * acz;
-    const crossZ = abx * acy - aby * acx;
-    const area = Math.hypot(crossX, crossY, crossZ) / 2;
-    if (area === 0) continue;
-    for (const barycentric of [[2 / 3, 1 / 6, 1 / 6], [1 / 6, 2 / 3, 1 / 6], [1 / 6, 1 / 6, 2 / 3]] as const) {
+    const geometry = triangleGeometry(mesh, offset);
+    if (!geometry) continue;
+    for (const vertex of geometry.vertices) {
+      minX = Math.min(minX, vertex[0]);
+      minY = Math.min(minY, vertex[1]);
+      minZ = Math.min(minZ, vertex[2]);
+      maxX = Math.max(maxX, vertex[0]);
+      maxY = Math.max(maxY, vertex[1]);
+      maxZ = Math.max(maxZ, vertex[2]);
+    }
+  }
+  const center: Vec3 = [(minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2];
+  const hashScale = Math.hypot(maxX - minX, maxY - minY, maxZ - minZ);
+  if (!Number.isFinite(hashScale) || hashScale === 0) throw new RangeError('Degenerate mesh surface');
+  let totalArea = 0;
+  for (let offset = 0; offset < mesh.indices.length; offset += 3) {
+    const geometry = triangleGeometry(mesh, offset);
+    if (!geometry) continue;
+    totalArea += geometry.area;
+    const hash = canonicalHash(geometry.vertices, center, hashScale);
+    const uniform = (hash + 0.5) / 0x1_0000_0000;
+    heapPushBounded(heap, selectedHashes, {
+      ...geometry,
+      priority: -Math.log(uniform) / geometry.area,
+      hash,
+    }, capacity);
+  }
+  if (heap.length === 0) throw new RangeError('Degenerate mesh surface');
+  const representativeWeight = totalArea / heap.length / pointsPerTriangle;
+  const samples: SurfaceSample[] = [];
+  for (const { vertices } of heap) {
+    for (let quadratureIndex = 0; quadratureIndex < pointsPerTriangle; quadratureIndex += 1) {
+      const barycentric = QUADRATURE[quadratureIndex];
       samples.push({
         point: [
-          barycentric[0] * mesh.positions[ai] + barycentric[1] * mesh.positions[bi] + barycentric[2] * mesh.positions[ci],
-          barycentric[0] * mesh.positions[ai + 1] + barycentric[1] * mesh.positions[bi + 1] + barycentric[2] * mesh.positions[ci + 1],
-          barycentric[0] * mesh.positions[ai + 2] + barycentric[1] * mesh.positions[bi + 2] + barycentric[2] * mesh.positions[ci + 2],
+          barycentric[0] * vertices[0][0] + barycentric[1] * vertices[1][0] + barycentric[2] * vertices[2][0],
+          barycentric[0] * vertices[0][1] + barycentric[1] * vertices[1][1] + barycentric[2] * vertices[2][1],
+          barycentric[0] * vertices[0][2] + barycentric[1] * vertices[1][2] + barycentric[2] * vertices[2][2],
         ],
-        weight: area / 3,
+        weight: representativeWeight,
       });
     }
   }
-  if (samples.length === 0) throw new RangeError('Degenerate mesh surface');
-  samples.sort((left, right) =>
-    left.point[0] - right.point[0] || left.point[1] - right.point[1] || left.point[2] - right.point[2] || left.weight - right.weight
-  );
-  const quadratureLimit = sampleCount * 3;
-  if (samples.length <= quadratureLimit) return samples;
-  return Array.from(
-    { length: quadratureLimit },
-    (_, index) => samples[Math.floor(index * samples.length / quadratureLimit)],
-  );
+  return { samples, selectedTriangleCount: heap.length };
+}
+
+function surfaceCovariance(mesh: TriangleMesh, centroid: Vec3): number[][] {
+  const covariance = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  let totalWeight = 0;
+  for (let offset = 0; offset < mesh.indices.length; offset += 3) {
+    const geometry = triangleGeometry(mesh, offset);
+    if (!geometry) continue;
+    for (const barycentric of QUADRATURE) {
+      const point: Vec3 = [0, 1, 2].map((component) =>
+        barycentric[0] * geometry.vertices[0][component]
+        + barycentric[1] * geometry.vertices[1][component]
+        + barycentric[2] * geometry.vertices[2][component]
+      ) as unknown as Vec3;
+      const weight = geometry.area / 3;
+      const delta = [point[0] - centroid[0], point[1] - centroid[1], point[2] - centroid[2]];
+      totalWeight += weight;
+      for (let row = 0; row < 3; row += 1) for (let column = row; column < 3; column += 1) {
+        covariance[row][column] += weight * delta[row] * delta[column];
+      }
+    }
+  }
+  if (totalWeight === 0) throw new RangeError('Degenerate mesh surface');
+  for (let row = 0; row < 3; row += 1) for (let column = row; column < 3; column += 1) {
+    covariance[row][column] /= totalWeight;
+    covariance[column][row] = covariance[row][column];
+  }
+  return covariance;
 }
 
 export function findAxisCandidates(
@@ -134,22 +259,8 @@ export function findAxisCandidates(
   }
   const referenced = referencedMesh(mesh);
   const { centroid } = massProperties(referenced);
-  const samples = surfaceSamples(referenced, options.sampleCount);
-  const covariance = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
-  let totalWeight = 0;
-  for (const { point, weight } of samples) {
-    const delta = [point[0] - centroid[0], point[1] - centroid[1], point[2] - centroid[2]];
-    totalWeight += weight;
-    for (let row = 0; row < 3; row += 1) {
-      for (let column = row; column < 3; column += 1) {
-        covariance[row][column] += weight * delta[row] * delta[column];
-      }
-    }
-  }
-  for (let row = 0; row < 3; row += 1) for (let column = row; column < 3; column += 1) {
-    covariance[row][column] /= totalWeight;
-    covariance[column][row] = covariance[row][column];
-  }
+  const covariance = surfaceCovariance(referenced, centroid);
+  const { samples } = selectRadialSurfaceSamples(referenced, options.sampleCount);
   return eigenvectors(covariance).map((direction) => ({
     origin: centroid,
     direction,

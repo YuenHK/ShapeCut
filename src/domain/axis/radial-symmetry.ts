@@ -105,8 +105,16 @@ export function radialSymmetry(
   const radialRmsError = Math.hypot(axialRadialError, angularError);
   const centroidOffset = Math.hypot(meanU, meanV) / transverseScale;
   const transverseAnisotropy = Math.abs(varianceU - varianceV) / Math.max(Number.MIN_VALUE, varianceU + varianceV);
-  const confidence = Math.max(0, Math.min(1, Math.exp(
-    -2.25 * radialRmsError - 2.5 * transverseAnisotropy - 4 * centroidOffset,
-  )));
+  const samplingFloor = 1 / Math.sqrt(samples.length);
+  const rawConfidence = Math.exp(
+    -1.8 * Math.max(0, radialRmsError - samplingFloor)
+    -2.5 * Math.max(0, transverseAnisotropy - samplingFloor)
+    -4 * Math.max(0, centroidOffset - samplingFloor),
+  );
+  const samplingReliability = Math.min(1, samples.length / 256);
+  const confidence = Math.max(0, Math.min(
+    1,
+    samplingReliability * rawConfidence + (1 - samplingReliability) * 0.5,
+  ));
   return { radialRmsError, centroidOffset, confidence };
 }
