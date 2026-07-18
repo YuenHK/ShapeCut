@@ -1,4 +1,4 @@
-import { DecompositionError, type Fit, type JointFeature, type MaterialInput } from './types';
+import { DecompositionError, type Fit, type JointFeature, type MaterialInput, type Point2, type Polygon2 } from './types';
 
 export function fitAllowance(material: MaterialInput, fit: Fit): number {
   return typeof material.fitAllowanceMm === 'number' ? material.fitAllowanceMm : material.fitAllowanceMm[fit];
@@ -12,9 +12,9 @@ export function jointWidth(material: MaterialInput, fit: Fit, localStructureMm: 
   return width;
 }
 
-export function jointPair(id: string, slotPartId: string, tabPartId: string, widthMm: number): readonly [JointFeature, JointFeature] {
+export function jointPair(id: string, slotPartId: string, tabPartId: string, widthMm: number, depthMm: number, slotPosition: Point2, slotDirection: Point2, tabPosition: Point2, tabDirection: Point2, slot: Polygon2, tab: Polygon2): readonly [JointFeature, JointFeature] {
   return [
-    { id, partId: slotPartId, matePartId: tabPartId, role: 'slot', widthMm },
-    { id, partId: tabPartId, matePartId: slotPartId, role: 'tab', widthMm },
+    { id, partId: slotPartId, matePartId: tabPartId, role: 'slot', widthMm, depthMm, position: slotPosition, direction: slotDirection, polygon: slot },
+    { id, partId: tabPartId, matePartId: slotPartId, role: 'tab', widthMm, depthMm, position: tabPosition, direction: tabDirection, polygon: tab },
   ];
 }

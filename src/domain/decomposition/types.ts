@@ -45,6 +45,10 @@ export type JointFeature = {
   readonly partId: string;
   readonly role: 'slot' | 'tab';
   readonly widthMm: number;
+  readonly depthMm: number;
+  readonly position: Point2;
+  readonly direction: Point2;
+  readonly polygon: Polygon2;
   readonly matePartId: string;
 };
 
@@ -53,6 +57,7 @@ export type AssemblyEdge = {
   readonly toPartId: string;
   readonly jointId: string;
   readonly order: number;
+  readonly instanceId?: 'negative-z' | 'positive-z';
 };
 
 /** Static ideal-symmetry estimate only; it is not a dynamic balance analysis. */
@@ -70,7 +75,7 @@ export type SpinnerKit = {
   readonly estimatedBalance: BalanceResult;
 };
 
-export type DecompositionErrorCode = 'PROFILE' | 'MATERIAL' | 'OPTIONS' | 'SHAFT' | 'JOINT';
+export type DecompositionErrorCode = 'PROFILE' | 'MATERIAL' | 'OPTIONS' | 'SHAFT' | 'JOINT' | 'HASH_COLLISION';
 
 export class DecompositionError extends Error {
   readonly name = 'DecompositionError';
