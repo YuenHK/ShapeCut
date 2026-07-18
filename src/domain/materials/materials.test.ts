@@ -1,15 +1,24 @@
+import { execFile } from 'node:child_process';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
+
 import { describe, expect, it } from 'vitest';
 import { ZodError } from 'zod';
 
 import type { Polygon2 } from '../decomposition/types';
 import { pointLocation, polygonsOverlapArea, validatePolygon } from '../engraving/geometry';
-import { createCalibrationCoupon } from './calibration-coupon';
+import { CalibrationCouponError, createCalibrationCoupon } from './calibration-coupon';
 import {
   FIT_NAMES,
   MaterialProfileSchema,
   classifyMaterialReadiness,
   type MaterialProfileV1,
 } from './schema';
+
+const execFileAsync = promisify(execFile);
 
 const recipes = {
   cut: { powerPercent: 82, speedMmPerSecond: 12, passes: 2, notes: 'Full cut starting point' },
@@ -69,6 +78,43 @@ function featurePolygons(coupon: ReturnType<typeof createCalibrationCoupon>): re
   ];
 }
 
+async function probeCouponInIsolatedProcess(profile: MaterialProfileV1): Promise<{
+  kind: string;
+  elapsedMs: number;
+  message?: string;
+}> {
+  const directory = await mkdtemp(join(tmpdir(), 'spinner-coupon-probe-'));
+  const probePath = join(directory, 'probe.ts');
+  const moduleUrl = pathToFileURL(resolve('src/domain/materials/calibration-coupon.ts')).href;
+  const source = `
+    import { CalibrationCouponError, createCalibrationCoupon } from ${JSON.stringify(moduleUrl)};
+    const profile = ${JSON.stringify(profile)};
+    const started = performance.now();
+    try {
+      createCalibrationCoupon(profile, 3);
+      process.stdout.write(JSON.stringify({ kind: 'returned', elapsedMs: performance.now() - started }));
+    } catch (error) {
+      process.stdout.write(JSON.stringify({
+        kind: error instanceof CalibrationCouponError ? error.name : error?.constructor?.name ?? typeof error,
+        elapsedMs: performance.now() - started,
+        message: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  `;
+  try {
+    await writeFile(probePath, source, 'utf8');
+    const { stdout } = await execFileAsync(resolve('node_modules/.bin/vite-node'), [probePath], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      timeout: 3_000,
+      killSignal: 'SIGKILL',
+    });
+    return JSON.parse(String(stdout).trim());
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
 describe('MaterialProfileSchema', () => {
   it.each([
     'PVC',
@@ -83,6 +129,12 @@ describe('MaterialProfileSchema', () => {
     'chromium(VI) leather',
     'contains_halogen',
     'chlorinated polymer',
+    'Sheet containing chlorine',
+    'CHLORINE-COMPOUND-1',
+    'EPOXY',
+    'Epoxy casting sheet',
+    'PHENOLIC',
+    'Phenolic casting sheet',
     'epoxy resin',
     'phenolic-resin',
   ])('rejects forbidden material identity %s with a controlled safety message', (materialCode) => {
@@ -106,6 +158,13 @@ describe('MaterialProfileSchema', () => {
     const profile = cloneProfile({
       materialCode: 'PV',
       materialName: 'Cork',
+      safetyEvidence: {
+        kind: 'allowlisted',
+        category: 'cork',
+        manufacturer: 'Example Cork Co.',
+        productId: 'Cork sheet C24',
+        laserSafetyReference: 'https://manufacturer.invalid/cork-c24',
+      },
     });
 
     expect(MaterialProfileSchema.parse(profile)).toEqual(profile);
@@ -155,6 +214,10 @@ describe('MaterialProfileSchema', () => {
     expect(MaterialProfileSchema.parse(custom)).toEqual(custom);
     expectZodError({ ...custom, safetyEvidence: { ...custom.safetyEvidence, manufacturer: '' } });
     expectZodError({ ...custom, safetyEvidence: { ...custom.safetyEvidence, laserSafetyReference: '' } });
+  });
+
+  it.each(['', '   ', '\n\t'])('rejects blank exact-batch evidence %j', (batchNotes) => {
+    expectZodError(cloneProfile({ batchNotes }));
   });
 });
 
@@ -211,6 +274,44 @@ describe('classifyMaterialReadiness', () => {
     expect(result.status).toBe('block');
     expect(result.reasons).toContainEqual(expect.objectContaining({ code: 'unknown-identity' }));
   });
+
+  it('blocks an allowlisted category that does not match the recorded material identity', () => {
+    const profile = cloneProfile({
+      materialCode: 'POLYMER-X42',
+      materialName: 'Opaque polymer sheet',
+      calibratedAt: '2026-07-19T00:00:00.000Z',
+      physicalCouponVerified: true,
+      safetyEvidence: {
+        kind: 'allowlisted',
+        category: 'cork',
+        manufacturer: 'Example Polymer Co.',
+        productId: 'POLYMER-X42',
+        laserSafetyReference: 'https://manufacturer.invalid/polymer-x42',
+      },
+    });
+
+    expect(MaterialProfileSchema.safeParse(profile).success).toBe(false);
+    expect(classifyMaterialReadiness(profile)).toEqual(expect.objectContaining({ status: 'block' }));
+  });
+
+  it('blocks explicit unknown composition even when an allowlisted category keyword is present', () => {
+    const result = classifyMaterialReadiness(cloneProfile({
+      materialCode: 'CAST-ACRYLIC-UNKNOWN',
+      materialName: 'Plastic with unknown composition',
+      calibratedAt: '2026-07-19T00:00:00.000Z',
+      physicalCouponVerified: true,
+      safetyEvidence: {
+        kind: 'allowlisted',
+        category: 'laser-rated-cast-acrylic',
+        manufacturer: 'Mystery Polymer Co.',
+        productId: 'UNKNOWN-CAST-ACRYLIC',
+        laserSafetyReference: 'https://manufacturer.invalid/unknown-cast-acrylic',
+      },
+    }));
+
+    expect(result.status).toBe('block');
+    expect(result.reasons).toContainEqual(expect.objectContaining({ code: 'unknown-composition' }));
+  });
 });
 
 describe('createCalibrationCoupon', () => {
@@ -266,6 +367,36 @@ describe('createCalibrationCoupon', () => {
     expect(sample?.allowanceMm).toBe(exactAllowance);
     expect(sample?.slotWidthMm).toBe(profile.thicknessMm + exactAllowance);
   });
+
+  it('keeps every recorded and fallback fit sample finite with a positive physical slot width', () => {
+    const profile = cloneProfile({
+      thicknessMm: 1,
+      minRemainingMm: 0.5,
+      fitAllowanceMm: { loose: -0.99, slip: -0.99, snug: -0.99, press: -0.99 },
+    });
+
+    const coupon = createCalibrationCoupon(profile, 3);
+
+    expect(coupon.fitSamples).toHaveLength(5);
+    expect(coupon.fitSamples.every(({ allowanceMm, slotWidthMm }) => (
+      Number.isFinite(allowanceMm)
+      && Number.isFinite(slotWidthMm)
+      && slotWidthMm > 0
+      && slotWidthMm === profile.thicknessMm + allowanceMm
+    ))).toBe(true);
+  });
+
+  it('terminates quickly with a typed error when finite inputs cannot produce finite coupon geometry', async () => {
+    const profile = cloneProfile({
+      fitAllowanceMm: { loose: 1e308, slip: 1e308, snug: 1e308, press: 1e308 },
+    });
+
+    const result = await probeCouponInIsolatedProcess(profile);
+
+    expect(result.kind).toBe(CalibrationCouponError.name);
+    expect(result.elapsedMs).toBeLessThan(250);
+    expect(result.message).toMatch(/geometry|coupon/i);
+  }, 7_000);
 
   it('blocks coupon generation for unknown-composition and forbidden material', () => {
     const unknown = cloneProfile({

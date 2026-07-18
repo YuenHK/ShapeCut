@@ -5,6 +5,9 @@ export const PROCESS_NAMES = ['cut', 'score', 'engrave1', 'engrave2', 'engrave3'
 
 const requiredText = z.string().trim().min(1).max(500);
 const notesText = z.string().max(4_000);
+const batchNotesText = notesText.refine((value) => value.trim().length > 0, {
+  message: 'Batch notes must identify the exact material batch.',
+});
 const finiteMillimetres = z.number().finite();
 
 export const ProcessRecipeSchema = z.object({
@@ -40,6 +43,15 @@ export const AllowlistedMaterialCategorySchema = z.enum([
   'laser-rated-cast-acrylic',
 ]);
 
+const allowlistedCategoryIdentityTokens = {
+  'laser-approved-plywood': ['plywood', 'laserply', 'woodply'],
+  'laser-approved-wood': ['wood', 'timber', 'balsa'],
+  paper: ['paper'],
+  cardboard: ['cardboard', 'cardstock', 'corrugatedcard'],
+  cork: ['cork'],
+  'laser-rated-cast-acrylic': ['castacrylic', 'acryliccast', 'laserratedacrylic'],
+} as const satisfies Record<z.infer<typeof AllowlistedMaterialCategorySchema>, readonly string[]>;
+
 const EvidenceFields = {
   manufacturer: requiredText,
   productId: requiredText,
@@ -74,11 +86,21 @@ const normalizedForbiddenTokens = [
   'chromiumvileather',
   'chromium6leather',
   'halogen',
+  'chlorine',
+  'chloride',
   'chlorinated',
+  'fluorine',
+  'fluoride',
+  'bromine',
+  'bromide',
   'brominated',
   'fluorinated',
+  'iodine',
+  'iodide',
   'iodinated',
+  'epoxy',
   'epoxyresin',
+  'phenolic',
   'phenolicresin',
 ] as const;
 
@@ -91,14 +113,35 @@ export function normalizeMaterialIdentity(value: string): string {
     .replace(/[^\p{Letter}\p{Number}]/gu, '');
 }
 
+function normalizedMaterialIdentities(code: string, name: string, productId: string): string[] {
+  return [code, name, productId].map(normalizeMaterialIdentity);
+}
+
 export function isForbiddenMaterialIdentity(code: string, name = '', productId = ''): boolean {
-  const identities = [code, name, productId].map(normalizeMaterialIdentity);
+  const identities = normalizedMaterialIdentities(code, name, productId);
   return identities.some((identity) => normalizedForbiddenTokens.some((token) => identity.includes(token)));
 }
 
 function isUnknownPlasticIdentity(code: string, name: string, productId: string): boolean {
-  const identities = [code, name, productId].map(normalizeMaterialIdentity);
+  const identities = normalizedMaterialIdentities(code, name, productId);
   return identities.some((identity) => identity === 'plastic' || identity.includes('genericplastic') || identity.includes('unknownplastic'));
+}
+
+function hasUnknownCompositionIdentity(code: string, name: string, productId: string): boolean {
+  const tokens = ['unknowncomposition', 'unknownmaterial', 'unknownpolymer', 'unidentifiedmaterial', 'mysterymaterial', 'mysterypolymer'];
+  return normalizedMaterialIdentities(code, name, productId)
+    .some((identity) => tokens.some((token) => identity.includes(token)));
+}
+
+function allowlistedCategoryMatchesIdentity(
+  category: z.infer<typeof AllowlistedMaterialCategorySchema>,
+  code: string,
+  name: string,
+  productId: string,
+): boolean {
+  const expectedTokens = allowlistedCategoryIdentityTokens[category];
+  return normalizedMaterialIdentities(code, name, productId)
+    .some((identity) => expectedTokens.some((token) => identity.includes(token)));
 }
 
 const MaterialProfileShape = z.object({
@@ -107,7 +150,7 @@ const MaterialProfileShape = z.object({
   machine: requiredText,
   materialCode: requiredText,
   materialName: requiredText,
-  batchNotes: notesText,
+  batchNotes: batchNotesText,
   thicknessMm: finiteMillimetres.positive(),
   sheetWidthMm: finiteMillimetres.positive(),
   sheetHeightMm: finiteMillimetres.positive(),
@@ -135,6 +178,25 @@ export const MaterialProfileSchema = MaterialProfileShape.superRefine((profile, 
       code: 'custom',
       path: ['materialCode'],
       message: 'Generic or unknown plastic is not an allowlisted material identity.',
+    });
+  }
+  if (hasUnknownCompositionIdentity(profile.materialCode, profile.materialName, profile.safetyEvidence.productId)) {
+    context.addIssue({
+      code: 'custom',
+      path: ['materialCode'],
+      message: 'Unknown material composition cannot be laser verified.',
+    });
+  }
+  if (profile.safetyEvidence.kind === 'allowlisted' && !allowlistedCategoryMatchesIdentity(
+    profile.safetyEvidence.category,
+    profile.materialCode,
+    profile.materialName,
+    profile.safetyEvidence.productId,
+  )) {
+    context.addIssue({
+      code: 'custom',
+      path: ['safetyEvidence', 'category'],
+      message: 'Allowlisted category does not match the recorded material identity.',
     });
   }
   if (profile.minRemainingMm > profile.thicknessMm) {
@@ -199,6 +261,18 @@ export function classifyMaterialReadiness(value: unknown): MaterialReadiness {
       return {
         status: 'block',
         reasons: [{ code: 'unknown-identity', message: 'Generic or unknown plastic has no reliable laser-safe identity.' }],
+      };
+    }
+    if (messages.some((message) => /unknown material composition/i.test(message))) {
+      return {
+        status: 'block',
+        reasons: [{ code: 'unknown-composition', message: 'The recorded material composition is unknown and remains blocked.' }],
+      };
+    }
+    if (messages.some((message) => /allowlisted category does not match/i.test(message))) {
+      return {
+        status: 'block',
+        reasons: [{ code: 'unknown-identity', message: 'The allowlisted category does not match the recorded material identity.' }],
       };
     }
     return {

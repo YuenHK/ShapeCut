@@ -57,14 +57,11 @@ function rectangle(x: number, y: number, width: number, height: number): Polygon
   return { points: [[x, y], [x + width, y], [x + width, y + height], [x, y + height]] };
 }
 
-function rounded(value: number): number {
-  return Math.round(value * 1_000_000) / 1_000_000;
-}
-
 function fitAllowances(profile: MaterialProfileV1): number[] {
   const values: number[] = [];
-  const add = (value: number, stabilize = false): void => {
-    const candidate = stabilize ? rounded(value) : value;
+  const add = (candidate: number): void => {
+    const slotWidthMm = profile.thicknessMm + candidate;
+    if (!Number.isFinite(candidate) || !Number.isFinite(slotWidthMm) || slotWidthMm <= 0) return;
     if (!values.includes(candidate)) values.push(candidate);
   };
   add(profile.fitAllowanceMm.loose);
@@ -72,9 +69,18 @@ function fitAllowances(profile: MaterialProfileV1): number[] {
   add(profile.fitAllowanceMm.snug);
   add(profile.fitAllowanceMm.press);
   add(0);
-  for (let step = 1; values.length < 5; step += 1) {
-    add(profile.fitAllowanceMm.snug - step * 0.05, true);
-    add(profile.fitAllowanceMm.snug + step * 0.05, true);
+  const base = profile.fitAllowanceMm.snug;
+  const increment = Math.max(
+    0.05,
+    profile.thicknessMm * 0.01,
+    Math.abs(base) * Number.EPSILON * 8,
+  );
+  for (let step = 1; step <= 16 && values.length < 5; step += 1) {
+    add(base + increment * step);
+    add(base - increment * step);
+  }
+  if (values.length < 5) {
+    throw new CalibrationCouponError('Calibration coupon could not generate five finite positive fit samples.');
   }
   return values.slice(0, 5);
 }
