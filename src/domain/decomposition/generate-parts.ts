@@ -1,5 +1,6 @@
 import { fitAllowance, jointPair, jointWidth } from './joints';
 import { DecompositionError, type AssemblyEdge, type DecompositionOptions, type LathedProfile, type MaterialInput, type Part2D, type Point2, type Polygon2, type SpinnerKit } from './types';
+import { isSimplePolygon, validateRadialSlots } from './polygon-validation';
 
 const RIB_COUNTS = new Set([4, 6, 8, 10, 12]);
 type Internals = { readonly hasher?: (canonicalPayload: string) => string };
@@ -95,10 +96,13 @@ export function generateParts(profileValue: unknown, materialValue: unknown, opt
   const width = jointWidth(material, options.fit, Math.min(hub, outer - hub, height));
   const depth = Math.min(material.thicknessMm * 0.8, (hub - (options.shaftMm / 2 + fitAllowance(material, options.fit) / 2)) / 3, (outer - hub) / 3);
   const jointCount = options.ringLayers + 1;
-  if (width * jointCount >= height * 0.9 || depth <= 0) throw new DecompositionError('JOINT', 'Tab intervals overlap or have no structural depth');
+  const structuralMargin = Math.max(0.01, material.thicknessMm * 0.02);
+  const centerSpacing = height / (jointCount + 1);
+  if (width + structuralMargin >= centerSpacing || depth <= 0) throw new DecompositionError('JOINT', 'Tab intervals overlap or have no structural depth');
   const zMin = profile.samples[0].z, zMax = profile.samples.at(-1)!.z;
   const tabCenters = Array.from({ length: jointCount }, (_, index) => zMin + (index + 1) * (zMax - zMin) / (jointCount + 1));
   const { outline: ribOutline, tabs } = ribSilhouette(profile, tabCenters, width, depth);
+  if (!isSimplePolygon(ribOutline)) throw new DecompositionError('JOINT', 'Tab insertion produced a self-intersecting rib outline');
   const used = new Map<string, string>();
   const digest = (payload: unknown): string => {
     const text = canonical(payload), result = (internals.hasher ?? hash128)(text);
@@ -111,7 +115,10 @@ export function generateParts(profileValue: unknown, materialValue: unknown, opt
   const id = (kind: string, index: number, geometry: unknown, jointed: boolean) => `${kind}-${index}-${digest({ kind, index, geometry, jointWidthMm: jointed ? width : undefined })}`;
   const shaftRadius = options.shaftMm / 2 + fitAllowance(material, options.fit) / 2;
   const shaftHole = circle(shaftRadius, true), hubOutline = circle(hub);
-  const hubSlots = Array.from({ length: options.ribCount }, (_, rib) => radialRectangle((shaftRadius + hub) / 2, width, depth, rib * Math.PI * 2 / options.ribCount));
+  const maxHubRadialCoordinate = Math.sqrt((hub - structuralMargin) ** 2 - (width / 2) ** 2);
+  const hubSlotRadius = maxHubRadialCoordinate - depth / 2 - structuralMargin;
+  const hubSlots = Array.from({ length: options.ribCount }, (_, rib) => radialRectangle(hubSlotRadius, width, depth, rib * Math.PI * 2 / options.ribCount));
+  if (!validateRadialSlots(hubSlots, shaftRadius, hub, structuralMargin)) throw new DecompositionError('JOINT', 'Hub slots breach structural margins or overlap');
   const hubId = id('hub', 0, { hubOutline, shaftHole, hubSlots }, true);
   const parts: Part2D[] = [{ id: hubId, kind: 'hub-layer', outline: hubOutline, holes: [shaftHole, ...hubSlots], quantity: options.ringLayers, holeMetadata: [{ purpose: 'shaft', center: [0, 0], radiusMm: shaftRadius, polygonIndex: 0 }] }];
   const ribIds: string[] = [];
@@ -121,8 +128,14 @@ export function generateParts(profileValue: unknown, materialValue: unknown, opt
   }
   const ringIds: string[] = [], ringSlots: Polygon2[][] = [];
   for (let layer = 0; layer < options.ringLayers; layer += 1) {
-    const slots = Array.from({ length: options.ribCount }, (_, rib) => radialRectangle(outer - material.thicknessMm / 2, width, Math.min(depth, material.thicknessMm * 0.8), rib * Math.PI * 2 / options.ribCount));
+    const ringDepth = Math.min(depth, material.thicknessMm * 0.8);
+    const inner = outer - material.thicknessMm;
+    const minRingCoordinate = Math.sqrt(Math.max(0, (inner + structuralMargin) ** 2 - (width / 2) ** 2));
+    const maxRingCoordinate = Math.sqrt((outer - structuralMargin) ** 2 - (width / 2) ** 2);
+    const ringSlotRadius = (minRingCoordinate + ringDepth / 2 + maxRingCoordinate - ringDepth / 2) / 2;
+    const slots = Array.from({ length: options.ribCount }, (_, rib) => radialRectangle(ringSlotRadius, width, ringDepth, rib * Math.PI * 2 / options.ribCount));
     const ringOutline = circle(outer), ringHole = circle(outer - material.thicknessMm, true);
+    if (!validateRadialSlots(slots, outer - material.thicknessMm, outer, structuralMargin)) throw new DecompositionError('JOINT', 'Ring slots breach structural margins or overlap');
     const ringId = id('ring', layer, { ringOutline, ringHole, slots }, true); ringIds.push(ringId); ringSlots.push(slots);
     parts.push({ id: ringId, kind: 'outer-ring', outline: ringOutline, holes: [ringHole, ...slots], quantity: 1 });
   }
@@ -136,17 +149,18 @@ export function generateParts(profileValue: unknown, materialValue: unknown, opt
   for (let rib = 0; rib < ribIds.length; rib += 1) {
     const direction: Point2 = [Math.cos(rib * Math.PI * 2 / options.ribCount), Math.sin(rib * Math.PI * 2 / options.ribCount)];
     const hubJoint = `joint-${digest({ slot: hubId, tab: ribIds[rib], feature: 0 })}`;
-    joints.push(...jointPair(hubJoint, hubId, ribIds[rib], width, depth, [(shaftRadius + hub) / 2 * direction[0], (shaftRadius + hub) / 2 * direction[1]], direction, [tabCenters[0], interpolate(profile, tabCenters[0]) + depth / 2], [0, 1], hubSlots[rib], tabs[0]));
-    assembly.push({ fromPartId: hubId, toPartId: ribIds[rib], jointId: hubJoint, order: order++ });
+    joints.push(...jointPair(hubJoint, hubId, ribIds[rib], width, depth, [hubSlotRadius * direction[0], hubSlotRadius * direction[1]], direction, [tabCenters[0], interpolate(profile, tabCenters[0]) + depth / 2], [0, 1], hubSlots[rib], tabs[0]));
+    assembly.push({ kind: 'joint', fromPartId: hubId, toPartId: ribIds[rib], jointId: hubJoint, order: order++ });
     for (let layer = 0; layer < ringIds.length; layer += 1) {
       const joint = `joint-${digest({ slot: ringIds[layer], tab: ribIds[rib], feature: layer + 1 })}`;
-      joints.push(...jointPair(joint, ringIds[layer], ribIds[rib], width, depth, [(outer - material.thicknessMm / 2) * direction[0], (outer - material.thicknessMm / 2) * direction[1]], direction, [tabCenters[layer + 1], interpolate(profile, tabCenters[layer + 1]) + depth / 2], [0, 1], ringSlots[layer][rib], tabs[layer + 1]));
-      assembly.push({ fromPartId: ringIds[layer], toPartId: ribIds[rib], jointId: joint, order: order++ });
+      const ringPosition = ringSlots[layer][rib].points.reduce((sum, point) => [sum[0] + point[0] / 4, sum[1] + point[1] / 4] as Point2, [0, 0] as Point2);
+      joints.push(...jointPair(joint, ringIds[layer], ribIds[rib], width, depth, ringPosition, direction, [tabCenters[layer + 1], interpolate(profile, tabCenters[layer + 1]) + depth / 2], [0, 1], ringSlots[layer][rib], tabs[layer + 1]));
+      assembly.push({ kind: 'joint', fromPartId: ringIds[layer], toPartId: ribIds[rib], jointId: joint, order: order++ });
     }
   }
   if (spacerId) {
-    assembly.push({ fromPartId: hubId, toPartId: spacerId, jointId: `placement-${digest({ hubId, spacerId, side: -1 })}`, order: order++, instanceId: 'negative-z' });
-    assembly.push({ fromPartId: hubId, toPartId: spacerId, jointId: `placement-${digest({ hubId, spacerId, side: 1 })}`, order: order++, instanceId: 'positive-z' });
+    assembly.push({ kind: 'placement', placementId: `placement-${digest({ hubId, spacerId, side: -1 })}`, partId: spacerId, relativeToPartId: hubId, instance: 'negative-z', side: 'negative-z', order: order++ });
+    assembly.push({ kind: 'placement', placementId: `placement-${digest({ hubId, spacerId, side: 1 })}`, partId: spacerId, relativeToPartId: hubId, instance: 'positive-z', side: 'positive-z', order: order++ });
   }
   return { parts, joints, assembly, estimatedBalance: { kind: 'ideal-static-estimate', status: 'pass', centroidOffsetMm: 0, assumptions: ['uniform material', 'ideal cuts', 'equal angular rib spacing', 'static estimate only'] } };
 }

@@ -52,13 +52,25 @@ export type JointFeature = {
   readonly matePartId: string;
 };
 
-export type AssemblyEdge = {
+export type JointAssemblyEdge = {
+  readonly kind: 'joint';
   readonly fromPartId: string;
   readonly toPartId: string;
   readonly jointId: string;
   readonly order: number;
-  readonly instanceId?: 'negative-z' | 'positive-z';
 };
+
+export type PlacementAssemblyEdge = {
+  readonly kind: 'placement';
+  readonly placementId: string;
+  readonly partId: string;
+  readonly relativeToPartId: string;
+  readonly instance: 'negative-z' | 'positive-z';
+  readonly side: 'negative-z' | 'positive-z';
+  readonly order: number;
+};
+
+export type AssemblyEdge = JointAssemblyEdge | PlacementAssemblyEdge;
 
 /** Static ideal-symmetry estimate only; it is not a dynamic balance analysis. */
 export type BalanceResult = {

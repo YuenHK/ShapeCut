@@ -4,6 +4,7 @@ import { sampleLathedProfile } from './profile-sampler';
 import type { LathedProfile, MaterialInput, Polygon2 } from './types';
 import type { TriangleMesh } from '../mesh/types';
 import type { Axis } from '../types';
+import { isSimplePolygon } from './polygon-validation';
 
 const profile: LathedProfile = {
   samples: [
@@ -24,6 +25,18 @@ function area(polygon: Polygon2): number {
 }
 
 describe('generateParts', () => {
+  test('rejects radial slots whose corners breach hub/ring margins or overlap neighbours', () => {
+    const large: LathedProfile = { samples: [{ z: -50, radius: 80 }, { z: 0, radius: 100 }, { z: 50, radius: 80 }] };
+    expect(() => generateParts(large, { thicknessMm: 38.9, fitAllowanceMm: 0.1 }, { ribCount: 12, ringLayers: 1, shaftMm: 62, fit: 'snug' })).toThrowError(expect.objectContaining({ code: 'JOINT' }));
+  });
+
+  test('rejects tabs wider than center spacing and emits simple legal rib outlines', () => {
+    const tall: LathedProfile = { samples: [{ z: -50, radius: 20 }, { z: 0, radius: 100 }, { z: 50, radius: 20 }] };
+    expect(() => generateParts(tall, { thicknessMm: 38.9, fitAllowanceMm: 0.1 }, { ribCount: 4, ringLayers: 1, shaftMm: 2, fit: 'snug' })).toThrowError(expect.objectContaining({ code: 'JOINT' }));
+    const legal = generateParts(profile, material, { ribCount: 8, ringLayers: 3, shaftMm: 3, fit: 'snug' });
+    expect(legal.parts.filter((part) => part.kind === 'rib').every((part) => isSimplePolygon(part.outline))).toBe(true);
+  });
+
   test('builds ribs from every meridional profile sample rather than a bounding rectangle', () => {
     const left: LathedProfile = { samples: [{ z: -10, radius: 4 }, { z: 0, radius: 18 }, { z: 10, radius: 4 }] };
     const right: LathedProfile = { samples: [{ z: -10, radius: 4 }, { z: 0, radius: 10 }, { z: 10, radius: 4 }] };
@@ -63,11 +76,25 @@ describe('generateParts', () => {
   test('connects both spacer instances on opposite hub sides in the assembly graph', () => {
     const kit = generateParts(profile, material, { ribCount: 4, ringLayers: 2, shaftMm: 3, fit: 'snug' });
     const spacer = kit.parts.find((part) => part.kind === 'spacer')!;
-    const edges = kit.assembly.filter((edge) => edge.fromPartId === spacer.id || edge.toPartId === spacer.id);
-    expect(edges.map((edge) => edge.instanceId).sort()).toEqual(['negative-z', 'positive-z']);
+    const edges = kit.assembly.filter((edge): edge is Extract<typeof edge, { kind: 'placement' }> => edge.kind === 'placement' && edge.partId === spacer.id);
+    expect(edges.map((edge) => edge.instance).sort()).toEqual(['negative-z', 'positive-z']);
     expect(new Set(edges.map((edge) => edge.order)).size).toBe(2);
     for (const part of kit.parts.filter((part) => part.id !== kit.parts[0].id)) {
-      expect(kit.assembly.some((edge) => edge.fromPartId === part.id || edge.toPartId === part.id)).toBe(true);
+      expect(kit.assembly.some((edge) => edge.kind === 'joint' ? edge.fromPartId === part.id || edge.toPartId === part.id : edge.partId === part.id)).toBe(true);
+    }
+  });
+
+  test('uses discriminated assembly edges with complete referential integrity', () => {
+    const kit = generateParts(profile, material, { ribCount: 6, ringLayers: 2, shaftMm: 3, fit: 'snug' });
+    const jointIds = new Set(kit.joints.map((joint) => joint.id));
+    const placementIds = new Set<string>();
+    for (const edge of kit.assembly) {
+      if (edge.kind === 'joint') expect(jointIds.has(edge.jointId)).toBe(true);
+      else {
+        expect(edge).not.toHaveProperty('jointId');
+        expect(placementIds.has(edge.placementId)).toBe(false);
+        placementIds.add(edge.placementId);
+      }
     }
   });
 
@@ -127,7 +154,7 @@ describe('generateParts', () => {
     for (const joint of kit.joints) grouped.set(joint.id, [...(grouped.get(joint.id) ?? []), joint]);
     expect([...grouped.values()].every((pair) => pair.length === 2 && pair[0].role !== pair[1].role)).toBe(true);
     expect(kit.joints.every((joint) => joint.widthMm === 3.1)).toBe(true);
-    expect(kit.assembly.every((edge) => grouped.has(edge.jointId) || edge.jointId.startsWith('placement-'))).toBe(true);
+    expect(kit.assembly.filter((edge) => edge.kind === 'joint').every((edge) => grouped.has(edge.jointId))).toBe(true);
   });
 
   test('is deterministic, input-immutable, scale-aware, and changes IDs with options', () => {
