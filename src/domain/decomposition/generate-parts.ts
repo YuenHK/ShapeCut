@@ -1,4 +1,5 @@
 import { fitAllowance, jointPair, jointWidth } from './joints';
+import { validateAssemblyCollisions } from './assembly-collisions';
 import { DecompositionError, type AssemblyEdge, type DecompositionOptions, type LathedProfile, type MaterialInput, type MatingFrame, type Part2D, type PartInstance, type Point2, type Polygon2, type SpinnerKit } from './types';
 import { isSimpleXMonotonePolygon, validateOpenRadialNotches } from './polygon-validation';
 import { minimumRadiusOverInterval } from './profile-geometry';
@@ -198,10 +199,20 @@ export function generateParts(profileValue: unknown, materialValue: unknown, opt
   const jointCount = options.ringLayers * 2;
   const geometryScale = Math.max(outer, height, material.thicknessMm, shaftPolygonRadius);
   const structuralMargin = Math.max(material.thicknessMm * 0.02, geometryScale * 64 * Number.EPSILON);
+  const spacerOuterRadius = options.ringLayers > 1 ? Math.min(hub, shaftPolygonRadius + material.thicknessMm) : undefined;
+  const adjacentRibClearanceRadius = material.thicknessMm / 2 / Math.tan(Math.PI / options.ribCount);
+  const ribInnerRadius = Math.max(shaftPolygonRadius, adjacentRibClearanceRadius, spacerOuterRadius ?? 0) + structuralMargin;
   const centerSpacing = height / (jointCount + 1);
   if (width + structuralMargin >= centerSpacing || depth <= 0) throw new DecompositionError('JOINT', 'Tab intervals overlap or have no structural depth');
   const zMin = profile.samples[0].z, zMax = profile.samples.at(-1)!.z;
-  const tabCenters = Array.from({ length: jointCount }, (_, index) => zMin + (index + 1) * (zMax - zMin) / (jointCount + 1));
+  const preferredCenters = Array.from({ length: jointCount }, (_, index) => zMin + (index + 1) * (zMax - zMin) / (jointCount + 1));
+  const requiredLocalRadius = ribInnerRadius + structuralMargin + Math.max(depth / 2, material.thicknessMm / 2);
+  const centersHaveRadialRoom = (centers: readonly number[]): boolean => centers.every((axialZ) =>
+    minimumRadiusOverInterval(profile, axialZ - width / 2, axialZ + width / 2) > requiredLocalRadius);
+  const compactSpacing = width + structuralMargin * 2;
+  const profileMiddle = (zMin + zMax) / 2;
+  const compactCenters = Array.from({ length: jointCount }, (_, index) => profileMiddle + (index - (jointCount - 1) / 2) * compactSpacing);
+  const tabCenters = centersHaveRadialRoom(preferredCenters) ? preferredCenters : compactCenters;
   const hubCenters = tabCenters.slice(0, options.ringLayers), ringCenters = tabCenters.slice(options.ringLayers);
   const used = new Map<string, string>();
   const digest = (payload: unknown): string => {
@@ -243,7 +254,7 @@ export function generateParts(profileValue: unknown, materialValue: unknown, opt
     const ringId = id('ring', layer, { outline: geometry.outline, ringHole, cuts: geometry.cuts, frames }, true); ringIds.push(ringId); ringCuts.push([...geometry.cuts]); ringFrames.push(frames);
     ringParts.push({ id: ringId, kind: 'outer-ring', outline: geometry.outline, holes: [ringHole], quantity: 1 });
   }
-  const ribOutline = ribSilhouette(profile, shaftPolygonRadius + structuralMargin, [...hubFrames.map((frames) => frames[0]), ...ringFrames.map((frames) => frames[0])].map((frame) => ({ axialZ: frame.axialZ, width: frame.tangentialWidth, radialMin: frame.radialMin, radialMax: frame.radialMax })));
+  const ribOutline = ribSilhouette(profile, ribInnerRadius, [...hubFrames.map((frames) => frames[0]), ...ringFrames.map((frames) => frames[0])].map((frame) => ({ axialZ: frame.axialZ, width: frame.tangentialWidth, radialMin: frame.radialMin, radialMax: frame.radialMax })));
   if (!isSimpleXMonotonePolygon(ribOutline)) throw new DecompositionError('JOINT', 'Complementary notch insertion produced a self-intersecting rib outline');
   const ribIds: string[] = [];
   const ribParts: Part2D[] = [];
@@ -255,8 +266,8 @@ export function generateParts(profileValue: unknown, materialValue: unknown, opt
   }
   const parts: Part2D[] = [{ id: hubId, kind: 'hub-layer', outline: hubGeometry.outline, holes: [shaftHole], quantity: options.ringLayers, holeMetadata: [{ purpose: 'shaft', center: [0, 0], radiusMm: shaftRadius, polygonIndex: 0 }] }, ...ribParts, ...ringParts];
   let spacerId: string | undefined;
-  if (options.ringLayers > 1) {
-    const spacerOutline = circle(Math.min(hub, shaftPolygonRadius + material.thicknessMm));
+  if (spacerOuterRadius !== undefined) {
+    const spacerOutline = circle(spacerOuterRadius);
     spacerId = id('spacer', 0, { spacerOutline, shaftHole }, false);
     parts.push({ id: spacerId, kind: 'spacer', outline: spacerOutline, holes: [shaftHole], quantity: 2, holeMetadata: [{ purpose: 'shaft', center: [0, 0], radiusMm: shaftRadius, polygonIndex: 0 }] });
   }
@@ -280,7 +291,9 @@ export function generateParts(profileValue: unknown, materialValue: unknown, opt
   });
   const spacerInstanceIds: string[] = [];
   if (spacerId) {
-    for (const [index, axialZ] of [hubCenters[0] - material.thicknessMm, hubCenters.at(-1)! + material.thicknessMm].entries()) {
+    const horizontalCenters = [...hubCenters, ...ringCenters];
+    const stackMinimum = Math.min(...horizontalCenters), stackMaximum = Math.max(...horizontalCenters);
+    for (const [index, axialZ] of [stackMinimum - material.thicknessMm, stackMaximum + material.thicknessMm].entries()) {
       const result = instanceId('spacer', index, spacerId, { axialZ, side: index === 0 ? 'negative-z' : 'positive-z' });
       spacerInstanceIds.push(result); instances.push({ id: result, partId: spacerId, axialZ });
     }
@@ -306,5 +319,7 @@ export function generateParts(profileValue: unknown, materialValue: unknown, opt
     assembly.push({ kind: 'placement', placementId: `placement-${digest({ hubInstanceId: hubInstanceIds[0], spacerInstanceId: spacerInstanceIds[0], side: -1 })}`, partId: spacerId, relativeToPartId: hubId, partInstanceId: spacerInstanceIds[0], relativeToInstanceId: hubInstanceIds[0], instance: 'negative-z', side: 'negative-z', order: order++ });
     assembly.push({ kind: 'placement', placementId: `placement-${digest({ hubInstanceId: hubInstanceIds.at(-1), spacerInstanceId: spacerInstanceIds[1], side: 1 })}`, partId: spacerId, relativeToPartId: hubId, partInstanceId: spacerInstanceIds[1], relativeToInstanceId: hubInstanceIds.at(-1)!, instance: 'positive-z', side: 'positive-z', order: order++ });
   }
-  return { parts, instances, joints, assembly, estimatedBalance: { kind: 'ideal-static-estimate', status: 'pass', centroidOffsetMm: 0, assumptions: ['uniform material', 'ideal cuts', 'equal angular rib spacing', 'static estimate only'] } };
+  const kit: SpinnerKit = { parts, instances, joints, assembly, estimatedBalance: { kind: 'ideal-static-estimate', status: 'pass', centroidOffsetMm: 0, assumptions: ['uniform material', 'ideal cuts', 'equal angular rib spacing', 'static estimate only'] } };
+  validateAssemblyCollisions(kit, material, profile);
+  return kit;
 }
