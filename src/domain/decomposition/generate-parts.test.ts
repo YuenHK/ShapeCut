@@ -24,6 +24,18 @@ function area(polygon: Polygon2): number {
 }
 
 describe('generateParts', () => {
+  test('adds two symmetric washer spacers only for multilayer rings without changing ideal balance', () => {
+    const multi = generateParts(profile, material, { ribCount: 8, ringLayers: 3, shaftMm: 3, fit: 'snug' });
+    const single = generateParts(profile, material, { ribCount: 8, ringLayers: 1, shaftMm: 3, fit: 'snug' });
+    const spacers = multi.parts.filter((part) => part.kind === 'spacer');
+    expect(spacers).toHaveLength(1);
+    expect(spacers[0].quantity).toBe(2);
+    expect(spacers[0].holes).toHaveLength(1);
+    expect(spacers[0].holeMetadata?.[0]).toMatchObject({ purpose: 'shaft', center: [0, 0] });
+    expect(single.parts.filter((part) => part.kind === 'spacer')).toHaveLength(0);
+    expect(multi.estimatedBalance).toEqual(single.estimatedBalance);
+  });
+
   test('generates the requested hybrid kit with valid consistently wound polygons', () => {
     const kit = generateParts(profile, material, { ribCount: 8, ringLayers: 3, shaftMm: 3, fit: 'snug' });
     expect(kit.parts.filter((part) => part.kind === 'rib')).toHaveLength(8);
@@ -69,16 +81,77 @@ describe('generateParts', () => {
   });
 
   test('is deterministic, input-immutable, scale-aware, and changes IDs with options', () => {
-    const snapshot = JSON.stringify({ profile, material });
+    const deterministicMaterial: MaterialInput = { thicknessMm: 3, fitAllowanceMm: { loose: 0.3, slip: 0.2, snug: 0.1, press: 0 } };
+    const snapshot = JSON.stringify({ profile, material: deterministicMaterial });
     const options = { ribCount: 8 as const, ringLayers: 3, shaftMm: 3, fit: 'snug' as const };
-    const first = generateParts(profile, material, options);
-    const second = generateParts(profile, material, options);
+    const first = generateParts(profile, deterministicMaterial, options);
+    const second = generateParts(profile, deterministicMaterial, options);
     expect(second).toEqual(first);
-    expect(JSON.stringify({ profile, material })).toBe(snapshot);
-    const changed = generateParts(profile, material, { ...options, fit: 'press' });
+    expect(JSON.stringify({ profile, material: deterministicMaterial })).toBe(snapshot);
+    const changed = generateParts(profile, deterministicMaterial, { ...options, fit: 'press' });
     expect(changed.parts.map((part) => part.id)).not.toEqual(first.parts.map((part) => part.id));
-    const scaled = generateParts({ samples: profile.samples.map(({ z, radius }) => ({ z: z * 2, radius: radius * 2 })) }, material, { ...options, shaftMm: 6 });
+    const scaled = generateParts({ samples: profile.samples.map(({ z, radius }) => ({ z: z * 2, radius: radius * 2 })) }, { thicknessMm: 6, fitAllowanceMm: { loose: 0.6, slip: 0.4, snug: 0.2, press: 0 } }, { ...options, shaftMm: 6 });
     expect(Math.abs(area(scaled.parts[0].outline)) / Math.abs(area(first.parts[0].outline))).toBeCloseTo(4, 6);
+  });
+
+  test('scales every geometry dimension while preserving dimensionless balance state', () => {
+    const options = { ribCount: 8 as const, ringLayers: 3, shaftMm: 3, fit: 'snug' as const };
+    const base = generateParts(profile, material, options);
+    const factor = 2.5;
+    const scaled = generateParts(
+      { samples: profile.samples.map(({ z, radius }) => ({ z: z * factor, radius: radius * factor })) },
+      { thicknessMm: material.thicknessMm * factor, fitAllowanceMm: 0.1 * factor },
+      { ...options, shaftMm: options.shaftMm * factor },
+    );
+    expect(scaled.parts.map((part) => part.kind)).toEqual(base.parts.map((part) => part.kind));
+    base.parts.forEach((part, partIndex) => {
+      const other = scaled.parts[partIndex];
+      [part.outline, ...part.holes].forEach((polygon, polygonIndex) => {
+        const otherPolygon = [other.outline, ...other.holes][polygonIndex];
+        polygon.points.forEach((point, pointIndex) => {
+          expect(otherPolygon.points[pointIndex][0]).toBeCloseTo(point[0] * factor, 10);
+          expect(otherPolygon.points[pointIndex][1]).toBeCloseTo(point[1] * factor, 10);
+        });
+      });
+      part.holeMetadata?.forEach((hole, index) => expect(other.holeMetadata?.[index].radiusMm).toBeCloseTo(hole.radiusMm * factor, 10));
+    });
+    base.joints.forEach((joint, index) => expect(scaled.joints[index].widthMm).toBeCloseTo(joint.widthMm * factor, 10));
+    expect(scaled.estimatedBalance.status).toBe(base.estimatedBalance.status);
+    expect(scaled.estimatedBalance.centroidOffsetMm).toBe(base.estimatedBalance.centroidOffsetMm * factor);
+  });
+
+  test('uses stable IDs derived only from each part relevant geometry and role', () => {
+    const fitMap = { loose: 0.3, slip: 0.2, snug: 0.1, press: 0 } as const;
+    const snug = generateParts(profile, { thicknessMm: 3, fitAllowanceMm: fitMap }, { ribCount: 8, ringLayers: 3, shaftMm: 3, fit: 'snug' });
+    const press = generateParts(profile, { thicknessMm: 3, fitAllowanceMm: fitMap }, { ribCount: 8, ringLayers: 3, shaftMm: 3, fit: 'press' });
+    for (const kind of ['hub-layer', 'rib', 'outer-ring'] as const) {
+      expect(press.parts.filter((part) => part.kind === kind).map((part) => part.id)).not.toEqual(snug.parts.filter((part) => part.kind === kind).map((part) => part.id));
+    }
+    expect(press.parts.find((part) => part.kind === 'spacer')?.id).toBe(snug.parts.find((part) => part.kind === 'spacer')?.id);
+    const fewer = generateParts(profile, { thicknessMm: 3, fitAllowanceMm: fitMap }, { ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' });
+    for (const kind of ['hub-layer', 'rib', 'spacer'] as const) {
+      expect(fewer.parts.filter((part) => part.kind === kind).map((part) => part.id)).toEqual(snug.parts.filter((part) => part.kind === kind).map((part) => part.id));
+    }
+    expect(fewer.parts.filter((part) => part.kind === 'outer-ring').map((part) => part.id)).toEqual(snug.parts.filter((part) => part.kind === 'outer-ring').slice(0, 2).map((part) => part.id));
+  });
+
+  test('accepts zero-radius tips by deriving the hub from the central profile structure', () => {
+    const pointed: LathedProfile = { samples: [{ z: -10, radius: 0 }, { z: 0, radius: 20 }, { z: 10, radius: 0 }] };
+    expect(() => generateParts(pointed, material, { ribCount: 6, ringLayers: 2, shaftMm: 3, fit: 'snug' })).not.toThrow();
+    expect(() => generateParts({ samples: [{ z: -1, radius: 0 }, { z: 1, radius: 0 }] }, material, { ribCount: 6, ringLayers: 2, shaftMm: 1, fit: 'snug' })).toThrowError(expect.objectContaining({ code: 'PROFILE' }));
+  });
+
+  test.each([
+    [null, material, { ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' }, 'PROFILE'],
+    [{ samples: null }, material, { ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' }, 'PROFILE'],
+    [profile, null, { ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' }, 'MATERIAL'],
+    [profile, { thicknessMm: 3, fitAllowanceMm: null }, { ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' }, 'MATERIAL'],
+    [profile, material, null, 'OPTIONS'],
+    [profile, material, { ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'invalid' }, 'OPTIONS'],
+    [profile, { thicknessMm: 3, fitAllowanceMm: { loose: 0, slip: 0, snug: 0 } }, { ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' }, 'MATERIAL'],
+    [profile, { thicknessMm: 3, fitAllowanceMm: { loose: 0, slip: 0, snug: 0, press: Infinity } }, { ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' }, 'MATERIAL'],
+  ] as const)('never leaks TypeError for malformed unknown input %#', (badProfile, badMaterial, badOptions, code) => {
+    expect(() => generateParts(badProfile as never, badMaterial as never, badOptions as never)).toThrowError(expect.objectContaining({ name: 'DecompositionError', code }));
   });
 
   test.each([
@@ -115,5 +188,19 @@ describe('sampleLathedProfile', () => {
     expect(sampled.samples.map(({ z }) => z)).toEqual([-2, 0, 2]);
     sampled.samples.forEach(({ radius }, index) => expect(radius).toBeCloseTo([2, 4, 2][index], 12));
     expect(sampled).toEqual(sampleLathedProfile(mesh, axis, 3));
+  });
+
+  test.each([
+    [null, { origin: [0, 0, 0], direction: [0, 0, 1], confidence: 1, confirmed: true }, 3],
+    [{ positions: new Float64Array([0, 0, 0]), indices: new Uint32Array([0, 1, 2]) }, { origin: [0, 0, 0], direction: [0, 0, 1], confidence: 1, confirmed: true }, 3],
+    [{ positions: new Float64Array([0, 0, 0, 1, 0, 1]), indices: new Uint32Array([0, 1]) }, { origin: [0, 0, 0], direction: [0, 0, 1], confidence: 1, confirmed: true }, 3],
+    [{ positions: new Float64Array([0, 0, 0, 1, 0, 1, NaN, 0, 2]), indices: new Uint32Array([0, 1, 2]) }, { origin: [0, 0, 0], direction: [0, 0, 1], confidence: 1, confirmed: true }, 3],
+    [{ positions: new Float64Array([1, 0, 0, 2, 0, 0, 3, 0, 0]), indices: new Uint32Array([0, 1, 2]) }, { origin: [0, 0, 0], direction: [0, 0, 1], confidence: 1, confirmed: true }, 3],
+    [{ positions: new Float64Array([0, 0, 0, 1, 0, 1, 2, 0, 2]), indices: new Uint32Array([0, 1, 2]) }, { origin: [0, 0, 0], direction: [0, 0, 1], confidence: 1, confirmed: false }, 3],
+    [{ positions: new Float64Array([0, 0, 0, 1, 0, 1, 2, 0, 2]), indices: new Uint32Array([0, 1, 2]) }, { origin: [NaN, 0, 0], direction: [0, 0, 1], confidence: 1, confirmed: true }, 3],
+    [{ positions: new Float64Array([0, 0, 0, 1, 0, 1, 2, 0, 2]), indices: new Uint32Array([0, 1, 2]) }, { origin: [0, 0, 0], direction: [0, 0, 0], confidence: 1, confirmed: true }, 3],
+    [{ positions: new Float64Array([0, 0, 0, 1, 0, 1, 2, 0, 2]), indices: new Uint32Array([0, 1, 2]) }, { origin: [0, 0, 0], direction: [0, 0, 1], confidence: 1, confirmed: true }, 1],
+  ] as const)('returns typed PROFILE errors for malformed sampler input %#', (mesh, axis, bins) => {
+    expect(() => sampleLathedProfile(mesh as never, axis as never, bins)).toThrowError(expect.objectContaining({ name: 'DecompositionError', code: 'PROFILE' }));
   });
 });
