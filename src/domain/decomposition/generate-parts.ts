@@ -1,5 +1,5 @@
 import { fitAllowance, jointPair, jointWidth } from './joints';
-import { DecompositionError, type AssemblyEdge, type DecompositionOptions, type LathedProfile, type MaterialInput, type Part2D, type Point2, type Polygon2, type SpinnerKit } from './types';
+import { DecompositionError, type AssemblyEdge, type DecompositionOptions, type LathedProfile, type MaterialInput, type MatingFrame, type Part2D, type Point2, type Polygon2, type SpinnerKit } from './types';
 import { isSimplePolygon, validateRadialSlots } from './polygon-validation';
 
 const RIB_COUNTS = new Set([4, 6, 8, 10, 12]);
@@ -70,25 +70,22 @@ function interpolate(profile: LathedProfile, z: number): number {
   return profile.samples.at(-1)!.radius;
 }
 
-function ribSilhouette(profile: LathedProfile, centers: readonly number[], width: number, depth: number): { outline: Polygon2; tabs: Polygon2[] } {
-  const upper: { point: Point2; order: number }[] = profile.samples.map(({ z, radius }) => ({ point: [z, radius], order: 0 }));
-  const tabs: Polygon2[] = [];
-  for (const center of centers) {
-    const z0 = center - width / 2, z1 = center + width / 2;
-    const r0 = interpolate(profile, z0), r1 = interpolate(profile, z1), top = Math.max(r0, r1) + depth;
-    const polygon: Polygon2 = { points: [[z0, r0], [z0, top], [z1, top], [z1, r1]] };
-    tabs.push(polygon);
-    upper.push(
-      { point: polygon.points[0], order: 0 }, { point: polygon.points[1], order: 1 },
-      { point: polygon.points[2], order: 0 }, { point: polygon.points[3], order: 1 },
-    );
-  }
-  upper.sort((a, b) => a.point[0] - b.point[0] || a.order - b.order);
-  const unique = upper.map(({ point }) => point).filter((point, index, points) => index === 0 || point[0] !== points[index - 1][0] || point[1] !== points[index - 1][1]);
+function ribSilhouette(profile: LathedProfile): Polygon2 {
   const lower: Point2[] = profile.samples.map(({ z, radius }) => [z, -radius]);
-  const boundary = [...lower, ...unique.reverse()].filter((point, index, points) => index === 0 || point[0] !== points[index - 1][0] || point[1] !== points[index - 1][1]);
+  const upper: Point2[] = [...profile.samples].reverse().map(({ z, radius }) => [z, radius]);
+  const boundary = [...lower, ...upper].filter((point, index, points) => index === 0 || point[0] !== points[index - 1][0] || point[1] !== points[index - 1][1]);
   if (boundary.length > 1 && boundary[0][0] === boundary.at(-1)![0] && boundary[0][1] === boundary.at(-1)![1]) boundary.pop();
-  return { outline: { points: boundary }, tabs };
+  return { points: boundary };
+}
+
+function contactPolygon(frame: MatingFrame): Polygon2 {
+  const half = frame.tangentialWidth / 2;
+  return { points: [[frame.axialZ - half, frame.radialMin], [frame.axialZ + half, frame.radialMin], [frame.axialZ + half, frame.radialMax], [frame.axialZ - half, frame.radialMax]] };
+}
+
+function contactFits(profile: LathedProfile, frame: MatingFrame, margin: number): boolean {
+  const half = frame.tangentialWidth / 2;
+  return frame.radialMin >= 0 && frame.radialMax + margin <= Math.min(interpolate(profile, frame.axialZ - half), interpolate(profile, frame.axialZ), interpolate(profile, frame.axialZ + half));
 }
 
 export function generateParts(profileValue: unknown, materialValue: unknown, optionsValue: unknown, internals: Internals = {}): SpinnerKit {
@@ -101,7 +98,7 @@ export function generateParts(profileValue: unknown, materialValue: unknown, opt
   if (width + structuralMargin >= centerSpacing || depth <= 0) throw new DecompositionError('JOINT', 'Tab intervals overlap or have no structural depth');
   const zMin = profile.samples[0].z, zMax = profile.samples.at(-1)!.z;
   const tabCenters = Array.from({ length: jointCount }, (_, index) => zMin + (index + 1) * (zMax - zMin) / (jointCount + 1));
-  const { outline: ribOutline, tabs } = ribSilhouette(profile, tabCenters, width, depth);
+  const ribOutline = ribSilhouette(profile);
   if (!isSimplePolygon(ribOutline)) throw new DecompositionError('JOINT', 'Tab insertion produced a self-intersecting rib outline');
   const used = new Map<string, string>();
   const digest = (payload: unknown): string => {
@@ -116,28 +113,42 @@ export function generateParts(profileValue: unknown, materialValue: unknown, opt
   const shaftRadius = options.shaftMm / 2 + fitAllowance(material, options.fit) / 2;
   const shaftHole = circle(shaftRadius, true), hubOutline = circle(hub);
   const maxHubRadialCoordinate = Math.sqrt((hub - structuralMargin) ** 2 - (width / 2) ** 2);
-  const hubSlotRadius = maxHubRadialCoordinate - depth / 2 - structuralMargin;
+  const hubLocalLimit = Math.min(interpolate(profile, tabCenters[0] - width / 2), interpolate(profile, tabCenters[0]), interpolate(profile, tabCenters[0] + width / 2)) - structuralMargin;
+  const hubSlotRadius = Math.min(maxHubRadialCoordinate - depth / 2 - structuralMargin, hubLocalLimit - depth / 2);
   const hubSlots = Array.from({ length: options.ribCount }, (_, rib) => radialRectangle(hubSlotRadius, width, depth, rib * Math.PI * 2 / options.ribCount));
   if (!validateRadialSlots(hubSlots, shaftRadius, hub, structuralMargin)) throw new DecompositionError('JOINT', 'Hub slots breach structural margins or overlap');
-  const hubId = id('hub', 0, { hubOutline, shaftHole, hubSlots }, true);
+  const hubFrames = Array.from({ length: options.ribCount }, (_, rib): MatingFrame => ({ axialZ: tabCenters[0], angleRad: rib * Math.PI * 2 / options.ribCount, radialMin: hubSlotRadius - depth / 2, radialMax: hubSlotRadius + depth / 2, tangentialWidth: width }));
+  if (hubFrames.some((frame) => !contactFits(profile, frame, structuralMargin))) throw new DecompositionError('JOINT', 'Profile cannot contain hub contact frame');
+  const hubId = id('hub', 0, { hubOutline, shaftHole, hubSlots, hubFrames }, true);
   const parts: Part2D[] = [{ id: hubId, kind: 'hub-layer', outline: hubOutline, holes: [shaftHole, ...hubSlots], quantity: options.ringLayers, holeMetadata: [{ purpose: 'shaft', center: [0, 0], radiusMm: shaftRadius, polygonIndex: 0 }] }];
   const ribIds: string[] = [];
   for (let index = 0; index < options.ribCount; index += 1) {
-    const ribId = id('rib', index, { ribOutline, tabs }, true); ribIds.push(ribId);
+    const ribId = `pending-rib-${index}`; ribIds.push(ribId);
     parts.push({ id: ribId, kind: 'rib', outline: ribOutline, holes: [], quantity: 1, angleRad: index * Math.PI * 2 / options.ribCount });
   }
-  const ringIds: string[] = [], ringSlots: Polygon2[][] = [];
+  const ringIds: string[] = [], ringSlots: Polygon2[][] = [], ringFrames: MatingFrame[][] = [];
   for (let layer = 0; layer < options.ringLayers; layer += 1) {
     const ringDepth = Math.min(depth, material.thicknessMm * 0.8);
-    const inner = outer - material.thicknessMm;
+    const axialZ = tabCenters[layer + 1], halfWidth = width / 2;
+    const localRadius = Math.min(interpolate(profile, axialZ - halfWidth), interpolate(profile, axialZ), interpolate(profile, axialZ + halfWidth)) - structuralMargin;
+    if (!(localRadius > material.thicknessMm + structuralMargin * 2)) throw new DecompositionError('JOINT', 'Local profile cannot contain ring annulus');
+    const inner = localRadius - material.thicknessMm;
     const minRingCoordinate = Math.sqrt(Math.max(0, (inner + structuralMargin) ** 2 - (width / 2) ** 2));
-    const maxRingCoordinate = Math.sqrt((outer - structuralMargin) ** 2 - (width / 2) ** 2);
+    const maxRingCoordinate = Math.sqrt((localRadius - structuralMargin) ** 2 - (width / 2) ** 2);
     const ringSlotRadius = (minRingCoordinate + ringDepth / 2 + maxRingCoordinate - ringDepth / 2) / 2;
     const slots = Array.from({ length: options.ribCount }, (_, rib) => radialRectangle(ringSlotRadius, width, ringDepth, rib * Math.PI * 2 / options.ribCount));
-    const ringOutline = circle(outer), ringHole = circle(outer - material.thicknessMm, true);
-    if (!validateRadialSlots(slots, outer - material.thicknessMm, outer, structuralMargin)) throw new DecompositionError('JOINT', 'Ring slots breach structural margins or overlap');
-    const ringId = id('ring', layer, { ringOutline, ringHole, slots }, true); ringIds.push(ringId); ringSlots.push(slots);
+    const ringOutline = circle(localRadius), ringHole = circle(inner, true);
+    if (!validateRadialSlots(slots, inner, localRadius, structuralMargin)) throw new DecompositionError('JOINT', 'Ring slots breach structural margins or overlap');
+    const frames = Array.from({ length: options.ribCount }, (_, rib): MatingFrame => ({ axialZ, angleRad: rib * Math.PI * 2 / options.ribCount, radialMin: ringSlotRadius - ringDepth / 2, radialMax: ringSlotRadius + ringDepth / 2, tangentialWidth: width }));
+    if (frames.some((frame) => !contactFits(profile, frame, structuralMargin))) throw new DecompositionError('JOINT', 'Profile cannot contain ring contact frame');
+    const ringId = id('ring', layer, { ringOutline, ringHole, slots, frames }, true); ringIds.push(ringId); ringSlots.push(slots); ringFrames.push(frames);
     parts.push({ id: ringId, kind: 'outer-ring', outline: ringOutline, holes: [ringHole, ...slots], quantity: 1 });
+  }
+  for (let rib = 0; rib < ribIds.length; rib += 1) {
+    const contacts = [hubFrames[rib], ...ringFrames.map((frames) => frames[rib])].map(contactPolygon);
+    const finalRibId = id('rib', rib, { ribOutline, contacts }, true);
+    ribIds[rib] = finalRibId;
+    parts[1 + rib] = { ...parts[1 + rib], id: finalRibId };
   }
   let spacerId: string | undefined;
   if (options.ringLayers > 1) {
@@ -148,13 +159,15 @@ export function generateParts(profileValue: unknown, materialValue: unknown, opt
   const joints = [], assembly: AssemblyEdge[] = []; let order = 0;
   for (let rib = 0; rib < ribIds.length; rib += 1) {
     const direction: Point2 = [Math.cos(rib * Math.PI * 2 / options.ribCount), Math.sin(rib * Math.PI * 2 / options.ribCount)];
-    const hubJoint = `joint-${digest({ slot: hubId, tab: ribIds[rib], feature: 0 })}`;
-    joints.push(...jointPair(hubJoint, hubId, ribIds[rib], width, depth, [hubSlotRadius * direction[0], hubSlotRadius * direction[1]], direction, [tabCenters[0], interpolate(profile, tabCenters[0]) + depth / 2], [0, 1], hubSlots[rib], tabs[0]));
+    const hubFrame = hubFrames[rib], hubContact = contactPolygon(hubFrame);
+    const hubJoint = `joint-${digest({ slot: hubId, tab: ribIds[rib], frame: hubFrame })}`;
+    joints.push(...jointPair(hubJoint, hubId, ribIds[rib], hubFrame, [hubSlotRadius * direction[0], hubSlotRadius * direction[1]], direction, [hubFrame.axialZ, (hubFrame.radialMin + hubFrame.radialMax) / 2], [0, 1], hubSlots[rib], hubContact));
     assembly.push({ kind: 'joint', fromPartId: hubId, toPartId: ribIds[rib], jointId: hubJoint, order: order++ });
     for (let layer = 0; layer < ringIds.length; layer += 1) {
-      const joint = `joint-${digest({ slot: ringIds[layer], tab: ribIds[rib], feature: layer + 1 })}`;
+      const frame = ringFrames[layer][rib], contact = contactPolygon(frame);
+      const joint = `joint-${digest({ slot: ringIds[layer], tab: ribIds[rib], frame })}`;
       const ringPosition = ringSlots[layer][rib].points.reduce((sum, point) => [sum[0] + point[0] / 4, sum[1] + point[1] / 4] as Point2, [0, 0] as Point2);
-      joints.push(...jointPair(joint, ringIds[layer], ribIds[rib], width, depth, ringPosition, direction, [tabCenters[layer + 1], interpolate(profile, tabCenters[layer + 1]) + depth / 2], [0, 1], ringSlots[layer][rib], tabs[layer + 1]));
+      joints.push(...jointPair(joint, ringIds[layer], ribIds[rib], frame, ringPosition, direction, [frame.axialZ, (frame.radialMin + frame.radialMax) / 2], [0, 1], ringSlots[layer][rib], contact));
       assembly.push({ kind: 'joint', fromPartId: ringIds[layer], toPartId: ribIds[rib], jointId: joint, order: order++ });
     }
   }

@@ -49,7 +49,17 @@ export type JointFeature = {
   readonly position: Point2;
   readonly direction: Point2;
   readonly polygon: Polygon2;
+  readonly featureType: 'cut-slot' | 'material-contact';
+  readonly frame: MatingFrame;
   readonly matePartId: string;
+};
+
+export type MatingFrame = {
+  readonly axialZ: number;
+  readonly angleRad: number;
+  readonly radialMin: number;
+  readonly radialMax: number;
+  readonly tangentialWidth: number;
 };
 
 export type JointAssemblyEdge = {

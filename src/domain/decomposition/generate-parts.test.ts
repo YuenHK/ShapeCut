@@ -50,21 +50,32 @@ describe('generateParts', () => {
     }
   });
 
-  test('embeds real paired tabs and radial slot polygons in exported part geometry', () => {
+  test('maps cut slots and in-material rib contacts to one shared mating frame', () => {
     const kit = generateParts(profile, material, { ribCount: 4, ringLayers: 2, shaftMm: 3, fit: 'snug' });
-    for (const joint of kit.joints) {
-      expect(joint.depthMm).toBeGreaterThan(0);
-      expect(Math.hypot(...joint.direction)).toBeCloseTo(1, 12);
-      const part = kit.parts.find(({ id }) => id === joint.partId)!;
-      if (joint.role === 'slot') expect(part.holes).toContainEqual(joint.polygon);
-      else {
-        expect(joint.polygon.points.every((point) => part.outline.points.some((candidate) => candidate[0] === point[0] && candidate[1] === point[1]))).toBe(true);
-        expect(joint.polygon.points.some(([z, radius]) => radius > radiusAt(profile, z))).toBe(true);
-      }
-    }
     const pairs = new Map<string, typeof kit.joints[number][]>();
     for (const joint of kit.joints) pairs.set(joint.id, [...(pairs.get(joint.id) ?? []), joint]);
-    expect([...pairs.values()].every((pair) => pair.length === 2 && pair[0].widthMm === pair[1].widthMm && pair[0].depthMm === pair[1].depthMm)).toBe(true);
+    for (const pair of pairs.values()) {
+      expect(pair).toHaveLength(2);
+      const slot = pair.find((feature) => feature.role === 'slot')!;
+      const contact = pair.find((feature) => feature.role === 'tab')!;
+      expect(slot.featureType).toBe('cut-slot');
+      expect(contact.featureType).toBe('material-contact');
+      expect(slot.frame).toEqual(contact.frame);
+      const radial = slot.polygon.points.map(([x, y]) => x * Math.cos(slot.frame.angleRad) + y * Math.sin(slot.frame.angleRad));
+      const tangential = slot.polygon.points.map(([x, y]) => -x * Math.sin(slot.frame.angleRad) + y * Math.cos(slot.frame.angleRad));
+      expect(Math.min(...radial)).toBeCloseTo(slot.frame.radialMin, 10);
+      expect(Math.max(...radial)).toBeCloseTo(slot.frame.radialMax, 10);
+      expect(Math.max(...tangential) - Math.min(...tangential)).toBeCloseTo(slot.frame.tangentialWidth, 10);
+      const zs = contact.polygon.points.map(([z]) => z), radii = contact.polygon.points.map(([, radius]) => radius);
+      expect((Math.min(...zs) + Math.max(...zs)) / 2).toBeCloseTo(slot.frame.axialZ, 10);
+      expect(Math.max(...zs) - Math.min(...zs)).toBeCloseTo(slot.frame.tangentialWidth, 10);
+      expect(Math.min(...radii)).toBeCloseTo(slot.frame.radialMin, 10);
+      expect(Math.max(...radii)).toBeCloseTo(slot.frame.radialMax, 10);
+      expect(contact.polygon.points.every(([z, radius]) => radius <= radiusAt(profile, z) + 1e-10)).toBe(true);
+      expect(kit.parts.find(({ id }) => id === slot.partId)!.holes).toContainEqual(slot.polygon);
+    }
+    const rib = kit.parts.find((part) => part.kind === 'rib')!;
+    expect(rib.outline.points).toEqual(profile.samples.map(({ z, radius }) => [z, -radius]).concat([...profile.samples].reverse().map(({ z, radius }) => [z, radius])));
   });
 
   test('uses selected fit allowance exactly for concentric shaft clearance', () => {
@@ -206,11 +217,10 @@ describe('generateParts', () => {
     }
     expect(press.parts.find((part) => part.kind === 'spacer')?.id).not.toBe(snug.parts.find((part) => part.kind === 'spacer')?.id);
     const fewer = generateParts(profile, { thicknessMm: 3, fitAllowanceMm: fitMap }, { ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' });
-    for (const kind of ['hub-layer', 'spacer'] as const) {
-      expect(fewer.parts.filter((part) => part.kind === kind).map((part) => part.id)).toEqual(snug.parts.filter((part) => part.kind === kind).map((part) => part.id));
-    }
+    expect(fewer.parts.filter((part) => part.kind === 'spacer').map((part) => part.id)).toEqual(snug.parts.filter((part) => part.kind === 'spacer').map((part) => part.id));
+    expect(fewer.parts.filter((part) => part.kind === 'hub-layer').map((part) => part.id)).not.toEqual(snug.parts.filter((part) => part.kind === 'hub-layer').map((part) => part.id));
     expect(fewer.parts.filter((part) => part.kind === 'rib').map((part) => part.id)).not.toEqual(snug.parts.filter((part) => part.kind === 'rib').map((part) => part.id));
-    expect(fewer.parts.filter((part) => part.kind === 'outer-ring').map((part) => part.id)).toEqual(snug.parts.filter((part) => part.kind === 'outer-ring').slice(0, 2).map((part) => part.id));
+    expect(fewer.parts.filter((part) => part.kind === 'outer-ring').map((part) => part.id)).not.toEqual(snug.parts.filter((part) => part.kind === 'outer-ring').slice(0, 2).map((part) => part.id));
   });
 
   test('accepts zero-radius tips by deriving the hub from the central profile structure', () => {
