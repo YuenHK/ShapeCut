@@ -82,6 +82,15 @@ const sharedBoundaryMaterialReport: MeshProblemReport = {
   duplicateTriangles: [],
 };
 
+const maximumBoundaryMarkerReport: MeshProblemReport = {
+  ...sharedBoundaryMaterialReport,
+  inspection: { ...sharedBoundaryMaterialReport.inspection, boundaryEdgeCount: 2_000 },
+  boundaryEdges: Array.from({ length: 2_000 }, (_, index) => ({
+    regionId: `mesh-boundary-edge-${index}`,
+    points: [[index, 0, 0], [index, 1, 0]],
+  })),
+};
+
 const mesh: TriangleMesh = {
   positions: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
   indices: new Uint32Array([0, 1, 2]),
@@ -199,7 +208,7 @@ describe('SpinnerViewport', () => {
     }
   });
 
-  it('disposes each marker geometry but a shared category material only once', () => {
+  it('disposes one batched geometry and material for a marker category', () => {
     const geometryDispose = vi.spyOn(BufferGeometry.prototype, 'dispose');
     const materialDispose = vi.spyOn(Material.prototype, 'dispose');
     const host = document.createElement('div');
@@ -212,8 +221,34 @@ describe('SpinnerViewport', () => {
       controller.setMeshProblems(sharedBoundaryMaterialReport);
       controller.setMeshProblems(undefined);
 
-      expect(geometryDispose).toHaveBeenCalledTimes(2);
+      expect(geometryDispose).toHaveBeenCalledTimes(1);
       expect(materialDispose).toHaveBeenCalledTimes(1);
+    } finally {
+      controller.dispose();
+      host.remove();
+      geometryDispose.mockRestore();
+      materialDispose.mockRestore();
+    }
+  });
+
+  it('keeps the maximum per-category marker volume in one bounded browser batch', () => {
+    const geometryDispose = vi.spyOn(BufferGeometry.prototype, 'dispose');
+    const materialDispose = vi.spyOn(Material.prototype, 'dispose');
+    const host = document.createElement('div');
+    document.body.append(host);
+    const controller = createSceneController(host);
+    try {
+      geometryDispose.mockClear();
+      materialDispose.mockClear();
+      const started = performance.now();
+
+      controller.setMeshProblems(maximumBoundaryMarkerReport);
+      const elapsedMs = performance.now() - started;
+      controller.setMeshProblems(undefined);
+
+      expect(geometryDispose).toHaveBeenCalledTimes(1);
+      expect(materialDispose).toHaveBeenCalledTimes(1);
+      expect(elapsedMs).toBeLessThan(100);
     } finally {
       controller.dispose();
       host.remove();

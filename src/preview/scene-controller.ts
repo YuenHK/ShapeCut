@@ -66,45 +66,52 @@ function disposeObject(root: Object3D): void {
   root.clear();
 }
 
-function markerGeometry(points: readonly (readonly [number, number, number])[]): BufferGeometry {
+function batchedMarkerGeometry<T extends EdgeMarker | TriangleMarker>(
+  markers: readonly T[],
+  markerPoints: (marker: T) => readonly (readonly [number, number, number])[],
+  regionBounds: Map<string, Box3>,
+): BufferGeometry {
+  const pointsByMarker = markers.map(markerPoints);
+  const positions = new Float32Array(pointsByMarker.reduce((sum, points) => sum + points.length * 3, 0));
+  const point = new Vector3();
+  let offset = 0;
+  for (let markerIndex = 0; markerIndex < markers.length; markerIndex += 1) {
+    const bounds = new Box3();
+    for (const coordinates of pointsByMarker[markerIndex]) {
+      positions.set(coordinates, offset);
+      offset += 3;
+      bounds.expandByPoint(point.set(...coordinates));
+    }
+    regionBounds.set(markers[markerIndex].regionId, bounds);
+  }
   const geometry = new BufferGeometry();
-  geometry.setAttribute('position', new BufferAttribute(new Float32Array(points.flatMap((point) => point)), 3));
+  geometry.setAttribute('position', new BufferAttribute(positions, 3));
   return geometry;
 }
 
-function addEdgeMarkers(group: Group, markers: readonly EdgeMarker[], material: LineBasicMaterial): void {
-  for (const marker of markers) {
-    const object = new LineSegments(markerGeometry(marker.points), material);
-    object.name = marker.regionId;
-    object.userData.regionId = marker.regionId;
-    object.renderOrder = 10;
-    group.add(object);
-  }
+function addEdgeMarkers(group: Group, markers: readonly EdgeMarker[], material: LineBasicMaterial, regionBounds: Map<string, Box3>): void {
+  const object = new LineSegments(batchedMarkerGeometry(markers, (marker) => marker.points, regionBounds), material);
+  object.renderOrder = 10;
+  group.add(object);
 }
 
-function addDegenerateMarkers(group: Group, markers: readonly TriangleMarker[], material: LineBasicMaterial): void {
-  for (const marker of markers) {
+function addDegenerateMarkers(group: Group, markers: readonly TriangleMarker[], material: LineBasicMaterial, regionBounds: Map<string, Box3>): void {
+  const geometry = batchedMarkerGeometry(markers, (marker) => {
     const [a, b, c] = marker.points;
-    const object = new LineSegments(markerGeometry([a, b, b, c, c, a]), material);
-    object.name = marker.regionId;
-    object.userData.regionId = marker.regionId;
-    object.renderOrder = 10;
-    group.add(object);
-  }
+    return [a, b, b, c, c, a];
+  }, regionBounds);
+  const object = new LineSegments(geometry, material);
+  object.renderOrder = 10;
+  group.add(object);
 }
 
-function addDuplicateMarkers(group: Group, markers: readonly TriangleMarker[], material: MeshBasicMaterial): void {
-  for (const marker of markers) {
-    const object = new Mesh(markerGeometry(marker.points), material);
-    object.name = marker.regionId;
-    object.userData.regionId = marker.regionId;
-    object.renderOrder = 10;
-    group.add(object);
-  }
+function addDuplicateMarkers(group: Group, markers: readonly TriangleMarker[], material: MeshBasicMaterial, regionBounds: Map<string, Box3>): void {
+  const object = new Mesh(batchedMarkerGeometry(markers, (marker) => marker.points, regionBounds), material);
+  object.renderOrder = 10;
+  group.add(object);
 }
 
-function frame(camera: PerspectiveCamera, controls: OrbitControls, object: Object3D): void {
-  const box = new Box3().setFromObject(object);
+function frameBounds(camera: PerspectiveCamera, controls: OrbitControls, box: Box3): void {
   if (box.isEmpty()) return;
   const center = box.getCenter(new Vector3());
   const size = box.getSize(new Vector3()).length();
@@ -114,6 +121,10 @@ function frame(camera: PerspectiveCamera, controls: OrbitControls, object: Objec
   camera.far = Math.max(size * 100, 1_000);
   camera.updateProjectionMatrix();
   controls.update();
+}
+
+function frame(camera: PerspectiveCamera, controls: OrbitControls, object: Object3D): void {
+  frameBounds(camera, controls, new Box3().setFromObject(object));
 }
 
 export function createSceneController(host: HTMLElement): SceneController {
@@ -150,6 +161,7 @@ export function createSceneController(host: HTMLElement): SceneController {
   let selectedPartId: string | undefined;
   let explodedAmount = 0;
   let disposed = false;
+  const problemRegionBounds = new Map<string, Box3>();
 
   const applyExploded = (): void => {
     partGroup.children.forEach((object, index) => {
@@ -242,16 +254,17 @@ export function createSceneController(host: HTMLElement): SceneController {
     },
     setMeshProblems(report) {
       disposeObject(problemGroup);
+      problemRegionBounds.clear();
       if (!report) return;
 
       if (report.boundaryEdges.length > 0) {
-        addEdgeMarkers(problemGroup, report.boundaryEdges, new LineBasicMaterial({ color: '#ef4444', depthTest: false }));
+        addEdgeMarkers(problemGroup, report.boundaryEdges, new LineBasicMaterial({ color: '#ef4444', depthTest: false }), problemRegionBounds);
       }
       if (report.nonManifoldEdges.length > 0) {
-        addEdgeMarkers(problemGroup, report.nonManifoldEdges, new LineBasicMaterial({ color: '#d946ef', depthTest: false }));
+        addEdgeMarkers(problemGroup, report.nonManifoldEdges, new LineBasicMaterial({ color: '#d946ef', depthTest: false }), problemRegionBounds);
       }
       if (report.degenerateTriangles.length > 0) {
-        addDegenerateMarkers(problemGroup, report.degenerateTriangles, new LineBasicMaterial({ color: '#f97316', depthTest: false }));
+        addDegenerateMarkers(problemGroup, report.degenerateTriangles, new LineBasicMaterial({ color: '#f97316', depthTest: false }), problemRegionBounds);
       }
       if (report.duplicateTriangles.length > 0) {
         addDuplicateMarkers(problemGroup, report.duplicateTriangles, new MeshBasicMaterial({
@@ -261,10 +274,10 @@ export function createSceneController(host: HTMLElement): SceneController {
           opacity: 0.48,
           side: DoubleSide,
           transparent: true,
-        }));
+        }), problemRegionBounds);
       }
       if (report.inconsistentWindingEdges.length > 0) {
-        addEdgeMarkers(problemGroup, report.inconsistentWindingEdges, new LineBasicMaterial({ color: '#38bdf8', depthTest: false }));
+        addEdgeMarkers(problemGroup, report.inconsistentWindingEdges, new LineBasicMaterial({ color: '#38bdf8', depthTest: false }), problemRegionBounds);
       }
       if (report.selfIntersections.length > 0) {
         addDuplicateMarkers(problemGroup, report.selfIntersections, new MeshBasicMaterial({
@@ -274,11 +287,16 @@ export function createSceneController(host: HTMLElement): SceneController {
           opacity: 0.62,
           side: DoubleSide,
           transparent: true,
-        }));
+        }), problemRegionBounds);
       }
     },
     selectPart,
     focusRegion(id) {
+      const problemBounds = problemRegionBounds.get(id);
+      if (problemBounds) {
+        frameBounds(camera, controls, problemBounds);
+        return;
+      }
       let target = scene.getObjectByName(id);
       if (!target) scene.traverse((object) => {
         if (!target && object.userData.regionId === id) target = object;
