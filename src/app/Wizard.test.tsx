@@ -138,6 +138,7 @@ function artifactResult(issues: readonly { readonly code: string; readonly sever
 
 function successfulServices(): WizardServices {
   return {
+    cancelGeometry: vi.fn(),
     inspectAndRepair: vi.fn().mockResolvedValue(analysis()),
     advancedRepair: vi.fn().mockResolvedValue({
       ...repair({ mode: 'advanced' }),
@@ -438,6 +439,7 @@ describe('Wizard', () => {
 
     expect(screen.getByRole('heading', { name: '軸心與尺寸' })).toBeVisible();
     expect(screen.queryByText('非流形邊：8')).not.toBeInTheDocument();
+    expect(services.cancelGeometry).toHaveBeenCalledTimes(2);
   });
 
   it('does not trigger a download after serialization is superseded by a new file', async () => {

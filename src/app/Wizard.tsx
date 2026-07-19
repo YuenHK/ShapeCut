@@ -32,6 +32,7 @@ type AdvancedRepairResult = MeshRepairResult & {
 type ManufacturingArtifactRequest = Omit<ManufacturingPipelineInput, 'material'>;
 
 export type WizardServices = {
+  cancelGeometry(): void;
   inspectAndRepair(file: File): Promise<RepairImportResult>;
   advancedRepair(original: TriangleMesh, safeMesh: TriangleMesh): Promise<AdvancedRepairResult>;
   serializeRepairedSTL(mesh: TriangleMesh, mode: 'safe' | 'advanced'): Promise<ArrayBuffer>;
@@ -69,6 +70,8 @@ export function Wizard({ services, repository, eagerPreview = false }: { readonl
   const [artifacts, setArtifacts] = useState<ManufacturingArtifacts>();
   const [operationError, setOperationError] = useState<string>();
 
+  useEffect(() => () => services.cancelGeometry(), [services]);
+
   useEffect(() => {
     if (!repository || !sourceSha256) return;
     const autosave = createProjectAutosave(repository, (message) => store.getState().setPersistenceError(message));
@@ -103,6 +106,7 @@ export function Wizard({ services, repository, eagerPreview = false }: { readonl
     }
   };
   const selectFile = (nextFile: File | undefined): void => {
+    services.cancelGeometry();
     selectionVersion.current += 1;
     setFile(nextFile);
     setAnalysis(undefined);

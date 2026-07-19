@@ -113,6 +113,7 @@ describe('geometry worker client', () => {
     const client = makeGeometryClient(inspectOnly(inspect));
 
     const first = client.analyze(new ArrayBuffer(1));
+    await Promise.resolve();
     const second = client.analyze(new ArrayBuffer(2));
 
     await expect(first).rejects.toEqual(expect.objectContaining({ name: 'SupersededError', code: 'SUPERSEDED', jobId: 1 }));
@@ -124,13 +125,48 @@ describe('geometry worker client', () => {
 
   it('cancels the active logical job when the UI leaves the step', async () => {
     const remote = deferred<MeshAnalysis>();
-    const client = makeGeometryClient(inspectOnly(() => remote.promise));
+    const abortExecution = vi.fn();
+    const client = makeGeometryClient(inspectOnly(() => remote.promise), { abortExecution });
+
+    const pending = client.analyze(new ArrayBuffer(8));
+    await Promise.resolve();
+    client.cancelActive();
+
+    await expect(pending).rejects.toBeInstanceOf(SupersededError);
+    expect(abortExecution).toHaveBeenCalledOnce();
+    remote.resolve(analysis('ignored'));
+  });
+
+  it('checks cancellation before a deferred operation begins and never calls the remote API', async () => {
+    const inspect = vi.fn().mockResolvedValue(analysis('should-not-run'));
+    const abortExecution = vi.fn();
+    const client = makeGeometryClient(inspectOnly(inspect), { abortExecution });
 
     const pending = client.analyze(new ArrayBuffer(8));
     client.cancelActive();
 
     await expect(pending).rejects.toBeInstanceOf(SupersededError);
-    remote.resolve(analysis('ignored'));
+    await Promise.resolve();
+    expect(inspect).not.toHaveBeenCalled();
+    expect(abortExecution).toHaveBeenCalledOnce();
+  });
+
+  it('aborts the executing backend before a superseding job is submitted', async () => {
+    const firstRemote = deferred<MeshAnalysis>();
+    const inspect = vi.fn()
+      .mockReturnValueOnce(firstRemote.promise)
+      .mockResolvedValueOnce(analysis('replacement'));
+    const abortExecution = vi.fn();
+    const client = makeGeometryClient(inspectOnly(inspect), { abortExecution });
+
+    const first = client.analyze(new ArrayBuffer(8));
+    await Promise.resolve();
+    const second = client.analyze(new ArrayBuffer(8));
+
+    await expect(first).rejects.toBeInstanceOf(SupersededError);
+    expect(abortExecution).toHaveBeenCalledOnce();
+    await expect(second).resolves.toMatchObject({ sourceHash: 'replacement' });
+    firstRemote.resolve(analysis('ignored'));
   });
 
   it('uses monotonically increasing job IDs after cancellation', async () => {
@@ -141,6 +177,7 @@ describe('geometry worker client', () => {
     const client = makeGeometryClient(inspectOnly(inspect));
 
     const first = client.analyze(new ArrayBuffer(1));
+    await Promise.resolve();
     client.cancelActive();
     await expect(first).rejects.toMatchObject({ jobId: 1 });
 

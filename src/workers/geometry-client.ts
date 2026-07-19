@@ -1,4 +1,4 @@
-import { releaseProxy, transfer, wrap } from 'comlink';
+import { releaseProxy, transfer, wrap, type Remote } from 'comlink';
 import type { AxisCandidate } from '../domain/axis/find-axis';
 import type { SpinnerKit } from '../domain/decomposition/types';
 import type { EngravingMap } from '../domain/engraving/height-field';
@@ -31,6 +31,8 @@ type ActiveJob = {
 export type GeometryClientOptions = {
   readonly transferInput?: (input: ArrayBuffer) => ArrayBuffer;
   readonly transferMesh?: (mesh: SerializedMesh) => SerializedMesh;
+  /** Stops CPU work already executing behind the API boundary. Must be synchronous and idempotent. */
+  readonly abortExecution?: () => void;
   readonly release?: () => void;
 };
 
@@ -58,6 +60,7 @@ export function makeGeometryClient(api: GeometryApi, options: GeometryClientOpti
     if (!current) return;
     active = undefined;
     current.reject(new SupersededError(current.id));
+    options.abortExecution?.();
   };
 
   const run = <T>(operation: () => Promise<T>): Promise<T> => {
@@ -68,7 +71,10 @@ export function makeGeometryClient(api: GeometryApi, options: GeometryClientOpti
       const job: ActiveJob = { id, reject };
       active = job;
       Promise.resolve()
-        .then(operation)
+        .then(() => {
+          if (active !== job || disposed) throw new SupersededError(job.id);
+          return operation();
+        })
         .then(
           (value) => {
             if (active !== job) return;
@@ -121,17 +127,53 @@ function cloneMesh(mesh: SerializedMesh): SerializedMesh {
 }
 
 export function createGeometryClient(worker: Worker): GeometryClient {
-  const api = wrap<GeometryApi>(worker);
+  return createRestartableGeometryClient(worker, createGeometryWorker);
+}
+
+function createRestartableGeometryClient(initialWorker: Worker, workerFactory: () => Worker): GeometryClient {
+  let worker: Worker | undefined = initialWorker;
+  let remote: Remote<GeometryApi> | undefined = wrap<GeometryApi>(initialWorker);
+
+  const releaseCurrentWorker = (): void => {
+    const currentRemote = remote;
+    const currentWorker = worker;
+    remote = undefined;
+    worker = undefined;
+    currentRemote?.[releaseProxy]();
+    currentWorker?.terminate();
+  };
+  const api = dynamicApi(() => {
+    if (!worker || !remote) {
+      worker = workerFactory();
+      remote = wrap<GeometryApi>(worker);
+    }
+    return remote;
+  });
   return makeGeometryClient(api, {
     transferInput: (input) => transfer(input, [input]),
     transferMesh: (mesh) => transfer(mesh, [mesh.positions.buffer, mesh.indices.buffer]),
-    release: () => {
-      api[releaseProxy]();
-      worker.terminate();
-    },
+    abortExecution: releaseCurrentWorker,
+    release: releaseCurrentWorker,
   });
 }
 
 export function createGeometryWorkerClient(): GeometryClient {
-  return createGeometryClient(new Worker(new URL('./geometry.worker.ts', import.meta.url), { type: 'module' }));
+  return createRestartableGeometryClient(createGeometryWorker(), createGeometryWorker);
+}
+
+function createGeometryWorker(): Worker {
+  return new Worker(new URL('./geometry.worker.ts', import.meta.url), { type: 'module' });
+}
+
+function dynamicApi(getRemote: () => Remote<GeometryApi>): GeometryApi {
+  return {
+    inspect: (input) => getRemote().inspect(input),
+    inspectAndFindAxes: (input) => getRemote().inspectAndFindAxes(input),
+    analyzeAndRepairForImport: (input) => getRemote().analyzeAndRepairForImport(input),
+    repairAdvanced: (original, safeMesh) => getRemote().repairAdvanced(original, safeMesh),
+    serializeSTL: (mesh, mode) => getRemote().serializeSTL(mesh, mode),
+    findAxes: (mesh) => getRemote().findAxes(mesh),
+    decompose: (request) => getRemote().decompose(request),
+    engrave: (request) => getRemote().engrave(request),
+  };
 }

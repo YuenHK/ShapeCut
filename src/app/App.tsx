@@ -7,7 +7,7 @@ import { createGeometryWorkerClient, type GeometryClient } from '../workers/geom
 import { Wizard, type WizardServices } from './Wizard';
 
 type AppGeometryClient = Pick<GeometryClient,
-  'analyzeAndRepairForImport' | 'repairAdvanced' | 'serializeSTL' | 'findAxes' | 'decompose' | 'engrave'
+  'analyzeAndRepairForImport' | 'repairAdvanced' | 'serializeSTL' | 'findAxes' | 'decompose' | 'engrave' | 'cancelActive'
 >;
 type PackageBuilder = (typeof import('../export/package'))['buildPackage'];
 
@@ -29,6 +29,7 @@ export function createAppServices({
 }: AppServiceDependencies): WizardServices {
   let latestImportRequest = 0;
   return {
+    cancelGeometry: () => getGeometry().cancelActive(),
     inspectAndRepair: async (file) => {
       const request = ++latestImportRequest;
       const geometry = getGeometry();

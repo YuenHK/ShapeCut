@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { writeBinarySTL } from '../domain/mesh/write-stl';
 import type { TriangleMesh } from '../domain/mesh/types';
 import {
@@ -113,6 +113,24 @@ describe('geometry worker boundary', () => {
     expect(result.safeRepair.after[countKey]).toBeGreaterThan(0);
     expect(result.safeRepair.accepted).toBe(false);
     expect(result.candidates).toEqual([]);
+  });
+
+  it('terminates the executing worker on supersede and completes the replacement on a fresh worker', async () => {
+    const terminate = vi.spyOn(Worker.prototype, 'terminate');
+    const postMessage = vi.spyOn(Worker.prototype, 'postMessage');
+    const client = createGeometryWorkerClient();
+    clients.push(client);
+    const first = client.analyzeAndRepairForImport(writeBinarySTL(disconnectedTriangles(20_000), 'safe'))
+      .catch((error: unknown) => error);
+    await vi.waitFor(() => expect(postMessage.mock.calls.map(([message]) => message)).toContainEqual(
+      expect.objectContaining({ type: 'APPLY' }),
+    ));
+
+    const replacement = client.analyzeAndRepairForImport(writeBinarySTL(tetrahedron(), 'safe'));
+
+    await expect(first).resolves.toBeInstanceOf(Error);
+    await expect(replacement).resolves.toMatchObject({ safeRepair: { accepted: true } });
+    expect(terminate).toHaveBeenCalled();
   });
 });
 
