@@ -51,6 +51,9 @@ test('diagnoses and offers repair for Knight Fortress without calling it unreada
   expect(repairedReport.inspection.nonManifoldEdgeCount).toBe(49);
   expect(repairedReport.inspection.degenerateTriangleCount).toBe(0);
   expect(repairedReport.duplicateTriangleCount).toBe(0);
+  await expect(page.getByRole('button', { name: '使用進階修復' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '軸心與尺寸' })).toBeDisabled();
+  await expect(page.getByRole('heading', { name: '軸心與尺寸' })).toHaveCount(0);
 
   await page.getByRole('button', { name: '復原原始模型' }).click();
   await expect(page.getByText('目前預覽：原始模型')).toBeVisible();

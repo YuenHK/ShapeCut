@@ -53,8 +53,19 @@ test('records the bounded 500k-triangle import result', async ({ page }, testInf
   await page.getByLabel('STL 模型檔案').setInputFiles({ name: '500k.stl', mimeType: 'model/stl', buffer: input });
   const started = Date.now();
   await page.getByRole('button', { name: '分析模型' }).click();
-  await expect(page.getByRole('alert')).toBeVisible({ timeout: 15_000 });
+  const alert = page.getByRole('alert');
+  await expect(alert).toHaveText(
+    '操作失敗：STL unique vertex count exceeds limit of 300000; simplify or split the mesh',
+    { timeout: 15_000 },
+  );
+  await expect(page.getByRole('heading', { name: '軸心', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '軸心與尺寸' })).toBeDisabled();
   const elapsedMs = Date.now() - started;
-  await testInfo.attach('500k-performance.json', { body: JSON.stringify({ elapsedMs, outcome: 'bounded blocking issue' }), contentType: 'application/json' });
+  const outcome = (await alert.textContent())?.trim();
+  expect(outcome).toBeTruthy();
+  await testInfo.attach('500k-performance.json', {
+    body: JSON.stringify({ elapsedMs, outcome, classification: 'resource-limit operation failure' }),
+    contentType: 'application/json',
+  });
   expect(elapsedMs).toBeLessThan(15_000);
 });

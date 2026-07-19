@@ -12,10 +12,12 @@
 | 10 個代表性 STL | 8 個自動成功；2 個按預期要求人工軸心／blocking；10/10 通過 |
 | TypeScript | 通過 |
 | Vite production build | 通過（324 modules transformed） |
-| 100k triangles | 2,776 ms 到可互動軸心頁；最長 main-thread task 81 ms |
-| 500k triangles | 3,411 ms 受控返回 blocking 結果 |
+| 100k triangles | 2,380 ms 到可互動軸心頁；最長 main-thread task 74 ms |
+| 500k triangles | 1,351 ms 受控返回 resource-limit `操作失敗`：unique vertices 超過 300,000 上限 |
 
 E2E 已實際驗證：封閉 STL 完成五步並下載可解開 ZIP；開放 STL 停在匯入步驟；未校準 cork 阻止匯出；ZIP 含 SVG、DXF、PDF、JSON；PWA manifest 存在。完整 fresh matrix 指令為 `npm test -- --run`、`npm run test:browser`、`npm run test:e2e`、`npm run validate:fixtures`、`npm run typecheck`、`npm run build` 及 `npm run test:performance`。
+
+效能數字來自 2026-07-19 的本機 Chromium single-worker fresh run，只量使用者按「分析模型」至互動軸心或明確 resource-limit 結果；測試端 fixture 建立及 `setInputFiles` 傳輸在計時範圍外。數字會隨機器及當時系統負載波動，驗收門檻仍為 100k 少於 3,000 ms、最長 main-thread task 少於 100 ms，以及 500k 在 15,000 ms 內受控返回具體結果。
 
 ## Knight Fortress 真實 STL regression
 
