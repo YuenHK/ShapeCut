@@ -77,9 +77,10 @@ export function createProjectStore() {
     setAxis: (axis) =>
       set({
         axis: {
-          ...axis,
           origin: [...axis.origin],
           direction: [...axis.direction],
+          confidence: axis.confidence,
+          confirmed: axis.confirmed,
         },
       }),
     updateSettings: (changes) => set((state) => ({ settings: { ...state.settings, ...changes } })),

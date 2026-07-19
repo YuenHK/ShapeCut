@@ -6,6 +6,7 @@ import type {
   DecompositionRequest,
   EngravingRequest,
   GeometryApi,
+  ImportAnalysis,
   MeshAnalysis,
   SerializedMesh,
 } from './geometry-api';
@@ -26,12 +27,14 @@ type ActiveJob = {
 
 export type GeometryClientOptions = {
   readonly transferInput?: (input: ArrayBuffer) => ArrayBuffer;
+  readonly transferMesh?: (mesh: SerializedMesh) => SerializedMesh;
   readonly release?: () => void;
 };
 
 export type GeometryClient = {
   readonly latestJobId: number;
   analyze(input: ArrayBuffer): Promise<MeshAnalysis>;
+  analyzeForImport(input: ArrayBuffer): Promise<ImportAnalysis>;
   findAxes(mesh: SerializedMesh): Promise<AxisCandidate[]>;
   decompose(request: DecompositionRequest): Promise<SpinnerKit>;
   engrave(request: EngravingRequest): Promise<EngravingMap>;
@@ -78,7 +81,8 @@ export function makeGeometryClient(api: GeometryApi, options: GeometryClientOpti
   return {
     get latestJobId() { return latestJobId; },
     analyze: (input) => run(() => api.inspect(options.transferInput?.(input) ?? input)),
-    findAxes: (mesh) => run(() => api.findAxes(mesh)),
+    analyzeForImport: (input) => run(() => api.inspectAndFindAxes(options.transferInput?.(input) ?? input)),
+    findAxes: (mesh) => run(() => api.findAxes(options.transferMesh?.(mesh) ?? mesh)),
     decompose: (request) => run(() => api.decompose(request)),
     engrave: (request) => run(() => api.engrave(request)),
     cancelActive,
@@ -95,6 +99,7 @@ export function createGeometryClient(worker: Worker): GeometryClient {
   const api = wrap<GeometryApi>(worker);
   return makeGeometryClient(api, {
     transferInput: (input) => transfer(input, [input]),
+    transferMesh: (mesh) => transfer(mesh, [mesh.positions.buffer, mesh.indices.buffer]),
     release: () => {
       api[releaseProxy]();
       worker.terminate();

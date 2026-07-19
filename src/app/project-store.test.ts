@@ -123,6 +123,12 @@ describe('project workflow store', () => {
     });
   });
 
+  it('stores only the persisted Axis contract when confirming an axis candidate', () => {
+    const store = createProjectStore();
+    store.getState().setAxis({ ...confirmedAxis, radialRmsError: 0.1, centroidOffset: 0, source: 'inertia' } as Axis & Record<string, unknown>);
+    expect(store.getState().axis).toEqual(confirmedAxis);
+  });
+
   it('starts at import and blocks decomposition until the axis is confirmed', () => {
     const store = createProjectStore();
 

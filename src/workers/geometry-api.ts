@@ -9,8 +9,10 @@ export type SerializedMesh = TriangleMesh;
 export type MeshAnalysis = {
   readonly sourceHash: string;
   readonly mesh: SerializedMesh;
+  readonly previewMesh: SerializedMesh;
   readonly inspection: MeshInspection;
 };
+export type ImportAnalysis = Omit<MeshAnalysis, 'mesh'> & { readonly candidates: readonly AxisCandidate[] };
 
 export type DecompositionRequest = {
   readonly profile: LathedProfile;
@@ -27,6 +29,7 @@ export type EngravingRequest = {
 /** Structured-clone-safe boundary for all CPU-heavy geometry operations. */
 export type GeometryApi = {
   inspect(input: ArrayBuffer): Promise<MeshAnalysis>;
+  inspectAndFindAxes(input: ArrayBuffer): Promise<ImportAnalysis>;
   findAxes(mesh: SerializedMesh): Promise<AxisCandidate[]>;
   decompose(request: DecompositionRequest): Promise<SpinnerKit>;
   engrave(request: EngravingRequest): Promise<EngravingMap>;

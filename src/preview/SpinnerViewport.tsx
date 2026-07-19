@@ -36,10 +36,6 @@ export function SpinnerViewport({
     if (!hostRef.current) return;
     const controller = createController(hostRef.current);
     controllerRef.current = controller;
-    controller.setMesh(mesh);
-    controller.setParts(parts);
-    controller.setEngraving(engraving);
-    controller.setExploded(exploded);
     return () => {
       controller.dispose();
       if (controllerRef.current === controller) controllerRef.current = undefined;

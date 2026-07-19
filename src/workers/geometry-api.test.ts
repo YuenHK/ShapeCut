@@ -16,6 +16,7 @@ function analysis(sourceHash: string): MeshAnalysis {
   return {
     sourceHash,
     mesh: { positions: new Float64Array(), indices: new Uint32Array() },
+    previewMesh: { positions: new Float64Array(), indices: new Uint32Array() },
     inspection: {
       triangleCount: 0,
       boundaryEdgeCount: 0,
@@ -29,6 +30,7 @@ function analysis(sourceHash: string): MeshAnalysis {
 function inspectOnly(inspect: GeometryApi['inspect']): GeometryApi {
   return {
     inspect,
+    inspectAndFindAxes: vi.fn(),
     findAxes: vi.fn(),
     decompose: vi.fn(),
     engrave: vi.fn(),

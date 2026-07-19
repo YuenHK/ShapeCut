@@ -9,6 +9,7 @@ import {
   ExtrudeGeometry,
   Group,
   Mesh,
+  MeshBasicMaterial,
   MeshStandardMaterial,
   Object3D,
   PerspectiveCamera,
@@ -84,6 +85,15 @@ export function createSceneController(host: HTMLElement): SceneController {
   const partGroup = new Group();
   const engravingGroup = new Group();
   scene.add(modelGroup, partGroup, engravingGroup);
+  const warmGeometry = new BufferGeometry();
+  warmGeometry.setAttribute('position', new BufferAttribute(new Float32Array([0, 0, 0, 0.001, 0, 0, 0, 0.001, 0]), 3));
+  const warmMaterial = new MeshBasicMaterial({ color: '#94a3b8', side: DoubleSide });
+  const warmMesh = new Mesh(warmGeometry, warmMaterial);
+  scene.add(warmMesh);
+  renderer.compile(scene, camera);
+  scene.remove(warmMesh);
+  warmGeometry.dispose();
+  warmMaterial.dispose();
   const raycaster = new Raycaster();
   const pointer = new Vector2();
   let selectedPartId: string | undefined;
@@ -137,8 +147,7 @@ export function createSceneController(host: HTMLElement): SceneController {
       const geometry = new BufferGeometry();
       geometry.setAttribute('position', new BufferAttribute(new Float32Array(mesh.positions), 3));
       geometry.setIndex(new BufferAttribute(new Uint32Array(mesh.indices), 1));
-      geometry.computeVertexNormals();
-      modelGroup.add(new Mesh(geometry, new MeshStandardMaterial({ color: '#94a3b8', metalness: 0.05, roughness: 0.75, side: DoubleSide })));
+      modelGroup.add(new Mesh(geometry, new MeshBasicMaterial({ color: '#94a3b8', side: DoubleSide })));
       frame(camera, controls, modelGroup);
     },
     setParts(kit) {
