@@ -25,6 +25,37 @@ export function App() {
         const candidates = analysis.candidates.length > 0 ? analysis.candidates : [suggestedAxis];
         return { candidates, mesh: analysis.previewMesh, sourceSha256, issues: [] };
       },
+      inspectAndRepair: async (file) => {
+        const geometry = geometryRef.current ??= createGeometryWorkerClient();
+        const input = await file.arrayBuffer();
+        sourceSha256 = await sha256Hex(input);
+        const analysis = await geometry.analyzeAndRepairForImport(input);
+        const candidates = analysis.safeRepair.accepted && analysis.candidates.length === 0
+          ? [suggestedAxis]
+          : analysis.candidates;
+        return { ...analysis, candidates, sourceSha256 };
+      },
+      advancedRepair: async (original, safeMesh) => {
+        const geometry = geometryRef.current ??= createGeometryWorkerClient();
+        const repair = await geometry.repairAdvanced(original, safeMesh);
+        if (!repair.accepted) return repair;
+        const candidates = await geometry.findAxes({
+          positions: repair.mesh.positions.slice(),
+          indices: repair.mesh.indices.slice(),
+        });
+        return { ...repair, candidates: candidates.length > 0 ? candidates : [suggestedAxis] };
+      },
+      downloadRepairedSTL: async (mesh, mode, originalFileName) => {
+        const geometry = geometryRef.current ??= createGeometryWorkerClient();
+        const bytes = await geometry.serializeSTL(mesh, mode);
+        const url = URL.createObjectURL(new Blob([bytes], { type: 'model/stl' }));
+        const link = document.createElement('a');
+        const baseName = originalFileName.replace(/^.*[\\/]/u, '').replace(/\.stl$/iu, '') || 'model';
+        link.href = url;
+        link.download = `${baseName}-repaired.stl`;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 0);
+      },
       decompose: async () => ({ issues: [] }),
       engrave: async (settings) => settings.materialId === 'cork-3' || settings.materialId === 'cardboard-2' ? ({ issues: [{ id: 'uncalibrated-material', regionId: 'material-profile', severity: 'confirm', label: '材料未校準', description: '必須先完成實體測試片校準。' }] }) : ({ issues: [] }),
       preflight: async (settings) => settings.materialId === 'cork-3' || settings.materialId === 'cardboard-2' ? ({ issues: [{ id: 'uncalibrated-material', regionId: 'material-profile', severity: 'confirm', label: '材料未校準', description: '必須先完成實體測試片校準。' }] }) : ({ issues: [] }),
