@@ -59,10 +59,13 @@ function rectangle(x: number, y: number, width: number, height: number): Polygon
 
 function fitAllowances(profile: MaterialProfileV1): number[] {
   const values: number[] = [];
+  const physicalWidths: number[] = [];
   const add = (candidate: number): void => {
     const slotWidthMm = profile.thicknessMm + candidate;
     if (!Number.isFinite(candidate) || !Number.isFinite(slotWidthMm) || slotWidthMm <= 0) return;
-    if (!values.includes(candidate)) values.push(candidate);
+    if (values.includes(candidate) || physicalWidths.includes(slotWidthMm)) return;
+    values.push(candidate);
+    physicalWidths.push(slotWidthMm);
   };
   add(profile.fitAllowanceMm.loose);
   add(profile.fitAllowanceMm.slip);

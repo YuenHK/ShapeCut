@@ -37,6 +37,7 @@ const completeProfile: MaterialProfileV1 = {
   safetyEvidence: {
     kind: 'allowlisted',
     category: 'laser-rated-cast-acrylic',
+    compositionKnown: true,
     manufacturer: 'Example Acrylic Co.',
     productId: 'Cast B42 Laser Rated',
     laserSafetyReference: 'https://manufacturer.invalid/cast-b42',

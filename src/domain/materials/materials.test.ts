@@ -51,6 +51,7 @@ const validProfile: MaterialProfileV1 = {
   safetyEvidence: {
     kind: 'allowlisted',
     category: 'laser-approved-plywood',
+    compositionKnown: true,
     manufacturer: 'Example Timber Co.',
     productId: 'Birch Laser Ply B24',
     laserSafetyReference: 'https://manufacturer.invalid/birch-b24-laser-safety',
@@ -161,6 +162,7 @@ describe('MaterialProfileSchema', () => {
       safetyEvidence: {
         kind: 'allowlisted',
         category: 'cork',
+        compositionKnown: true,
         manufacturer: 'Example Cork Co.',
         productId: 'Cork sheet C24',
         laserSafetyReference: 'https://manufacturer.invalid/cork-c24',
@@ -218,6 +220,117 @@ describe('MaterialProfileSchema', () => {
 
   it.each(['', '   ', '\n\t'])('rejects blank exact-batch evidence %j', (batchNotes) => {
     expectZodError(cloneProfile({ batchNotes }));
+  });
+
+  it.each([
+    'UNKNOWN BATCH',
+    'batch: unidentified',
+    'Un_identified---BATCH',
+    'batch unknown',
+    'The batch is still unknown',
+  ])('rejects explicitly unknown exact-batch evidence %j', (batchNotes) => {
+    expectZodError(cloneProfile({ batchNotes }));
+  });
+
+  it.each([
+    'CHLORO-POLYMER',
+    'FLUOROPOLYMER',
+    'BROMO-POLYMER',
+    'IODO_POLYMER',
+    'HALIDE-CONTAINING POLYMER',
+    'HALOGENATED-POLYMER',
+    'ASTATINE-COMPOUND',
+  ])('rejects adjacent halogen alias %s for a known-composition custom material', (materialCode) => {
+    const profile = cloneProfile({
+      materialCode,
+      materialName: 'Known-composition polymer sheet',
+      calibratedAt: '2026-07-19T00:00:00.000Z',
+      physicalCouponVerified: true,
+      safetyEvidence: {
+        kind: 'custom',
+        manufacturer: 'Known Polymer Co.',
+        productId: 'POLYMER-B42',
+        laserSafetyReference: 'https://manufacturer.invalid/polymer-b42',
+        compositionKnown: true,
+      },
+    });
+
+    expect(() => MaterialProfileSchema.parse(profile)).toThrowError(/not laser safe/i);
+    expect(classifyMaterialReadiness(profile)).toEqual(expect.objectContaining({ status: 'block' }));
+  });
+
+  it('accepts structured known-composition evidence for an allowlisted material', () => {
+    const profile = {
+      ...cloneProfile(),
+      safetyEvidence: { ...validProfile.safetyEvidence, compositionKnown: true },
+    };
+
+    expect(MaterialProfileSchema.parse(profile)).toEqual(profile);
+  });
+
+  it('accepts conservative complete category terms but rejects substring laundering', () => {
+    const paperclip = cloneProfile({
+      materialCode: 'PAPERCLIP-STAINLESS-STEEL',
+      materialName: 'Stainless steel paperclip',
+      calibratedAt: '2026-07-19T00:00:00.000Z',
+      physicalCouponVerified: true,
+      safetyEvidence: {
+        kind: 'allowlisted',
+        category: 'paper',
+        compositionKnown: true,
+        manufacturer: 'Example Stationery Co.',
+        productId: 'PAPERCLIP-SS-1',
+        laserSafetyReference: 'https://manufacturer.invalid/paperclip-ss-1',
+      },
+    });
+    const birchPly = cloneProfile({
+      materialCode: 'BIRCH-PLY-B24',
+      materialName: 'Birch ply',
+      safetyEvidence: {
+        kind: 'allowlisted',
+        category: 'laser-approved-plywood',
+        compositionKnown: true,
+        manufacturer: 'Example Timber Co.',
+        productId: 'BIRCH-PLY-B24',
+        laserSafetyReference: 'https://manufacturer.invalid/birch-ply-b24',
+      },
+    });
+    const castPmma = cloneProfile({
+      materialCode: 'CAST-PMMA-B42',
+      materialName: 'Laser-rated cast PMMA sheet',
+      safetyEvidence: {
+        kind: 'allowlisted',
+        category: 'laser-rated-cast-acrylic',
+        compositionKnown: true,
+        manufacturer: 'Example Acrylic Co.',
+        productId: 'CAST-PMMA-B42',
+        laserSafetyReference: 'https://manufacturer.invalid/cast-pmma-b42',
+      },
+    });
+
+    expect(MaterialProfileSchema.safeParse(paperclip).success).toBe(false);
+    expect(MaterialProfileSchema.parse(birchPly)).toEqual(birchPly);
+    expect(MaterialProfileSchema.parse(castPmma)).toEqual(castPmma);
+  });
+
+  it('rejects a separated paper-clip phrase instead of treating one word as material proof', () => {
+    const paperClip = cloneProfile({
+      materialCode: 'PAPER-CLIP-STAINLESS-STEEL',
+      materialName: 'Stainless steel paper clip',
+      calibratedAt: '2026-07-19T00:00:00.000Z',
+      physicalCouponVerified: true,
+      safetyEvidence: {
+        kind: 'allowlisted',
+        category: 'paper',
+        compositionKnown: true,
+        manufacturer: 'Example Stationery Co.',
+        productId: 'PAPER-CLIP-SS-2',
+        laserSafetyReference: 'https://manufacturer.invalid/paper-clip-ss-2',
+      },
+    });
+
+    expect(MaterialProfileSchema.safeParse(paperClip).success).toBe(false);
+    expect(classifyMaterialReadiness(paperClip).status).toBe('block');
   });
 });
 
@@ -284,6 +397,7 @@ describe('classifyMaterialReadiness', () => {
       safetyEvidence: {
         kind: 'allowlisted',
         category: 'cork',
+        compositionKnown: true,
         manufacturer: 'Example Polymer Co.',
         productId: 'POLYMER-X42',
         laserSafetyReference: 'https://manufacturer.invalid/polymer-x42',
@@ -303,11 +417,58 @@ describe('classifyMaterialReadiness', () => {
       safetyEvidence: {
         kind: 'allowlisted',
         category: 'laser-rated-cast-acrylic',
+        compositionKnown: true,
         manufacturer: 'Mystery Polymer Co.',
         productId: 'UNKNOWN-CAST-ACRYLIC',
         laserSafetyReference: 'https://manufacturer.invalid/unknown-cast-acrylic',
       },
     }));
+
+    expect(result.status).toBe('block');
+    expect(result.reasons).toContainEqual(expect.objectContaining({ code: 'unknown-composition' }));
+  });
+
+  it('blocks the reviewer exact reversed unknown-composition allowlist witness', () => {
+    const profile = {
+      ...cloneProfile({
+        materialCode: 'CAST-ACRYLIC-COMPOSITION-UNKNOWN',
+        materialName: 'Laser-rated cast acrylic composition unknown',
+        calibratedAt: '2026-07-19T00:00:00.000Z',
+        physicalCouponVerified: true,
+      }),
+      safetyEvidence: {
+        kind: 'allowlisted' as const,
+        category: 'laser-rated-cast-acrylic' as const,
+        manufacturer: 'Unknown Acrylic Vendor',
+        productId: 'CAST-ACRYLIC-COMPOSITION-UNKNOWN',
+        laserSafetyReference: 'https://manufacturer.invalid/cast-acrylic-composition-unknown',
+        compositionKnown: true,
+      },
+    };
+
+    const result = classifyMaterialReadiness(profile);
+
+    expect(result.status).toBe('block');
+    expect(result.reasons).toContainEqual(expect.objectContaining({ code: 'unknown-composition' }));
+  });
+
+  it('blocks unknown composition even when filler words separate the identity terms', () => {
+    const result = classifyMaterialReadiness({
+      ...cloneProfile({
+        materialCode: 'CAST-ACRYLIC-B42',
+        materialName: 'Laser-rated cast acrylic; composition is still unknown',
+        calibratedAt: '2026-07-19T00:00:00.000Z',
+        physicalCouponVerified: true,
+      }),
+      safetyEvidence: {
+        kind: 'allowlisted' as const,
+        category: 'laser-rated-cast-acrylic' as const,
+        compositionKnown: true,
+        manufacturer: 'Example Acrylic Vendor',
+        productId: 'CAST-ACRYLIC-B42',
+        laserSafetyReference: 'https://manufacturer.invalid/cast-acrylic-b42',
+      },
+    });
 
     expect(result.status).toBe('block');
     expect(result.reasons).toContainEqual(expect.objectContaining({ code: 'unknown-composition' }));
@@ -384,6 +545,26 @@ describe('createCalibrationCoupon', () => {
       && slotWidthMm > 0
       && slotWidthMm === profile.thicknessMm + allowanceMm
     ))).toBe(true);
+  });
+
+  it('emits five distinct physical slot widths when input allowances collapse at one ULP', () => {
+    const profile = cloneProfile({
+      thicknessMm: 1,
+      minRemainingMm: 0.5,
+      fitAllowanceMm: {
+        loose: 0,
+        slip: Number.MIN_VALUE,
+        snug: 1e-323,
+        press: 1.5e-323,
+      },
+    });
+
+    const coupon = createCalibrationCoupon(profile, 3);
+    const slotWidths = coupon.fitSamples.map(({ slotWidthMm }) => slotWidthMm);
+
+    expect(coupon.fitSamples).toHaveLength(5);
+    expect(new Set(slotWidths).size).toBe(5);
+    expect(slotWidths.every((width) => Number.isFinite(width) && width > 0)).toBe(true);
   });
 
   it('terminates quickly with a typed error when finite inputs cannot produce finite coupon geometry', async () => {

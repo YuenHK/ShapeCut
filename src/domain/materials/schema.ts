@@ -5,9 +5,13 @@ export const PROCESS_NAMES = ['cut', 'score', 'engrave1', 'engrave2', 'engrave3'
 
 const requiredText = z.string().trim().min(1).max(500);
 const notesText = z.string().max(4_000);
-const batchNotesText = notesText.refine((value) => value.trim().length > 0, {
-  message: 'Batch notes must identify the exact material batch.',
-});
+const batchNotesText = notesText
+  .refine((value) => value.trim().length > 0, {
+    message: 'Batch notes must identify the exact material batch.',
+  })
+  .refine((value) => !hasUnknownBatchIdentity(value), {
+    message: 'Batch notes cannot identify the material batch as unknown or unidentified.',
+  });
 const finiteMillimetres = z.number().finite();
 
 export const ProcessRecipeSchema = z.object({
@@ -44,18 +48,28 @@ export const AllowlistedMaterialCategorySchema = z.enum([
 ]);
 
 const allowlistedCategoryIdentityTokens = {
-  'laser-approved-plywood': ['plywood', 'laserply', 'woodply'],
-  'laser-approved-wood': ['wood', 'timber', 'balsa'],
+  'laser-approved-plywood': ['plywood', 'ply', 'laserply', 'woodply', 'birchply'],
+  'laser-approved-wood': ['wood', 'timber', 'balsa', 'basswood'],
   paper: ['paper'],
   cardboard: ['cardboard', 'cardstock', 'corrugatedcard'],
   cork: ['cork'],
-  'laser-rated-cast-acrylic': ['castacrylic', 'acryliccast', 'laserratedacrylic'],
+  'laser-rated-cast-acrylic': ['acrylic', 'pmma', 'castacrylic', 'acryliccast', 'laserratedacrylic'],
+} as const satisfies Record<z.infer<typeof AllowlistedMaterialCategorySchema>, readonly string[]>;
+
+const allowlistedCategoryContradictionTokens = {
+  'laser-approved-plywood': ['metal', 'steel', 'stainless', 'plastic', 'polymer', 'acrylic', 'paper', 'cardboard', 'cork'],
+  'laser-approved-wood': ['metal', 'steel', 'stainless', 'plastic', 'polymer', 'acrylic', 'paper', 'cardboard', 'cork'],
+  paper: ['clip', 'paperclip', 'metal', 'steel', 'stainless', 'plastic', 'polymer', 'acrylic', 'wood', 'plywood', 'cork'],
+  cardboard: ['metal', 'steel', 'stainless', 'plastic', 'polymer', 'acrylic', 'wood', 'plywood', 'cork'],
+  cork: ['metal', 'steel', 'stainless', 'plastic', 'polymer', 'acrylic', 'paper', 'cardboard', 'wood', 'plywood'],
+  'laser-rated-cast-acrylic': ['metal', 'steel', 'stainless', 'plastic', 'polymer', 'wood', 'plywood', 'paper', 'cardboard', 'cork'],
 } as const satisfies Record<z.infer<typeof AllowlistedMaterialCategorySchema>, readonly string[]>;
 
 const EvidenceFields = {
   manufacturer: requiredText,
   productId: requiredText,
   laserSafetyReference: requiredText,
+  compositionKnown: z.boolean(),
 } as const;
 
 export const MaterialSafetyEvidenceSchema = z.discriminatedUnion('kind', [
@@ -67,7 +81,6 @@ export const MaterialSafetyEvidenceSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('custom'),
     ...EvidenceFields,
-    compositionKnown: z.boolean(),
   }).strict(),
 ]);
 
@@ -86,18 +99,25 @@ const normalizedForbiddenTokens = [
   'chromiumvileather',
   'chromium6leather',
   'halogen',
+  'halogenated',
+  'halide',
+  'chloro',
   'chlorine',
   'chloride',
   'chlorinated',
   'fluorine',
+  'fluoro',
   'fluoride',
   'bromine',
+  'bromo',
   'bromide',
   'brominated',
   'fluorinated',
   'iodine',
+  'iodo',
   'iodide',
   'iodinated',
+  'astatine',
   'epoxy',
   'epoxyresin',
   'phenolic',
@@ -117,6 +137,24 @@ function normalizedMaterialIdentities(code: string, name: string, productId: str
   return [code, name, productId].map(normalizeMaterialIdentity);
 }
 
+function identityTerms(value: string): string[] {
+  const words = value
+    .normalize('NFKD')
+    .toLocaleLowerCase('en-US')
+    .split(/[^\p{Letter}\p{Number}]+/u)
+    .filter((word) => word.length > 0);
+  return [...new Set([...words, words.join('')])];
+}
+
+function hasUnknownBatchIdentity(value: string): boolean {
+  const compact = normalizeMaterialIdentity(value);
+  const terms = new Set(identityTerms(value));
+  const hasUnknownMarker = ['unknown', 'unidentified', 'mystery'].some((term) => terms.has(term));
+  return (terms.has('batch') && hasUnknownMarker)
+    || ['unknownbatch', 'batchunknown', 'unidentifiedbatch', 'batchunidentified']
+      .some((token) => compact.includes(token));
+}
+
 export function isForbiddenMaterialIdentity(code: string, name = '', productId = ''): boolean {
   const identities = normalizedMaterialIdentities(code, name, productId);
   return identities.some((identity) => normalizedForbiddenTokens.some((token) => identity.includes(token)));
@@ -128,9 +166,21 @@ function isUnknownPlasticIdentity(code: string, name: string, productId: string)
 }
 
 function hasUnknownCompositionIdentity(code: string, name: string, productId: string): boolean {
-  const tokens = ['unknowncomposition', 'unknownmaterial', 'unknownpolymer', 'unidentifiedmaterial', 'mysterymaterial', 'mysterypolymer'];
-  return normalizedMaterialIdentities(code, name, productId)
-    .some((identity) => tokens.some((token) => identity.includes(token)));
+  const tokens = [
+    'unknowncomposition', 'compositionunknown',
+    'unknownmaterial', 'materialunknown',
+    'unknownpolymer', 'polymerunknown',
+    'unidentifiedmaterial', 'materialunidentified',
+    'mysterymaterial', 'mysterypolymer',
+  ];
+  return [code, name, productId].some((value) => {
+    const compact = normalizeMaterialIdentity(value);
+    const terms = new Set(identityTerms(value));
+    const hasUnknownMarker = ['unknown', 'unidentified', 'mystery'].some((term) => terms.has(term));
+    const namesComposition = ['composition', 'material', 'polymer'].some((term) => terms.has(term));
+    return (hasUnknownMarker && namesComposition)
+      || tokens.some((token) => compact.includes(token));
+  });
 }
 
 function allowlistedCategoryMatchesIdentity(
@@ -140,8 +190,10 @@ function allowlistedCategoryMatchesIdentity(
   productId: string,
 ): boolean {
   const expectedTokens = allowlistedCategoryIdentityTokens[category];
-  return normalizedMaterialIdentities(code, name, productId)
-    .some((identity) => expectedTokens.some((token) => identity.includes(token)));
+  const contradictionTokens = allowlistedCategoryContradictionTokens[category];
+  const terms = new Set([code, name, productId].flatMap(identityTerms));
+  return expectedTokens.some((token) => terms.has(token))
+    && !contradictionTokens.some((token) => terms.has(token));
 }
 
 const MaterialProfileShape = z.object({
@@ -184,6 +236,13 @@ export const MaterialProfileSchema = MaterialProfileShape.superRefine((profile, 
     context.addIssue({
       code: 'custom',
       path: ['materialCode'],
+      message: 'Unknown material composition cannot be laser verified.',
+    });
+  }
+  if (profile.safetyEvidence.kind === 'allowlisted' && !profile.safetyEvidence.compositionKnown) {
+    context.addIssue({
+      code: 'custom',
+      path: ['safetyEvidence', 'compositionKnown'],
       message: 'Unknown material composition cannot be laser verified.',
     });
   }
