@@ -43,3 +43,31 @@ export type MassProperties = {
   readonly volume: number;
   readonly centroid: Vec3;
 };
+
+export type MeshComparison = {
+  readonly beforeSize: Vec3;
+  readonly afterSize: Vec3;
+  readonly axisChangePercent: Vec3;
+  readonly beforeAbsoluteVolume: number;
+  readonly afterAbsoluteVolume: number;
+  readonly volumeChangePercent: number;
+};
+
+export type MeshRepairChanges = {
+  readonly removedDegenerate: number;
+  readonly removedDuplicate: number;
+  readonly weldedVertices: number;
+  readonly splitVertices: number;
+  readonly filledHoles: number;
+};
+
+export type MeshRepairResult = {
+  readonly mode: 'safe' | 'advanced';
+  readonly mesh: TriangleMesh;
+  readonly before: MeshProblemReport;
+  readonly after: MeshProblemReport;
+  readonly changes: MeshRepairChanges;
+  readonly comparison: MeshComparison;
+  readonly accepted: boolean;
+  readonly blockingReasons: readonly string[];
+};
