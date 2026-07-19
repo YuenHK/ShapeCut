@@ -179,7 +179,7 @@ describe('App browser smoke test', () => {
     expect(submissionOrder).toEqual(['A', 'B'])
     expect(accepted.sourceSha256).toBe('b'.repeat(64))
 
-    await services.exportKit({
+    const zip = await services.buildKit({
       splitPositionPercent: 50,
       ribCount: 6,
       ringLayers: 2,
@@ -192,6 +192,7 @@ describe('App browser smoke test', () => {
       sheetHeightMm: 200,
     }, accepted.sourceSha256)
     expect(packageBuilder).toHaveBeenCalledWith(expect.objectContaining({ sourceSha256: 'b'.repeat(64) }))
+    await services.downloadKit(zip)
     await vi.waitFor(() => expect(revokeObjectURL).toHaveBeenCalledTimes(1))
   })
 
@@ -204,6 +205,65 @@ describe('App browser smoke test', () => {
     await expect(services.downloadRepairedSTL(new ArrayBuffer(84), 'throwing.stl')).rejects.toThrow('click failed exactly')
     await vi.waitFor(() => expect(revokeObjectURL).toHaveBeenCalledTimes(1))
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:throwing-download')
+  })
+
+  it('builds kit bytes without a browser side effect and revokes exactly once when the later click throws', async () => {
+    const packageBuild = deferred<{ zip: Uint8Array }>()
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:throwing-kit')
+    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => { throw new Error('kit click failed exactly') })
+    const services = createAppServices({
+      getGeometry: () => ({} as never),
+      packageBuilder: vi.fn().mockReturnValue(packageBuild.promise) as never,
+    })
+    const settings = {
+      splitPositionPercent: 50,
+      ribCount: 8,
+      ringLayers: 2,
+      shaftMm: 3,
+      fit: 'snug' as const,
+      materialId: 'plywood-3' as const,
+      engravingLevels: 3 as const,
+      textureStrength: 0.6,
+      sheetWidthMm: 300,
+      sheetHeightMm: 200,
+    }
+
+    const building = services.buildKit(settings, 'a'.repeat(64))
+    expect(createObjectURL).not.toHaveBeenCalled()
+    expect(click).not.toHaveBeenCalled()
+    packageBuild.resolve({ zip: new Uint8Array([1, 2, 3]) })
+    const zip = await building
+    expect(createObjectURL).not.toHaveBeenCalled()
+    expect(click).not.toHaveBeenCalled()
+
+    await expect(services.downloadKit(zip)).rejects.toThrow('kit click failed exactly')
+    await vi.waitFor(() => expect(revokeObjectURL).toHaveBeenCalledTimes(1))
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:throwing-kit')
+  })
+
+  it('disposes the import worker and never submits after unmount during the initial file read', async () => {
+    const user = userEvent.setup()
+    const read = deferred<ArrayBuffer>()
+    const terminate = vi.spyOn(Worker.prototype, 'terminate')
+    const postMessage = vi.spyOn(Worker.prototype, 'postMessage')
+    const file = new File([tetrahedronSTL], 'deferred.stl', { type: 'model/stl' })
+    const arrayBuffer = vi.fn().mockReturnValue(read.promise)
+    Object.defineProperty(file, 'arrayBuffer', { configurable: true, value: arrayBuffer })
+    const view = render(<App />)
+
+    await user.upload(screen.getByLabelText('STL 模型檔案'), file)
+    await user.click(screen.getByRole('button', { name: '分析模型' }))
+    expect(arrayBuffer).toHaveBeenCalledOnce()
+    view.unmount()
+    read.resolve(new TextEncoder().encode(tetrahedronSTL).buffer)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(terminate).toHaveBeenCalledTimes(1)
+    expect(postMessage.mock.calls.map(([message]) => message)).not.toContainEqual(
+      expect.objectContaining({ type: 'APPLY' }),
+    )
   })
 })
 

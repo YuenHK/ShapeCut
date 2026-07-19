@@ -116,7 +116,8 @@ function successfulServices(): WizardServices {
     decompose: vi.fn().mockResolvedValue({ issues: [] }),
     engrave: vi.fn().mockResolvedValue({ issues: [] }),
     preflight: vi.fn().mockResolvedValue({ issues: [] }),
-    exportKit: vi.fn().mockResolvedValue(undefined),
+    buildKit: vi.fn().mockResolvedValue(new Uint8Array([1, 2, 3])),
+    downloadKit: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -160,10 +161,11 @@ describe('Wizard', () => {
     expect(screen.getByRole('button', { name: '匯出製作套件' })).toBeEnabled();
     expect(services.decompose).toHaveBeenCalledWith(expect.objectContaining({ ribCount: 8 }));
     await user.click(screen.getByRole('button', { name: '匯出製作套件' }));
-    expect(services.exportKit).toHaveBeenCalledWith(
+    expect(services.buildKit).toHaveBeenCalledWith(
       expect.objectContaining({ ribCount: 8 }),
       'a'.repeat(64),
     );
+    expect(services.downloadKit).toHaveBeenCalledWith(expect.any(Uint8Array));
   });
 
   it('keeps export blocked and links a blocking issue to its explanation', async () => {
@@ -349,6 +351,37 @@ describe('Wizard', () => {
     await Promise.resolve();
 
     expect(services.downloadRepairedSTL).not.toHaveBeenCalled();
+  });
+
+  it('does not trigger a kit download after its build is superseded by a new file', async () => {
+    const user = userEvent.setup();
+    const kitBuild = deferred<Uint8Array>();
+    const services = successfulServices();
+    services.buildKit = vi.fn().mockReturnValue(kitBuild.promise);
+    services.downloadKit = vi.fn().mockResolvedValue(undefined);
+    render(<Wizard services={services} />);
+
+    await user.upload(screen.getByLabelText('STL 模型檔案'), new File(['first'], 'first.stl'));
+    await user.click(screen.getByRole('button', { name: '分析模型' }));
+    await user.click(screen.getByRole('button', { name: '確認軸心' }));
+    await user.click(screen.getByRole('button', { name: '下一步' }));
+    await user.clear(screen.getByLabelText('骨架數量'));
+    await user.type(screen.getByLabelText('骨架數量'), '8');
+    await user.click(screen.getByRole('button', { name: '接受拆件建議' }));
+    await user.click(screen.getByRole('button', { name: '產生雕刻與材料設定' }));
+    await user.click(screen.getByRole('button', { name: '匯出製作套件' }));
+
+    expect(services.buildKit).toHaveBeenCalledWith(
+      expect.objectContaining({ ribCount: 8 }),
+      'a'.repeat(64),
+    );
+    await user.click(screen.getByRole('button', { name: '匯入與修復' }));
+    await user.upload(screen.getByLabelText('STL 模型檔案'), new File(['second'], 'second.stl'));
+    kitBuild.resolve(new Uint8Array([1, 2, 3]));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(services.downloadKit).not.toHaveBeenCalled();
   });
 });
 

@@ -32,13 +32,14 @@ export function createAppServices({
   return {
     inspectAndRepair: async (file) => {
       const request = ++latestImportRequest;
+      const geometry = getGeometry();
       const input = await file.arrayBuffer();
       if (request !== latestImportRequest) throw new Error('Import request was superseded');
 
       // Start hashing and the worker job without awaiting either. Worker submission
       // therefore follows file-selection order, never fingerprint completion order.
       const fingerprintPromise = fingerprint(input);
-      const analysisPromise = getGeometry().analyzeAndRepairForImport(input);
+      const analysisPromise = geometry.analyzeAndRepairForImport(input);
       const [sourceSha256, analysis] = await Promise.all([fingerprintPromise, analysisPromise]);
       const candidates = analysis.safeRepair.accepted && analysis.candidates.length === 0
         ? [suggestedAxis]
@@ -71,11 +72,14 @@ export function createAppServices({
     decompose: async () => ({ issues: [] }),
     engrave: async (settings) => settings.materialId === 'cork-3' || settings.materialId === 'cardboard-2' ? ({ issues: [{ id: 'uncalibrated-material', regionId: 'material-profile', severity: 'confirm', label: '材料未校準', description: '必須先完成實體測試片校準。' }] }) : ({ issues: [] }),
     preflight: async (settings) => settings.materialId === 'cork-3' || settings.materialId === 'cardboard-2' ? ({ issues: [{ id: 'uncalibrated-material', regionId: 'material-profile', severity: 'confirm', label: '材料未校準', description: '必須先完成實體測試片校準。' }] }) : ({ issues: [] }),
-    exportKit: async (settings, sourceSha256) => {
+    buildKit: async (settings, sourceSha256) => {
       const size = Math.min(settings.sheetWidthMm, settings.sheetHeightMm, 40);
       const polygon = { points: [[10, 10], [10 + size, 10], [10 + size, 10 + size], [10, 10 + size]] as const };
       const files = await packageBuilder({ schemaVersion: 1, name: 'spinner', sourceSha256, settings, document: { unit: 'mm', sheets: [{ width: settings.sheetWidthMm, height: settings.sheetHeightMm, entities: [{ id: 'spinner-cut', partId: 'spinner-part', layer: 'CUT', polygon }] }], manifest: [{ partId: 'spinner-part', quantity: 1, assemblyOrder: 1 }] } });
-      const url = URL.createObjectURL(new Blob([files.zip as BlobPart], { type: 'application/zip' }));
+      return files.zip;
+    },
+    downloadKit: async (zip) => {
+      const url = URL.createObjectURL(new Blob([zip as BlobPart], { type: 'application/zip' }));
       try {
         const link = document.createElement('a');
         link.href = url;

@@ -26,7 +26,8 @@ export type WizardServices = {
   decompose(settings: WizardSettings): Promise<IssueResult>;
   engrave(settings: WizardSettings): Promise<IssueResult>;
   preflight(settings: WizardSettings): Promise<IssueResult>;
-  exportKit(settings: WizardSettings, sourceSha256: string): Promise<void>;
+  buildKit(settings: WizardSettings, sourceSha256: string): Promise<Uint8Array>;
+  downloadKit(zip: Uint8Array): Promise<void>;
 };
 
 const steps: readonly { id: WorkflowStep; label: string }[] = [
@@ -227,8 +228,11 @@ export function Wizard({ services, repository, eagerPreview = false }: { readonl
       })} />}
       {state.step === 'export' && <ExportStep issues={issues} busy={busyAction !== undefined} onExport={() => void execute('workflow', async (isCurrent) => {
         if (!sourceSha256) throw new Error('缺少原始 STL 指紋');
-        await services.exportKit(store.getState().settings, sourceSha256);
-        if (!isCurrent()) return;
+        const settings = { ...store.getState().settings };
+        const acceptedSourceSha256 = sourceSha256;
+        const zip = await services.buildKit(settings, acceptedSourceSha256);
+        if (!isCurrent() || store.getState().step !== 'export') return;
+        await services.downloadKit(zip);
       })} />}
     </div>
   );
