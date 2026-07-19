@@ -10,7 +10,9 @@
     "test": "vitest run",
     "test:browser": "vitest --config vitest.browser.config.ts",
     "test:e2e": "playwright test",
-    "test:performance": "playwright test e2e/performance.spec.ts --workers=1"
+    "test:performance": "playwright test e2e/performance.spec.ts --workers=1",
+    "validate:fixtures": "vite-node scripts/validate-fixtures.ts",
+    "generate:coupons": "vite-node scripts/generate-material-coupons.ts"
   },
   "dependencies": {
     "comlink": "^4.4.2",

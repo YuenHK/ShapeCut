@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "license": "CC0-1.0 project-generated fixtures",
+  "models": [
+    { "file": "symmetric-smooth.stl", "category": "smooth", "expected": "auto-axis-and-editable-kit", "expectedAxis": [0, 0, 1] },
+    { "file": "symmetric-textured.stl", "category": "textured", "expected": "auto-axis-and-editable-kit", "expectedAxis": [0, 0, 1] },
+    { "file": "hollow-shell.stl", "category": "hollow", "expected": "auto-axis-and-editable-kit", "expectedAxis": [0, 0, 1] },
+    { "file": "wide-outer-ring.stl", "category": "wide-outer-ring", "expected": "auto-axis-and-editable-kit", "expectedAxis": [0, 0, 1] },
+    { "file": "thin-profile.stl", "category": "thin-wall", "expected": "auto-axis-and-editable-kit", "expectedAxis": [0, 0, 1] },
+    { "file": "tall-spindle.stl", "category": "tall", "expected": "auto-axis-and-editable-kit", "expectedAxis": [0, 0, 1] },
+    { "file": "squat-disc.stl", "category": "squat", "expected": "auto-axis-and-editable-kit", "expectedAxis": [0, 0, 1] },
+    { "file": "stepped-profile.stl", "category": "stepped", "expected": "auto-axis-and-editable-kit", "expectedAxis": [0, 0, 1] },
+    { "file": "low-symmetry.stl", "category": "low-symmetry", "expected": "manual-axis-or-block" },
+    { "file": "invalid-open.stl", "category": "invalid-mesh", "expected": "blocking" }
+  ]
+}

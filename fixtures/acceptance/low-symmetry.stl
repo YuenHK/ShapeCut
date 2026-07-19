@@ -1,0 +1,22 @@
+solid low_symmetry
+facet normal 0 0 0 outer loop
+vertex 0 0 8
+vertex -9 -5 -6
+vertex 13 -4 -5
+endloop endfacet
+facet normal 0 0 0 outer loop
+vertex 0 0 8
+vertex 13 -4 -5
+vertex 2 11 -3
+endloop endfacet
+facet normal 0 0 0 outer loop
+vertex 0 0 8
+vertex 2 11 -3
+vertex -9 -5 -6
+endloop endfacet
+facet normal 0 0 0 outer loop
+vertex -9 -5 -6
+vertex 2 11 -3
+vertex 13 -4 -5
+endloop endfacet
+endsolid low_symmetry

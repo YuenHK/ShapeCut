@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "status": "software-generated-physical-validation-pending",
+  "warning": "Do not manufacture until machine, product, batch and manufacturer safety reference placeholders are replaced.",
+  "coupons": [
+    { "material": "3 mm birch plywood", "file": "pending-plywood-3-coupon.svg", "physicalStatus": "pending" },
+    { "material": "3 mm cardboard", "file": "pending-cardboard-3-coupon.svg", "physicalStatus": "pending" },
+    { "material": "3 mm vendor-confirmed cast acrylic", "file": "pending-cast-pmma-3-coupon.svg", "physicalStatus": "pending" }
+  ]
+}
