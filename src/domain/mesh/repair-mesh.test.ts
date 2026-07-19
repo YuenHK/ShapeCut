@@ -49,6 +49,59 @@ describe('safe mesh repair', () => {
     expect(result.blockingReasons).toContain('仍有非流形邊');
   });
 
+  test('blocks a repair that removes the only face and leaves an empty mesh', () => {
+    const source: TriangleMesh = {
+      positions: new Float64Array([0, 0, 0]),
+      indices: new Uint32Array([0, 0, 0]),
+    };
+
+    const result = repairMeshSafe(source);
+
+    expect(result.after.inspection.triangleCount).toBe(0);
+    expect(result.accepted).toBe(false);
+    expect(result.blockingReasons).toContain('修復結果無法形成有效實體');
+  });
+
+  test('blocks closed topology that has zero volume', () => {
+    const result = repairMeshSafe(coplanarTetrahedron());
+
+    expect(result.after.inspection).toMatchObject({
+      triangleCount: 4,
+      boundaryEdgeCount: 0,
+      nonManifoldEdgeCount: 0,
+      degenerateTriangleCount: 0,
+    });
+    expect(result.comparison.afterAbsoluteVolume).toBe(0);
+    expect(result.accepted).toBe(false);
+    expect(result.blockingReasons).toContain('修復結果無法形成有效實體');
+  });
+
+  test('removes same-winding duplicate volume pollution from the comparison baseline', () => {
+    const result = repairMeshSafe(tetrahedronWithSameWindingDuplicate());
+
+    expect(result.changes.removedDuplicate).toBe(1);
+    expect(result.comparison.beforeAbsoluteVolume).toBeCloseTo(1 / 6, 12);
+    expect(result.comparison.afterAbsoluteVolume).toBeCloseTo(1 / 6, 12);
+    expect(result.comparison.volumeChangePercent).toBeCloseTo(0, 12);
+    expect(result.accepted).toBe(true);
+  });
+
+  test.each([1e6, 1e10])(
+    'ignores an unreferenced far vertex at scale %s in degeneracy and before-volume tolerances',
+    (distance) => {
+      const source = withUnreferencedVertex(tetrahedron(), [distance, distance, distance]);
+
+      const result = repairMeshSafe(source);
+
+      expect(result.before.inspection.degenerateTriangleCount).toBe(0);
+      expect(result.changes.removedDegenerate).toBe(0);
+      expect(result.after.inspection.triangleCount).toBe(4);
+      expect(result.comparison.beforeAbsoluteVolume).toBeCloseTo(1 / 6, 12);
+      expect(result.comparison.volumeChangePercent).toBeCloseTo(0, 12);
+      expect(result.accepted).toBe(true);
+    },
+  );
+
   test('derives the weld cell size from the original referenced bounding box', () => {
     const source = repairableTinyTetrahedronWithDegenerateExtrema();
 
@@ -57,6 +110,22 @@ describe('safe mesh repair', () => {
     expect(result.changes.removedDegenerate).toBe(1);
     expect(result.changes.weldedVertices).toBe(1);
     expect(result.after.inspection.boundaryEdgeCount).toBe(0);
+  });
+
+  test('welds vertices within tolerance across adjacent spatial cells', () => {
+    const result = repairMeshSafe(tetrahedronWithSplitOrigin(0.99e-7, 1.01e-7));
+
+    expect(result.changes.weldedVertices).toBe(1);
+    expect(result.after.inspection.boundaryEdgeCount).toBe(0);
+    expect(result.accepted).toBe(true);
+  });
+
+  test('does not weld vertices just beyond the global tolerance', () => {
+    const result = repairMeshSafe(tetrahedronWithSplitOrigin(0, 1.0001e-7));
+
+    expect(result.changes.weldedVertices).toBe(0);
+    expect(result.after.inspection.boundaryEdgeCount).toBeGreaterThan(0);
+    expect(result.accepted).toBe(false);
   });
 
   test('compares axis sizes and absolute volume without mutating either mesh', () => {
@@ -82,6 +151,34 @@ describe('safe mesh repair', () => {
     );
     expect(before).toEqual(beforeSnapshot);
     expect(after).toEqual(afterSnapshot);
+  });
+
+  test('reports the exact 0.5 percent axis and 1 percent volume boundaries', () => {
+    const axisBoundary = compareMeshes(tetrahedron(), transformMesh(tetrahedron(), [1.005, 1, 1]));
+    const volumeScale = Math.cbrt(1.01);
+    const volumeBoundary = compareMeshes(
+      tetrahedron(),
+      transformMesh(tetrahedron(), [volumeScale, volumeScale, volumeScale]),
+    );
+
+    expect(axisBoundary.axisChangePercent).toEqual([
+      expect.closeTo(0.5, 12),
+      0,
+      0,
+    ]);
+    expect(axisBoundary.axisChangePercent[0]).toBeLessThanOrEqual(0.5);
+    expect(volumeBoundary.volumeChangePercent).toBeCloseTo(1, 12);
+    expect(volumeBoundary.volumeChangePercent).toBeLessThanOrEqual(1);
+    expect(volumeBoundary.axisChangePercent.every((change) => change < 0.5)).toBe(true);
+  });
+
+  test('reports infinite drift from zero size and zero volume to a solid', () => {
+    const comparison = compareMeshes(coplanarTetrahedron(), tetrahedron());
+
+    expect(comparison.beforeSize).toEqual([1, 1, 0]);
+    expect(comparison.beforeAbsoluteVolume).toBe(0);
+    expect(comparison.axisChangePercent[2]).toBe(Number.POSITIVE_INFINITY);
+    expect(comparison.volumeChangePercent).toBe(Number.POSITIVE_INFINITY);
   });
 });
 
@@ -145,6 +242,33 @@ function tetrahedron(): TriangleMesh {
   };
 }
 
+function tetrahedronWithSameWindingDuplicate(): TriangleMesh {
+  const mesh = tetrahedron();
+  return {
+    positions: mesh.positions.slice(),
+    indices: new Uint32Array([...mesh.indices, 0, 2, 1]),
+  };
+}
+
+function coplanarTetrahedron(): TriangleMesh {
+  return {
+    positions: new Float64Array([
+      0, 0, 0,
+      1, 0, 0,
+      1, 1, 0,
+      0, 1, 0,
+    ]),
+    indices: tetrahedron().indices.slice(),
+  };
+}
+
+function withUnreferencedVertex(mesh: TriangleMesh, vertex: readonly [number, number, number]): TriangleMesh {
+  return {
+    positions: new Float64Array([...mesh.positions, ...vertex]),
+    indices: mesh.indices.slice(),
+  };
+}
+
 function repairableTinyTetrahedronWithDegenerateExtrema(): TriangleMesh {
   return {
     positions: new Float64Array([
@@ -163,6 +287,24 @@ function repairableTinyTetrahedronWithDegenerateExtrema(): TriangleMesh {
       1, 2, 3,
       2, 4, 3,
       5, 6, 7,
+    ]),
+  };
+}
+
+function tetrahedronWithSplitOrigin(originalX: number, splitX: number): TriangleMesh {
+  return {
+    positions: new Float64Array([
+      originalX, 0, 0,
+      1, 0, 0,
+      0, 1, 0,
+      0, 0, 1,
+      splitX, 0, 0,
+    ]),
+    indices: new Uint32Array([
+      0, 2, 1,
+      0, 1, 3,
+      1, 2, 3,
+      2, 4, 3,
     ]),
   };
 }

@@ -14,12 +14,13 @@ type Bounds = {
 };
 
 export function repairMeshSafe(mesh: TriangleMesh): MeshRepairResult {
-  const before = analyzeMeshProblems(mesh);
-  const filtered = filterFaces(mesh);
-  const welded = weldVertices(mesh, filtered.indices);
-  const repaired = compactVertices(mesh, welded.indices);
+  const referenced = compactVertices(mesh, mesh.indices);
+  const before = analyzeMeshProblems(referenced);
+  const filtered = filterFaces(referenced);
+  const welded = weldVertices(referenced, filtered.indices);
+  const repaired = compactVertices(referenced, welded.indices);
   const after = analyzeMeshProblems(repaired);
-  const comparison = compareMeshes(mesh, repaired);
+  const comparison = compareMeshes(referenced, repaired);
   const blockingReasons = collectBlockingReasons(after, comparison);
 
   return {
@@ -41,10 +42,12 @@ export function repairMeshSafe(mesh: TriangleMesh): MeshRepairResult {
 }
 
 export function compareMeshes(before: TriangleMesh, after: TriangleMesh): MeshComparison {
-  const beforeSize = referencedBounds(before).size;
-  const afterSize = referencedBounds(after).size;
-  const beforeAbsoluteVolume = meshAbsoluteVolume(before);
-  const afterAbsoluteVolume = meshAbsoluteVolume(after);
+  const beforeGeometry = comparisonGeometry(before);
+  const afterGeometry = comparisonGeometry(after);
+  const beforeSize = referencedBounds(beforeGeometry).size;
+  const afterSize = referencedBounds(afterGeometry).size;
+  const beforeAbsoluteVolume = meshAbsoluteVolume(beforeGeometry);
+  const afterAbsoluteVolume = meshAbsoluteVolume(afterGeometry);
   return {
     beforeSize,
     afterSize,
@@ -155,7 +158,7 @@ function weldVertices(
   };
 }
 
-function compactVertices(mesh: TriangleMesh, indices: readonly number[]): TriangleMesh {
+function compactVertices(mesh: TriangleMesh, indices: Iterable<number>): TriangleMesh {
   const compactIndexBySource = new Map<number, number>();
   const positions: number[] = [];
   const compactIndices: number[] = [];
@@ -180,6 +183,14 @@ function collectBlockingReasons(
   comparison: MeshComparison,
 ): string[] {
   const reasons: string[] = [];
+  if (
+    report.inspection.triangleCount === 0
+    || comparison.afterSize.some((size) => !(size > 0) || !Number.isFinite(size))
+    || !(comparison.afterAbsoluteVolume > 0)
+    || !Number.isFinite(comparison.afterAbsoluteVolume)
+  ) {
+    reasons.push('修復結果無法形成有效實體');
+  }
   if (report.inspection.boundaryEdgeCount > 0) reasons.push('仍有開放邊界');
   if (report.inspection.nonManifoldEdgeCount > 0) reasons.push('仍有非流形邊');
   if (report.inspection.degenerateTriangleCount > 0) reasons.push('仍有退化三角形');
@@ -226,6 +237,12 @@ function referencedBounds(mesh: TriangleMesh): Bounds {
   return boundsForIndices(mesh, [...new Set(mesh.indices)]);
 }
 
+function comparisonGeometry(mesh: TriangleMesh): TriangleMesh {
+  const referenced = compactVertices(mesh, mesh.indices);
+  const filtered = filterFaces(referenced);
+  return compactVertices(referenced, filtered.indices);
+}
+
 function boundsForIndices(mesh: TriangleMesh, indices: readonly number[]): Bounds {
   if (indices.length === 0) return { min: [0, 0, 0], size: [0, 0, 0] };
   let minX = Infinity;
@@ -263,7 +280,12 @@ function meshAbsoluteVolume(mesh: TriangleMesh): number {
 
 function changePercent(before: number, after: number): number {
   if (before === 0) return after === 0 ? 0 : Number.POSITIVE_INFINITY;
-  return Math.abs((after - before) / before) * 100;
+  const change = Math.abs((after - before) / before) * 100;
+  for (const threshold of [MAX_AXIS_CHANGE_PERCENT, MAX_VOLUME_CHANGE_PERCENT]) {
+    const tolerance = 64 * Number.EPSILON * Math.max(1, Math.abs(change), threshold);
+    if (Math.abs(change - threshold) <= tolerance) return threshold;
+  }
+  return change;
 }
 
 function cellCoordinates(mesh: TriangleMesh, vertex: number, origin: Vec3, cellSize: number): Vec3 {
