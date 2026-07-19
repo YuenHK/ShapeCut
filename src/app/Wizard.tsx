@@ -265,7 +265,7 @@ export function Wizard({ services, repository, eagerPreview = false }: { readonl
           });
         }}
       />}
-      {state.step === 'axis' && <><h2>軸心與尺寸</h2><AxisStep candidates={candidates} confirmedAxis={state.axis} onConfirm={(candidate) => state.setAxis({ ...candidate, confirmed: true })} onNext={() => {
+      {state.step === 'axis' && <><h2>軸心與尺寸</h2><AxisStep candidates={candidates} confirmedAxis={state.axis} onConfirm={(candidate) => state.setAxis({ ...candidate, confirmed: true })} onAxisInvalidated={() => store.setState({ axis: undefined })} onNext={() => {
         if (state.goToStep('decomposition')) setFurthestStep((value) => Math.max(value, 2));
       }} /></>}
       {state.step === 'decomposition' && <DecompositionStep settings={state.settings} busy={busyAction !== undefined} onChange={updateSettings} onAccept={() => void execute('workflow', async (isCurrent) => {

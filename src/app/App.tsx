@@ -1,4 +1,3 @@
-import type { AxisCandidate } from '../domain/axis/find-axis';
 import { useEffect, useMemo, useRef } from 'react';
 import { defaultPendingMaterialProfile } from '../domain/materials/default-profiles';
 import type { MaterialProfileV1 } from '../domain/materials/schema';
@@ -6,11 +5,6 @@ import { createManufacturingArtifacts } from '../domain/pipeline/manufacturing-p
 import { ProjectRepository, sha256Hex } from '../persistence/project-repository';
 import { createGeometryWorkerClient, type GeometryClient } from '../workers/geometry-client';
 import { Wizard, type WizardServices } from './Wizard';
-
-const suggestedAxis: AxisCandidate = {
-  origin: [0, 0, 0], direction: [0, 0, 1], confidence: 0.9, confirmed: false,
-  radialRmsError: 0, centroidOffset: 0, source: 'inertia',
-};
 
 type AppGeometryClient = Pick<GeometryClient,
   'analyzeAndRepairForImport' | 'repairAdvanced' | 'serializeSTL' | 'findAxes' | 'decompose' | 'engrave'
@@ -47,12 +41,9 @@ export function createAppServices({
       const analysisPromise = geometry.analyzeAndRepairForImport(input);
       const [sourceSha256, analysis] = await Promise.all([fingerprintPromise, analysisPromise]);
       const meshSha256 = await fingerprintMesh(analysis.safeRepair.mesh, fingerprint);
-      const candidates = analysis.safeRepair.accepted && analysis.candidates.length === 0
-        ? [suggestedAxis]
-        : analysis.candidates;
       return {
         ...analysis,
-        candidates,
+        candidates: analysis.safeRepair.accepted ? analysis.candidates : [],
         sourceSha256,
         meshSha256,
         repairProvenance: { mode: 'safe', algorithmVersion: 'safe-repair-v1' },
@@ -68,7 +59,7 @@ export function createAppServices({
         positions: repair.mesh.positions.slice(),
         indices: repair.mesh.indices.slice(),
       });
-      return { ...repair, candidates: candidates.length > 0 ? candidates : [suggestedAxis], meshSha256, repairProvenance };
+      return { ...repair, candidates, meshSha256, repairProvenance };
     },
     serializeRepairedSTL: (mesh, mode) => getGeometry().serializeSTL(mesh, mode),
     downloadRepairedSTL: async (bytes, originalFileName) => {

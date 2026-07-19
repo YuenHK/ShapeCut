@@ -121,6 +121,18 @@ describe('App browser smoke test', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('操作失敗：ASCII STL contains no triangles')
   })
 
+  it('does not invent a Z-axis candidate when accepted geometry returns no candidates', async () => {
+    const importResult = acceptedImport('worker-empty-axis')
+    const services = createAppServices({
+      getGeometry: () => ({ analyzeAndRepairForImport: vi.fn().mockResolvedValue(importResult) } as never),
+      fingerprint: vi.fn().mockResolvedValue('a'.repeat(64)),
+    })
+
+    const result = await services.inspectAndRepair(new File(['mesh'], 'manual-required.stl'))
+
+    expect(result.candidates).toEqual([])
+  })
+
   it('downloads a repaired STL with the original base name and revokes the blob URL', async () => {
     const user = userEvent.setup()
     let downloadedFilename = ''

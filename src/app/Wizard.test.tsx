@@ -204,6 +204,29 @@ describe('Wizard', () => {
     expect(screen.getByLabelText('骨架數量')).toHaveValue(10);
   });
 
+  it('keeps empty axis candidates manual-required and passes only the explicitly confirmed normalized manual axis', async () => {
+    const user = userEvent.setup();
+    const services = successfulServices();
+    services.inspectAndRepair = vi.fn().mockResolvedValue({ ...analysis(), candidates: [] });
+    render(<Wizard services={services} />);
+
+    await user.upload(screen.getByLabelText('STL 模型檔案'), new File(['solid manual'], 'manual.stl'));
+    await user.click(screen.getByRole('button', { name: '分析模型' }));
+    expect(screen.getByRole('button', { name: '下一步' })).toBeDisabled();
+    for (const [label, value] of [
+      ['手動原點 X', '1'], ['手動原點 Y', '2'], ['手動原點 Z', '3'],
+      ['手動方向 X', '0'], ['手動方向 Y', '3'], ['手動方向 Z', '4'],
+    ] as const) await user.type(screen.getByLabelText(label), value);
+    await user.click(screen.getByRole('button', { name: '確認手動軸心' }));
+    expect(screen.getByRole('button', { name: '下一步' })).toBeEnabled();
+    await user.click(screen.getByRole('button', { name: '下一步' }));
+    await user.click(screen.getByRole('button', { name: '接受拆件建議' }));
+
+    expect(services.createArtifacts).toHaveBeenCalledWith(expect.objectContaining({
+      axis: expect.objectContaining({ origin: [1, 2, 3], direction: [0, 0.6, 0.8], confirmed: true }),
+    }));
+  });
+
   it('keeps export disabled until the complete successful path passes', async () => {
     const user = userEvent.setup();
     const services = successfulServices();
