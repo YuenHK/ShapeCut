@@ -315,10 +315,27 @@ export function Wizard({ services, repository, eagerPreview = false }: { readonl
     };
   };
 
+  const ownsCurrentManufacturingInput = (version: string): boolean => {
+    try { return manufacturingRequestVersion(artifactRequest()) === version; }
+    catch { return false; }
+  };
+
   const updateSettings = (changes: Partial<WizardSettings>): void => {
     store.getState().updateSettings(changes);
     setArtifacts(undefined);
     setIssues([]);
+  };
+
+  const navigateToStep = (target: WorkflowStep): void => {
+    if (busyAction) {
+      if (target !== 'import') return;
+      services.cancelGeometry();
+      selectionVersion.current += 1;
+      setBusyAction(undefined);
+      setArtifacts(undefined);
+      setIssues([]);
+    }
+    store.getState().goToStep(target);
   };
 
   return (
@@ -338,7 +355,7 @@ export function Wizard({ services, repository, eagerPreview = false }: { readonl
       {operationError && <p role="alert">操作失敗：{operationError}</p>}
       {issues.length > 0 && state.step !== 'export' && <div role="alert">{issues.map((issue) => <p key={issue.id}>{issue.label}：{issue.description}</p>)}</div>}
       {(eagerPreview || repairPreview || acceptedPreview) && <SpinnerViewport mesh={state.step === 'import' ? repairPreview : acceptedPreview} meshProblems={currentReport} issues={issues} />}
-      <nav aria-label="轉換步驟"><ol>{steps.map(({ id, label }, index) => <li key={id}><button type="button" disabled={index > furthestStep} aria-current={state.step === id ? 'step' : undefined} onClick={() => state.goToStep(id)}>{label}</button></li>)}</ol></nav>
+      <nav aria-label="轉換步驟"><ol>{steps.map(({ id, label }, index) => <li key={id}><button type="button" disabled={(busyAction !== undefined && id !== 'import') || index > furthestStep} aria-current={state.step === id ? 'step' : undefined} onClick={() => navigateToStep(id)}>{label}</button></li>)}</ol></nav>
       {state.step !== 'import' && analysis && currentRepair && <RepairSummary stage={repairStage} originalReport={analysis.originalReport} repair={currentRepair} />}
       {state.step === 'import' && <ImportStep
         file={file}
@@ -378,15 +395,21 @@ export function Wizard({ services, repository, eagerPreview = false }: { readonl
         if (state.goToStep('decomposition')) setFurthestStep((value) => Math.max(value, 2));
       }} /></>}
       {state.step === 'decomposition' && <DecompositionStep settings={state.settings} busy={busyAction !== undefined} onChange={updateSettings} onAccept={() => void execute('workflow', async (isCurrent) => {
-        const result = await services.createArtifacts(artifactRequest());
-        if (!isCurrent()) return;
+        const request = artifactRequest();
+        const requestVersion = manufacturingRequestVersion(request);
+        const result = await services.createArtifacts(request);
+        if (!isCurrent() || !ownsCurrentManufacturingInput(requestVersion)) return;
+        assertCoherentArtifacts(result);
         setArtifacts(result);
         setIssues(preflightIssues(result));
         if (state.goToStep('engraving')) setFurthestStep((value) => Math.max(value, 3));
       })} />}
       {state.step === 'engraving' && <EngravingStep settings={state.settings} busy={busyAction !== undefined} onChange={updateSettings} onGenerate={() => void execute('workflow', async (isCurrent) => {
-        const result = await services.createArtifacts(artifactRequest());
-        if (!isCurrent()) return;
+        const request = artifactRequest();
+        const requestVersion = manufacturingRequestVersion(request);
+        const result = await services.createArtifacts(request);
+        if (!isCurrent() || !ownsCurrentManufacturingInput(requestVersion)) return;
+        assertCoherentArtifacts(result);
         setArtifacts(result);
         setIssues(preflightIssues(result));
         if (state.goToStep('export')) setFurthestStep(4);
@@ -400,6 +423,33 @@ export function Wizard({ services, repository, eagerPreview = false }: { readonl
       })} />}
     </div>
   );
+}
+
+function manufacturingRequestVersion(input: ManufacturingArtifactRequest): string {
+  return JSON.stringify({
+    sourceSha256: input.sourceSha256,
+    meshSha256: input.meshSha256,
+    repair: input.repair,
+    axis: input.axis,
+    settings: input.settings,
+  });
+}
+
+function assertCoherentArtifacts(artifacts: ManufacturingArtifacts): void {
+  const expected = JSON.stringify(artifacts.provenance);
+  const stages = [
+    artifacts.profile,
+    artifacts.kit,
+    artifacts.material,
+    artifacts.engraving,
+    artifacts.layout,
+    artifacts.preflight,
+    artifacts.document,
+  ];
+  if (stages.some((stage) => !stage || JSON.stringify(stage.provenance) !== expected)
+    || JSON.stringify(artifacts.document?.value?.provenance) !== expected) {
+    throw new Error('製作 artifacts 不屬於同一輸入版本');
+  }
 }
 
 function preflightIssues(artifacts: ManufacturingArtifacts): readonly GeometryIssue[] {

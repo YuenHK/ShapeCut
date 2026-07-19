@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { AxisCandidate } from '../domain/axis/find-axis';
@@ -130,10 +130,16 @@ function analysis(safeRepair: MeshRepairResult = repair(), sourceHash = 'source-
 
 function artifactResult(issues: readonly { readonly code: string; readonly severity: 'blocking' | 'confirm' | 'info'; readonly message: string; readonly regionId?: string; readonly fixes: readonly [] }[] = []): ManufacturingArtifacts {
   const provenance = { inputFingerprint: 'version-a' };
+  const envelope = (value: unknown) => ({ provenance, value });
   return {
     provenance,
-    preflight: { provenance, value: { issues, canExport: issues.every(({ severity }) => severity === 'info') } },
-    document: { provenance, value: { provenance } },
+    profile: envelope({}),
+    kit: envelope({}),
+    material: envelope({}),
+    engraving: envelope({}),
+    layout: envelope({}),
+    preflight: envelope({ issues, canExport: issues.every(({ severity }) => severity === 'info') }),
+    document: envelope({ provenance }),
   } as unknown as ManufacturingArtifacts;
 }
 
@@ -277,10 +283,7 @@ describe('Wizard', () => {
 
   it('exports only the current versioned artifacts built from the accepted mesh, confirmed axis, repair provenance, and settings', async () => {
     const user = userEvent.setup();
-    const artifacts = {
-      provenance: { inputFingerprint: 'version-a' },
-      preflight: { value: { issues: [], canExport: true } },
-    } as unknown as ManufacturingArtifacts;
+    const artifacts = artifactResult();
     const services = {
       ...successfulServices(),
       createArtifacts: vi.fn().mockResolvedValue(artifacts),
@@ -306,6 +309,83 @@ describe('Wizard', () => {
     }));
     expect(services.buildKit).toHaveBeenCalledWith(artifacts);
     expect(services.downloadKit).toHaveBeenCalledWith(expect.any(Uint8Array));
+  });
+
+  it('locks every job-affecting decomposition and engraving control while its artifact job is active', async () => {
+    const user = userEvent.setup();
+    const decomposition = deferred<ManufacturingArtifacts>();
+    const engraving = deferred<ManufacturingArtifacts>();
+    const services = successfulServices();
+    services.createArtifacts = vi.fn()
+      .mockReturnValueOnce(decomposition.promise)
+      .mockReturnValueOnce(engraving.promise);
+    render(<Wizard services={services} />);
+
+    await user.upload(screen.getByLabelText('STL 模型檔案'), new File(['solid'], 'spinner.stl'));
+    await user.click(screen.getByRole('button', { name: '分析模型' }));
+    await user.click(screen.getByRole('button', { name: '確認軸心' }));
+    await user.click(screen.getByRole('button', { name: '下一步' }));
+    await user.click(screen.getByRole('button', { name: '接受拆件建議' }));
+
+    for (const label of ['分件線位置 (%)', '骨架數量', '外環層數', '金屬軸直徑 (mm)', '卡榫配合']) {
+      expect(screen.getByLabelText(label)).toBeDisabled();
+    }
+    expect(screen.getByRole('button', { name: '軸心與尺寸' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '匯入與修復' })).toBeEnabled();
+    decomposition.resolve(artifactResult());
+    expect(await screen.findByRole('heading', { name: '紋理與材料' })).toBeVisible();
+
+    await user.click(screen.getByRole('button', { name: '產生雕刻與材料設定' }));
+    for (const label of ['材料設定檔', '雕刻級數', '紋理強度', '板材闊度 (mm)', '板材高度 (mm)']) {
+      expect(screen.getByLabelText(label)).toBeDisabled();
+    }
+    expect(screen.getByRole('button', { name: '自動拆件' })).toBeDisabled();
+    engraving.resolve(artifactResult());
+    expect(await screen.findByRole('heading', { name: '排版與輸出' })).toBeVisible();
+  });
+
+  it('discards an artifact result when the settings fingerprint no longer matches the launched job', async () => {
+    const user = userEvent.setup();
+    const pending = deferred<ManufacturingArtifacts>();
+    const services = successfulServices();
+    services.createArtifacts = vi.fn().mockReturnValue(pending.promise);
+    render(<Wizard services={services} />);
+
+    await user.upload(screen.getByLabelText('STL 模型檔案'), new File(['solid'], 'spinner.stl'));
+    await user.click(screen.getByRole('button', { name: '分析模型' }));
+    await user.click(screen.getByRole('button', { name: '確認軸心' }));
+    await user.click(screen.getByRole('button', { name: '下一步' }));
+    await user.click(screen.getByRole('button', { name: '接受拆件建議' }));
+    const ribs = screen.getByLabelText('骨架數量');
+    fireEvent.change(ribs, { target: { value: '10' } });
+    expect(ribs).toHaveValue(10);
+    pending.resolve(artifactResult());
+
+    expect(await screen.findByRole('button', { name: '接受拆件建議' })).toBeEnabled();
+    expect(screen.getByRole('heading', { name: '自動拆件' })).toBeVisible();
+    expect(screen.queryByRole('heading', { name: '紋理與材料' })).not.toBeInTheDocument();
+    expect(services.createArtifacts).toHaveBeenCalledWith(expect.objectContaining({ settings: expect.objectContaining({ ribCount: 6 }) }));
+  });
+
+  it('rejects mixed-version manufacturing stages before applying them to the workflow', async () => {
+    const user = userEvent.setup();
+    const services = successfulServices();
+    const coherent = artifactResult();
+    services.createArtifacts = vi.fn().mockResolvedValue({
+      ...coherent,
+      layout: { ...coherent.layout, provenance: { ...coherent.provenance, inputFingerprint: 'version-b' } },
+    });
+    render(<Wizard services={services} />);
+
+    await user.upload(screen.getByLabelText('STL 模型檔案'), new File(['solid'], 'spinner.stl'));
+    await user.click(screen.getByRole('button', { name: '分析模型' }));
+    await user.click(screen.getByRole('button', { name: '確認軸心' }));
+    await user.click(screen.getByRole('button', { name: '下一步' }));
+    await user.click(screen.getByRole('button', { name: '接受拆件建議' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('製作 artifacts 不屬於同一輸入版本');
+    expect(screen.getByRole('heading', { name: '自動拆件' })).toBeVisible();
+    expect(screen.getByRole('button', { name: '紋理與材料' })).toBeDisabled();
   });
 
   it('locks future steps and preserves edited parameters when navigating back', async () => {
