@@ -44,11 +44,11 @@ export function SpinnerViewport({
     };
   }, [createController]);
 
-  useEffect(() => { controllerRef.current?.setMesh(mesh); }, [mesh]);
-  useEffect(() => { controllerRef.current?.setParts(parts); }, [parts]);
-  useEffect(() => { controllerRef.current?.setEngraving(engraving); }, [engraving]);
-  useEffect(() => { controllerRef.current?.setMeshProblems(meshProblems); }, [meshProblems]);
-  useEffect(() => { controllerRef.current?.setExploded(exploded); }, [exploded]);
+  useEffect(() => { controllerRef.current?.setMesh(mesh); }, [createController, mesh]);
+  useEffect(() => { controllerRef.current?.setParts(parts); }, [createController, parts]);
+  useEffect(() => { controllerRef.current?.setEngraving(engraving); }, [createController, engraving]);
+  useEffect(() => { controllerRef.current?.setMeshProblems(meshProblems); }, [createController, meshProblems]);
+  useEffect(() => { controllerRef.current?.setExploded(exploded); }, [createController, exploded]);
 
   const markersTruncated = meshProblems
     ? Object.values(meshProblems.markersTruncated).some(Boolean)

@@ -1,8 +1,11 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { BufferGeometry, Material } from 'three';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { describe, expect, it, vi } from 'vitest';
-import type { MeshProblemReport } from '../domain/mesh/types';
+import type { SpinnerKit } from '../domain/decomposition/types';
+import type { EngravingMap } from '../domain/engraving/height-field';
+import type { MeshProblemReport, TriangleMesh } from '../domain/mesh/types';
 import { createSceneController, type SceneController } from './scene-controller';
 import { SpinnerViewport } from './SpinnerViewport';
 
@@ -54,6 +57,52 @@ const truncatedReport: MeshProblemReport = {
   markersTruncated: { ...report.markersTruncated, boundaryEdges: true },
 };
 
+const sharedBoundaryMaterialReport: MeshProblemReport = {
+  ...report,
+  inspection: {
+    ...report.inspection,
+    boundaryEdgeCount: 2,
+    nonManifoldEdgeCount: 0,
+    degenerateTriangleCount: 0,
+  },
+  duplicateTriangleCount: 0,
+  boundaryEdges: [
+    report.boundaryEdges[0],
+    { regionId: 'mesh-boundary-edge-1', points: [[0, 1, 0], [1, 1, 0]] },
+  ],
+  nonManifoldEdges: [],
+  degenerateTriangles: [],
+  duplicateTriangles: [],
+};
+
+const mesh: TriangleMesh = {
+  positions: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+  indices: new Uint32Array([0, 1, 2]),
+};
+
+const parts: SpinnerKit = {
+  parts: [],
+  instances: [],
+  joints: [],
+  assembly: [],
+  estimatedBalance: {
+    kind: 'ideal-static-estimate',
+    status: 'pass',
+    centroidOffsetMm: 0,
+    angularMassError: 0,
+    assumptions: [],
+  },
+};
+
+const engraving: EngravingMap = {
+  levels: 3,
+  regions: [],
+  center: [0, 0],
+  depthMode: 'relative',
+  levelDepths: [0, 0.1, 0.2, 0.3],
+  assumptions: [],
+};
+
 function issuesFromReport(meshProblems: MeshProblemReport) {
   return meshProblems.nonManifoldEdges.map((marker, index) => ({
     id: `non-manifold-${index}`,
@@ -65,6 +114,42 @@ function issuesFromReport(meshProblems: MeshProblemReport) {
 }
 
 describe('SpinnerViewport', () => {
+  it('rehydrates a replacement controller with every current scene value', () => {
+    const first = fakeController();
+    const second = fakeController();
+    const firstFactory = () => first;
+    const secondFactory = () => second;
+    const view = render(
+      <SpinnerViewport
+        mesh={mesh}
+        parts={parts}
+        engraving={engraving}
+        meshProblems={report}
+        issues={[]}
+        createController={firstFactory}
+      />,
+    );
+    fireEvent.change(screen.getByRole('slider', { name: '爆炸圖距離' }), { target: { value: '0.2' } });
+
+    view.rerender(
+      <SpinnerViewport
+        mesh={mesh}
+        parts={parts}
+        engraving={engraving}
+        meshProblems={report}
+        issues={[]}
+        createController={secondFactory}
+      />,
+    );
+
+    expect(first.dispose).toHaveBeenCalledOnce();
+    expect(second.setMesh).toHaveBeenCalledWith(mesh);
+    expect(second.setParts).toHaveBeenCalledWith(parts);
+    expect(second.setEngraving).toHaveBeenCalledWith(engraving);
+    expect(second.setMeshProblems).toHaveBeenCalledWith(report);
+    expect(second.setExploded).toHaveBeenCalledWith(0.2);
+  });
+
   it('sends problem geometry to the scene and focuses its stable region id', async () => {
     const controller = fakeController();
     render(<SpinnerViewport meshProblems={report} issues={issuesFromReport(report)} createController={() => controller} />);
@@ -107,6 +192,48 @@ describe('SpinnerViewport', () => {
     }
   });
 
+  it('disposes each marker geometry but a shared category material only once', () => {
+    const geometryDispose = vi.spyOn(BufferGeometry.prototype, 'dispose');
+    const materialDispose = vi.spyOn(Material.prototype, 'dispose');
+    const host = document.createElement('div');
+    document.body.append(host);
+    const controller = createSceneController(host);
+    try {
+      geometryDispose.mockClear();
+      materialDispose.mockClear();
+
+      controller.setMeshProblems(sharedBoundaryMaterialReport);
+      controller.setMeshProblems(undefined);
+
+      expect(geometryDispose).toHaveBeenCalledTimes(2);
+      expect(materialDispose).toHaveBeenCalledTimes(1);
+    } finally {
+      controller.dispose();
+      host.remove();
+      geometryDispose.mockRestore();
+      materialDispose.mockRestore();
+    }
+  });
+
+  it('finds a real problem overlay and runs its focus framing', () => {
+    const controlsUpdate = vi.spyOn(OrbitControls.prototype, 'update');
+    const host = document.createElement('div');
+    document.body.append(host);
+    const controller = createSceneController(host);
+    try {
+      controller.setMeshProblems(report);
+      controlsUpdate.mockClear();
+
+      controller.focusRegion('mesh-non-manifold-edge-0');
+
+      expect(controlsUpdate).toHaveBeenCalledOnce();
+    } finally {
+      controller.dispose();
+      host.remove();
+      controlsUpdate.mockRestore();
+    }
+  });
+
   it('creates and removes the real WebGL canvas', () => {
     const view = render(<SpinnerViewport issues={[]} />);
     expect(view.container.querySelector('canvas')).toBeInTheDocument();
@@ -117,11 +244,24 @@ describe('SpinnerViewport', () => {
   });
 
   it('releases the real WebGL canvas across 20 mount cycles', () => {
-    for (let index = 0; index < 20; index += 1) {
-      const view = render(<SpinnerViewport meshProblems={report} issues={[]} />);
-      expect(view.container.querySelectorAll('canvas')).toHaveLength(1);
-      view.unmount();
-      expect(view.container.querySelectorAll('canvas')).toHaveLength(0);
+    const geometryDispose = vi.spyOn(BufferGeometry.prototype, 'dispose');
+    const materialDispose = vi.spyOn(Material.prototype, 'dispose');
+    try {
+      for (let index = 0; index < 20; index += 1) {
+        const view = render(<SpinnerViewport meshProblems={report} issues={[]} />);
+        expect(view.container.querySelectorAll('canvas')).toHaveLength(1);
+        const geometryCallsBeforeUnmount = geometryDispose.mock.calls.length;
+        const materialCallsBeforeUnmount = materialDispose.mock.calls.length;
+
+        view.unmount();
+
+        expect(view.container.querySelectorAll('canvas')).toHaveLength(0);
+        expect(geometryDispose.mock.calls.length - geometryCallsBeforeUnmount).toBe(4);
+        expect(materialDispose.mock.calls.length - materialCallsBeforeUnmount).toBe(4);
+      }
+    } finally {
+      geometryDispose.mockRestore();
+      materialDispose.mockRestore();
     }
   });
 
