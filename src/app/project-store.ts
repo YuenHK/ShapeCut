@@ -34,8 +34,23 @@ export function canEnterStep(
 }
 
 export type ProjectStoreState = ProjectV1 & {
+  settings: WizardSettings;
   setAxis: (axis: Axis) => void;
+  updateSettings: (changes: Partial<WizardSettings>) => void;
   goToStep: (target: WorkflowStep) => boolean;
+};
+
+export type WizardSettings = {
+  readonly splitPositionPercent: number;
+  readonly ribCount: number;
+  readonly ringLayers: number;
+  readonly shaftMm: number;
+  readonly fit: 'loose' | 'slip' | 'snug' | 'press';
+  readonly materialId: string;
+  readonly engravingLevels: 3 | 4 | 5;
+  readonly textureStrength: number;
+  readonly sheetWidthMm: number;
+  readonly sheetHeightMm: number;
 };
 
 export function createProjectStore() {
@@ -44,6 +59,18 @@ export function createProjectStore() {
     id: 'untitled-project',
     name: 'Untitled project',
     step: 'import',
+    settings: {
+      splitPositionPercent: 50,
+      ribCount: 6,
+      ringLayers: 2,
+      shaftMm: 3,
+      fit: 'snug',
+      materialId: 'plywood-3',
+      engravingLevels: 3,
+      textureStrength: 0.6,
+      sheetWidthMm: 300,
+      sheetHeightMm: 200,
+    },
     setAxis: (axis) =>
       set({
         axis: {
@@ -52,6 +79,7 @@ export function createProjectStore() {
           direction: [...axis.direction],
         },
       }),
+    updateSettings: (changes) => set((state) => ({ settings: { ...state.settings, ...changes } })),
     goToStep: (target) => {
       if (!canEnterStep(get(), target)) {
         return false;

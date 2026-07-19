@@ -6,9 +6,10 @@ export type AxisStepProps = {
   readonly confirmedAxis?: Axis;
   readonly onConfirm: (candidate: AxisCandidate) => void;
   readonly onManualRequest?: () => void;
+  readonly onNext?: () => void;
 };
 
-export function AxisStep({ candidates, confirmedAxis, onConfirm, onManualRequest }: AxisStepProps) {
+export function AxisStep({ candidates, confirmedAxis, onConfirm, onManualRequest, onNext }: AxisStepProps) {
   const candidate = candidates.reduce<AxisCandidate | undefined>(
     (best, current) => best === undefined || current.confidence > best.confidence ? current : best,
     undefined,
@@ -21,7 +22,7 @@ export function AxisStep({ candidates, confirmedAxis, onConfirm, onManualRequest
       {needsConfirmation && <p role="status">需要確認</p>}
       <button type="button" disabled={!candidate} onClick={() => candidate && onConfirm(candidate)}>確認軸心</button>
       {onManualRequest && <button type="button" onClick={onManualRequest}>手動設定軸心</button>}
-      <button type="button" disabled={!confirmedAxis?.confirmed && (needsConfirmation || !candidate)}>下一步</button>
+      <button type="button" disabled={!confirmedAxis?.confirmed && (needsConfirmation || !candidate)} onClick={onNext}>下一步</button>
     </section>
   );
 }
