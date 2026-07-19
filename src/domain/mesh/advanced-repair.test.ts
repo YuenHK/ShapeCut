@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import { repairMeshAdvanced } from './advanced-repair';
 import { repairMeshSafe } from './repair-mesh';
 import type { TriangleMesh } from './types';
+import { interpenetratingTetrahedra } from '../../test/mesh-builders';
 
 describe('bounded advanced mesh repair', () => {
   test('splits a non-manifold shared edge into independent closed manifold sheets', () => {
@@ -130,6 +131,17 @@ describe('bounded advanced mesh repair', () => {
     expect(result.after.inspection).toMatchObject({ boundaryEdgeCount: 0, nonManifoldEdgeCount: 0 });
     expect(result.accepted).toBe(false);
     expect(result.blockingReasons).toContain('修復結果仍有面方向不一致');
+  });
+
+  test('does not accept interpenetrating closed shells that topology-only checks would pass', () => {
+    const original = interpenetratingTetrahedra();
+
+    const result = repairMeshAdvanced(original, repairMeshSafe(original).mesh);
+
+    expect(result.after.selfIntersectionCount).toBeGreaterThan(0);
+    expect(result.after.selfIntersectionAnalysisComplete).toBe(true);
+    expect(result.accepted).toBe(false);
+    expect(result.blockingReasons).toContain('仍有三維自相交');
   });
 
   test('triangulates the same legal hole at the origin and after a large translation', () => {

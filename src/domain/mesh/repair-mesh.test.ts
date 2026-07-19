@@ -4,6 +4,10 @@ import { describe, expect, test } from 'vitest';
 import { parseSTL } from './parse-stl';
 import { compareMeshes, repairMeshSafe } from './repair-mesh';
 import type { TriangleMesh } from './types';
+import {
+  interpenetratingTetrahedra,
+  tetrahedronWithOneReversedFace,
+} from '../../test/mesh-builders';
 
 describe('safe mesh repair', () => {
   test('removes degenerate and duplicate faces, welds near vertices, and compacts unused vertices', () => {
@@ -126,6 +130,25 @@ describe('safe mesh repair', () => {
     expect(result.changes.weldedVertices).toBe(0);
     expect(result.after.inspection.boundaryEdgeCount).toBeGreaterThan(0);
     expect(result.accepted).toBe(false);
+  });
+
+  test('fails closed for a watertight tetrahedron with one locally reversed face', () => {
+    const result = repairMeshSafe(tetrahedronWithOneReversedFace());
+
+    expect(result.after.inspection).toMatchObject({ boundaryEdgeCount: 0, nonManifoldEdgeCount: 0 });
+    expect(result.after.inconsistentWindingEdgeCount).toBe(3);
+    expect(result.accepted).toBe(false);
+    expect(result.blockingReasons).toContain('修復結果仍有面方向不一致');
+  });
+
+  test('fails closed for two interpenetrating closed tetrahedra', () => {
+    const result = repairMeshSafe(interpenetratingTetrahedra());
+
+    expect(result.after.inspection).toMatchObject({ boundaryEdgeCount: 0, nonManifoldEdgeCount: 0 });
+    expect(result.after.selfIntersectionCount).toBeGreaterThan(0);
+    expect(result.after.selfIntersectionAnalysisComplete).toBe(true);
+    expect(result.accepted).toBe(false);
+    expect(result.blockingReasons).toContain('仍有三維自相交');
   });
 
   test('compares axis sizes and absolute volume without mutating either mesh', () => {

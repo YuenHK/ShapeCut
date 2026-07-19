@@ -105,6 +105,10 @@ export function RepairSummary({
         {count('非流形邊', before.inspection.nonManifoldEdgeCount, after?.inspection.nonManifoldEdgeCount)}
         {count('退化三角形', before.inspection.degenerateTriangleCount, after?.inspection.degenerateTriangleCount)}
         {count('重複三角形', before.duplicateTriangleCount, after?.duplicateTriangleCount)}
+        {count('面方向不一致', before.inconsistentWindingEdgeCount, after?.inconsistentWindingEdgeCount)}
+        {count('三維自相交', before.selfIntersectionCount, after?.selfIntersectionCount)}
+        {!before.selfIntersectionAnalysisComplete && <li>三維自相交分析：未完整</li>}
+        {after && !after.selfIntersectionAnalysisComplete && <li>修復後三維自相交分析：未完整</li>}
       </ul>
       {repair && (
         <>
@@ -114,6 +118,9 @@ export function RepairSummary({
             {count('非流形邊', originalReport.inspection.nonManifoldEdgeCount)}
             {count('退化三角形', originalReport.inspection.degenerateTriangleCount)}
             {count('重複三角形', originalReport.duplicateTriangleCount)}
+            {count('面方向不一致', originalReport.inconsistentWindingEdgeCount)}
+            {count('三維自相交', originalReport.selfIntersectionCount)}
+            {!originalReport.selfIntersectionAnalysisComplete && <li>三維自相交分析：未完整</li>}
           </ul>
           <p>{repair.accepted ? '修復結果已通過安全檢查' : '修復結果未通過安全檢查'}</p>
           <ul aria-label="修復變更">

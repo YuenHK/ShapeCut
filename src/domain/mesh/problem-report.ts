@@ -1,15 +1,22 @@
 import type { Vec3 } from '../types';
 import { inspectMesh } from './inspect-mesh';
 import { meshNumerics } from './numerics';
+import { analyzeSelfIntersections, type SelfIntersectionBudget } from './self-intersection';
 import type { EdgeMarker, MeshProblemReport, TriangleMarker, TriangleMesh } from './types';
 
 type EdgeIncidence = {
   readonly a: number;
   readonly b: number;
   count: number;
+  forwardCount: number;
+  reverseCount: number;
 };
 
-export function analyzeMeshProblems(mesh: TriangleMesh, markerLimit = 2_000): MeshProblemReport {
+export function analyzeMeshProblems(
+  mesh: TriangleMesh,
+  markerLimit = 2_000,
+  selfIntersectionBudget: SelfIntersectionBudget = {},
+): MeshProblemReport {
   if (!Number.isInteger(markerLimit) || markerLimit < 0) {
     throw new RangeError('Marker limit must be a non-negative integer.');
   }
@@ -57,8 +64,10 @@ export function analyzeMeshProblems(mesh: TriangleMesh, markerLimit = 2_000): Me
 
   const boundaryEdges: EdgeMarker[] = [];
   const nonManifoldEdges: EdgeMarker[] = [];
+  const inconsistentWindingEdges: EdgeMarker[] = [];
   let boundaryEdgeCount = 0;
   let nonManifoldEdgeCount = 0;
+  let inconsistentWindingEdgeCount = 0;
   for (const edge of edgeIncidences.values()) {
     if (edge.count === 1) {
       if (boundaryEdges.length < markerLimit) {
@@ -70,21 +79,34 @@ export function analyzeMeshProblems(mesh: TriangleMesh, markerLimit = 2_000): Me
         nonManifoldEdges.push(edgeMarker(mesh, edge, `mesh-non-manifold-edge-${nonManifoldEdges.length}`));
       }
       nonManifoldEdgeCount += 1;
+    } else if (edge.forwardCount !== 1 || edge.reverseCount !== 1) {
+      if (inconsistentWindingEdges.length < markerLimit) {
+        inconsistentWindingEdges.push(edgeMarker(mesh, edge, `mesh-winding-edge-${inconsistentWindingEdges.length}`));
+      }
+      inconsistentWindingEdgeCount += 1;
     }
   }
+  const selfIntersections = analyzeSelfIntersections(mesh, markerLimit, selfIntersectionBudget);
 
   return {
     inspection: inspectMesh(mesh),
     duplicateTriangleCount,
+    inconsistentWindingEdgeCount,
+    selfIntersectionCount: selfIntersections.count,
+    selfIntersectionAnalysisComplete: selfIntersections.complete,
     boundaryEdges,
     nonManifoldEdges,
     degenerateTriangles,
     duplicateTriangles,
+    inconsistentWindingEdges,
+    selfIntersections: selfIntersections.markers,
     markersTruncated: {
       boundaryEdges: boundaryEdgeCount > boundaryEdges.length,
       nonManifoldEdges: nonManifoldEdgeCount > nonManifoldEdges.length,
       degenerateTriangles: degenerateTriangleCount > degenerateTriangles.length,
       duplicateTriangles: duplicateTriangleCount > duplicateTriangles.length,
+      inconsistentWindingEdges: inconsistentWindingEdgeCount > inconsistentWindingEdges.length,
+      selfIntersections: selfIntersections.count > selfIntersections.markers.length,
     },
   };
 }
@@ -94,8 +116,14 @@ function addEdgeIncidence(edges: Map<string, EdgeIncidence>, first: number, seco
   const b = Math.max(first, second);
   const key = `${a}:${b}`;
   const existing = edges.get(key);
-  if (existing) existing.count += 1;
-  else edges.set(key, { a, b, count: 1 });
+  const forward = first === a && second === b;
+  if (existing) {
+    existing.count += 1;
+    if (forward) existing.forwardCount += 1;
+    else existing.reverseCount += 1;
+  } else {
+    edges.set(key, { a, b, count: 1, forwardCount: forward ? 1 : 0, reverseCount: forward ? 0 : 1 });
+  }
 }
 
 function isDegenerate(

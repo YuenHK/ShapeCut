@@ -27,15 +27,22 @@ export type MeshProblemCategory =
   | 'boundaryEdges'
   | 'nonManifoldEdges'
   | 'degenerateTriangles'
-  | 'duplicateTriangles';
+  | 'duplicateTriangles'
+  | 'inconsistentWindingEdges'
+  | 'selfIntersections';
 
 export type MeshProblemReport = {
   readonly inspection: MeshInspection;
   readonly duplicateTriangleCount: number;
+  readonly inconsistentWindingEdgeCount: number;
+  readonly selfIntersectionCount: number;
+  readonly selfIntersectionAnalysisComplete: boolean;
   readonly boundaryEdges: readonly EdgeMarker[];
   readonly nonManifoldEdges: readonly EdgeMarker[];
   readonly degenerateTriangles: readonly TriangleMarker[];
   readonly duplicateTriangles: readonly TriangleMarker[];
+  readonly inconsistentWindingEdges: readonly EdgeMarker[];
+  readonly selfIntersections: readonly TriangleMarker[];
   readonly markersTruncated: Readonly<Record<MeshProblemCategory, boolean>>;
 };
 

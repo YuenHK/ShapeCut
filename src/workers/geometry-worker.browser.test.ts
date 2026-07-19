@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { writeBinarySTL } from '../domain/mesh/write-stl';
 import type { TriangleMesh } from '../domain/mesh/types';
-import { openTetrahedron, tetrahedron } from '../test/mesh-builders';
+import {
+  interpenetratingTetrahedra,
+  openTetrahedron,
+  tetrahedron,
+  tetrahedronWithOneReversedFace,
+} from '../test/mesh-builders';
 import type { GeometryClient } from './geometry-client';
 import { createGeometryWorkerClient } from './geometry-client';
 
@@ -94,6 +99,20 @@ describe('geometry worker boundary', () => {
     expect(bytes.byteLength).toBe(84 + 4 * 50);
     expect(new TextDecoder().decode(bytes.slice(0, 80))).toContain('advanced');
     expect(new DataView(bytes).getUint32(80, true)).toBe(4);
+  });
+
+  it.each([
+    ['inconsistent winding', tetrahedronWithOneReversedFace(), 'inconsistentWindingEdgeCount'],
+    ['3D self-intersection', interpenetratingTetrahedra(), 'selfIntersectionCount'],
+  ] as const)('keeps %s counterexamples locked across the real worker boundary', async (_label, mesh, countKey) => {
+    const client = createGeometryWorkerClient();
+    clients.push(client);
+
+    const result = await client.analyzeAndRepairForImport(writeBinarySTL(mesh, 'safe'));
+
+    expect(result.safeRepair.after[countKey]).toBeGreaterThan(0);
+    expect(result.safeRepair.accepted).toBe(false);
+    expect(result.candidates).toEqual([]);
   });
 });
 

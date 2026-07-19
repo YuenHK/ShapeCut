@@ -39,15 +39,22 @@ const report: MeshProblemReport = {
     invertedVolume: false,
   },
   duplicateTriangleCount: 1,
+  inconsistentWindingEdgeCount: 0,
+  selfIntersectionCount: 0,
+  selfIntersectionAnalysisComplete: true,
   boundaryEdges: [{ regionId: 'mesh-boundary-edge-0', points: [[0, 0, 0], [1, 0, 0]] }],
   nonManifoldEdges: [{ regionId: 'mesh-non-manifold-edge-0', points: [[0, 0, 0], [0, 1, 0]] }],
   degenerateTriangles: [{ regionId: 'mesh-degenerate-triangle-0', points: [[0, 0, 0], [1, 0, 0], [2, 0, 0]] }],
   duplicateTriangles: [{ regionId: 'mesh-duplicate-triangle-0', points: [[0, 0, 0], [1, 0, 0], [0, 1, 0]] }],
+  inconsistentWindingEdges: [],
+  selfIntersections: [],
   markersTruncated: {
     boundaryEdges: false,
     nonManifoldEdges: false,
     degenerateTriangles: false,
     duplicateTriangles: false,
+    inconsistentWindingEdges: false,
+    selfIntersections: false,
   },
 };
 

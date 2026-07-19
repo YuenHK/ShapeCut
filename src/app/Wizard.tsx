@@ -334,6 +334,27 @@ function issuesFromReport(report: MeshProblemReport): readonly GeometryIssue[] {
     label: '重複三角形',
     description: `偵測到 ${report.duplicateTriangleCount} 個重複三角形。`,
   });
+  add(report.inconsistentWindingEdgeCount, {
+    id: 'mesh-inconsistent-winding',
+    regionId: report.inconsistentWindingEdges[0]?.regionId ?? 'mesh-winding',
+    severity: 'blocking',
+    label: '面方向不一致',
+    description: `偵測到 ${report.inconsistentWindingEdgeCount} 條相鄰面方向不一致的邊。`,
+  });
+  add(report.selfIntersectionCount, {
+    id: 'mesh-self-intersections',
+    regionId: report.selfIntersections[0]?.regionId ?? 'mesh-self-intersection',
+    severity: 'blocking',
+    label: '三維自相交',
+    description: `偵測到 ${report.selfIntersectionCount} 對相交三角形。`,
+  });
+  if (!report.selfIntersectionAnalysisComplete) issues.push({
+    id: 'mesh-self-intersection-analysis-incomplete',
+    regionId: 'mesh-self-intersection-analysis',
+    severity: 'blocking',
+    label: '三維自相交分析未完整',
+    description: '分析超出安全工作上限；在完整驗證前不得繼續。',
+  });
   return issues;
 }
 

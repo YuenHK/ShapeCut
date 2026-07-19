@@ -52,11 +52,16 @@ afterEach(() => vi.restoreAllMocks())
 const zeroReport: MeshProblemReport = {
   inspection: { triangleCount: 4, boundaryEdgeCount: 0, nonManifoldEdgeCount: 0, degenerateTriangleCount: 0, invertedVolume: false },
   duplicateTriangleCount: 0,
+  inconsistentWindingEdgeCount: 0,
+  selfIntersectionCount: 0,
+  selfIntersectionAnalysisComplete: true,
   boundaryEdges: [],
   nonManifoldEdges: [],
   degenerateTriangles: [],
   duplicateTriangles: [],
-  markersTruncated: { boundaryEdges: false, nonManifoldEdges: false, degenerateTriangles: false, duplicateTriangles: false },
+  inconsistentWindingEdges: [],
+  selfIntersections: [],
+  markersTruncated: { boundaryEdges: false, nonManifoldEdges: false, degenerateTriangles: false, duplicateTriangles: false, inconsistentWindingEdges: false, selfIntersections: false },
 }
 
 const tinyMesh: TriangleMesh = {

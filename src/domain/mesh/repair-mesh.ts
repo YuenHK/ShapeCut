@@ -195,6 +195,9 @@ export function meshRepairBlockingReasons(
   if (report.inspection.nonManifoldEdgeCount > 0) reasons.push('仍有非流形邊');
   if (report.inspection.degenerateTriangleCount > 0) reasons.push('仍有退化三角形');
   if (report.duplicateTriangleCount > 0) reasons.push('仍有重複三角形');
+  if (report.inconsistentWindingEdgeCount > 0) reasons.push('修復結果仍有面方向不一致');
+  if (report.selfIntersectionCount > 0) reasons.push('仍有三維自相交');
+  if (!report.selfIntersectionAnalysisComplete) reasons.push('三維自相交分析超出安全工作上限，結果未能完整驗證');
   const axisNames = ['X', 'Y', 'Z'] as const;
   comparison.axisChangePercent.forEach((change, axis) => {
     if (change > MAX_AXIS_CHANGE_PERCENT) reasons.push(`${axisNames[axis]} 軸尺寸變化超過 0.5%`);

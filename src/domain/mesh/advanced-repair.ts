@@ -424,12 +424,8 @@ function buildResult(
 ): MeshRepairResult {
   const after = analyzeMeshProblems(mesh);
   const comparison = compareMeshes(original, mesh);
-  const orientationReasons = hasInconsistentEdgeOrientation(mesh.indices)
-    ? ['修復結果仍有面方向不一致']
-    : [];
   const blockingReasons = [...new Set([
     ...specificReasons,
-    ...orientationReasons,
     ...meshRepairBlockingReasons(after, comparison),
   ])];
   return {
@@ -442,14 +438,6 @@ function buildResult(
     accepted: blockingReasons.length === 0,
     blockingReasons,
   };
-}
-
-function hasInconsistentEdgeOrientation(indices: ArrayLike<number>): boolean {
-  return [...edgeIncidences(indices).values()].some((edge) => {
-    if (edge.uses.length !== 2) return false;
-    const [first, second] = edge.uses;
-    return first.from !== second.to || first.to !== second.from;
-  });
 }
 
 function compactMesh(data: MeshData): TriangleMesh {

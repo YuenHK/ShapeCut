@@ -53,7 +53,12 @@ const geometryApi: GeometryApi = {
     const mesh = parseSTL(input);
     const inspection = inspectMesh(mesh);
     const preview = previewMesh(mesh);
-    const invalidTopology = inspection.boundaryEdgeCount > 0 || inspection.nonManifoldEdgeCount > 0;
+    const problems = analyzeMeshProblems(mesh, 0);
+    const invalidTopology = inspection.boundaryEdgeCount > 0
+      || inspection.nonManifoldEdgeCount > 0
+      || problems.inconsistentWindingEdgeCount > 0
+      || problems.selfIntersectionCount > 0
+      || !problems.selfIntersectionAnalysisComplete;
     const candidates = invalidTopology ? [] : findAxisCandidates(mesh, { sampleCount: 4096 });
     return transfer({ sourceHash, previewMesh: preview, inspection, candidates }, [preview.positions.buffer, preview.indices.buffer]);
   },

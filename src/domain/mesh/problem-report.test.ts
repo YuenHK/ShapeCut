@@ -1,6 +1,11 @@
 import { describe, expect, test } from 'vitest';
 import { analyzeMeshProblems } from './problem-report';
 import type { TriangleMesh } from './types';
+import {
+  interpenetratingTetrahedra,
+  tetrahedron,
+  tetrahedronWithOneReversedFace,
+} from '../../test/mesh-builders';
 
 describe('mesh problem reports', () => {
   test('reports duplicate faces independent of winding and bounds marker payloads', () => {
@@ -58,6 +63,8 @@ describe('mesh problem reports', () => {
       nonManifoldEdges: true,
       degenerateTriangles: false,
       duplicateTriangles: true,
+      inconsistentWindingEdges: false,
+      selfIntersections: false,
     });
   });
 
@@ -80,6 +87,32 @@ describe('mesh problem reports', () => {
 
     expect(analyzeMeshProblems(valid).degenerateTriangles).toHaveLength(0);
     expect(analyzeMeshProblems(collinear).degenerateTriangles).toHaveLength(1);
+  });
+
+  test('reports closed topology whose incident faces use a shared edge in the same direction', () => {
+    const report = analyzeMeshProblems(tetrahedronWithOneReversedFace());
+
+    expect(report.inspection).toMatchObject({ boundaryEdgeCount: 0, nonManifoldEdgeCount: 0 });
+    expect(report.inconsistentWindingEdgeCount).toBe(3);
+    expect(report.inconsistentWindingEdges).toHaveLength(3);
+  });
+
+  test('detects intersections between disconnected closed shells without flagging adjacent tetrahedron faces', () => {
+    const valid = analyzeMeshProblems(tetrahedron());
+    const intersecting = analyzeMeshProblems(interpenetratingTetrahedra());
+
+    expect(valid.selfIntersectionAnalysisComplete).toBe(true);
+    expect(valid.selfIntersectionCount).toBe(0);
+    expect(intersecting.inspection).toMatchObject({ boundaryEdgeCount: 0, nonManifoldEdgeCount: 0 });
+    expect(intersecting.selfIntersectionAnalysisComplete).toBe(true);
+    expect(intersecting.selfIntersectionCount).toBeGreaterThan(0);
+    expect(intersecting.selfIntersections.length).toBeGreaterThan(0);
+  });
+
+  test('reports an incomplete self-intersection analysis when the triangle-pair budget is exhausted', () => {
+    const report = analyzeMeshProblems(interpenetratingTetrahedra(), 2_000, { maxTrianglePairTests: 0 });
+
+    expect(report.selfIntersectionAnalysisComplete).toBe(false);
   });
 });
 

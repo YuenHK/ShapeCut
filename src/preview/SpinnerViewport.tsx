@@ -58,6 +58,8 @@ export function SpinnerViewport({
       + meshProblems.inspection.nonManifoldEdgeCount
       + meshProblems.inspection.degenerateTriangleCount
       + meshProblems.duplicateTriangleCount
+      + meshProblems.inconsistentWindingEdgeCount
+      + meshProblems.selfIntersectionCount
     : 0;
 
   return (

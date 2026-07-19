@@ -263,6 +263,19 @@ export function createSceneController(host: HTMLElement): SceneController {
           transparent: true,
         }));
       }
+      if (report.inconsistentWindingEdges.length > 0) {
+        addEdgeMarkers(problemGroup, report.inconsistentWindingEdges, new LineBasicMaterial({ color: '#38bdf8', depthTest: false }));
+      }
+      if (report.selfIntersections.length > 0) {
+        addDuplicateMarkers(problemGroup, report.selfIntersections, new MeshBasicMaterial({
+          color: '#dc2626',
+          depthTest: false,
+          depthWrite: false,
+          opacity: 0.62,
+          side: DoubleSide,
+          transparent: true,
+        }));
+      }
     },
     selectPart,
     focusRegion(id) {

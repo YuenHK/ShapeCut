@@ -29,12 +29,18 @@ function report({
   nonManifold = 0,
   degenerate = 0,
   duplicate = 0,
+  inconsistentWinding = 0,
+  selfIntersections = 0,
+  selfIntersectionAnalysisComplete = true,
 }: {
   readonly triangles?: number;
   readonly boundary?: number;
   readonly nonManifold?: number;
   readonly degenerate?: number;
   readonly duplicate?: number;
+  readonly inconsistentWinding?: number;
+  readonly selfIntersections?: number;
+  readonly selfIntersectionAnalysisComplete?: boolean;
 } = {}): MeshProblemReport {
   return {
     inspection: {
@@ -45,15 +51,22 @@ function report({
       invertedVolume: false,
     },
     duplicateTriangleCount: duplicate,
+    inconsistentWindingEdgeCount: inconsistentWinding,
+    selfIntersectionCount: selfIntersections,
+    selfIntersectionAnalysisComplete,
     boundaryEdges: boundary > 0 ? [{ regionId: 'mesh-boundary-edge-0', points: [[0, 0, 0], [1, 0, 0]] }] : [],
     nonManifoldEdges: nonManifold > 0 ? [{ regionId: 'mesh-non-manifold-edge-0', points: [[0, 0, 0], [1, 0, 0]] }] : [],
     degenerateTriangles: degenerate > 0 ? [{ regionId: 'mesh-degenerate-triangle-0', points: [[0, 0, 0], [1, 0, 0], [0, 0, 0]] }] : [],
     duplicateTriangles: duplicate > 0 ? [{ regionId: 'mesh-duplicate-triangle-0', points: [[0, 0, 0], [1, 0, 0], [0, 1, 0]] }] : [],
+    inconsistentWindingEdges: inconsistentWinding > 0 ? [{ regionId: 'mesh-winding-edge-0', points: [[0, 0, 0], [1, 0, 0]] }] : [],
+    selfIntersections: selfIntersections > 0 ? [{ regionId: 'mesh-self-intersection-0', points: [[0, 0, 0], [1, 0, 0], [0, 1, 0]] }] : [],
     markersTruncated: {
       boundaryEdges: false,
       nonManifoldEdges: false,
       degenerateTriangles: false,
       duplicateTriangles: false,
+      inconsistentWindingEdges: false,
+      selfIntersections: false,
     },
   };
 }
@@ -323,6 +336,24 @@ describe('Wizard', () => {
 
     expect(screen.getByText('體積變化超過 1%')).toBeVisible();
     expect(screen.getByRole('button', { name: '使用進階修復' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '軸心與尺寸' })).toBeDisabled();
+  });
+
+  it.each([
+    ['面方向不一致', report({ inconsistentWinding: 3 }), '修復結果仍有面方向不一致'],
+    ['三維自相交', report({ selfIntersections: 4 }), '仍有三維自相交'],
+  ])('keeps a closed %s counterexample in the repair step', async (summaryLabel, after, reason) => {
+    const user = userEvent.setup();
+    const blocked = repair({ accepted: false, before: after, after, blockingReasons: [reason] });
+    const services = successfulServices();
+    services.inspectAndRepair = vi.fn().mockResolvedValue(analysis(blocked));
+    render(<Wizard services={services} />);
+
+    await user.upload(screen.getByLabelText('STL 模型檔案'), new File(['solid counterexample'], 'counterexample.stl'));
+    await user.click(screen.getByRole('button', { name: '分析模型' }));
+
+    expect(screen.getAllByText(new RegExp(`${summaryLabel}：`)).length).toBeGreaterThan(0);
+    expect(screen.getByText(reason)).toBeVisible();
     expect(screen.getByRole('button', { name: '軸心與尺寸' })).toBeDisabled();
   });
 

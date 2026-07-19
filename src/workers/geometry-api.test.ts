@@ -53,15 +53,22 @@ function importRepairAnalysis(sourceHash: string): ImportRepairAnalysis {
       invertedVolume: false,
     },
     duplicateTriangleCount: 0,
+    inconsistentWindingEdgeCount: 0,
+    selfIntersectionCount: 0,
+    selfIntersectionAnalysisComplete: true,
     boundaryEdges: [],
     nonManifoldEdges: [],
     degenerateTriangles: [],
     duplicateTriangles: [],
+    inconsistentWindingEdges: [],
+    selfIntersections: [],
     markersTruncated: {
       boundaryEdges: false,
       nonManifoldEdges: false,
       degenerateTriangles: false,
       duplicateTriangles: false,
+      inconsistentWindingEdges: false,
+      selfIntersections: false,
     },
   } as const;
   return {
