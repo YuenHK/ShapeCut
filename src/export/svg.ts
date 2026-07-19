@@ -9,7 +9,7 @@ export function writeSheetSvg(sheet: ManufacturingSheet): string {
   const groups = usedLayers(sheet).map((layer) => {
     const paths = sheet.entities.filter((entity) => entity.layer === layer).map((entity) => {
       const points = entity.polygon.points.map(([x, y]) => `${x},${y}`).join(' ');
-      return `<polygon id="${escape(entity.id)}" data-part-id="${escape(entity.partId)}" points="${points}"/>`;
+      return `<polygon id="${escape(entity.id)}" data-part-id="${escape(entity.partId)}" data-instance="${entity.instance}" data-contour="${entity.contour}" points="${points}"/>`;
     }).join('');
     return `<g id="layer-${layer}" data-process="${layer}">${paths}</g>`;
   }).join('');

@@ -107,7 +107,11 @@ export function radialSymmetry(
   const transverseAnisotropy = Math.abs(varianceU - varianceV) / Math.max(Number.MIN_VALUE, varianceU + varianceV);
   const samplingFloor = 1 / Math.sqrt(samples.length);
   const rawConfidence = Math.exp(
-    -1.8 * Math.max(0, radialRmsError - samplingFloor)
+    // A hollow lathed body legitimately has several radii at one axial
+    // position.  Only the angular residual distinguishes rotational
+    // symmetry; penalising the within-bin radius mixture rejects concentric
+    // shells even though every angular sector has the same radial profile.
+    -1.4 * Math.max(0, angularError - samplingFloor)
     -2.5 * Math.max(0, transverseAnisotropy - samplingFloor)
     -4 * Math.max(0, centroidOffset - samplingFloor),
   );

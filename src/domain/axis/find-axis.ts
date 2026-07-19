@@ -3,6 +3,8 @@ import { massProperties } from '../mesh/mass-properties';
 import type { TriangleMesh } from '../mesh/types';
 import { radialSymmetry, type SurfaceSample } from './radial-symmetry';
 
+export const AUTOMATIC_AXIS_CONFIDENCE_THRESHOLD = 0.8;
+
 export type AxisCandidate = Axis & {
   readonly radialRmsError: number;
   readonly centroidOffset: number;

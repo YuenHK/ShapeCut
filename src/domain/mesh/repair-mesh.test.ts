@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, test } from 'vitest';
 import { parseSTL } from './parse-stl';
+import { analyzeMeshProblems } from './problem-report';
 import { compareMeshes, repairMeshSafe } from './repair-mesh';
 import type { TriangleMesh } from './types';
 import {
@@ -10,6 +11,17 @@ import {
 } from '../../test/mesh-builders';
 
 describe('safe mesh repair', () => {
+  test('reuses an already computed source report without changing repair semantics', () => {
+    const source = repairableTetrahedron();
+    const beforeReport = analyzeMeshProblems(source);
+
+    const result = repairMeshSafe(source, { beforeReport });
+
+    expect(result.before).toBe(beforeReport);
+    expect(result.after.inspection.degenerateTriangleCount).toBe(0);
+    expect(result.accepted).toBe(true);
+  });
+
   test('removes degenerate and duplicate faces, welds near vertices, and compacts unused vertices', () => {
     const result = repairMeshSafe(repairableTetrahedron());
 

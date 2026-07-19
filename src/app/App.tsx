@@ -80,7 +80,11 @@ export function createAppServices({
     createArtifacts: async (input) => {
       const material = await getMaterial(input.settings.materialId);
       if (!material) throw new Error(`找不到完整材料設定檔：${input.settings.materialId}`);
-      return createManufacturingArtifacts({ ...input, material }, getGeometry());
+      const geometry = getGeometry();
+      return createManufacturingArtifacts({ ...input, material }, {
+        decompose: (request) => measureWorkerStage('spinner-worker-decomposition', () => geometry.decompose(request)),
+        engrave: (request) => measureWorkerStage('spinner-worker-engraving', () => geometry.engrave(request)),
+      });
     },
     buildKit: async (artifacts) => {
       if (!artifacts.preflight.value.canExport) throw new Error('真實加工前檢查未通過，不能建立 production 製作套件');
@@ -129,6 +133,12 @@ export function createAppServices({
 async function fingerprintMesh(mesh: { readonly positions: Float64Array; readonly indices: Uint32Array }, fingerprint: typeof sha256Hex): Promise<string> {
   const [positionsHash, indicesHash] = await Promise.all([fingerprint(mesh.positions), fingerprint(mesh.indices)]);
   return fingerprint(new TextEncoder().encode(`${positionsHash}:${indicesHash}`));
+}
+
+async function measureWorkerStage<T>(name: string, operation: () => Promise<T>): Promise<T> {
+  const started = performance.now();
+  try { return await operation(); }
+  finally { performance.measure(name, { start: started, duration: performance.now() - started }); }
 }
 
 export function App() {

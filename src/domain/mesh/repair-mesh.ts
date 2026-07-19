@@ -2,7 +2,7 @@ import type { Vec3 } from '../types';
 import { massProperties, MeshVolumeError } from './mass-properties';
 import { meshNumerics } from './numerics';
 import { analyzeMeshProblems } from './problem-report';
-import type { MeshComparison, MeshRepairResult, TriangleMesh } from './types';
+import type { MeshComparison, MeshProblemReport, MeshRepairResult, TriangleMesh } from './types';
 
 const WELD_RELATIVE_TOLERANCE = 1e-7;
 const MAX_AXIS_CHANGE_PERCENT = 0.5;
@@ -13,9 +13,12 @@ type Bounds = {
   readonly size: Vec3;
 };
 
-export function repairMeshSafe(mesh: TriangleMesh): MeshRepairResult {
+export function repairMeshSafe(
+  mesh: TriangleMesh,
+  options: { readonly beforeReport?: MeshProblemReport } = {},
+): MeshRepairResult {
   const referenced = compactVertices(mesh, mesh.indices);
-  const before = analyzeMeshProblems(referenced);
+  const before = options.beforeReport ?? analyzeMeshProblems(referenced);
   const filtered = filterFaces(referenced);
   const welded = weldVertices(referenced, filtered.indices);
   const repaired = compactVertices(referenced, welded.indices);

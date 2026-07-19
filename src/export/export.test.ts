@@ -108,11 +108,18 @@ describe('manufacturing package', () => {
     expect(svgLayers(files.sheets[0].svg)).toEqual(expectedLayers);
     expect(dxfLayers(files.sheets[0].dxf)).toEqual(expectedLayers);
     expect(files.sheets[0].svg).toContain('width="300mm" height="200mm"');
+    expect(files.sheets[0].svg).toContain('data-instance="0" data-contour="outline"');
     expect(files.sheets[0].dxf).toContain('$INSUNITS\n70\n4');
+    expect(files.sheets[0].dxf).toContain('$EXTMIN\n10\n0\n20\n0\n30\n0');
+    expect(files.sheets[0].dxf).toContain('$EXTMAX\n10\n300\n20\n200\n30\n0');
+    expect(files.sheets[0].dxf).toContain('999\nENTITY_ID:hub-cut-0');
+    expect(files.sheets[0].dxf).toContain('999\nPART_ID:hub-1\n999\nINSTANCE:0\n999\nCONTOUR:outline');
 
     const pdf = await PDFDocument.load(files.assemblyPdf);
     expect(pdf.getKeywords()).toContain('hub-1:2');
     expect(pdf.getKeywords()).toContain('rib-1:6');
+    expect(pdf.getKeywords()).toContain('assembly-order:1:hub-1');
+    expect(pdf.getKeywords()).toContain('assembly-order:2:rib-1');
     expect(pdf.getPageCount()).toBeGreaterThan(0);
   });
 

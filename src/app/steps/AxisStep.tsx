@@ -1,8 +1,7 @@
 import { useState } from 'react';
 import type { Axis } from '../../domain/types';
-import type { AxisCandidate } from '../../domain/axis/find-axis';
+import { AUTOMATIC_AXIS_CONFIDENCE_THRESHOLD, type AxisCandidate } from '../../domain/axis/find-axis';
 
-const AUTOMATIC_CONFIDENCE_THRESHOLD = 0.8;
 const labels = ['X', 'Y', 'Z'] as const;
 type ManualVector = readonly [string, string, string];
 
@@ -27,7 +26,7 @@ export function AxisStep({
     (best, current) => best === undefined || current.confidence > best.confidence ? current : best,
     undefined,
   );
-  const manualRequired = candidate === undefined || candidate.confidence < AUTOMATIC_CONFIDENCE_THRESHOLD;
+  const manualRequired = candidate === undefined || candidate.confidence < AUTOMATIC_AXIS_CONFIDENCE_THRESHOLD;
   const [manualOpen, setManualOpen] = useState(false);
   const [manualTouched, setManualTouched] = useState(false);
   const [origin, setOrigin] = useState<ManualVector>(['', '', '']);

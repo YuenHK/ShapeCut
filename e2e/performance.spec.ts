@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { importAndReachDecomposition } from './helpers';
 
 function binaryTetrahedra(triangleCount: number): Buffer {
   const buffer = Buffer.allocUnsafe(84 + triangleCount * 50);
@@ -68,4 +69,31 @@ test('records the bounded 500k-triangle import result', async ({ page }, testInf
     contentType: 'application/json',
   });
   expect(elapsedMs).toBeLessThan(15_000);
+});
+
+test('measures the real worker decomposition and engraving stages', async ({ page }, testInfo) => {
+  await page.goto('/');
+  await importAndReachDecomposition(page, 'fixtures/acceptance/symmetric-smooth.stl');
+  await page.evaluate(() => performance.clearMeasures());
+
+  const started = Date.now();
+  await page.getByRole('button', { name: '接受拆件建議' }).click();
+  await expect(page.getByRole('heading', { name: '紋理與材料' })).toBeVisible({ timeout: 10_000 });
+  const firstPipelineElapsedMs = Date.now() - started;
+  const timings = await page.evaluate(() => ({
+    decomposition: performance.getEntriesByName('spinner-worker-decomposition', 'measure').map(({ duration }) => duration),
+    engraving: performance.getEntriesByName('spinner-worker-engraving', 'measure').map(({ duration }) => duration),
+  }));
+
+  await testInfo.attach('manufacturing-stage-performance.json', {
+    body: JSON.stringify({ firstPipelineElapsedMs, ...timings }),
+    contentType: 'application/json',
+  });
+  expect(timings.decomposition).toHaveLength(1);
+  expect(timings.engraving).toHaveLength(1);
+  expect(timings.decomposition[0]).toBeGreaterThanOrEqual(0);
+  expect(timings.engraving[0]).toBeGreaterThanOrEqual(0);
+  expect(timings.decomposition[0]).toBeLessThan(3_000);
+  expect(timings.engraving[0]).toBeLessThan(3_000);
+  expect(firstPipelineElapsedMs).toBeLessThan(5_000);
 });

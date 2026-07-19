@@ -6,7 +6,10 @@ const MM_TO_POINTS = 72 / 25.4;
 export async function writeAssemblyPdf(project: ManufacturingProject): Promise<Uint8Array> {
   const pdf = await PDFDocument.create();
   pdf.setTitle(`${project.name} assembly guide`);
-  pdf.setKeywords(project.document.manifest.map(({ partId, quantity }) => `${partId}:${quantity}`));
+  pdf.setKeywords(project.document.manifest.flatMap(({ partId, quantity, assemblyOrder }) => [
+    `${partId}:${quantity}`,
+    `assembly-order:${assemblyOrder}:${partId}`,
+  ]));
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   const page = pdf.addPage([210 * MM_TO_POINTS, 297 * MM_TO_POINTS]);
   page.drawText(`${project.name} - Assembly guide`, { x: 30, y: page.getHeight() - 40, size: 16, font });

@@ -67,7 +67,7 @@ const geometryApi: GeometryApi = {
     const originalMesh = parseSTL(input);
     const originalPreview = previewMesh(originalMesh);
     const originalReport = analyzeMeshProblems(originalMesh);
-    const safeRepair = repairMeshSafe(originalMesh);
+    const safeRepair = repairMeshSafe(originalMesh, { beforeReport: originalReport });
     const candidates = safeRepair.accepted
       ? findAxisCandidates(safeRepair.mesh, { sampleCount: 4096 })
       : [];

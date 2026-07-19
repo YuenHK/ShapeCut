@@ -72,6 +72,23 @@ function centeredCube(): TriangleMesh {
   return { positions, indices };
 }
 
+function concentricLathedShell(): TriangleMesh {
+  const outer = lathedSpinner();
+  const inner = lathedSpinner(([x, y, z]) => [x * 0.55, y * 0.55, z * 0.9]);
+  const vertexOffset = outer.positions.length / 3;
+  const positions = new Float64Array(outer.positions.length + inner.positions.length);
+  positions.set(outer.positions);
+  positions.set(inner.positions, outer.positions.length);
+  const indices = new Uint32Array(outer.indices.length + inner.indices.length);
+  indices.set(outer.indices);
+  for (let offset = 0; offset < inner.indices.length; offset += 3) {
+    indices[outer.indices.length + offset] = inner.indices[offset] + vertexOffset;
+    indices[outer.indices.length + offset + 1] = inner.indices[offset + 2] + vertexOffset;
+    indices[outer.indices.length + offset + 2] = inner.indices[offset + 1] + vertexOffset;
+  }
+  return { positions, indices };
+}
+
 const obliqueAxis: MutableVec3 = (() => {
   const length = Math.hypot(1, 2, 3);
   return [1 / length, 2 / length, 3 / length];
@@ -171,6 +188,17 @@ describe('findAxisCandidates', () => {
   it('does not mistake an equal-extent cube for a rotationally symmetric body', () => {
     const [best] = findAxisCandidates(centeredCube(), { sampleCount: 4096 });
     expect(best.confidence).toBeLessThan(0.8);
+  });
+
+  it('keeps a densely tessellated elliptical body below the automatic threshold', () => {
+    const [best] = findAxisCandidates(lathedSpinner(([x, y, z]) => [x * 1.5, y, z]), { sampleCount: 4096 });
+    expect(best.confidence).toBeLessThan(0.8);
+  });
+
+  it('keeps a concentric hollow surface above the automatic confirmation threshold', () => {
+    const [best] = findAxisCandidates(concentricLathedShell(), { sampleCount: 4096 });
+    expect(Math.abs(best.direction[2])).toBeGreaterThan(0.999);
+    expect(best.confidence).toBeGreaterThanOrEqual(0.8);
   });
 
   it('is scale-aware across microscopic and very large translated spinners', () => {
