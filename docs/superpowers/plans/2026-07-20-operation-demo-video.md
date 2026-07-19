@@ -44,7 +44,7 @@
 
 - [ ] **Step 1: Write the failing timeline tests**
 
-Test that scene IDs occur in this order: `title`, `privacy`, `import`, `inspection`, `axis`, `material`, `decomposition`, `engraving`, `export`, `knight-import`, `knight-repair`, `knight-block`, `closing`. Assert summed `holdMs` is between 160000 and 200000, captions contain `本機瀏覽器`, `材料測試片`, and `未通過安全檢查`, and no caption matches `/Users/` or an email pattern.
+Test that scene IDs occur in this order: `title`, `privacy`, `import`, `inspection`, `axis`, `material`, `decomposition`, `engraving`, `export`, `knight-import`, `knight-repair`, `knight-block`, `closing`. Assert summed `holdMs` is between 105000 and 130000 so real UI operations and transitions can fit inside the final 160–200 second runtime. Captions must contain `本機瀏覽器`, `材料測試片`, and `未通過安全檢查`, and no caption may match `/Users/` or an email pattern.
 
 - [ ] **Step 2: Run the test and verify the module is missing**
 
@@ -54,7 +54,7 @@ Expected: FAIL because `./demo-timeline` cannot be resolved.
 
 - [ ] **Step 3: Implement the typed timeline**
 
-Create thirteen immutable scenes with concrete Traditional Chinese captions matching the approved storyboard. Allocate 10–18 seconds to each normal scene and 18–24 seconds to each Knight Fortress scene so the total is 160–200 seconds. Implement `assertSafeCaptionText` and validate all captions when the module loads.
+Create thirteen immutable scenes with concrete Traditional Chinese captions matching the approved storyboard. Allocate 6–10 seconds to each normal scene and 10–14 seconds to each Knight Fortress scene so the total caption hold budget is 105–130 seconds; real clicks, processing, scrolling, and transitions supply the remaining time within the final 160–200 second runtime. Implement `assertSafeCaptionText` and validate all captions when the module loads.
 
 - [ ] **Step 4: Run the focused test**
 
@@ -208,4 +208,3 @@ git commit -m "test: verify demo video artifact"
 - [ ] **Step 6: Deliver both local artifacts**
 
 Provide clickable links to `artifacts/video/spinner-laser-kit-demo-zh-hant.mp4` and `artifacts/video/spinner-laser-kit-demo-silent.webm`, state the measured duration and resolution, and note that the Knight Fortress source remains local and uncommitted.
-
