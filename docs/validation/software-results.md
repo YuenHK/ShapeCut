@@ -6,20 +6,24 @@
 
 | 關卡 | 結果 |
 |---|---:|
-| Vitest unit/component | 409/409 通過（25 個 test files） |
-| Chromium browser | 31/31 通過（4 個 test files） |
+| Vitest unit/component | 425/425 通過（25 個 test files） |
+| Chromium browser | 33/33 通過（4 個 test files） |
 | Playwright E2E | 9/9 通過（single worker，避免幾何 benchmark 與另一個 repair worker 爭用 CPU） |
 | 10 個代表性 STL | 8 個自動成功；1 個要求人工軸心；1 個 topology blocking；10/10 通過 |
 | TypeScript | 通過 |
-| Vite production build | 通過（341 modules transformed） |
+| Vite production build | 通過（343 modules transformed） |
 | 非根路徑 PWA build | `/school/spinner/` manifest、icon、service worker URL／scope 及 cache shell 全部通過 |
-| 100k triangles | 2,893 ms 到可互動軸心頁；最長 main-thread task 72 ms |
-| 500k triangles | 1,397 ms 受控返回 resource-limit `操作失敗`：unique vertices 超過 300,000 上限 |
-| 真實拆件／雕刻 worker | 首次 pipeline 106 ms；decomposition 11.9 ms；engraving 8.0 ms |
+| 100k triangles | 2,895 ms 到可互動軸心頁；最長 main-thread task 75 ms |
+| 500k triangles | 1,377 ms 受控返回 resource-limit `操作失敗`：unique vertices 超過 300,000 上限 |
+| 真實拆件／雕刻 worker | 首次 pipeline 89 ms；decomposition 11.6 ms；engraving 3.3 ms |
 
 E2E 已實際驗證：真實封閉 STL 完成軟件流程，但預設材料因欠精確材料身份、實體 coupon 及合資格操作員簽署而阻止 production 匯出；開放 STL 停在匯入步驟；低對稱 fixture 必須輸入有限非零手動軸心；頁面重載後必須重新附加並核對原始 STL。另有 real-fixture integration 使用兩個不同 STL 及明確標示 `TEST ONLY` 的完整 synthetic signed profile，經真正 readiness／preflight gate 建立套件，再逐 entity 驗證 SVG、DXF、PDF、JSON 與 ZIP；兩個 STL 的 profile、CUT geometry 及使用尺寸均不同。這個 synthetic profile 只屬自動測試證據，不代表任何實物或 production 批准。完整 fresh matrix 指令為 `npm run test`、`npm run test:browser -- --run --browser=chromium`、`npm run test:e2e -- --workers=1`、`npm run validate:fixtures`、`npm run typecheck`、`npm run build` 及 `npm run test:performance`。
 
-效能數字來自 2026-07-19 的本機 Chromium single-worker fresh run，只量使用者按「分析模型」至互動軸心或明確 resource-limit 結果；測試端 fixture 建立及 `setInputFiles` 傳輸在計時範圍外。數字會隨機器及當時系統負載波動，驗收門檻仍為 100k 少於 3,000 ms、最長 main-thread task 少於 100 ms，以及 500k 在 15,000 ms 內受控返回具體結果。
+Final re-review 亦在真實 Chromium App 流程中驗證：從 raw `symmetric-smooth.stl` 經真實 worker／pipeline，先匯入缺 coupon／操作員證據的 stored profile 並確認 production 匯出保持 disabled，再把同一 profile 編輯成完整簽署的 `TEST ONLY` ready profile；下載後用 JSZip 重開套件，重新驗證 `canExport: true`、`materialReadiness: ready`、`physicalApproval: approved`、coupon／操作員證據、CUT entities 及 SVG `CUT` layer。無效 JSON、欠 manufacturer 身份及 reserved 內置 ID 均被拒絕；四個內置 profile 始終唯讀及 pending。
+
+`splitPositionPercent` 現定義為 radial hub boundary：`hubRadius = outerRadius × splitPositionPercent / 100`。同一 outer radius 30 mm 的幾何 oracle 實測 30% 產生 9 mm hub、60% 產生 18 mm hub，且 rib outline 及排版後 CUT polygon coordinates 均不同；domain 同時拒絕 9、91、NaN、Infinity，pipeline 及 persisted project schema 亦拒絕 10–90 範圍外值。若百分比合法但 shaft／接合等實際幾何不安全，既有 decomposition safety checks 仍 fail-closed。
+
+效能數字來自 2026-07-19 的本機 Chromium single-worker final re-review fresh run，只量使用者按「分析模型」至互動軸心或明確 resource-limit 結果；測試端 fixture 建立及 `setInputFiles` 傳輸在計時範圍外。數字會隨機器及當時系統負載波動，驗收門檻仍為 100k 少於 3,000 ms、最長 main-thread task 少於 100 ms，以及 500k 在 15,000 ms 內受控返回具體結果。
 
 ## Knight Fortress 真實 STL regression
 
@@ -61,6 +65,8 @@ E2E 已實際驗證：真實封閉 STL 完成軟件流程，但預設材料因�
 | 3 mm cast acrylic | 只接受廠商確認可 Laser 加工的 cast PMMA | 待操作員附資料表 | 待切割 | 待 coupon 合格後輸出 |
 
 軟件可產生 calibration coupon；預設材料 profile 全部保持 pending，不能產生 production 製作 ZIP。只有在合資格操作員填寫精確機器／產品／批次／安全證據、完成實體 coupon，並以姓名、資格、時間、簽署及 coupon ID 簽批後，材料才可變成 `ready`。production 匯出邊界會重新驗證完整 `MaterialProfileV1`，不能只靠 UI checkbox 或偽造 `ready` 字串繞過。
+
+App 現提供 validated JSON 匯入／編輯／儲存路徑，並從 IndexedDB 列出 stored profiles；選取 profile 後，pipeline 會在每次產生 artifacts 前按 ID 重新讀取完整記錄。這個功能只讓真實已完成證據的 profile 可被軟件使用，並不代替下列實體關卡。
 
 預校準 coupon 已由實際 coupon 引擎產生；重建指令為 `npm run generate:coupons`：
 
