@@ -13,6 +13,32 @@ export type MeshInspection = {
   readonly invertedVolume: boolean;
 };
 
+export type EdgeMarker = {
+  readonly regionId: string;
+  readonly points: readonly [Vec3, Vec3];
+};
+
+export type TriangleMarker = {
+  readonly regionId: string;
+  readonly points: readonly [Vec3, Vec3, Vec3];
+};
+
+export type MeshProblemCategory =
+  | 'boundaryEdges'
+  | 'nonManifoldEdges'
+  | 'degenerateTriangles'
+  | 'duplicateTriangles';
+
+export type MeshProblemReport = {
+  readonly inspection: MeshInspection;
+  readonly duplicateTriangleCount: number;
+  readonly boundaryEdges: readonly EdgeMarker[];
+  readonly nonManifoldEdges: readonly EdgeMarker[];
+  readonly degenerateTriangles: readonly TriangleMarker[];
+  readonly duplicateTriangles: readonly TriangleMarker[];
+  readonly markersTruncated: Readonly<Record<MeshProblemCategory, boolean>>;
+};
+
 export type MassProperties = {
   readonly volume: number;
   readonly centroid: Vec3;
