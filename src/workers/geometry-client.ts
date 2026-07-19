@@ -2,11 +2,14 @@ import { releaseProxy, transfer, wrap } from 'comlink';
 import type { AxisCandidate } from '../domain/axis/find-axis';
 import type { SpinnerKit } from '../domain/decomposition/types';
 import type { EngravingMap } from '../domain/engraving/height-field';
+import type { MeshRepairResult } from '../domain/mesh/types';
+import type { STLRepairMode } from '../domain/mesh/write-stl';
 import type {
   DecompositionRequest,
   EngravingRequest,
   GeometryApi,
   ImportAnalysis,
+  ImportRepairAnalysis,
   MeshAnalysis,
   SerializedMesh,
 } from './geometry-api';
@@ -35,6 +38,9 @@ export type GeometryClient = {
   readonly latestJobId: number;
   analyze(input: ArrayBuffer): Promise<MeshAnalysis>;
   analyzeForImport(input: ArrayBuffer): Promise<ImportAnalysis>;
+  analyzeAndRepairForImport(input: ArrayBuffer): Promise<ImportRepairAnalysis>;
+  repairAdvanced(original: SerializedMesh, safeMesh: SerializedMesh): Promise<MeshRepairResult>;
+  serializeSTL(mesh: SerializedMesh, mode: STLRepairMode): Promise<ArrayBuffer>;
   findAxes(mesh: SerializedMesh): Promise<AxisCandidate[]>;
   decompose(request: DecompositionRequest): Promise<SpinnerKit>;
   engrave(request: EngravingRequest): Promise<EngravingMap>;
@@ -82,6 +88,21 @@ export function makeGeometryClient(api: GeometryApi, options: GeometryClientOpti
     get latestJobId() { return latestJobId; },
     analyze: (input) => run(() => api.inspect(options.transferInput?.(input) ?? input)),
     analyzeForImport: (input) => run(() => api.inspectAndFindAxes(options.transferInput?.(input) ?? input)),
+    analyzeAndRepairForImport: (input) => run(() => (
+      api.analyzeAndRepairForImport(options.transferInput?.(input) ?? input)
+    )),
+    repairAdvanced: (original, safeMesh) => run(() => {
+      const originalCopy = cloneMesh(original);
+      const safeCopy = cloneMesh(safeMesh);
+      return api.repairAdvanced(
+        options.transferMesh?.(originalCopy) ?? originalCopy,
+        options.transferMesh?.(safeCopy) ?? safeCopy,
+      );
+    }),
+    serializeSTL: (mesh, mode) => run(() => {
+      const meshCopy = cloneMesh(mesh);
+      return api.serializeSTL(options.transferMesh?.(meshCopy) ?? meshCopy, mode);
+    }),
     findAxes: (mesh) => run(() => api.findAxes(options.transferMesh?.(mesh) ?? mesh)),
     decompose: (request) => run(() => api.decompose(request)),
     engrave: (request) => run(() => api.engrave(request)),
@@ -93,6 +114,10 @@ export function makeGeometryClient(api: GeometryApi, options: GeometryClientOpti
       options.release?.();
     },
   };
+}
+
+function cloneMesh(mesh: SerializedMesh): SerializedMesh {
+  return { positions: mesh.positions.slice(), indices: mesh.indices.slice() };
 }
 
 export function createGeometryClient(worker: Worker): GeometryClient {

@@ -3,6 +3,8 @@ import type { DecompositionOptions, LathedProfile, MaterialInput, SpinnerKit } f
 import type { EngravingLevelCount, EngravingMap, HeightField } from '../domain/engraving/height-field';
 import type { QuantizeOptions } from '../domain/engraving/quantize';
 import type { MeshInspection, TriangleMesh } from '../domain/mesh/types';
+import type { MeshProblemReport, MeshRepairResult } from '../domain/mesh/types';
+import type { STLRepairMode } from '../domain/mesh/write-stl';
 
 export type SerializedMesh = TriangleMesh;
 
@@ -13,6 +15,15 @@ export type MeshAnalysis = {
   readonly inspection: MeshInspection;
 };
 export type ImportAnalysis = Omit<MeshAnalysis, 'mesh'> & { readonly candidates: readonly AxisCandidate[] };
+
+export type ImportRepairAnalysis = {
+  readonly sourceHash: string;
+  readonly originalMesh: SerializedMesh;
+  readonly originalPreview: SerializedMesh;
+  readonly originalReport: MeshProblemReport;
+  readonly safeRepair: MeshRepairResult;
+  readonly candidates: readonly AxisCandidate[];
+};
 
 export type DecompositionRequest = {
   readonly profile: LathedProfile;
@@ -30,6 +41,9 @@ export type EngravingRequest = {
 export type GeometryApi = {
   inspect(input: ArrayBuffer): Promise<MeshAnalysis>;
   inspectAndFindAxes(input: ArrayBuffer): Promise<ImportAnalysis>;
+  analyzeAndRepairForImport(input: ArrayBuffer): Promise<ImportRepairAnalysis>;
+  repairAdvanced(original: SerializedMesh, safeMesh: SerializedMesh): Promise<MeshRepairResult>;
+  serializeSTL(mesh: SerializedMesh, mode: STLRepairMode): Promise<ArrayBuffer>;
   findAxes(mesh: SerializedMesh): Promise<AxisCandidate[]>;
   decompose(request: DecompositionRequest): Promise<SpinnerKit>;
   engrave(request: EngravingRequest): Promise<EngravingMap>;

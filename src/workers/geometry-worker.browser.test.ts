@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { writeBinarySTL } from '../domain/mesh/write-stl';
+import type { TriangleMesh } from '../domain/mesh/types';
+import { openTetrahedron, tetrahedron } from '../test/mesh-builders';
 import type { GeometryClient } from './geometry-client';
 import { createGeometryWorkerClient } from './geometry-client';
 
@@ -30,4 +33,79 @@ describe('geometry worker boundary', () => {
     expect(result.mesh.positions).toBeInstanceOf(Float64Array);
     expect(result.mesh.indices).toBeInstanceOf(Uint32Array);
   });
+
+  it('returns independently backed original, preview, and safe repair meshes', async () => {
+    const client = createGeometryWorkerClient();
+    clients.push(client);
+    const source = writeBinarySTL(tetrahedron(), 'safe');
+
+    const result = await client.analyzeAndRepairForImport(source);
+
+    expect(source.byteLength).toBe(0);
+    expect(result.originalReport.inspection.triangleCount).toBe(4);
+    expect(result.safeRepair.mode).toBe('safe');
+    expect(result.safeRepair.accepted).toBe(true);
+    expect(result.originalPreview.positions.length).toBeGreaterThan(0);
+    expect(result.originalMesh.positions.buffer).not.toBe(result.originalPreview.positions.buffer);
+    expect(result.originalMesh.positions.buffer).not.toBe(result.safeRepair.mesh.positions.buffer);
+    expect(result.originalPreview.positions.buffer).not.toBe(result.safeRepair.mesh.positions.buffer);
+  });
+
+  it('preserves original and safe meshes when advanced repair rejects', async () => {
+    const client = createGeometryWorkerClient();
+    clients.push(client);
+    const result = await client.analyzeAndRepairForImport(writeBinarySTL(openTetrahedron(), 'safe'));
+    const oversizedSafeMesh = {
+      positions: result.safeRepair.mesh.positions.slice(),
+      indices: new Uint32Array([...result.safeRepair.mesh.indices, 0, 1, 2]),
+    };
+    const originalLength = result.originalMesh.positions.length;
+    const safeLength = oversizedSafeMesh.positions.length;
+
+    await expect(client.repairAdvanced(result.originalMesh, oversizedSafeMesh)).rejects.toThrow(/triangle.*limit/i);
+
+    expect(result.originalMesh.positions.length).toBe(originalLength);
+    expect(result.originalMesh.indices.length).toBe(9);
+    expect(oversizedSafeMesh.positions.length).toBe(safeLength);
+    expect(oversizedSafeMesh.indices.length).toBe(12);
+  });
+
+  it('caps each problem marker collection at 2,000 while retaining complete counts', async () => {
+    const client = createGeometryWorkerClient();
+    clients.push(client);
+    const source = writeBinarySTL(disconnectedTriangles(2_001), 'safe');
+
+    const result = await client.analyzeAndRepairForImport(source);
+
+    expect(result.originalReport.inspection.boundaryEdgeCount).toBe(6_003);
+    expect(result.originalReport.boundaryEdges).toHaveLength(2_000);
+    expect(result.originalReport.markersTruncated.boundaryEdges).toBe(true);
+  });
+
+  it('serializes repaired meshes and reparses the exact binary STL before transfer', async () => {
+    const client = createGeometryWorkerClient();
+    clients.push(client);
+    const mesh = tetrahedron();
+
+    const bytes = await client.serializeSTL(mesh, 'advanced');
+
+    expect(mesh.positions.length).toBe(12);
+    expect(mesh.indices.length).toBe(12);
+    expect(bytes.byteLength).toBe(84 + 4 * 50);
+    expect(new TextDecoder().decode(bytes.slice(0, 80))).toContain('advanced');
+    expect(new DataView(bytes).getUint32(80, true)).toBe(4);
+  });
 });
+
+function disconnectedTriangles(count: number): TriangleMesh {
+  const positions = new Float64Array(count * 9);
+  const indices = new Uint32Array(count * 3);
+  for (let triangle = 0; triangle < count; triangle += 1) {
+    const positionOffset = triangle * 9;
+    const indexOffset = triangle * 3;
+    const x = triangle * 2;
+    positions.set([x, 0, 0, x + 1, 0, 0, x, 1, 0], positionOffset);
+    indices.set([indexOffset, indexOffset + 1, indexOffset + 2], indexOffset);
+  }
+  return { positions, indices };
+}

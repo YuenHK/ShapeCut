@@ -2,10 +2,14 @@ import { expose, transfer } from 'comlink';
 import { findAxisCandidates } from '../domain/axis/find-axis';
 import { generateParts } from '../domain/decomposition/generate-parts';
 import { quantizeHeightField } from '../domain/engraving/quantize';
+import { repairMeshAdvanced } from '../domain/mesh/advanced-repair';
 import { inspectMesh } from '../domain/mesh/inspect-mesh';
 import { parseSTL } from '../domain/mesh/parse-stl';
-import type { GeometryApi, MeshAnalysis } from './geometry-api';
-import type { TriangleMesh } from '../domain/mesh/types';
+import { analyzeMeshProblems } from '../domain/mesh/problem-report';
+import { repairMeshSafe } from '../domain/mesh/repair-mesh';
+import type { MeshRepairResult, TriangleMesh } from '../domain/mesh/types';
+import { writeBinarySTL } from '../domain/mesh/write-stl';
+import type { GeometryApi, ImportRepairAnalysis, MeshAnalysis } from './geometry-api';
 
 function previewMesh(mesh: TriangleMesh, maximumTriangles = 2_000): TriangleMesh {
   const indexLimit = Math.min(mesh.indices.length, maximumTriangles * 3);
@@ -53,6 +57,43 @@ const geometryApi: GeometryApi = {
     const candidates = invalidTopology ? [] : findAxisCandidates(mesh, { sampleCount: 4096 });
     return transfer({ sourceHash, previewMesh: preview, inspection, candidates }, [preview.positions.buffer, preview.indices.buffer]);
   },
+  async analyzeAndRepairForImport(input) {
+    const sourceHash = hashBuffer(input);
+    const originalMesh = parseSTL(input);
+    const originalPreview = previewMesh(originalMesh);
+    const originalReport = analyzeMeshProblems(originalMesh);
+    const safeRepair = repairMeshSafe(originalMesh);
+    const candidates = safeRepair.accepted
+      ? findAxisCandidates(safeRepair.mesh, { sampleCount: 4096 })
+      : [];
+    const result: ImportRepairAnalysis = {
+      sourceHash,
+      originalMesh,
+      originalPreview,
+      originalReport,
+      safeRepair,
+      candidates,
+    };
+    return transfer(result, meshBuffers(originalMesh, originalPreview, safeRepair.mesh));
+  },
+  async repairAdvanced(original, safeMesh) {
+    return transferRepairResult(repairMeshAdvanced(original, safeMesh));
+  },
+  async serializeSTL(mesh, mode) {
+    const bytes = writeBinarySTL(mesh, mode);
+    const expectedTriangleCount = mesh.indices.length / 3;
+    const expectedByteLength = 84 + expectedTriangleCount * 50;
+    const reparsed = parseSTL(bytes);
+    const declaredTriangleCount = new DataView(bytes).getUint32(80, true);
+    if (
+      bytes.byteLength !== expectedByteLength
+      || declaredTriangleCount !== expectedTriangleCount
+      || reparsed.indices.length / 3 !== expectedTriangleCount
+    ) {
+      throw new Error('Serialized STL validation failed');
+    }
+    return transfer(bytes, [bytes]);
+  },
   async findAxes(mesh) {
     return findAxisCandidates(mesh, { sampleCount: 4096 });
   },
@@ -63,5 +104,13 @@ const geometryApi: GeometryApi = {
     return quantizeHeightField(field, levels, options);
   },
 };
+
+function meshBuffers(...meshes: readonly TriangleMesh[]): Transferable[] {
+  return meshes.flatMap((mesh) => [mesh.positions.buffer, mesh.indices.buffer]);
+}
+
+function transferRepairResult(result: MeshRepairResult): MeshRepairResult {
+  return transfer(result, meshBuffers(result.mesh));
+}
 
 expose(geometryApi);
