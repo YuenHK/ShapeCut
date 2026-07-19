@@ -1,8 +1,9 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useStore } from 'zustand';
 import type { AxisCandidate } from '../domain/axis/find-axis';
 import type { WorkflowStep } from '../domain/types';
 import type { GeometryIssue } from '../preview/SpinnerViewport';
+import { createProjectAutosave, type ProjectRepository } from '../persistence/project-repository';
 import { createProjectStore, type WizardSettings } from './project-store';
 import { AxisStep } from './steps/AxisStep';
 import { DecompositionStep } from './steps/DecompositionStep';
@@ -12,7 +13,7 @@ import { ImportStep } from './steps/ImportStep';
 
 type IssueResult = { readonly issues: readonly GeometryIssue[] };
 export type WizardServices = {
-  inspect(file: File): Promise<IssueResult & { readonly candidates: readonly AxisCandidate[] }>;
+  inspect(file: File): Promise<IssueResult & { readonly candidates: readonly AxisCandidate[]; readonly sourceSha256?: string }>;
   decompose(settings: WizardSettings): Promise<IssueResult>;
   engrave(settings: WizardSettings): Promise<IssueResult>;
   preflight(settings: WizardSettings): Promise<IssueResult>;
@@ -27,7 +28,7 @@ const steps: readonly { id: WorkflowStep; label: string }[] = [
   { id: 'export', label: '排版與輸出' },
 ];
 
-export function Wizard({ services }: { readonly services: WizardServices }) {
+export function Wizard({ services, repository }: { readonly services: WizardServices; readonly repository?: ProjectRepository }) {
   const store = useMemo(createProjectStore, []);
   const state = useStore(store);
   const [file, setFile] = useState<File>();
@@ -35,6 +36,23 @@ export function Wizard({ services }: { readonly services: WizardServices }) {
   const [issues, setIssues] = useState<readonly GeometryIssue[]>([]);
   const [busy, setBusy] = useState(false);
   const [furthestStep, setFurthestStep] = useState(0);
+  const [sourceSha256, setSourceSha256] = useState<string>();
+
+  useEffect(() => {
+    if (!repository || !sourceSha256) return;
+    const autosave = createProjectAutosave(repository, (message) => store.getState().setPersistenceError(message));
+    let lastSnapshot = '';
+    const schedule = () => {
+      const current = store.getState();
+      const snapshotKey = JSON.stringify({ id: current.id, name: current.name, step: current.step, axis: current.axis, settings: current.settings, sourceSha256 });
+      if (snapshotKey === lastSnapshot) return;
+      lastSnapshot = snapshotKey;
+      autosave.schedule({ schemaVersion: 1, id: current.id, name: current.name, step: current.step, axis: current.axis, settings: current.settings, sourceSha256, updatedAt: new Date().toISOString() });
+    };
+    schedule();
+    const unsubscribe = store.subscribe(schedule);
+    return () => { unsubscribe(); autosave.dispose(); };
+  }, [repository, sourceSha256, store]);
 
   const execute = async (operation: () => Promise<void>): Promise<void> => {
     if (busy) return;
@@ -45,11 +63,13 @@ export function Wizard({ services }: { readonly services: WizardServices }) {
 
   return (
     <div className="wizard">
+      {state.persistenceError && <p role="alert">專案儲存失敗：{state.persistenceError}</p>}
       <nav aria-label="轉換步驟"><ol>{steps.map(({ id, label }, index) => <li key={id}><button type="button" disabled={index > furthestStep} aria-current={state.step === id ? 'step' : undefined} onClick={() => state.goToStep(id)}>{label}</button></li>)}</ol></nav>
       {state.step === 'import' && <ImportStep file={file} busy={busy} onFile={setFile} onAnalyze={() => file && void execute(async () => {
         const result = await services.inspect(file);
         setCandidates(result.candidates);
         setIssues(result.issues);
+        setSourceSha256(result.sourceSha256);
         if (!hasBlocking(result)) {
           setFurthestStep((value) => Math.max(value, 1));
           state.goToStep('axis');

@@ -1,4 +1,6 @@
 import type { AxisCandidate } from '../domain/axis/find-axis';
+import { useEffect, useMemo } from 'react';
+import { ProjectRepository, sha256Hex } from '../persistence/project-repository';
 import { Wizard, type WizardServices } from './Wizard';
 
 const suggestedAxis: AxisCandidate = {
@@ -7,7 +9,7 @@ const suggestedAxis: AxisCandidate = {
 };
 
 const placeholderServices: WizardServices = {
-  inspect: async () => ({ candidates: [suggestedAxis], issues: [] }),
+  inspect: async (file) => ({ candidates: [suggestedAxis], issues: [], sourceSha256: await sha256Hex(file) }),
   decompose: async () => ({ issues: [] }),
   engrave: async () => ({ issues: [] }),
   preflight: async () => ({ issues: [] }),
@@ -15,10 +17,12 @@ const placeholderServices: WizardServices = {
 };
 
 export function App() {
+  const repository = useMemo(() => new ProjectRepository(), []);
+  useEffect(() => () => repository.close(), [repository]);
   return (
     <main>
       <h1>陀螺 Laser Kit</h1>
-      <Wizard services={placeholderServices} />
+      <Wizard services={placeholderServices} repository={repository} />
     </main>
   )
 }

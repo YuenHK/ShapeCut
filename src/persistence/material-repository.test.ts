@@ -60,8 +60,8 @@ describe('MaterialRepository', () => {
     await Dexie.delete(databaseName);
   });
 
-  it('declares schema V1 with the required material indexes', () => {
-    expect(database.verno).toBe(1);
+  it('migrates the database to V2 while retaining the required material indexes', () => {
+    expect(database.verno).toBe(2);
     const indexes = database.materials.schema.indexes.map(({ name }) => name);
     expect(indexes).toEqual(expect.arrayContaining([
       'machine',
@@ -69,6 +69,7 @@ describe('MaterialRepository', () => {
       'calibratedAt',
       'physicalCouponVerified',
     ]));
+    expect(database.projects.schema.indexes.map(({ name }) => name)).toEqual(expect.arrayContaining(['name', 'updatedAt', 'sourceSha256', 'step']));
   });
 
   it('round-trips the complete V1 record through genuine IndexedDB and does not leak mutable references', async () => {

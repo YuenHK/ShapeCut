@@ -35,8 +35,11 @@ export function canEnterStep(
 
 export type ProjectStoreState = ProjectV1 & {
   settings: WizardSettings;
+  persistenceError?: string;
   setAxis: (axis: Axis) => void;
   updateSettings: (changes: Partial<WizardSettings>) => void;
+  setPersistenceError: (message?: string) => void;
+  loadProject: (project: ProjectV1 & { readonly settings: WizardSettings }) => void;
   goToStep: (target: WorkflowStep) => boolean;
 };
 
@@ -80,6 +83,12 @@ export function createProjectStore() {
         },
       }),
     updateSettings: (changes) => set((state) => ({ settings: { ...state.settings, ...changes } })),
+    setPersistenceError: (message) => set({ persistenceError: message }),
+    loadProject: (project) => set({
+      schemaVersion: project.schemaVersion, id: project.id, name: project.name, step: project.step,
+      axis: project.axis ? { ...project.axis, origin: [...project.axis.origin], direction: [...project.axis.direction] } : undefined,
+      settings: structuredClone(project.settings), persistenceError: undefined,
+    }),
     goToStep: (target) => {
       if (!canEnterStep(get(), target)) {
         return false;
