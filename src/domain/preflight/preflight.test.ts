@@ -37,11 +37,12 @@ describe('runPreflight', () => {
     expect(result.issues.every(({ fixes }) => fixes.length > 0)).toBe(true);
   });
 
-  it('requires explicit acceptance for confirm issues', () => {
+  it('keeps physical calibration pending as a production blocker even if a confirmation code is supplied', () => {
     const pending = runPreflight(context({ material: { safe: true, calibrated: false, minFeatureMm: 0.5, minWebMm: 1, minRemainingMm: 0.8 } }));
     expect(pending.canExport).toBe(false);
     const accepted = runPreflight(context({ material: { safe: true, calibrated: false, minFeatureMm: 0.5, minWebMm: 1, minRemainingMm: 0.8 }, acceptedConfirmations: ['uncalibrated-material'] }));
-    expect(accepted.canExport).toBe(true);
+    expect(accepted.canExport).toBe(false);
+    expect(accepted.issues).toContainEqual(expect.objectContaining({ code: 'uncalibrated-material', severity: 'blocking' }));
   });
 
   it('fails closed for non-finite manufacturing measurements', () => {

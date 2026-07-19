@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { MeshProblemReport, MeshRepairResult, TriangleMesh } from '../domain/mesh/types'
+import type { ManufacturingArtifacts } from '../domain/pipeline/manufacturing-pipeline'
 import type { ImportRepairAnalysis } from '../workers/geometry-api'
 import { App, createAppServices } from './App'
 
@@ -179,18 +180,7 @@ describe('App browser smoke test', () => {
     expect(submissionOrder).toEqual(['A', 'B'])
     expect(accepted.sourceSha256).toBe('b'.repeat(64))
 
-    const zip = await services.buildKit({
-      splitPositionPercent: 50,
-      ribCount: 6,
-      ringLayers: 2,
-      shaftMm: 3,
-      fit: 'snug',
-      materialId: 'plywood-3',
-      engravingLevels: 3,
-      textureStrength: 0.6,
-      sheetWidthMm: 300,
-      sheetHeightMm: 200,
-    }, accepted.sourceSha256)
+    const zip = await services.buildKit(packageArtifacts(accepted.sourceSha256))
     expect(packageBuilder).toHaveBeenCalledWith(expect.objectContaining({ sourceSha256: 'b'.repeat(64) }))
     await services.downloadKit(zip)
     await vi.waitFor(() => expect(revokeObjectURL).toHaveBeenCalledTimes(1))
@@ -216,20 +206,7 @@ describe('App browser smoke test', () => {
       getGeometry: () => ({} as never),
       packageBuilder: vi.fn().mockReturnValue(packageBuild.promise) as never,
     })
-    const settings = {
-      splitPositionPercent: 50,
-      ribCount: 8,
-      ringLayers: 2,
-      shaftMm: 3,
-      fit: 'snug' as const,
-      materialId: 'plywood-3' as const,
-      engravingLevels: 3 as const,
-      textureStrength: 0.6,
-      sheetWidthMm: 300,
-      sheetHeightMm: 200,
-    }
-
-    const building = services.buildKit(settings, 'a'.repeat(64))
+    const building = services.buildKit(packageArtifacts('a'.repeat(64)))
     expect(createObjectURL).not.toHaveBeenCalled()
     expect(click).not.toHaveBeenCalled()
     packageBuild.resolve({ zip: new Uint8Array([1, 2, 3]) })
@@ -240,6 +217,23 @@ describe('App browser smoke test', () => {
     await expect(services.downloadKit(zip)).rejects.toThrow('kit click failed exactly')
     await vi.waitFor(() => expect(revokeObjectURL).toHaveBeenCalledTimes(1))
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:throwing-kit')
+  })
+
+  it('refuses to package preflight or document artifacts owned by a different pipeline version', async () => {
+    const packageBuilder = vi.fn().mockResolvedValue({ zip: new Uint8Array([1]) })
+    const services = createAppServices({ getGeometry: () => ({} as never), packageBuilder: packageBuilder as never })
+    const mismatched = packageArtifacts('a'.repeat(64))
+    const other = { ...mismatched.provenance, inputFingerprint: '2'.repeat(64) }
+
+    await expect(services.buildKit({
+      ...mismatched,
+      preflight: { ...mismatched.preflight, provenance: other },
+    })).rejects.toThrow(/pipeline|version|版本/i)
+    await expect(services.buildKit({
+      ...mismatched,
+      document: { ...mismatched.document, provenance: other },
+    })).rejects.toThrow(/pipeline|version|版本/i)
+    expect(packageBuilder).not.toHaveBeenCalled()
   })
 
   it('disposes the import worker and never submits after unmount during the initial file read', async () => {
@@ -272,4 +266,80 @@ function deferred<T>() {
   let reject!: (reason?: unknown) => void
   const promise = new Promise<T>((fulfill, fail) => { resolve = fulfill; reject = fail })
   return { promise, resolve, reject }
+}
+
+function packageArtifacts(sourceSha256: string): ManufacturingArtifacts {
+  const provenance = {
+    schemaVersion: 1 as const,
+    sourceSha256,
+    meshSha256: 'c'.repeat(64),
+    settingsFingerprint: 'd'.repeat(64),
+    materialFingerprint: 'e'.repeat(64),
+    axisFingerprint: 'f'.repeat(64),
+    inputFingerprint: '1'.repeat(64),
+    repair: { mode: 'safe' as const, algorithmVersion: 'safe-repair-v1' },
+  }
+  return {
+    provenance,
+    profile: { provenance, value: { samples: [] } },
+    kit: { provenance, value: {} },
+    material: { provenance, value: { profile: readyPackageMaterial(), readiness: { status: 'ready', reasons: [] } } },
+    engraving: { provenance, value: {} },
+    layout: { provenance, value: {} },
+    preflight: { provenance, value: { issues: [], canExport: true } },
+    document: {
+      provenance,
+      value: {
+        provenance,
+        unit: 'mm',
+        sheets: [{ width: 100, height: 100, entities: [{ id: 'part-0', partId: 'part', layer: 'CUT', polygon: { points: [[1, 1], [10, 1], [10, 10], [1, 10]] } }] }],
+        manifest: [{ partId: 'part', quantity: 1, assemblyOrder: 1 }],
+      },
+    },
+  } as unknown as ManufacturingArtifacts
+}
+
+function readyPackageMaterial() {
+  return {
+    schemaVersion: 1 as const,
+    id: 'q400-birch-b42',
+    machine: 'Trotec Q400 #1',
+    materialCode: 'BIRCH-PLY-B42',
+    materialName: 'Laser-approved birch plywood',
+    batchNotes: 'Manufacturer batch B42 measured at four corners',
+    thicknessMm: 3,
+    sheetWidthMm: 300,
+    sheetHeightMm: 200,
+    kerfMm: 0.14,
+    fitAllowanceMm: { loose: 0.2, slip: 0.12, snug: 0.06, press: 0 },
+    minFeatureMm: 0.6,
+    minWebMm: 0.4,
+    minRemainingMm: 1.2,
+    recipes: {
+      cut: { powerPercent: 50, speedMmPerSecond: 20, passes: 1, notes: 'Approved batch setting' },
+      score: null,
+      engrave1: { powerPercent: 10, speedMmPerSecond: 100, passes: 1, notes: 'Approved level one' },
+      engrave2: null,
+      engrave3: null,
+      engrave4: null,
+      engrave5: null,
+    },
+    calibratedAt: '2026-07-19T00:00:00.000Z',
+    physicalCouponVerified: true,
+    operatorApproval: {
+      operatorName: 'Alex Chan',
+      qualification: 'Qualified laser cutter operator',
+      signedAt: '2026-07-19T00:00:00.000Z',
+      signature: 'A-CHAN-Q400-B42',
+      couponId: 'Q400-BIRCH-B42-20260719',
+    },
+    safetyEvidence: {
+      kind: 'allowlisted' as const,
+      category: 'laser-approved-plywood' as const,
+      compositionKnown: true,
+      manufacturer: 'Example Timber Company',
+      productId: 'BIRCH-PLY-B42',
+      laserSafetyReference: 'https://example.com/materials/birch-b42-safety',
+    },
+  }
 }

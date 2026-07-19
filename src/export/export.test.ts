@@ -1,16 +1,71 @@
 import JSZip from 'jszip';
 import { PDFDocument } from 'pdf-lib';
 import { describe, expect, it } from 'vitest';
+import type { MaterialProfileV1 } from '../domain/materials/schema';
 import type { ManufacturingProject } from './layers';
 import { buildPackage } from './package';
 
 const square = (x: number, y: number, size: number) => ({ points: [[x, y], [x + size, y], [x + size, y + size], [x, y + size]] as const });
 
+const readyMaterial: MaterialProfileV1 = {
+  schemaVersion: 1,
+  id: 'q400-birch-b42',
+  machine: 'Trotec Q400 #1',
+  materialCode: 'BIRCH-PLY-B42',
+  materialName: 'Laser-approved birch plywood',
+  batchNotes: 'Manufacturer batch B42 measured at four corners',
+  thicknessMm: 3,
+  sheetWidthMm: 300,
+  sheetHeightMm: 200,
+  kerfMm: 0.14,
+  fitAllowanceMm: { loose: 0.2, slip: 0.12, snug: 0.06, press: 0 },
+  minFeatureMm: 0.6,
+  minWebMm: 0.4,
+  minRemainingMm: 1.2,
+  recipes: {
+    cut: { powerPercent: 50, speedMmPerSecond: 20, passes: 1, notes: 'Approved batch setting' },
+    score: null,
+    engrave1: { powerPercent: 10, speedMmPerSecond: 100, passes: 1, notes: 'Approved level one' },
+    engrave2: null,
+    engrave3: null,
+    engrave4: null,
+    engrave5: null,
+  },
+  calibratedAt: '2026-07-19T00:00:00.000Z',
+  physicalCouponVerified: true,
+  operatorApproval: {
+    operatorName: 'Alex Chan',
+    qualification: 'Qualified laser cutter operator',
+    signedAt: '2026-07-19T00:00:00.000Z',
+    signature: 'A-CHAN-Q400-B42',
+    couponId: 'Q400-BIRCH-B42-20260719',
+  },
+  safetyEvidence: {
+    kind: 'allowlisted',
+    category: 'laser-approved-plywood',
+    compositionKnown: true,
+    manufacturer: 'Example Timber Company',
+    productId: 'BIRCH-PLY-B42',
+    laserSafetyReference: 'https://example.com/materials/birch-b42-safety',
+  },
+};
+
 const completeProject: ManufacturingProject = {
   schemaVersion: 1,
   name: 'balanced-spinner',
   sourceSha256: 'a'.repeat(64),
+  provenance: { inputFingerprint: 'b'.repeat(64) },
+  preflight: {
+    inputFingerprint: 'b'.repeat(64),
+    canExport: true,
+    issues: [],
+    acceptedConfirmations: [],
+    materialReadiness: { status: 'ready', reasons: [] },
+    materialProfile: readyMaterial,
+    physicalApproval: 'approved',
+  },
   document: {
+    provenance: { inputFingerprint: 'b'.repeat(64) },
     unit: 'mm',
     sheets: [{
       width: 300,
@@ -74,6 +129,39 @@ describe('manufacturing package', () => {
 
     const settings = JSON.parse(await zip.file('03-settings/project-settings.json')!.async('string'));
     expect(settings).toMatchObject({ schemaVersion: 1, sourceSha256: 'a'.repeat(64), document: { unit: 'mm' } });
+
+    const preflight = await PDFDocument.load(await zip.file('preflight-report.pdf')!.async('uint8array'));
+    expect(preflight.getKeywords()).toContain('production-approved');
+    expect(preflight.getKeywords()).toContain('material-readiness:ready');
+    expect(preflight.getKeywords()).toContain('blocking:0');
+  });
+
+  it('refuses production packaging while physical material or coupon approval is pending', async () => {
+    const pending = {
+      ...completeProject,
+      preflight: {
+        ...completeProject.preflight,
+        canExport: false,
+        issues: [{ code: 'uncalibrated-material', severity: 'blocking' as const, message: 'Physical coupon and signed operator evidence are pending.' }],
+        materialReadiness: { status: 'confirm' as const, reasons: [{ code: 'physical-calibration-required', message: 'Physical coupon pending.' }] },
+        materialProfile: { ...readyMaterial, calibratedAt: null, physicalCouponVerified: false, operatorApproval: undefined },
+        physicalApproval: 'pending' as const,
+      },
+    };
+
+    await expect(buildPackage(pending)).rejects.toThrow(/preflight|physical|production|pending/i);
+  });
+
+  it('recomputes material readiness and rejects forged ready flags without signed physical evidence', async () => {
+    const forgedReady = {
+      ...completeProject,
+      preflight: {
+        ...completeProject.preflight,
+        materialProfile: { ...readyMaterial, operatorApproval: undefined },
+      },
+    };
+
+    await expect(buildPackage(forgedReady)).rejects.toThrow(/preflight|physical|production|pending/i);
   });
 
   it('rejects unsafe names, invalid fingerprints, and non-finite geometry', async () => {

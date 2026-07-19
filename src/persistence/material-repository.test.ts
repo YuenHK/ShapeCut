@@ -34,13 +34,20 @@ const completeProfile: MaterialProfileV1 = {
   },
   calibratedAt: '2026-07-19T01:02:03.000Z',
   physicalCouponVerified: true,
+  operatorApproval: {
+    operatorName: 'Alex Chan',
+    qualification: 'Qualified laser cutter operator',
+    signedAt: '2026-07-19T01:02:03.000Z',
+    signature: 'A-CHAN-Q400-B42',
+    couponId: 'Q400-CAST-B42-20260719',
+  },
   safetyEvidence: {
     kind: 'allowlisted',
     category: 'laser-rated-cast-acrylic',
     compositionKnown: true,
     manufacturer: 'Example Acrylic Co.',
     productId: 'Cast B42 Laser Rated',
-    laserSafetyReference: 'https://manufacturer.invalid/cast-b42',
+    laserSafetyReference: 'https://example.com/materials/cast-b42-laser-safety',
   },
 };
 

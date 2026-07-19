@@ -58,7 +58,7 @@ E2E 已實際驗證：封閉 STL 完成五步並下載可解開 ZIP；開放 STL
 | 3 mm cardboard | 已支援 | 待操作員填寫產品／批次 | 待切割 | 待 coupon 合格後輸出 |
 | 3 mm cast acrylic | 只接受廠商確認可 Laser 加工的 cast PMMA | 待操作員附資料表 | 待切割 | 待 coupon 合格後輸出 |
 
-軟件可產生 calibration coupon 及製作 ZIP，但本報告不把未切割材料標記為 calibrated。需完成下列實物表後，才可把三個材料 profile 設為 `physicalCouponVerified: true`。
+軟件可產生 calibration coupon；預設材料 profile 全部保持 pending，不能產生 production 製作 ZIP。只有在合資格操作員填寫精確機器／產品／批次／安全證據、完成實體 coupon，並以姓名、資格、時間、簽署及 coupon ID 簽批後，材料才可變成 `ready`。production 匯出邊界會重新驗證完整 `MaterialProfileV1`，不能只靠 UI checkbox 或偽造 `ready` 字串繞過。
 
 預校準 coupon 已由實際 coupon 引擎產生；重建指令為 `npm run generate:coupons`：
 

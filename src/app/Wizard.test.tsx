@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { AxisCandidate } from '../domain/axis/find-axis';
 import type { MeshProblemReport, MeshRepairResult, TriangleMesh } from '../domain/mesh/types';
+import type { ManufacturingArtifacts } from '../domain/pipeline/manufacturing-pipeline';
 import type { ImportRepairAnalysis } from '../workers/geometry-api';
 import { Wizard, type WizardServices } from './Wizard';
 
@@ -95,10 +96,16 @@ function repair({
   };
 }
 
-function analysis(safeRepair: MeshRepairResult = repair(), sourceHash = 'source-a'): ImportRepairAnalysis & { readonly sourceSha256: string } {
+function analysis(safeRepair: MeshRepairResult = repair(), sourceHash = 'source-a'): ImportRepairAnalysis & {
+  readonly sourceSha256: string;
+  readonly meshSha256: string;
+  readonly repairProvenance: { readonly mode: 'safe'; readonly algorithmVersion: string };
+} {
   return {
     sourceHash,
     sourceSha256: 'a'.repeat(64),
+    meshSha256: 'c'.repeat(64),
+    repairProvenance: { mode: 'safe', algorithmVersion: 'safe-repair-v1' },
     originalMesh: { positions: mesh.positions.slice(), indices: mesh.indices.slice() },
     originalPreview: { positions: mesh.positions.slice(), indices: mesh.indices.slice() },
     originalReport: safeRepair.before,
@@ -107,21 +114,65 @@ function analysis(safeRepair: MeshRepairResult = repair(), sourceHash = 'source-
   };
 }
 
+function artifactResult(issues: readonly { readonly code: string; readonly severity: 'blocking' | 'confirm' | 'info'; readonly message: string; readonly regionId?: string; readonly fixes: readonly [] }[] = []): ManufacturingArtifacts {
+  const provenance = { inputFingerprint: 'version-a' };
+  return {
+    provenance,
+    preflight: { provenance, value: { issues, canExport: issues.every(({ severity }) => severity === 'info') } },
+    document: { provenance, value: { provenance } },
+  } as unknown as ManufacturingArtifacts;
+}
+
 function successfulServices(): WizardServices {
   return {
     inspectAndRepair: vi.fn().mockResolvedValue(analysis()),
-    advancedRepair: vi.fn().mockResolvedValue(repair({ mode: 'advanced' })),
+    advancedRepair: vi.fn().mockResolvedValue({
+      ...repair({ mode: 'advanced' }),
+      meshSha256: 'd'.repeat(64),
+      repairProvenance: { mode: 'advanced', algorithmVersion: 'advanced-repair-v1' },
+    }),
     serializeRepairedSTL: vi.fn().mockResolvedValue(new ArrayBuffer(84)),
     downloadRepairedSTL: vi.fn().mockResolvedValue(undefined),
-    decompose: vi.fn().mockResolvedValue({ issues: [] }),
-    engrave: vi.fn().mockResolvedValue({ issues: [] }),
-    preflight: vi.fn().mockResolvedValue({ issues: [] }),
+    createArtifacts: vi.fn().mockResolvedValue(artifactResult()),
     buildKit: vi.fn().mockResolvedValue(new Uint8Array([1, 2, 3])),
     downloadKit: vi.fn().mockResolvedValue(undefined),
   };
 }
 
 describe('Wizard', () => {
+  it('exports only the current versioned artifacts built from the accepted mesh, confirmed axis, repair provenance, and settings', async () => {
+    const user = userEvent.setup();
+    const artifacts = {
+      provenance: { inputFingerprint: 'version-a' },
+      preflight: { value: { issues: [], canExport: true } },
+    } as unknown as ManufacturingArtifacts;
+    const services = {
+      ...successfulServices(),
+      createArtifacts: vi.fn().mockResolvedValue(artifacts),
+      buildKit: vi.fn().mockResolvedValue(new Uint8Array([1, 2, 3])),
+    };
+    render(<Wizard services={services as never} />);
+
+    await user.upload(screen.getByLabelText('STL 模型檔案'), new File(['solid test'], 'spinner.stl'));
+    await user.click(screen.getByRole('button', { name: '分析模型' }));
+    await user.click(screen.getByRole('button', { name: '確認軸心' }));
+    await user.click(screen.getByRole('button', { name: '下一步' }));
+    await user.click(screen.getByRole('button', { name: '接受拆件建議' }));
+    await user.click(screen.getByRole('button', { name: '產生雕刻與材料設定' }));
+    await user.click(screen.getByRole('button', { name: '匯出製作套件' }));
+
+    expect(services.createArtifacts).toHaveBeenCalledWith(expect.objectContaining({
+      sourceSha256: 'a'.repeat(64),
+      meshSha256: 'c'.repeat(64),
+      mesh: expect.objectContaining({ positions: expect.any(Float64Array), indices: expect.any(Uint32Array) }),
+      axis: expect.objectContaining({ direction: [0, 0, 1], confirmed: true }),
+      repair: { mode: 'safe', algorithmVersion: 'safe-repair-v1' },
+      settings: expect.objectContaining({ ribCount: 6 }),
+    }));
+    expect(services.buildKit).toHaveBeenCalledWith(artifacts);
+    expect(services.downloadKit).toHaveBeenCalledWith(expect.any(Uint8Array));
+  });
+
   it('locks future steps and preserves edited parameters when navigating back', async () => {
     const user = userEvent.setup();
     render(<Wizard services={successfulServices()} />);
@@ -159,21 +210,18 @@ describe('Wizard', () => {
     await user.click(screen.getByRole('button', { name: '產生雕刻與材料設定' }));
 
     expect(screen.getByRole('button', { name: '匯出製作套件' })).toBeEnabled();
-    expect(services.decompose).toHaveBeenCalledWith(expect.objectContaining({ ribCount: 8 }));
+    expect(services.createArtifacts).toHaveBeenCalledWith(expect.objectContaining({ settings: expect.objectContaining({ ribCount: 8 }) }));
     await user.click(screen.getByRole('button', { name: '匯出製作套件' }));
-    expect(services.buildKit).toHaveBeenCalledWith(
-      expect.objectContaining({ ribCount: 8 }),
-      'a'.repeat(64),
-    );
+    expect(services.buildKit).toHaveBeenCalledWith(expect.objectContaining({ provenance: expect.any(Object) }));
     expect(services.downloadKit).toHaveBeenCalledWith(expect.any(Uint8Array));
   });
 
   it('keeps export blocked and links a blocking issue to its explanation', async () => {
     const user = userEvent.setup();
     const services = successfulServices();
-    services.preflight = vi.fn().mockResolvedValue({
-      issues: [{ id: 'sheet-too-small', severity: 'blocking', regionId: 'layout-sheet', label: '板材太細', description: '零件超出板材邊界。' }],
-    });
+    services.createArtifacts = vi.fn().mockResolvedValue(artifactResult([
+      { code: 'sheet-too-small', severity: 'blocking', regionId: 'layout-sheet', message: '板材太細：零件超出板材邊界。', fixes: [] },
+    ]));
     render(<Wizard services={services} />);
 
     await user.upload(screen.getByLabelText('STL 模型檔案'), new File(['solid test'], 'spinner.stl'));
@@ -213,12 +261,16 @@ describe('Wizard', () => {
     });
     const services = successfulServices();
     services.inspectAndRepair = vi.fn().mockResolvedValue(analysis(blockedSafeRepair));
-    services.advancedRepair = vi.fn().mockResolvedValue(repair({
-      mode: 'advanced',
-      accepted: true,
-      before: blockedSafeRepair.after,
-      after: report({ triangles: 103 }),
-    }));
+    services.advancedRepair = vi.fn().mockResolvedValue({
+      ...repair({
+        mode: 'advanced',
+        accepted: true,
+        before: blockedSafeRepair.after,
+        after: report({ triangles: 103 }),
+      }),
+      meshSha256: 'd'.repeat(64),
+      repairProvenance: { mode: 'advanced', algorithmVersion: 'advanced-repair-v1' },
+    });
     render(<Wizard services={services} />);
 
     await user.upload(screen.getByLabelText('STL 模型檔案'), new File(['solid test'], 'blocked.stl'));
@@ -251,13 +303,17 @@ describe('Wizard', () => {
     const blocked = repair({ accepted: false, after: report({ boundary: 3 }), blockingReasons: ['仍有開放邊界'] });
     const services = successfulServices();
     services.inspectAndRepair = vi.fn().mockResolvedValue(analysis(blocked));
-    services.advancedRepair = vi.fn().mockResolvedValue(repair({
-      mode: 'advanced',
-      accepted: false,
-      before: blocked.after,
-      after: report({ boundary: 3 }),
-      blockingReasons: ['仍有開放邊界', '體積變化超過 1%'],
-    }));
+    services.advancedRepair = vi.fn().mockResolvedValue({
+      ...repair({
+        mode: 'advanced',
+        accepted: false,
+        before: blocked.after,
+        after: report({ boundary: 3 }),
+        blockingReasons: ['仍有開放邊界', '體積變化超過 1%'],
+      }),
+      meshSha256: 'd'.repeat(64),
+      repairProvenance: { mode: 'advanced', algorithmVersion: 'advanced-repair-v1' },
+    });
     render(<Wizard services={services} />);
 
     await user.upload(screen.getByLabelText('STL 模型檔案'), new File(['solid test'], 'rejected.stl'));
@@ -371,10 +427,7 @@ describe('Wizard', () => {
     await user.click(screen.getByRole('button', { name: '產生雕刻與材料設定' }));
     await user.click(screen.getByRole('button', { name: '匯出製作套件' }));
 
-    expect(services.buildKit).toHaveBeenCalledWith(
-      expect.objectContaining({ ribCount: 8 }),
-      'a'.repeat(64),
-    );
+    expect(services.buildKit).toHaveBeenCalledWith(expect.objectContaining({ provenance: expect.any(Object) }));
     await user.click(screen.getByRole('button', { name: '匯入與修復' }));
     await user.upload(screen.getByLabelText('STL 模型檔案'), new File(['second'], 'second.stl'));
     kitBuild.resolve(new Uint8Array([1, 2, 3]));

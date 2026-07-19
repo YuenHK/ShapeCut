@@ -16,9 +16,10 @@ export async function writeAssemblyPdf(project: ManufacturingProject): Promise<U
   return pdf.save();
 }
 
-export async function writeTextPdf(title: string, lines: readonly string[]): Promise<Uint8Array> {
+export async function writeTextPdf(title: string, lines: readonly string[], keywords: readonly string[] = []): Promise<Uint8Array> {
   const pdf = await PDFDocument.create();
   pdf.setTitle(title);
+  if (keywords.length > 0) pdf.setKeywords([...keywords]);
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   const page = pdf.addPage([210 * MM_TO_POINTS, 297 * MM_TO_POINTS]);
   page.drawText(title, { x: 30, y: page.getHeight() - 40, size: 16, font });

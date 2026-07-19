@@ -84,6 +84,14 @@ export const MaterialSafetyEvidenceSchema = z.discriminatedUnion('kind', [
   }).strict(),
 ]);
 
+export const QualifiedOperatorApprovalSchema = z.object({
+  operatorName: requiredText,
+  qualification: requiredText,
+  signedAt: z.string().datetime({ offset: true }),
+  signature: requiredText,
+  couponId: requiredText,
+}).strict();
+
 const normalizedForbiddenTokens = [
   'pvc',
   'polyvinylchloride',
@@ -214,6 +222,7 @@ const MaterialProfileShape = z.object({
   recipes: RecipesSchema,
   calibratedAt: z.string().datetime({ offset: true }).nullable(),
   physicalCouponVerified: z.boolean(),
+  operatorApproval: QualifiedOperatorApprovalSchema.optional(),
   safetyEvidence: MaterialSafetyEvidenceSchema,
 }).strict();
 
@@ -282,6 +291,13 @@ export const MaterialProfileSchema = MaterialProfileShape.superRefine((profile, 
       message: 'A verified physical coupon requires a calibration date.',
     });
   }
+  if (profile.operatorApproval !== undefined && (!profile.physicalCouponVerified || profile.calibratedAt === null)) {
+    context.addIssue({
+      code: 'custom',
+      path: ['operatorApproval'],
+      message: 'Signed operator approval requires a verified physical coupon and calibration date.',
+    });
+  }
 });
 
 /** Alias retained for callers that name the version explicitly. */
@@ -296,7 +312,9 @@ export type MaterialReadinessReasonCode =
   | 'unknown-identity'
   | 'unknown-composition'
   | 'invalid-profile'
-  | 'physical-calibration-required';
+  | 'physical-calibration-required'
+  | 'operator-approval-required'
+  | 'material-identity-incomplete';
 
 export type MaterialReadiness = {
   status: 'ready' | 'confirm' | 'block';
@@ -347,13 +365,33 @@ export function classifyMaterialReadiness(value: unknown): MaterialReadiness {
       reasons: [{ code: 'unknown-composition', message: 'The custom material composition is unknown and remains blocked.' }],
     };
   }
-  if (profile.calibratedAt === null || !profile.physicalCouponVerified) {
-    return {
-      status: 'confirm',
-      reasons: [{ code: 'physical-calibration-required', message: 'Cut and inspect a physical calibration coupon for this exact machine, material batch, and thickness.' }],
-    };
+  const reasons: MaterialReadiness['reasons'] = [];
+  if ([
+    profile.machine,
+    profile.materialCode,
+    profile.materialName,
+    profile.batchNotes,
+    profile.safetyEvidence.manufacturer,
+    profile.safetyEvidence.productId,
+    profile.safetyEvidence.laserSafetyReference,
+  ].some(hasPlaceholderEvidence)) {
+    reasons.push({ code: 'material-identity-incomplete', message: 'Replace every pending machine, product, batch, manufacturer, and safety-reference placeholder with exact evidence.' });
   }
-  return { status: 'ready', reasons: [] };
+  if (profile.calibratedAt === null || !profile.physicalCouponVerified) {
+    reasons.push({ code: 'physical-calibration-required', message: 'Cut and inspect a physical calibration coupon for this exact machine, material batch, and thickness.' });
+  }
+  if (profile.operatorApproval === undefined) {
+    reasons.push({ code: 'operator-approval-required', message: 'A qualified operator must sign the physical coupon evidence before production export.' });
+  }
+  return reasons.length === 0 ? { status: 'ready', reasons } : { status: 'confirm', reasons };
+}
+
+function hasPlaceholderEvidence(value: string): boolean {
+  const normalized = value.normalize('NFKC').toLowerCase().replaceAll(/[^a-z0-9.]+/gu, '');
+  return normalized.includes('replace')
+    || normalized.includes('pending')
+    || normalized.includes('precalibration')
+    || normalized.includes('manufacturer.invalid');
 }
 
 export function parseMaterialProfile(value: unknown): MaterialProfileV1 {

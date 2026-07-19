@@ -25,7 +25,7 @@ export function runPreflight(context: PreflightContext): { readonly issues: read
   add(context.balance.status === 'block', issue('balance-block', 'blocking', 'Estimated ideal balance exceeds the safe limit.', 'decomposition', 'balance-centroid'));
   add(context.balance.status === 'confirm', issue('balance-confirm', 'confirm', 'Estimated ideal balance is close to the limit.', 'decomposition', 'balance-centroid'));
   add(!context.material.safe, issue('forbidden-material', 'blocking', 'Material is not laser-safe.', 'engraving', 'material-profile'));
-  add(!context.material.calibrated, issue('uncalibrated-material', 'confirm', 'Material profile has not been physically calibrated.', 'engraving', 'material-profile'));
+  add(!context.material.calibrated, issue('uncalibrated-material', 'blocking', 'Production export requires exact material identity, physical coupon calibration, and signed qualified-operator evidence.', 'engraving', 'material-profile'));
   add(context.measurements.minimumFeatureMm < context.material.minFeatureMm, issue('minimum-feature', 'blocking', 'A feature is below the calibrated minimum.', 'decomposition', 'minimum-feature'));
   add(context.measurements.minimumWebMm < context.material.minWebMm, issue('minimum-web', 'blocking', 'A structural web is too narrow.', 'decomposition', 'minimum-web'));
   add(context.measurements.minimumRemainingMm < context.material.minRemainingMm, issue('engraving-remaining', 'blocking', 'Engraving leaves insufficient material.', 'engraving', 'engraving-depth'));

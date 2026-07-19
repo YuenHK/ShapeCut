@@ -364,9 +364,46 @@ describe('classifyMaterialReadiness', () => {
     const result = classifyMaterialReadiness(cloneProfile({
       calibratedAt: '2026-07-19T00:00:00.000Z',
       physicalCouponVerified: true,
+      operatorApproval: {
+        operatorName: 'Test Operator',
+        qualification: 'Qualified laser operator test fixture',
+        signedAt: '2026-07-19T00:00:00.000Z',
+        signature: 'TEST-SIGNATURE-B24',
+        couponId: 'COUPON-B24',
+      },
+      safetyEvidence: {
+        ...validProfile.safetyEvidence,
+        laserSafetyReference: 'https://example.com/birch-b24-laser-safety-record',
+      },
     }));
 
     expect(result).toEqual({ status: 'ready', reasons: [] });
+  });
+
+  it('keeps a checked coupon and calibration date pending without signed qualified-operator evidence', () => {
+    const result = classifyMaterialReadiness(cloneProfile({
+      calibratedAt: '2026-07-19T00:00:00.000Z',
+      physicalCouponVerified: true,
+    }));
+
+    expect(result.status).toBe('confirm');
+    expect(result.reasons).toContainEqual(expect.objectContaining({ code: 'operator-approval-required' }));
+  });
+
+  it('reports placeholder machine, batch, product, or safety evidence as incomplete identity', () => {
+    const result = classifyMaterialReadiness(cloneProfile({
+      machine: 'REPLACE-WITH-MACHINE',
+      batchNotes: 'PRE-CALIBRATION BATCH - replace with exact lot',
+      safetyEvidence: {
+        ...validProfile.safetyEvidence,
+        manufacturer: 'REPLACE',
+        productId: 'PENDING-PRODUCT',
+        laserSafetyReference: 'https://manufacturer.invalid/replace-before-use',
+      },
+    }));
+
+    expect(result.status).toBe('confirm');
+    expect(result.reasons).toContainEqual(expect.objectContaining({ code: 'material-identity-incomplete' }));
   });
 
   it('blocks a forbidden identity instead of throwing an accidental runtime error', () => {

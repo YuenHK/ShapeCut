@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Part2D, Polygon2 } from '../decomposition/types';
 import { applyKerf } from './kerf';
 import { nestParts } from './nest';
-import type { PolygonKernel } from './polygon-kernel';
+import { simpleMiterPolygonKernel, type PolygonKernel } from './polygon-kernel';
 
 function area(polygon: Polygon2): number {
   return Math.abs(polygon.points.reduce((sum, point, index) => {
@@ -37,6 +37,14 @@ describe('kerf compensation', () => {
   it('fails closed on concave geometry until a vetted polygon kernel is supplied', () => {
     const concave: Part2D = { ...part, outline: { points: [[0, 0], [10, 0], [5, 4], [10, 10], [0, 10]] }, holes: [] };
     expect(() => applyKerf(concave, 0.2)).toThrow(/convex/i);
+  });
+
+  it('offsets validated simple concave manufacturing outlines with the explicit miter kernel', () => {
+    const concave: Part2D = { ...part, outline: { points: [[0, 0], [10, 0], [10, 3], [6, 3], [6, 7], [10, 7], [10, 10], [0, 10]] }, holes: [] };
+
+    const result = applyKerf(concave, 0.2, simpleMiterPolygonKernel);
+
+    expect(area(result.outline)).toBeGreaterThan(area(concave.outline));
   });
 });
 
