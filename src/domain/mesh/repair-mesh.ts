@@ -21,7 +21,7 @@ export function repairMeshSafe(mesh: TriangleMesh): MeshRepairResult {
   const repaired = compactVertices(referenced, welded.indices);
   const after = analyzeMeshProblems(repaired);
   const comparison = compareMeshes(referenced, repaired);
-  const blockingReasons = collectBlockingReasons(after, comparison);
+  const blockingReasons = meshRepairBlockingReasons(after, comparison);
 
   return {
     mode: 'safe',
@@ -178,7 +178,7 @@ function compactVertices(mesh: TriangleMesh, indices: Iterable<number>): Triangl
   };
 }
 
-function collectBlockingReasons(
+export function meshRepairBlockingReasons(
   report: MeshRepairResult['after'],
   comparison: MeshComparison,
 ): string[] {
