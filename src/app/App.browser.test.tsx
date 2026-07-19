@@ -309,7 +309,7 @@ function packageArtifacts(sourceSha256: string): ManufacturingArtifacts {
       value: {
         provenance,
         unit: 'mm',
-        sheets: [{ width: 100, height: 100, entities: [{ id: 'part-0', partId: 'part', layer: 'CUT', polygon: { points: [[1, 1], [10, 1], [10, 10], [1, 10]] } }] }],
+        sheets: [{ width: 100, height: 100, entities: [{ id: 'part-0', partId: 'part', instance: 0, contour: 'outline', layer: 'CUT', polygon: { points: [[1, 1], [10, 1], [10, 10], [1, 10]] } }] }],
         manifest: [{ partId: 'part', quantity: 1, assemblyOrder: 1 }],
       },
     },

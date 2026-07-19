@@ -6,6 +6,9 @@ import type { ManufacturingProject } from './layers';
 import { buildPackage } from './package';
 
 const square = (x: number, y: number, size: number) => ({ points: [[x, y], [x + size, y], [x + size, y + size], [x, y + size]] as const });
+const cut = (id: string, partId: string, instance: number, x: number, y: number, size: number) => ({
+  id, partId, instance, contour: 'outline' as const, layer: 'CUT' as const, polygon: square(x, y, size),
+});
 
 const readyMaterial: MaterialProfileV1 = {
   schemaVersion: 1,
@@ -71,12 +74,14 @@ const completeProject: ManufacturingProject = {
       width: 300,
       height: 200,
       entities: [
-        { id: 'hub-cut', partId: 'hub-1', layer: 'CUT', polygon: square(10, 10, 30) },
-        { id: 'hub-score', partId: 'hub-1', layer: 'SCORE', polygon: square(12, 12, 26) },
-        { id: 'rib-e1', partId: 'rib-1', layer: 'ENGRAVE_1', polygon: square(60, 10, 20) },
-        { id: 'rib-e2', partId: 'rib-1', layer: 'ENGRAVE_2', polygon: square(62, 12, 16) },
-        { id: 'rib-e3', partId: 'rib-1', layer: 'ENGRAVE_3', polygon: square(64, 14, 12) },
-        { id: 'rib-e4', partId: 'rib-1', layer: 'ENGRAVE_4', polygon: square(66, 16, 8) },
+        cut('hub-cut-0', 'hub-1', 0, 10, 10, 30),
+        cut('hub-cut-1', 'hub-1', 1, 45, 10, 30),
+        ...Array.from({ length: 6 }, (_, instance) => cut(`rib-cut-${instance}`, 'rib-1', instance, 10 + instance * 25, 60, 15)),
+        { id: 'hub-score', partId: 'hub-1', instance: 0, contour: 'process', layer: 'SCORE', polygon: square(12, 12, 26) },
+        { id: 'rib-e1', partId: 'rib-1', instance: 0, contour: 'process', layer: 'ENGRAVE_1', polygon: square(12, 62, 11) },
+        { id: 'rib-e2', partId: 'rib-1', instance: 1, contour: 'process', layer: 'ENGRAVE_2', polygon: square(37, 62, 11) },
+        { id: 'rib-e3', partId: 'rib-1', instance: 2, contour: 'process', layer: 'ENGRAVE_3', polygon: square(62, 62, 11) },
+        { id: 'rib-e4', partId: 'rib-1', instance: 3, contour: 'process', layer: 'ENGRAVE_4', polygon: square(87, 62, 11) },
       ],
     }],
     manifest: [
@@ -178,5 +183,66 @@ describe('manufacturing package', () => {
       },
     };
     await expect(buildPackage(invalid)).rejects.toThrow(/finite/i);
+  });
+
+  it('rejects missing or extra CUT instances instead of trusting manifest quantities', async () => {
+    const entities = completeProject.document.sheets[0].entities;
+    const missing: ManufacturingProject = {
+      ...completeProject,
+      document: { ...completeProject.document, sheets: [{ ...completeProject.document.sheets[0], entities: entities.filter(({ id }) => id !== 'rib-cut-5') }] },
+    };
+    const extra: ManufacturingProject = {
+      ...completeProject,
+      document: { ...completeProject.document, sheets: [{ ...completeProject.document.sheets[0], entities: [...entities, cut('rib-cut-6', 'rib-1', 6, 165, 60, 15)] }] },
+    };
+
+    await expect(buildPackage(missing)).rejects.toThrow(/CUT|quantity|manifest/i);
+    await expect(buildPackage(extra)).rejects.toThrow(/CUT|quantity|manifest/i);
+  });
+
+  it('rejects duplicate entity IDs and duplicate or non-contiguous assembly order', async () => {
+    const sheet = completeProject.document.sheets[0];
+    const duplicateEntity: ManufacturingProject = {
+      ...completeProject,
+      document: { ...completeProject.document, sheets: [{ ...sheet, entities: [...sheet.entities, { ...sheet.entities[0] }] }] },
+    };
+    const duplicateOrder: ManufacturingProject = {
+      ...completeProject,
+      document: { ...completeProject.document, manifest: completeProject.document.manifest.map((part) => ({ ...part, assemblyOrder: 1 })) },
+    };
+
+    await expect(buildPackage(duplicateEntity)).rejects.toThrow(/entity|unique|duplicate/i);
+    await expect(buildPackage(duplicateOrder)).rejects.toThrow(/assembly|order|manifest/i);
+  });
+
+  it('rejects invalid, out-of-sheet, and disallowed-overlapping CUT polygons', async () => {
+    const sheet = completeProject.document.sheets[0];
+    const replace = (id: string, replacement: typeof sheet.entities[number]) => sheet.entities.map((entity) => entity.id === id ? replacement : entity);
+    const invalidEntity = { ...sheet.entities[0], polygon: { points: [[10, 10], [40, 40], [10, 40], [40, 10]] as const } };
+    const outsideEntity = { ...sheet.entities[0], polygon: square(-1, 10, 30) };
+    const overlappingEntity = { ...sheet.entities.find(({ id }) => id === 'rib-cut-1')!, polygon: square(10, 60, 15) };
+    const projectWith = (entities: typeof sheet.entities): ManufacturingProject => ({
+      ...completeProject,
+      document: { ...completeProject.document, sheets: [{ ...sheet, entities }] },
+    });
+
+    await expect(buildPackage(projectWith(replace(sheet.entities[0].id, invalidEntity)))).rejects.toThrow(/polygon|geometry|CUT/i);
+    await expect(buildPackage(projectWith(replace(sheet.entities[0].id, outsideEntity)))).rejects.toThrow(/sheet|bound|CUT/i);
+    await expect(buildPackage(projectWith(replace('rib-cut-1', overlappingEntity)))).rejects.toThrow(/overlap|CUT/i);
+  });
+
+  it('allows only strictly-contained holes belonging to the matching CUT instance', async () => {
+    const sheet = completeProject.document.sheets[0];
+    const validHole = { id: 'hub-hole-0', partId: 'hub-1', instance: 0, contour: 'hole' as const, layer: 'CUT' as const, polygon: square(20, 20, 5) };
+    const wrongInstance = { ...validHole, id: 'hub-hole-wrong-instance', instance: 1 };
+    const outsideOutline = { ...validHole, id: 'hub-hole-outside', polygon: square(100, 100, 5) };
+    const projectWith = (entity: typeof validHole): ManufacturingProject => ({
+      ...completeProject,
+      document: { ...completeProject.document, sheets: [{ ...sheet, entities: [...sheet.entities, entity] }] },
+    });
+
+    await expect(buildPackage(projectWith(validHole))).resolves.toBeDefined();
+    await expect(buildPackage(projectWith(wrongInstance))).rejects.toThrow(/hole|outline|instance/i);
+    await expect(buildPackage(projectWith(outsideOutline))).rejects.toThrow(/hole|outline|contain/i);
   });
 });

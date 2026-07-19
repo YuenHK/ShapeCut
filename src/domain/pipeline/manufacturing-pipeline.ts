@@ -315,12 +315,16 @@ function createManufacturingDocument(
       entities.push({
         id: `${part.id}-instance-${placement.instance}-outline`,
         partId: part.id,
+        instance: placement.instance,
+        contour: 'outline',
         layer: 'CUT',
         polygon: translatePolygon(part.outline, transform),
       });
       part.holes.forEach((hole, index) => entities.push({
         id: `${part.id}-instance-${placement.instance}-hole-${index}`,
         partId: part.id,
+        instance: placement.instance,
+        contour: 'hole',
         layer: 'CUT',
         polygon: translatePolygon(hole, transform),
       }));
@@ -329,6 +333,8 @@ function createManufacturingDocument(
         entities.push({
           id: `${part.id}-instance-${placement.instance}-engrave-${index}`,
           partId: part.id,
+          instance: placement.instance,
+          contour: 'process',
           layer: `ENGRAVE_${region.level}` as LayerName,
           polygon: translatePolygon(region.polygon, transform),
         });

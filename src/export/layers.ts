@@ -1,10 +1,18 @@
 import type { Polygon2 } from '../domain/decomposition/types';
+import { pointLocation, polygonIntersectionArea, polygonMassProperties, polygonsIntersectOrTouch, validatePolygon } from '../domain/engraving/geometry';
 import { MaterialProfileSchema, type MaterialProfileV1 } from '../domain/materials/schema';
 
 export type LayerName = 'CUT' | 'SCORE' | `ENGRAVE_${1 | 2 | 3 | 4 | 5}`;
 export const LAYER_ORDER: readonly LayerName[] = ['CUT', 'SCORE', 'ENGRAVE_1', 'ENGRAVE_2', 'ENGRAVE_3', 'ENGRAVE_4', 'ENGRAVE_5'];
 
-export type LayerEntity = { readonly id: string; readonly partId: string; readonly layer: LayerName; readonly polygon: Polygon2 };
+export type LayerEntity = {
+  readonly id: string;
+  readonly partId: string;
+  readonly instance: number;
+  readonly contour: 'outline' | 'hole' | 'process';
+  readonly layer: LayerName;
+  readonly polygon: Polygon2;
+};
 export type ManufacturingSheet = { readonly width: number; readonly height: number; readonly entities: readonly LayerEntity[] };
 export type PartManifest = { readonly partId: string; readonly quantity: number; readonly assemblyOrder: number };
 export type ArtifactReference = { readonly inputFingerprint: string };
@@ -60,16 +68,103 @@ export function validateProject(project: ManufacturingProject): void {
   }
   if (project.document.unit !== 'mm' || project.document.sheets.length === 0) throw new RangeError('Manufacturing document must contain millimetre sheets');
   const partIds = new Set<string>();
+  const assemblyOrders = new Set<number>();
+  const quantities = new Map<string, number>();
+  if (project.document.manifest.length === 0) throw new RangeError('Part manifest must not be empty');
   for (const item of project.document.manifest) {
-    if (!item.partId || partIds.has(item.partId) || !Number.isSafeInteger(item.quantity) || item.quantity < 1 || !Number.isSafeInteger(item.assemblyOrder) || item.assemblyOrder < 1) throw new RangeError('Part manifest is invalid');
+    if (typeof item.partId !== 'string' || !item.partId || partIds.has(item.partId) || !Number.isSafeInteger(item.quantity) || item.quantity < 1
+      || !Number.isSafeInteger(item.assemblyOrder) || item.assemblyOrder < 1 || assemblyOrders.has(item.assemblyOrder)) {
+      throw new RangeError('Part manifest assembly order and quantities must be unique and valid');
+    }
     partIds.add(item.partId);
+    assemblyOrders.add(item.assemblyOrder);
+    quantities.set(item.partId, item.quantity);
   }
-  for (const sheet of project.document.sheets) {
+  if ([...assemblyOrders].sort((left, right) => left - right).some((order, index) => order !== index + 1)) {
+    throw new RangeError('Part manifest assembly order must be contiguous from one');
+  }
+
+  const entityIds = new Set<string>();
+  const cutEntities: { readonly entity: LayerEntity; readonly sheetIndex: number }[] = [];
+  const outlines = new Map<string, { readonly entity: LayerEntity; readonly sheetIndex: number }>();
+  for (const [sheetIndex, sheet] of project.document.sheets.entries()) {
     if (![sheet.width, sheet.height].every(Number.isFinite) || sheet.width <= 0 || sheet.height <= 0) throw new RangeError('Sheet dimensions must be finite and positive');
     for (const entity of sheet.entities) {
-      if (!LAYER_ORDER.includes(entity.layer) || !partIds.has(entity.partId) || entity.polygon.points.length < 3 || entity.polygon.points.some((point) => point.length !== 2 || !point.every(Number.isFinite))) throw new RangeError('Entity geometry must be finite and reference a manifest part');
+      if (typeof entity.id !== 'string' || !entity.id || entityIds.has(entity.id)) throw new RangeError('Manufacturing entity IDs must be non-empty and unique');
+      entityIds.add(entity.id);
+      const quantity = quantities.get(entity.partId);
+      if (!LAYER_ORDER.includes(entity.layer) || quantity === undefined
+        || !Number.isSafeInteger(entity.instance) || entity.instance < 0 || entity.instance >= quantity) {
+        throw new RangeError('Entity must reference a valid manifest part instance and layer');
+      }
+      if (!entity.polygon || !Array.isArray(entity.polygon.points)
+        || entity.polygon.points.some((point) => !Array.isArray(point) || point.length !== 2 || point.some((coordinate) => !Number.isFinite(coordinate)))) {
+        throw new RangeError('Entity geometry must be finite and reference a manifest part');
+      }
+      if (!validatePolygon(entity.polygon)) throw new RangeError('Entity polygon geometry must be valid and non-self-intersecting');
+      if (entity.layer !== 'CUT') {
+        if (entity.contour !== 'process') throw new RangeError('Non-CUT entities must use the process contour');
+        continue;
+      }
+      if (entity.contour !== 'outline' && entity.contour !== 'hole') throw new RangeError('CUT entities must identify an outline or hole contour');
+      if (entity.polygon.points.some(([x, y]) => x < 0 || y < 0 || x > sheet.width || y > sheet.height)) {
+        throw new RangeError('CUT polygon must remain within its material sheet bounds');
+      }
+      const indexed = { entity, sheetIndex };
+      cutEntities.push(indexed);
+      if (entity.contour === 'outline') {
+        const key = partInstanceKey(entity);
+        if (outlines.has(key)) throw new RangeError('Each manifest part instance must have exactly one CUT outline');
+        outlines.set(key, indexed);
+      }
     }
   }
+
+  for (const item of project.document.manifest) {
+    for (let instance = 0; instance < item.quantity; instance += 1) {
+      if (!outlines.has(partInstanceKey({ partId: item.partId, instance }))) {
+        throw new RangeError('CUT instance quantity does not match the part manifest');
+      }
+    }
+  }
+  if (outlines.size !== project.document.manifest.reduce((sum, item) => sum + item.quantity, 0)) {
+    throw new RangeError('CUT instance quantity does not match the part manifest');
+  }
+
+  for (const indexed of cutEntities) {
+    if (indexed.entity.contour !== 'hole') continue;
+    const outline = outlines.get(partInstanceKey(indexed.entity));
+    if (!outline || outline.sheetIndex !== indexed.sheetIndex || !strictlyContains(outline.entity.polygon, indexed.entity.polygon)) {
+      throw new RangeError('CUT hole must be strictly contained by its matching part-instance outline');
+    }
+  }
+  for (let leftIndex = 0; leftIndex < cutEntities.length; leftIndex += 1) {
+    const left = cutEntities[leftIndex];
+    for (let rightIndex = leftIndex + 1; rightIndex < cutEntities.length; rightIndex += 1) {
+      const right = cutEntities[rightIndex];
+      if (left.sheetIndex !== right.sheetIndex || isMatchingOutlineAndHole(left.entity, right.entity)) continue;
+      if (polygonsIntersectOrTouch(left.entity.polygon, right.entity.polygon)) {
+        throw new RangeError(`CUT polygons ${left.entity.id} and ${right.entity.id} overlap or touch`);
+      }
+    }
+  }
+}
+
+function partInstanceKey(entity: Pick<LayerEntity, 'partId' | 'instance'>): string {
+  return `${entity.partId}\u0000${entity.instance}`;
+}
+
+function isMatchingOutlineAndHole(left: LayerEntity, right: LayerEntity): boolean {
+  return left.partId === right.partId && left.instance === right.instance
+    && ((left.contour === 'outline' && right.contour === 'hole') || (left.contour === 'hole' && right.contour === 'outline'));
+}
+
+function strictlyContains(outline: Polygon2, hole: Polygon2): boolean {
+  if (hole.points.some((point) => pointLocation(outline, point) !== 1)) return false;
+  const holeArea = polygonMassProperties(hole).area;
+  const intersectionArea = polygonIntersectionArea(outline, hole);
+  const tolerance = Math.max(Number.MIN_VALUE, holeArea * 4096 * Number.EPSILON);
+  return Number.isFinite(intersectionArea) && Math.abs(intersectionArea - holeArea) <= tolerance;
 }
 
 export function usedLayers(sheet: ManufacturingSheet): LayerName[] {
