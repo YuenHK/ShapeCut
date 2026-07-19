@@ -6,15 +6,28 @@
 
 | 關卡 | 結果 |
 |---|---:|
-| Vitest unit/component | 314/314 通過 |
-| Chromium browser | 8/8 通過 |
-| Playwright E2E | 5/5 通過 |
+| Vitest unit/component | 366/366 通過（22 個 test files） |
+| Chromium browser | 25/25 通過（4 個 test files） |
+| Playwright E2E | 6/6 通過（single worker，避免幾何 benchmark 與另一個 repair worker 爭用 CPU） |
+| 10 個代表性 STL | 8 個自動成功；2 個按預期要求人工軸心／blocking；10/10 通過 |
 | TypeScript | 通過 |
-| Vite production build | 通過 |
-| 100k triangles | 約 1.7–2.3 秒到可互動軸心頁；分析階段沒有超過 100 ms long task |
-| 500k triangles | 約 3.4–3.5 秒內受控返回 blocking 結果 |
+| Vite production build | 通過（324 modules transformed） |
+| 100k triangles | 2,776 ms 到可互動軸心頁；最長 main-thread task 81 ms |
+| 500k triangles | 3,411 ms 受控返回 blocking 結果 |
 
-E2E 已實際驗證：封閉 STL 完成五步並下載可解開 ZIP；開放 STL 停在匯入步驟；未校準 cork 阻止匯出；ZIP 含 SVG、DXF、PDF、JSON；PWA manifest 存在。
+E2E 已實際驗證：封閉 STL 完成五步並下載可解開 ZIP；開放 STL 停在匯入步驟；未校準 cork 阻止匯出；ZIP 含 SVG、DXF、PDF、JSON；PWA manifest 存在。完整 fresh matrix 指令為 `npm test -- --run`、`npm run test:browser`、`npm run test:e2e`、`npm run validate:fixtures`、`npm run typecheck`、`npm run build` 及 `npm run test:performance`。
+
+## Knight Fortress 真實 STL regression
+
+外部使用者 fixture `Copy of Beyblade X Knight Fortress.stl` 未加入 repository；E2E 在 fixture 存在時實際執行，亦可用 `KNIGHT_FORTRESS_STL` 明確指定路徑，缺失時會清楚 skip，避免 CI 假失敗。
+
+| 階段 | 開放邊界 | 非流形邊 | 退化三角形 | 重複三角形 | 結果 |
+|---|---:|---:|---:|---:|---|
+| 原始模型 | 0 | 105 | 63 | 33 | 可解析；沒有誤報為「讀不到檔案」 |
+| 安全修復 | 41 | 49 | 0 | 0 | 未通過安全檢查；保持 blocking |
+| 進階修復 | 41 | 49 | 0 | 0 | 未通過安全檢查；`非流形面扇無法在限制內安全拆分` |
+
+真實 browser workflow 同時確認：必須明確勾選同意才可執行進階修復；`使用進階修復` 保持 disabled；「軸心與尺寸」保持鎖定。進階結果只可下載供外部檢查，不能進入自動拆件。E2E 下載 `Copy of Beyblade X Knight Fortress-repaired.stl` 後用 STL parser 重新讀取，得到 41／49／0／0；按「復原原始模型」後回復 0／105／63／33。以上結果不表示 Knight Fortress 已成功修復。
 
 ## 10 個代表性 STL
 

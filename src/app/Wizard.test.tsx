@@ -270,7 +270,7 @@ describe('Wizard', () => {
     expect(screen.getByRole('button', { name: '軸心與尺寸' })).toBeDisabled();
   });
 
-  it('downloads only an accepted repair and retains it separately after restore', async () => {
+  it('downloads an accepted repair and retains it separately after restore', async () => {
     const user = userEvent.setup();
     const services = successfulServices();
     render(<Wizard services={services} />);

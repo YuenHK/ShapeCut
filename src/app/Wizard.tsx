@@ -135,7 +135,13 @@ export function Wizard({ services, repository, eagerPreview = false }: { readonl
 
   const currentRepair = repairStage === 'safe' ? analysis?.safeRepair : repairStage === 'advanced' ? advancedRepair : undefined;
   const currentReport = repairStage === 'original' ? analysis?.originalReport : currentRepair?.after;
-  const previewMesh = repairStage === 'original' ? analysis?.originalPreview : currentRepair?.mesh;
+  const repairPreview = useMemo(
+    () => repairStage === 'original'
+      ? analysis?.originalPreview
+      : currentRepair ? compactPreview(currentRepair.mesh) : undefined,
+    [analysis?.originalPreview, currentRepair, repairStage],
+  );
+  const acceptedPreview = useMemo(() => mesh ? compactPreview(mesh) : undefined, [mesh]);
 
   const previewRepair = (stage: Exclude<ImportRepairStage, 'original'>): void => {
     const result = stage === 'safe' ? analysis?.safeRepair : advancedRepair;
@@ -170,7 +176,7 @@ export function Wizard({ services, repository, eagerPreview = false }: { readonl
       {state.persistenceError && <p role="alert">專案儲存失敗：{state.persistenceError}</p>}
       {operationError && <p role="alert">操作失敗：{operationError}</p>}
       {issues.length > 0 && state.step !== 'export' && <div role="alert">{issues.map((issue) => <p key={issue.id}>{issue.label}：{issue.description}</p>)}</div>}
-      {(eagerPreview || previewMesh || mesh) && <SpinnerViewport mesh={state.step === 'import' ? previewMesh : mesh} meshProblems={currentReport} issues={issues} />}
+      {(eagerPreview || repairPreview || acceptedPreview) && <SpinnerViewport mesh={state.step === 'import' ? repairPreview : acceptedPreview} meshProblems={currentReport} issues={issues} />}
       <nav aria-label="轉換步驟"><ol>{steps.map(({ id, label }, index) => <li key={id}><button type="button" disabled={index > furthestStep} aria-current={state.step === id ? 'step' : undefined} onClick={() => state.goToStep(id)}>{label}</button></li>)}</ol></nav>
       {state.step !== 'import' && analysis && currentRepair && <RepairSummary stage={repairStage} originalReport={analysis.originalReport} repair={currentRepair} />}
       {state.step === 'import' && <ImportStep
@@ -199,7 +205,7 @@ export function Wizard({ services, repository, eagerPreview = false }: { readonl
         onPreview={previewRepair}
         onUseRepair={useCurrentRepair}
         onDownload={() => {
-          if (!file || !currentRepair?.accepted) return;
+          if (!file || !currentRepair) return;
           void execute('download', async (isCurrent) => {
             const bytes = await services.serializeRepairedSTL(currentRepair.mesh, currentRepair.mode);
             if (!isCurrent()) return;
@@ -270,4 +276,27 @@ function issuesFromReport(report: MeshProblemReport): readonly GeometryIssue[] {
     description: `偵測到 ${report.duplicateTriangleCount} 個重複三角形。`,
   });
   return issues;
+}
+
+function compactPreview(mesh: TriangleMesh, maximumTriangles = 2_000): TriangleMesh {
+  const indexLimit = Math.min(mesh.indices.length, maximumTriangles * 3);
+  if (indexLimit === mesh.indices.length) return mesh;
+  const remap = new Map<number, number>();
+  const positions: number[] = [];
+  const indices = new Uint32Array(indexLimit);
+  for (let offset = 0; offset < indexLimit; offset += 1) {
+    const source = mesh.indices[offset];
+    let target = remap.get(source);
+    if (target === undefined) {
+      target = remap.size;
+      remap.set(source, target);
+      positions.push(
+        mesh.positions[source * 3],
+        mesh.positions[source * 3 + 1],
+        mesh.positions[source * 3 + 2],
+      );
+    }
+    indices[offset] = target;
+  }
+  return { positions: new Float64Array(positions), indices };
 }

@@ -74,7 +74,7 @@ export function ImportStep({
       {currentRepair && (
         <>
           <button type="button" disabled={!currentRepair.accepted || busy} onClick={onUseRepair}>使用{currentRepair.mode === 'safe' ? '安全' : '進階'}修復</button>
-          {currentRepair.accepted && <button type="button" disabled={busy} onClick={onDownload}>{busyAction === 'download' ? '準備下載中…' : '下載已修復 STL'}</button>}
+          <button type="button" disabled={busy} onClick={onDownload}>{busyAction === 'download' ? '準備下載中…' : '下載已修復 STL'}</button>
         </>
       )}
     </section>
