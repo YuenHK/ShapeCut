@@ -8,6 +8,9 @@ import {
   DoubleSide,
   ExtrudeGeometry,
   Group,
+  LineBasicMaterial,
+  LineSegments,
+  Material,
   Mesh,
   MeshBasicMaterial,
   MeshStandardMaterial,
@@ -23,7 +26,7 @@ import {
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { SpinnerKit, Polygon2 } from '../domain/decomposition/types';
 import type { EngravingMap } from '../domain/engraving/height-field';
-import type { TriangleMesh } from '../domain/mesh/types';
+import type { EdgeMarker, MeshProblemReport, TriangleMarker, TriangleMesh } from '../domain/mesh/types';
 import { engravingLevelColor, PART_COLORS } from './color-map';
 
 export interface SceneController {
@@ -31,6 +34,7 @@ export interface SceneController {
   setParts(parts: SpinnerKit | undefined): void;
   setExploded(amount: number): void;
   setEngraving(map: EngravingMap | undefined): void;
+  setMeshProblems(report: MeshProblemReport | undefined): void;
   selectPart(id: string | undefined): void;
   focusRegion(id: string): void;
   dispose(): void;
@@ -44,13 +48,59 @@ function shapeFromPolygon(polygon: Polygon2): Shape {
 }
 
 function disposeObject(root: Object3D): void {
+  const geometries = new Set<BufferGeometry>();
+  const materials = new Set<Material>();
   root.traverse((object) => {
-    if (!(object instanceof Mesh)) return;
-    object.geometry.dispose();
-    const materials = Array.isArray(object.material) ? object.material : [object.material];
-    for (const material of materials) material.dispose();
+    const renderable = object as Object3D & {
+      geometry?: BufferGeometry;
+      material?: Material | readonly Material[];
+    };
+    if (renderable.geometry) geometries.add(renderable.geometry);
+    if (renderable.material) {
+      const objectMaterials = Array.isArray(renderable.material) ? renderable.material : [renderable.material];
+      for (const material of objectMaterials) materials.add(material);
+    }
   });
+  for (const geometry of geometries) geometry.dispose();
+  for (const material of materials) material.dispose();
   root.clear();
+}
+
+function markerGeometry(points: readonly (readonly [number, number, number])[]): BufferGeometry {
+  const geometry = new BufferGeometry();
+  geometry.setAttribute('position', new BufferAttribute(new Float32Array(points.flatMap((point) => point)), 3));
+  return geometry;
+}
+
+function addEdgeMarkers(group: Group, markers: readonly EdgeMarker[], material: LineBasicMaterial): void {
+  for (const marker of markers) {
+    const object = new LineSegments(markerGeometry(marker.points), material);
+    object.name = marker.regionId;
+    object.userData.regionId = marker.regionId;
+    object.renderOrder = 10;
+    group.add(object);
+  }
+}
+
+function addDegenerateMarkers(group: Group, markers: readonly TriangleMarker[], material: LineBasicMaterial): void {
+  for (const marker of markers) {
+    const [a, b, c] = marker.points;
+    const object = new LineSegments(markerGeometry([a, b, b, c, c, a]), material);
+    object.name = marker.regionId;
+    object.userData.regionId = marker.regionId;
+    object.renderOrder = 10;
+    group.add(object);
+  }
+}
+
+function addDuplicateMarkers(group: Group, markers: readonly TriangleMarker[], material: MeshBasicMaterial): void {
+  for (const marker of markers) {
+    const object = new Mesh(markerGeometry(marker.points), material);
+    object.name = marker.regionId;
+    object.userData.regionId = marker.regionId;
+    object.renderOrder = 10;
+    group.add(object);
+  }
 }
 
 function frame(camera: PerspectiveCamera, controls: OrbitControls, object: Object3D): void {
@@ -84,7 +134,8 @@ export function createSceneController(host: HTMLElement): SceneController {
   const modelGroup = new Group();
   const partGroup = new Group();
   const engravingGroup = new Group();
-  scene.add(modelGroup, partGroup, engravingGroup);
+  const problemGroup = new Group();
+  scene.add(modelGroup, partGroup, engravingGroup, problemGroup);
   const warmGeometry = new BufferGeometry();
   warmGeometry.setAttribute('position', new BufferAttribute(new Float32Array([0, 0, 0, 0.001, 0, 0, 0, 0.001, 0]), 3));
   const warmMaterial = new MeshBasicMaterial({ color: '#94a3b8', side: DoubleSide });
@@ -189,6 +240,30 @@ export function createSceneController(host: HTMLElement): SceneController {
         engravingGroup.add(object);
       }
     },
+    setMeshProblems(report) {
+      disposeObject(problemGroup);
+      if (!report) return;
+
+      if (report.boundaryEdges.length > 0) {
+        addEdgeMarkers(problemGroup, report.boundaryEdges, new LineBasicMaterial({ color: '#ef4444', depthTest: false }));
+      }
+      if (report.nonManifoldEdges.length > 0) {
+        addEdgeMarkers(problemGroup, report.nonManifoldEdges, new LineBasicMaterial({ color: '#d946ef', depthTest: false }));
+      }
+      if (report.degenerateTriangles.length > 0) {
+        addDegenerateMarkers(problemGroup, report.degenerateTriangles, new LineBasicMaterial({ color: '#f97316', depthTest: false }));
+      }
+      if (report.duplicateTriangles.length > 0) {
+        addDuplicateMarkers(problemGroup, report.duplicateTriangles, new MeshBasicMaterial({
+          color: '#facc15',
+          depthTest: false,
+          depthWrite: false,
+          opacity: 0.48,
+          side: DoubleSide,
+          transparent: true,
+        }));
+      }
+    },
     selectPart,
     focusRegion(id) {
       let target = scene.getObjectByName(id);
@@ -207,6 +282,7 @@ export function createSceneController(host: HTMLElement): SceneController {
       disposeObject(modelGroup);
       disposeObject(partGroup);
       disposeObject(engravingGroup);
+      disposeObject(problemGroup);
       renderer.dispose();
       renderer.forceContextLoss();
       renderer.domElement.remove();

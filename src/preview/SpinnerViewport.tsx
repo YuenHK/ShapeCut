@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { SpinnerKit } from '../domain/decomposition/types';
 import type { EngravingMap } from '../domain/engraving/height-field';
-import type { TriangleMesh } from '../domain/mesh/types';
+import type { MeshProblemReport, TriangleMesh } from '../domain/mesh/types';
 import type { Severity } from '../domain/types';
 import { createSceneController, type SceneController } from './scene-controller';
 
@@ -17,6 +17,7 @@ export type SpinnerViewportProps = {
   readonly mesh?: TriangleMesh;
   readonly parts?: SpinnerKit;
   readonly engraving?: EngravingMap;
+  readonly meshProblems?: MeshProblemReport;
   readonly issues: readonly GeometryIssue[];
   readonly createController?: (host: HTMLElement) => SceneController;
 };
@@ -25,6 +26,7 @@ export function SpinnerViewport({
   mesh,
   parts,
   engraving,
+  meshProblems,
   issues,
   createController = createSceneController,
 }: SpinnerViewportProps) {
@@ -45,7 +47,18 @@ export function SpinnerViewport({
   useEffect(() => { controllerRef.current?.setMesh(mesh); }, [mesh]);
   useEffect(() => { controllerRef.current?.setParts(parts); }, [parts]);
   useEffect(() => { controllerRef.current?.setEngraving(engraving); }, [engraving]);
+  useEffect(() => { controllerRef.current?.setMeshProblems(meshProblems); }, [meshProblems]);
   useEffect(() => { controllerRef.current?.setExploded(exploded); }, [exploded]);
+
+  const markersTruncated = meshProblems
+    ? Object.values(meshProblems.markersTruncated).some(Boolean)
+    : false;
+  const problemCount = meshProblems
+    ? meshProblems.inspection.boundaryEdgeCount
+      + meshProblems.inspection.nonManifoldEdgeCount
+      + meshProblems.inspection.degenerateTriangleCount
+      + meshProblems.duplicateTriangleCount
+    : 0;
 
   return (
     <section aria-label="陀螺 3D 預覽">
@@ -62,6 +75,11 @@ export function SpinnerViewport({
           onChange={(event) => setExploded(Number(event.currentTarget.value))}
         />
       </label>
+      {markersTruncated && (
+        <p role="status" aria-live="polite">
+          為維持 3D 預覽效能，每類問題只顯示首 2,000 個標記；完整問題總數：{problemCount.toLocaleString('en-US')}。
+        </p>
+      )}
       {issues.length > 0 && (
         <ul aria-label="幾何問題">
           {issues.map((issue) => (
