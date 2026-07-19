@@ -6,16 +6,18 @@
 
 | 關卡 | 結果 |
 |---|---:|
-| Vitest unit/component | 366/366 通過（22 個 test files） |
-| Chromium browser | 25/25 通過（4 個 test files） |
-| Playwright E2E | 6/6 通過（single worker，避免幾何 benchmark 與另一個 repair worker 爭用 CPU） |
-| 10 個代表性 STL | 8 個自動成功；2 個按預期要求人工軸心／blocking；10/10 通過 |
+| Vitest unit/component | 409/409 通過（25 個 test files） |
+| Chromium browser | 31/31 通過（4 個 test files） |
+| Playwright E2E | 9/9 通過（single worker，避免幾何 benchmark 與另一個 repair worker 爭用 CPU） |
+| 10 個代表性 STL | 8 個自動成功；1 個要求人工軸心；1 個 topology blocking；10/10 通過 |
 | TypeScript | 通過 |
-| Vite production build | 通過（324 modules transformed） |
-| 100k triangles | 2,380 ms 到可互動軸心頁；最長 main-thread task 74 ms |
-| 500k triangles | 1,351 ms 受控返回 resource-limit `操作失敗`：unique vertices 超過 300,000 上限 |
+| Vite production build | 通過（341 modules transformed） |
+| 非根路徑 PWA build | `/school/spinner/` manifest、icon、service worker URL／scope 及 cache shell 全部通過 |
+| 100k triangles | 2,893 ms 到可互動軸心頁；最長 main-thread task 72 ms |
+| 500k triangles | 1,397 ms 受控返回 resource-limit `操作失敗`：unique vertices 超過 300,000 上限 |
+| 真實拆件／雕刻 worker | 首次 pipeline 106 ms；decomposition 11.9 ms；engraving 8.0 ms |
 
-E2E 已實際驗證：封閉 STL 完成五步並下載可解開 ZIP；開放 STL 停在匯入步驟；未校準 cork 阻止匯出；ZIP 含 SVG、DXF、PDF、JSON；PWA manifest 存在。完整 fresh matrix 指令為 `npm test -- --run`、`npm run test:browser`、`npm run test:e2e`、`npm run validate:fixtures`、`npm run typecheck`、`npm run build` 及 `npm run test:performance`。
+E2E 已實際驗證：真實封閉 STL 完成軟件流程，但預設材料因欠精確材料身份、實體 coupon 及合資格操作員簽署而阻止 production 匯出；開放 STL 停在匯入步驟；低對稱 fixture 必須輸入有限非零手動軸心；頁面重載後必須重新附加並核對原始 STL。另有 real-fixture integration 使用兩個不同 STL 及明確標示 `TEST ONLY` 的完整 synthetic signed profile，經真正 readiness／preflight gate 建立套件，再逐 entity 驗證 SVG、DXF、PDF、JSON 與 ZIP；兩個 STL 的 profile、CUT geometry 及使用尺寸均不同。這個 synthetic profile 只屬自動測試證據，不代表任何實物或 production 批准。完整 fresh matrix 指令為 `npm run test`、`npm run test:browser -- --run --browser=chromium`、`npm run test:e2e -- --workers=1`、`npm run validate:fixtures`、`npm run typecheck`、`npm run build` 及 `npm run test:performance`。
 
 效能數字來自 2026-07-19 的本機 Chromium single-worker fresh run，只量使用者按「分析模型」至互動軸心或明確 resource-limit 結果；測試端 fixture 建立及 `setInputFiles` 傳輸在計時範圍外。數字會隨機器及當時系統負載波動，驗收門檻仍為 100k 少於 3,000 ms、最長 main-thread task 少於 100 ms，以及 500k 在 15,000 ms 內受控返回具體結果。
 
@@ -37,18 +39,18 @@ E2E 已實際驗證：封閉 STL 完成五步並下載可解開 ZIP；開放 STL
 
 | 模型 | 類別 | 結果 | 軸向 alignment | confidence | 零件 |
 |---|---|---|---:|---:|---:|
-| symmetric-smooth.stl | 平滑 | 自動軸心＋可編輯拆件 | 1.000 | 0.985 | 10 |
-| symmetric-textured.stl | 紋理 | 自動軸心＋可編輯拆件 | 1.000 | 0.958 | 10 |
-| hollow-shell.stl | 中空殼 | 自動軸心＋可編輯拆件 | 1.000 | 0.587 | 10 |
-| wide-outer-ring.stl | 寬外環 | 自動軸心＋可編輯拆件 | 1.000 | 0.968 | 10 |
-| thin-profile.stl | 薄壁空殼 | 自動軸心＋可編輯拆件 | 1.000 | 0.811 | 10 |
-| tall-spindle.stl | 修長 | 自動軸心＋可編輯拆件 | 1.000 | 0.988 | 10 |
-| squat-disc.stl | 扁碟 | 自動軸心＋可編輯拆件 | 1.000 | 0.901 | 10 |
-| stepped-profile.stl | 階梯輪廓 | 自動軸心＋可編輯拆件 | 1.000 | 0.890 | 10 |
+| symmetric-smooth.stl | 平滑 | 自動軸心＋可編輯拆件 | 1.000 | 1.000 | 10 |
+| symmetric-textured.stl | 紋理 | 自動軸心＋可編輯拆件 | 1.000 | 0.984 | 10 |
+| hollow-shell.stl | 中空殼 | 自動軸心＋可編輯拆件 | 1.000 | 0.810 | 10 |
+| wide-outer-ring.stl | 寬外環 | 自動軸心＋可編輯拆件 | 1.000 | 1.000 | 10 |
+| thin-profile.stl | 薄壁空殼 | 自動軸心＋可編輯拆件 | 1.000 | 0.919 | 10 |
+| tall-spindle.stl | 修長 | 自動軸心＋可編輯拆件 | 1.000 | 0.994 | 10 |
+| squat-disc.stl | 扁碟 | 自動軸心＋可編輯拆件 | 1.000 | 0.920 | 10 |
+| stepped-profile.stl | 階梯輪廓 | 自動軸心＋可編輯拆件 | 1.000 | 0.955 | 10 |
 | low-symmetry.stl | 低對稱 | 要求手動軸心 | — | 0.523 | — |
 | invalid-open.stl | 無效網格 | blocking：開放邊界 | — | — | — |
 
-自動成功率為 8/10，另外兩個模型均按 manifest 返回預期人工處理或 blocking 結果。所有模型由本專案程序化產生，以 CC0-1.0 發佈；重建指令為 `node scripts/generate-acceptance-fixtures.mjs`。
+自動成功率為 8/10；`low-symmetry.stl` 的 0.523 低於 UI 自動確認門檻 0.8，`invalid-open.stl` 則由真實 topology inspection 阻止。validator 亦比較至少兩個自動模型的 geometry SHA-256 及輸出尺寸，確認不是共用固定輸出。所有模型由本專案程序化產生，以 CC0-1.0 發佈；重建指令為 `node scripts/generate-acceptance-fixtures.mjs`。
 
 ## 三材料軟件狀態
 
