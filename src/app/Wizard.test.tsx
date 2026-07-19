@@ -109,9 +109,9 @@ function analysis(safeRepair: MeshRepairResult = repair(), sourceHash = 'source-
 
 function successfulServices(): WizardServices {
   return {
-    inspect: vi.fn().mockResolvedValue({ candidates: [axis], issues: [] }),
     inspectAndRepair: vi.fn().mockResolvedValue(analysis()),
     advancedRepair: vi.fn().mockResolvedValue(repair({ mode: 'advanced' })),
+    serializeRepairedSTL: vi.fn().mockResolvedValue(new ArrayBuffer(84)),
     downloadRepairedSTL: vi.fn().mockResolvedValue(undefined),
     decompose: vi.fn().mockResolvedValue({ issues: [] }),
     engrave: vi.fn().mockResolvedValue({ issues: [] }),
@@ -159,6 +159,11 @@ describe('Wizard', () => {
 
     expect(screen.getByRole('button', { name: '匯出製作套件' })).toBeEnabled();
     expect(services.decompose).toHaveBeenCalledWith(expect.objectContaining({ ribCount: 8 }));
+    await user.click(screen.getByRole('button', { name: '匯出製作套件' }));
+    expect(services.exportKit).toHaveBeenCalledWith(
+      expect.objectContaining({ ribCount: 8 }),
+      'a'.repeat(64),
+    );
   });
 
   it('keeps export blocked and links a blocking issue to its explanation', async () => {
@@ -273,9 +278,12 @@ describe('Wizard', () => {
     await user.click(screen.getByRole('button', { name: '匯入與修復' }));
     await user.click(screen.getByRole('button', { name: '下載已修復 STL' }));
 
-    expect(services.downloadRepairedSTL).toHaveBeenCalledWith(
+    expect(services.serializeRepairedSTL).toHaveBeenCalledWith(
       expect.objectContaining({ indices: expect.any(Uint32Array) }),
       'safe',
+    );
+    expect(services.downloadRepairedSTL).toHaveBeenCalledWith(
+      expect.any(ArrayBuffer),
       'original-base.stl',
     );
     await user.click(screen.getByRole('button', { name: '復原原始模型' }));
@@ -318,6 +326,29 @@ describe('Wizard', () => {
 
     expect(screen.getByRole('heading', { name: '軸心與尺寸' })).toBeVisible();
     expect(screen.queryByText('非流形邊：8')).not.toBeInTheDocument();
+  });
+
+  it('does not trigger a download after serialization is superseded by a new file', async () => {
+    const user = userEvent.setup();
+    const serialization = deferred<ArrayBuffer>();
+    const services = successfulServices();
+    services.serializeRepairedSTL = vi.fn().mockReturnValue(serialization.promise);
+    services.downloadRepairedSTL = vi.fn().mockResolvedValue(undefined);
+    render(<Wizard services={services} />);
+
+    const input = screen.getByLabelText('STL 模型檔案');
+    await user.upload(input, new File(['first'], 'first.stl'));
+    await user.click(screen.getByRole('button', { name: '分析模型' }));
+    await user.click(screen.getByRole('button', { name: '匯入與修復' }));
+    await user.click(screen.getByRole('button', { name: '下載已修復 STL' }));
+
+    await user.upload(screen.getByLabelText('STL 模型檔案'), new File(['second'], 'second.stl'));
+    expect(screen.getByText('second.stl')).toBeVisible();
+    serialization.resolve(new ArrayBuffer(84));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(services.downloadRepairedSTL).not.toHaveBeenCalled();
   });
 });
 

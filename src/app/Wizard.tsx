@@ -15,18 +15,18 @@ import { ExportStep } from './steps/ExportStep';
 import { ImportStep, RepairSummary, type ImportBusyAction, type ImportRepairStage } from './steps/ImportStep';
 
 type IssueResult = { readonly issues: readonly GeometryIssue[] };
-type RepairImportResult = ImportRepairAnalysis & { readonly sourceSha256?: string };
+type RepairImportResult = ImportRepairAnalysis & { readonly sourceSha256: string };
 type AdvancedRepairResult = MeshRepairResult & { readonly candidates?: readonly AxisCandidate[] };
 
 export type WizardServices = {
-  inspect(file: File): Promise<IssueResult & { readonly candidates: readonly AxisCandidate[]; readonly sourceSha256?: string; readonly mesh?: TriangleMesh }>;
   inspectAndRepair(file: File): Promise<RepairImportResult>;
   advancedRepair(original: TriangleMesh, safeMesh: TriangleMesh): Promise<AdvancedRepairResult>;
-  downloadRepairedSTL(mesh: TriangleMesh, mode: 'safe' | 'advanced', originalFileName: string): Promise<void>;
+  serializeRepairedSTL(mesh: TriangleMesh, mode: 'safe' | 'advanced'): Promise<ArrayBuffer>;
+  downloadRepairedSTL(bytes: ArrayBuffer, originalFileName: string): Promise<void>;
   decompose(settings: WizardSettings): Promise<IssueResult>;
   engrave(settings: WizardSettings): Promise<IssueResult>;
   preflight(settings: WizardSettings): Promise<IssueResult>;
-  exportKit(settings: WizardSettings): Promise<void>;
+  exportKit(settings: WizardSettings, sourceSha256: string): Promise<void>;
 };
 
 const steps: readonly { id: WorkflowStep; label: string }[] = [
@@ -200,8 +200,9 @@ export function Wizard({ services, repository, eagerPreview = false }: { readonl
         onDownload={() => {
           if (!file || !currentRepair?.accepted) return;
           void execute('download', async (isCurrent) => {
-            await services.downloadRepairedSTL(currentRepair.mesh, currentRepair.mode, file.name);
+            const bytes = await services.serializeRepairedSTL(currentRepair.mesh, currentRepair.mode);
             if (!isCurrent()) return;
+            await services.downloadRepairedSTL(bytes, file.name);
           });
         }}
       />}
@@ -225,7 +226,8 @@ export function Wizard({ services, repository, eagerPreview = false }: { readonl
         if (state.goToStep('export')) setFurthestStep(4);
       })} />}
       {state.step === 'export' && <ExportStep issues={issues} busy={busyAction !== undefined} onExport={() => void execute('workflow', async (isCurrent) => {
-        await services.exportKit(store.getState().settings);
+        if (!sourceSha256) throw new Error('缺少原始 STL 指紋');
+        await services.exportKit(store.getState().settings, sourceSha256);
         if (!isCurrent()) return;
       })} />}
     </div>
