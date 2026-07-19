@@ -1,5 +1,6 @@
-const CACHE = 'spinner-laser-kit-shell-v1';
-const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icon.svg'];
+const CACHE = 'spinner-laser-kit-shell-v2';
+const BASE_PATH = new URL(self.registration.scope).pathname;
+const SHELL = [BASE_PATH, `${BASE_PATH}index.html`, `${BASE_PATH}manifest.webmanifest`, `${BASE_PATH}icon.svg`];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)));

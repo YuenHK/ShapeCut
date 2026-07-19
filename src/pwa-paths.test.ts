@@ -1,0 +1,49 @@
+// @vitest-environment node
+
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import { build } from 'vite';
+
+const temporaryDirectories: string[] = [];
+afterEach(async () => {
+  await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+});
+
+describe('PWA deployment paths', () => {
+  it('builds an installable app under a non-root base path', async () => {
+    const output = await mkdtemp(join(tmpdir(), 'spinner-pwa-'));
+    temporaryDirectories.push(output);
+    const priorNodeEnvironment = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      await build({
+        root: process.cwd(),
+        base: '/school/spinner/',
+        mode: 'production',
+        logLevel: 'silent',
+        build: { outDir: output, emptyOutDir: true },
+      });
+    } finally {
+      if (priorNodeEnvironment === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = priorNodeEnvironment;
+    }
+
+    const index = await readFile(join(output, 'index.html'), 'utf8');
+    expect(index).toContain('href="/school/spinner/manifest.webmanifest"');
+    expect(index).toContain('href="/school/spinner/icon.svg"');
+
+    const manifest = JSON.parse(await readFile(join(output, 'manifest.webmanifest'), 'utf8'));
+    expect(manifest).toMatchObject({ start_url: './', scope: './' });
+    expect(manifest.icons[0].src).toBe('icon.svg');
+
+    const scripts = (await readdir(join(output, 'assets'))).filter((file) => file.endsWith('.js'));
+    const javascript = (await Promise.all(scripts.map((file) => readFile(join(output, 'assets', file), 'utf8')))).join('\n');
+    expect(javascript.includes('/school/spinner/sw.js'), 'compiled service-worker registration must include the deployment base').toBe(true);
+
+    const serviceWorker = await readFile(join(output, 'sw.js'), 'utf8');
+    expect(serviceWorker).toContain('self.registration.scope');
+    expect(serviceWorker).not.toContain("const SHELL = ['/',");
+  }, 20_000);
+});

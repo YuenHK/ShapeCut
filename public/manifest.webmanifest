@@ -2,9 +2,10 @@
   "name": "陀螺 Laser Kit",
   "short_name": "Laser Kit",
   "description": "將旋轉對稱 STL 轉換成多材料 Laser cut 製作套件。",
-  "start_url": "/",
+  "start_url": "./",
+  "scope": "./",
   "display": "standalone",
   "background_color": "#f8fafc",
   "theme_color": "#0f172a",
-  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
 }
