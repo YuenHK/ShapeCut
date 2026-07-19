@@ -5,6 +5,11 @@ import { createMaterialDatabase, type MaterialDatabase } from './database';
 
 const Vec3Schema = z.tuple([z.number().finite(), z.number().finite(), z.number().finite()]);
 const AxisSchema = z.object({ origin: Vec3Schema, direction: Vec3Schema.refine((direction) => Math.hypot(...direction) > 0, 'Axis direction must be non-zero'), confidence: z.number().finite().min(0).max(1), confirmed: z.boolean() }).strict();
+const StoredRepairSchema = z.object({
+  mode: z.enum(['safe', 'advanced']),
+  algorithmVersion: z.string().trim().min(1).max(200),
+  meshSha256: z.string().regex(/^[0-9a-f]{64}$/i, 'Invalid repaired mesh SHA-256').transform((value) => value.toLowerCase()),
+}).strict();
 const SettingsSchema = z.object({
   splitPositionPercent: z.number().finite().min(0).max(100),
   ribCount: z.union([z.literal(4), z.literal(6), z.literal(8), z.literal(10), z.literal(12)]),
@@ -17,20 +22,40 @@ const SettingsSchema = z.object({
   sheetWidthMm: z.number().finite().positive(),
   sheetHeightMm: z.number().finite().positive(),
 }).strict();
-const StoredProjectSchema = z.object({
+const StoredProjectBaseSchema = z.object({
   schemaVersion: z.literal(1), id: z.string().trim().min(1).max(500), name: z.string().trim().min(1).max(500),
   step: z.enum(['import', 'axis', 'decomposition', 'engraving', 'export']), axis: AxisSchema.optional(), settings: SettingsSchema,
-  sourceSha256: z.string().regex(/^[0-9a-f]{64}$/i, 'Invalid source SHA-256').transform((value) => value.toLowerCase()), updatedAt: z.string().datetime({ offset: true }),
-}).strict().superRefine((project, context) => {
+  sourceSha256: z.string().regex(/^[0-9a-f]{64}$/i, 'Invalid source SHA-256').transform((value) => value.toLowerCase()),
+  repair: StoredRepairSchema.optional(),
+  updatedAt: z.string().datetime({ offset: true }),
+}).strict();
+const StoredProjectSchema = StoredProjectBaseSchema.superRefine((project, context) => {
   if (['decomposition', 'engraving', 'export'].includes(project.step) && project.axis?.confirmed !== true) {
     context.addIssue({ code: 'custom', path: ['axis'], message: 'This workflow step requires a confirmed axis.' });
   }
+  if (project.step !== 'import' && !project.repair) {
+    context.addIssue({ code: 'custom', path: ['repair'], message: 'Downstream workflow state requires repair provenance and repaired mesh fingerprint.' });
+  }
 });
+
+export type StoredRepairV1 = {
+  readonly mode: 'safe' | 'advanced';
+  readonly algorithmVersion: string;
+  readonly meshSha256: string;
+};
 
 export type StoredProjectV1 = {
   readonly schemaVersion: 1; readonly id: string; readonly name: string; readonly step: WorkflowStep;
-  readonly axis?: Axis; readonly settings: WizardSettings; readonly sourceSha256: string; readonly updatedAt: string;
+  readonly axis?: Axis; readonly settings: WizardSettings; readonly sourceSha256: string; readonly repair?: StoredRepairV1; readonly updatedAt: string;
 };
+
+function parseStoredProject(value: unknown): StoredProjectV1 {
+  const parsed = StoredProjectBaseSchema.parse(value) as StoredProjectV1;
+  if (parsed.step !== 'import' && !parsed.repair) {
+    return { ...parsed, step: 'import', axis: undefined };
+  }
+  return StoredProjectSchema.parse(parsed) as StoredProjectV1;
+}
 
 export async function sha256Hex(input: Blob | ArrayBuffer | ArrayBufferView): Promise<string> {
   let bytes: ArrayBuffer;
@@ -55,7 +80,11 @@ export class ProjectRepository {
   }
   async get(id: string): Promise<StoredProjectV1 | undefined> {
     const value = await this.database.projects.get(z.string().trim().min(1).max(500).parse(id));
-    return value === undefined ? undefined : structuredClone(StoredProjectSchema.parse(value) as StoredProjectV1);
+    return value === undefined ? undefined : structuredClone(parseStoredProject(value));
+  }
+  async list(): Promise<readonly StoredProjectV1[]> {
+    const values = await this.database.projects.orderBy('updatedAt').reverse().toArray();
+    return values.map((value) => structuredClone(parseStoredProject(value)));
   }
   async attachSource(id: string, source: Blob | ArrayBuffer | ArrayBufferView): Promise<StoredProjectV1> {
     const project = await this.get(id);

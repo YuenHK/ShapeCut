@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { AxisCandidate } from '../domain/axis/find-axis';
 import type { MeshProblemReport, MeshRepairResult, TriangleMesh } from '../domain/mesh/types';
 import type { ManufacturingArtifacts } from '../domain/pipeline/manufacturing-pipeline';
+import { SourceFingerprintError, type StoredProjectV1 } from '../persistence/project-repository';
 import type { ImportRepairAnalysis } from '../workers/geometry-api';
 import { Wizard, type WizardServices } from './Wizard';
 
@@ -153,7 +154,127 @@ function successfulServices(): WizardServices {
   };
 }
 
+function storedProject(overrides: Partial<StoredProjectV1> = {}): StoredProjectV1 {
+  return {
+    schemaVersion: 1,
+    id: 'saved-spinner',
+    name: 'Saved spinner',
+    step: 'decomposition',
+    axis: { ...axis, confirmed: true },
+    settings: {
+      splitPositionPercent: 50, ribCount: 10, ringLayers: 2, shaftMm: 3, fit: 'snug', materialId: 'plywood-3',
+      engravingLevels: 4, textureStrength: 0.6, sheetWidthMm: 300, sheetHeightMm: 200,
+    },
+    sourceSha256: 'a'.repeat(64),
+    repair: { mode: 'safe', algorithmVersion: 'safe-repair-v1', meshSha256: 'c'.repeat(64) },
+    updatedAt: '2026-07-19T09:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function repositoryWith(project: StoredProjectV1) {
+  return {
+    list: vi.fn().mockResolvedValue([project]),
+    get: vi.fn().mockResolvedValue(project),
+    attachSource: vi.fn().mockResolvedValue(project),
+    save: vi.fn().mockResolvedValue(project),
+  };
+}
+
 describe('Wizard', () => {
+  it('opens a saved project through the startup chooser but keeps every downstream step locked until reanalysis', async () => {
+    const user = userEvent.setup();
+    const saved = storedProject();
+    const repository = repositoryWith(saved);
+    const services = successfulServices();
+    render(<Wizard services={services} repository={repository as never} />);
+
+    await user.selectOptions(await screen.findByLabelText('開啟已儲存專案'), saved.id);
+    await user.click(screen.getByRole('button', { name: '載入專案' }));
+
+    expect(screen.getByRole('heading', { name: '匯入與修復' })).toBeVisible();
+    expect(screen.getByText(/請重新附加原始 STL/)).toHaveTextContent(saved.sourceSha256);
+    expect(screen.getByRole('button', { name: '軸心與尺寸' })).toBeDisabled();
+    expect(services.inspectAndRepair).not.toHaveBeenCalled();
+  });
+
+  it('rejects a different reattached STL before geometry analysis and stays locked at import', async () => {
+    const user = userEvent.setup();
+    const saved = storedProject();
+    const repository = repositoryWith(saved);
+    repository.attachSource.mockRejectedValue(new SourceFingerprintError());
+    const services = successfulServices();
+    render(<Wizard services={services} repository={repository as never} />);
+
+    await user.selectOptions(await screen.findByLabelText('開啟已儲存專案'), saved.id);
+    await user.click(screen.getByRole('button', { name: '載入專案' }));
+    await user.upload(screen.getByLabelText('STL 模型檔案'), new File(['wrong'], 'wrong.stl'));
+    await user.click(screen.getByRole('button', { name: '分析模型' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('原始 STL 指紋不符');
+    expect(services.inspectAndRepair).not.toHaveBeenCalled();
+    expect(screen.getByRole('heading', { name: '匯入與修復' })).toBeVisible();
+    expect(screen.getByRole('button', { name: '軸心與尺寸' })).toBeDisabled();
+  });
+
+  it('restores only a verified saved repair and resumes no later than decomposition', async () => {
+    const user = userEvent.setup();
+    const saved = storedProject({ step: 'export' });
+    const repository = repositoryWith(saved);
+    const services = successfulServices();
+    render(<Wizard services={services} repository={repository as never} />);
+
+    await user.selectOptions(await screen.findByLabelText('開啟已儲存專案'), saved.id);
+    await user.click(screen.getByRole('button', { name: '載入專案' }));
+    const file = new File(['matching'], 'matching.stl');
+    await user.upload(screen.getByLabelText('STL 模型檔案'), file);
+    await user.click(screen.getByRole('button', { name: '分析模型' }));
+
+    expect(repository.attachSource).toHaveBeenCalledWith(saved.id, file);
+    expect(services.inspectAndRepair).toHaveBeenCalledWith(file);
+    expect(await screen.findByRole('heading', { name: '自動拆件' })).toBeVisible();
+    expect(screen.getByLabelText('骨架數量')).toHaveValue(10);
+    expect(screen.getByRole('button', { name: '紋理與材料' })).toBeDisabled();
+  });
+
+  it('deterministically reruns and verifies a saved advanced repair before resuming', async () => {
+    const user = userEvent.setup();
+    const saved = storedProject({
+      repair: { mode: 'advanced', algorithmVersion: 'advanced-repair-v1', meshSha256: 'd'.repeat(64) },
+    });
+    const repository = repositoryWith(saved);
+    const services = successfulServices();
+    render(<Wizard services={services} repository={repository as never} />);
+
+    await user.selectOptions(await screen.findByLabelText('開啟已儲存專案'), saved.id);
+    await user.click(screen.getByRole('button', { name: '載入專案' }));
+    await user.upload(screen.getByLabelText('STL 模型檔案'), new File(['matching'], 'matching.stl'));
+    await user.click(screen.getByRole('button', { name: '分析模型' }));
+
+    expect(services.advancedRepair).toHaveBeenCalledWith(
+      expect.objectContaining({ indices: expect.any(Uint32Array) }),
+      expect.objectContaining({ indices: expect.any(Uint32Array) }),
+    );
+    expect(await screen.findByRole('heading', { name: '自動拆件' })).toBeVisible();
+  });
+
+  it('rejects a reanalysis whose repaired mesh fingerprint differs from the saved project', async () => {
+    const user = userEvent.setup();
+    const saved = storedProject({ repair: { mode: 'safe', algorithmVersion: 'safe-repair-v1', meshSha256: 'e'.repeat(64) } });
+    const repository = repositoryWith(saved);
+    const services = successfulServices();
+    render(<Wizard services={services} repository={repository as never} />);
+
+    await user.selectOptions(await screen.findByLabelText('開啟已儲存專案'), saved.id);
+    await user.click(screen.getByRole('button', { name: '載入專案' }));
+    await user.upload(screen.getByLabelText('STL 模型檔案'), new File(['matching'], 'matching.stl'));
+    await user.click(screen.getByRole('button', { name: '分析模型' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('已儲存的修復結果與重新分析不一致');
+    expect(screen.getByRole('heading', { name: '匯入與修復' })).toBeVisible();
+    expect(screen.getByRole('button', { name: '軸心與尺寸' })).toBeDisabled();
+  });
+
   it('exports only the current versioned artifacts built from the accepted mesh, confirmed axis, repair provenance, and settings', async () => {
     const user = userEvent.setup();
     const artifacts = {

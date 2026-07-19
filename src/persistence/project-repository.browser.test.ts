@@ -17,6 +17,7 @@ describe('project browser persistence', () => {
       schemaVersion: 1, id: 'browser-project', name: 'Browser project', step: 'axis',
       axis: { origin: [0, 0, 0], direction: [0, 0, 1], confidence: 0.9, confirmed: true },
       settings: { splitPositionPercent: 50, ribCount: 6, ringLayers: 2, shaftMm: 3, fit: 'snug', materialId: 'plywood-3', engravingLevels: 3, textureStrength: 0.6, sheetWidthMm: 300, sheetHeightMm: 200 },
+      repair: { mode: 'safe', algorithmVersion: 'safe-repair-v1', meshSha256: 'c'.repeat(64) },
       sourceSha256: await sha256Hex(source), updatedAt: new Date().toISOString(),
     };
     const firstDatabase = createMaterialDatabase(name);

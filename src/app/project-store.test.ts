@@ -102,6 +102,49 @@ describe('canEnterStep', () => {
 });
 
 describe('project workflow store', () => {
+  it('loads persisted downstream state into a locked import checkpoint', () => {
+    const store = createProjectStore();
+
+    store.getState().loadProject({
+      schemaVersion: 1,
+      id: 'saved-project',
+      name: 'Saved project',
+      step: 'export',
+      axis: confirmedAxis,
+      settings: store.getState().settings,
+    });
+
+    expect(store.getState()).toMatchObject({
+      id: 'saved-project',
+      name: 'Saved project',
+      step: 'import',
+      axis: undefined,
+    });
+    expect(store.getState().goToStep('decomposition')).toBe(false);
+  });
+
+  it('resumes a verified later project no later than decomposition so artifacts must be regenerated', () => {
+    const store = createProjectStore();
+    const saved = {
+      schemaVersion: 1 as const,
+      id: 'verified-project',
+      name: 'Verified project',
+      step: 'export' as const,
+      axis: confirmedAxis,
+      settings: { ...store.getState().settings, ribCount: 10 as const },
+    };
+
+    store.getState().loadProject(saved);
+    (store.getState() as unknown as { resumeVerifiedProject(project: typeof saved): void }).resumeVerifiedProject(saved);
+
+    expect(store.getState()).toMatchObject({
+      id: 'verified-project',
+      step: 'decomposition',
+      axis: confirmedAxis,
+      settings: { ribCount: 10 },
+    });
+  });
+
   it('copies an axis so later input mutations cannot change project state', () => {
     const store = createProjectStore();
     const input = {

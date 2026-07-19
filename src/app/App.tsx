@@ -13,6 +13,7 @@ type PackageBuilder = (typeof import('../export/package'))['buildPackage'];
 
 export type AppServiceDependencies = {
   readonly getGeometry: () => AppGeometryClient;
+  readonly cancelGeometry?: () => void;
   readonly fingerprint?: typeof sha256Hex;
   readonly packageBuilder?: PackageBuilder;
   readonly getMaterial?: (id: string) => Promise<MaterialProfileV1 | undefined>;
@@ -20,6 +21,7 @@ export type AppServiceDependencies = {
 
 export function createAppServices({
   getGeometry,
+  cancelGeometry = () => getGeometry().cancelActive(),
   fingerprint = sha256Hex,
   packageBuilder = async (project) => {
     const { buildPackage } = await import('../export/package');
@@ -29,7 +31,7 @@ export function createAppServices({
 }: AppServiceDependencies): WizardServices {
   let latestImportRequest = 0;
   return {
-    cancelGeometry: () => getGeometry().cancelActive(),
+    cancelGeometry,
     inspectAndRepair: async (file) => {
       const request = ++latestImportRequest;
       const geometry = getGeometry();
@@ -134,6 +136,7 @@ export function App() {
   const geometryRef = useRef<GeometryClient | undefined>(undefined);
   const services = useMemo<WizardServices>(() => createAppServices({
     getGeometry: () => geometryRef.current ??= createGeometryWorkerClient(),
+    cancelGeometry: () => geometryRef.current?.cancelActive(),
   }), []);
   useEffect(() => () => { repository.close(); geometryRef.current?.dispose(); }, [repository]);
   const canEagerlyCreateWebGl = typeof WebGLRenderingContext !== 'undefined';

@@ -40,6 +40,7 @@ export type ProjectStoreState = ProjectV1 & {
   updateSettings: (changes: Partial<WizardSettings>) => void;
   setPersistenceError: (message?: string) => void;
   loadProject: (project: ProjectV1 & { readonly settings: WizardSettings }) => void;
+  resumeVerifiedProject: (project: ProjectV1 & { readonly settings: WizardSettings }) => WorkflowStep;
   goToStep: (target: WorkflowStep) => boolean;
 };
 
@@ -86,10 +87,25 @@ export function createProjectStore() {
     updateSettings: (changes) => set((state) => ({ settings: { ...state.settings, ...changes } })),
     setPersistenceError: (message) => set({ persistenceError: message }),
     loadProject: (project) => set({
-      schemaVersion: project.schemaVersion, id: project.id, name: project.name, step: project.step,
-      axis: project.axis ? { ...project.axis, origin: [...project.axis.origin], direction: [...project.axis.direction] } : undefined,
+      schemaVersion: project.schemaVersion, id: project.id, name: project.name, step: 'import',
+      axis: undefined,
       settings: structuredClone(project.settings), persistenceError: undefined,
     }),
+    resumeVerifiedProject: (project) => {
+      const target: WorkflowStep = project.step === 'import' || project.step === 'axis' ? 'axis' : 'decomposition';
+      set({
+        schemaVersion: project.schemaVersion,
+        id: project.id,
+        name: project.name,
+        step: target,
+        axis: project.axis
+          ? { ...project.axis, origin: [...project.axis.origin], direction: [...project.axis.direction] }
+          : undefined,
+        settings: structuredClone(project.settings),
+        persistenceError: undefined,
+      });
+      return target;
+    },
     goToStep: (target) => {
       if (!canEnterStep(get(), target)) {
         return false;

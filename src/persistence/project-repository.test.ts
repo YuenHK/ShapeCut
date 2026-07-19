@@ -18,6 +18,7 @@ async function project(overrides: Partial<StoredProjectV1> = {}): Promise<Stored
       engravingLevels: 4, textureStrength: 0.6, sheetWidthMm: 300, sheetHeightMm: 200,
     },
     sourceSha256: await sha256Hex(source),
+    repair: { mode: 'safe', algorithmVersion: 'safe-repair-v1', meshSha256: 'b'.repeat(64) },
     updatedAt: '2026-07-19T08:00:00.000Z',
     ...overrides,
   };
@@ -47,6 +48,32 @@ describe('ProjectRepository', () => {
     expect(loaded).toEqual(expected);
     (loaded!.settings as { ribCount: number }).ribCount = 12;
     expect((await repository.get(expected.id))?.settings.ribCount).toBe(6);
+  });
+
+  it('rejects downstream project state without repair provenance and repaired mesh fingerprint', async () => {
+    await expect(repository.save(await project({ repair: undefined }))).rejects.toThrow(/repair provenance/i);
+  });
+
+  it('lists saved projects newest first for the startup chooser', async () => {
+    const older = await project({ id: 'older', updatedAt: '2026-07-19T08:00:00.000Z' });
+    const newer = await project({ id: 'newer', updatedAt: '2026-07-19T09:00:00.000Z' });
+    await database.projects.bulkPut([older, newer]);
+
+    const list = await (repository as ProjectRepository & { list(): Promise<readonly StoredProjectV1[]> }).list();
+
+    expect(list.map(({ id }) => id)).toEqual(['newer', 'older']);
+  });
+
+  it('migrates legacy downstream records without repair provenance to a locked import checkpoint', async () => {
+    const legacy = await project({ repair: undefined, step: 'export' });
+    await database.projects.put(legacy);
+
+    await expect(repository.get(legacy.id)).resolves.toMatchObject({
+      id: legacy.id,
+      step: 'import',
+      axis: undefined,
+      repair: undefined,
+    });
   });
 
   it('requires the original STL fingerprint on reopen', async () => {

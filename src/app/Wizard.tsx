@@ -11,7 +11,12 @@ import type { WorkflowStep } from '../domain/types';
 import type { GeometryIssue } from '../preview/SpinnerViewport';
 import { SpinnerViewport } from '../preview/SpinnerViewport';
 import type { ImportRepairAnalysis } from '../workers/geometry-api';
-import { createProjectAutosave, type ProjectRepository } from '../persistence/project-repository';
+import {
+  createProjectAutosave,
+  SourceFingerprintError,
+  type ProjectRepository,
+  type StoredProjectV1,
+} from '../persistence/project-repository';
 import { createProjectStore, type WizardSettings } from './project-store';
 import { AxisStep } from './steps/AxisStep';
 import { DecompositionStep } from './steps/DecompositionStep';
@@ -69,8 +74,24 @@ export function Wizard({ services, repository, eagerPreview = false }: { readonl
   const [mesh, setMesh] = useState<TriangleMesh>();
   const [artifacts, setArtifacts] = useState<ManufacturingArtifacts>();
   const [operationError, setOperationError] = useState<string>();
+  const [savedProjects, setSavedProjects] = useState<readonly StoredProjectV1[]>([]);
+  const [selectedSavedProjectId, setSelectedSavedProjectId] = useState('');
+  const [pendingProject, setPendingProject] = useState<StoredProjectV1>();
 
   useEffect(() => () => services.cancelGeometry(), [services]);
+
+  useEffect(() => {
+    if (!repository) return;
+    let active = true;
+    void repository.list().then((projects) => {
+      if (!active) return;
+      setSavedProjects(projects);
+      setSelectedSavedProjectId((current) => current || projects[0]?.id || '');
+    }).catch((error) => {
+      if (active) store.getState().setPersistenceError(error instanceof Error ? error.message : '無法讀取已儲存專案');
+    });
+    return () => { active = false; };
+  }, [repository, store]);
 
   useEffect(() => {
     if (!repository || !sourceSha256) return;
@@ -78,15 +99,17 @@ export function Wizard({ services, repository, eagerPreview = false }: { readonl
     let lastSnapshot = '';
     const schedule = () => {
       const current = store.getState();
-      const snapshotKey = JSON.stringify({ id: current.id, name: current.name, step: current.step, axis: current.axis, settings: current.settings, sourceSha256 });
+      const repair = meshSha256 && repairProvenance ? { ...repairProvenance, meshSha256 } : undefined;
+      if (current.step !== 'import' && !repair) return;
+      const snapshotKey = JSON.stringify({ id: current.id, name: current.name, step: current.step, axis: current.axis, settings: current.settings, sourceSha256, repair });
       if (snapshotKey === lastSnapshot) return;
       lastSnapshot = snapshotKey;
-      autosave.schedule({ schemaVersion: 1, id: current.id, name: current.name, step: current.step, axis: current.axis, settings: current.settings, sourceSha256, updatedAt: new Date().toISOString() });
+      autosave.schedule({ schemaVersion: 1, id: current.id, name: current.name, step: current.step, axis: current.axis, settings: current.settings, sourceSha256, repair, updatedAt: new Date().toISOString() });
     };
     schedule();
     const unsubscribe = store.subscribe(schedule);
     return () => { unsubscribe(); autosave.dispose(); };
-  }, [repository, sourceSha256, store]);
+  }, [meshSha256, repairProvenance, repository, sourceSha256, store]);
 
   const execute = async (
     action: ImportBusyAction,
@@ -105,9 +128,7 @@ export function Wizard({ services, repository, eagerPreview = false }: { readonl
       if (isCurrent()) setBusyAction(undefined);
     }
   };
-  const selectFile = (nextFile: File | undefined): void => {
-    services.cancelGeometry();
-    selectionVersion.current += 1;
+  const resetGeometryState = (nextFile: File | undefined): void => {
     setFile(nextFile);
     setAnalysis(undefined);
     setAdvancedRepair(undefined);
@@ -126,33 +147,106 @@ export function Wizard({ services, repository, eagerPreview = false }: { readonl
     store.setState({ axis: undefined });
     store.getState().goToStep('import');
   };
+  const selectFile = (nextFile: File | undefined): void => {
+    services.cancelGeometry();
+    selectionVersion.current += 1;
+    resetGeometryState(nextFile);
+  };
+
+  const loadSavedProject = (): void => {
+    if (!repository || !selectedSavedProjectId) return;
+    services.cancelGeometry();
+    const version = ++selectionVersion.current;
+    setBusyAction('workflow');
+    setOperationError(undefined);
+    void repository.get(selectedSavedProjectId).then((project) => {
+      if (selectionVersion.current !== version) return;
+      if (!project) throw new Error('找不到已儲存專案');
+      resetGeometryState(undefined);
+      setPendingProject(project);
+      store.getState().loadProject(project);
+    }).catch((error) => {
+      if (selectionVersion.current === version) {
+        setOperationError(error instanceof Error ? error.message : '無法開啟已儲存專案');
+        setBusyAction(undefined);
+      }
+    });
+  };
 
   const analyzeFile = (): void => {
     const selectedFile = file;
     if (!selectedFile) return;
     void execute('analyze', async (isCurrent) => {
+      const reopening = pendingProject;
+      if (reopening) {
+        if (!repository) throw new Error('專案資料庫不可用，不能驗證原始 STL');
+        try {
+          await repository.attachSource(reopening.id, selectedFile);
+        } catch (error) {
+          if (error instanceof SourceFingerprintError || (error instanceof Error && error.message === 'STL fingerprint mismatch')) {
+            throw new Error('原始 STL 指紋不符；專案仍停留在匯入步驟');
+          }
+          throw error;
+        }
+        if (!isCurrent()) return;
+      }
       const result = await services.inspectAndRepair(selectedFile);
       if (!isCurrent()) return;
+      if (reopening && result.sourceSha256 !== reopening.sourceSha256) {
+        throw new Error('原始 STL 指紋不符；重新分析結果與專案記錄不一致');
+      }
+
+      let acceptedRepair: MeshRepairResult = result.safeRepair;
+      let acceptedMeshSha256 = result.meshSha256;
+      let acceptedProvenance: RepairProvenanceV1 = result.repairProvenance;
+      let acceptedCandidates = result.candidates;
+      let acceptedStage: Exclude<ImportRepairStage, 'original'> = 'safe';
+      let replayedAdvanced: AdvancedRepairResult | undefined;
+      if (reopening?.repair?.mode === 'advanced') {
+        replayedAdvanced = await services.advancedRepair(result.originalMesh, result.safeRepair.mesh);
+        if (!isCurrent()) return;
+        acceptedRepair = replayedAdvanced;
+        acceptedMeshSha256 = replayedAdvanced.meshSha256;
+        acceptedProvenance = replayedAdvanced.repairProvenance;
+        acceptedCandidates = replayedAdvanced.candidates ?? [];
+        acceptedStage = 'advanced';
+      }
+      if (reopening?.repair && (
+        !acceptedRepair.accepted
+        || acceptedMeshSha256 !== reopening.repair.meshSha256
+        || acceptedProvenance.mode !== reopening.repair.mode
+        || acceptedProvenance.algorithmVersion !== reopening.repair.algorithmVersion
+      )) {
+        throw new Error('已儲存的修復結果與重新分析不一致；專案仍停留在匯入步驟');
+      }
+
       setAnalysis(result);
-      setAdvancedRepair(undefined);
-      setRepairStage('safe');
+      setAdvancedRepair(replayedAdvanced);
+      setRepairStage(acceptedStage);
       setAdvancedConsent(false);
-      setCandidates(result.candidates);
+      setCandidates(acceptedCandidates);
       setSourceSha256(result.sourceSha256);
-      setIssues(issuesFromReport(result.safeRepair.after));
-      if (!result.safeRepair.accepted) {
+      setIssues(issuesFromReport(acceptedRepair.after));
+      if (!acceptedRepair.accepted) {
         setMesh(undefined);
         setMeshSha256(undefined);
         setRepairProvenance(undefined);
         setFurthestStep(0);
-        state.goToStep('import');
+        store.getState().goToStep('import');
         return;
       }
-      setMesh(result.safeRepair.mesh);
-      setMeshSha256(result.meshSha256);
-      setRepairProvenance(result.repairProvenance);
+      setMesh(acceptedRepair.mesh);
+      setMeshSha256(acceptedMeshSha256);
+      setRepairProvenance(acceptedProvenance);
+      if (reopening?.repair) {
+        setPendingProject(undefined);
+        const resumedStep = store.getState().resumeVerifiedProject(reopening);
+        setFurthestStep(resumedStep === 'decomposition' ? 2 : 1);
+        return;
+      }
+      if (reopening) setPendingProject(undefined);
       setFurthestStep(1);
-      state.goToStep('axis');
+      store.getState().goToStep('axis');
     });
   };
 
@@ -229,6 +323,17 @@ export function Wizard({ services, repository, eagerPreview = false }: { readonl
 
   return (
     <div className="wizard">
+      {repository && <section aria-labelledby="saved-projects-title">
+        <h2 id="saved-projects-title">已儲存專案</h2>
+        <label>開啟已儲存專案
+          <select value={selectedSavedProjectId} onChange={(event) => setSelectedSavedProjectId(event.currentTarget.value)}>
+            <option value="">選擇專案</option>
+            {savedProjects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+          </select>
+        </label>
+        <button type="button" disabled={!selectedSavedProjectId || busyAction !== undefined} onClick={loadSavedProject}>載入專案</button>
+        {pendingProject && <p role="status">請重新附加原始 STL 並重新分析。預期 SHA-256：{pendingProject.sourceSha256}。驗證完成前不會復原後續步驟。</p>}
+      </section>}
       {state.persistenceError && <p role="alert">專案儲存失敗：{state.persistenceError}</p>}
       {operationError && <p role="alert">操作失敗：{operationError}</p>}
       {issues.length > 0 && state.step !== 'export' && <div role="alert">{issues.map((issue) => <p key={issue.id}>{issue.label}：{issue.description}</p>)}</div>}

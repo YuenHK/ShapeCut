@@ -18,3 +18,42 @@ test('converts a calibrated symmetric spinner into a valid laser-kit ZIP', async
   const zip = await JSZip.loadAsync(await import('node:fs/promises').then(({ readFile }) => readFile(path!)));
   expect(zip.file('03-settings/project-settings.json')).not.toBeNull();
 });
+
+test('reloads a saved project only after the original STL and repaired mesh are reverified', async ({ page }) => {
+  await page.goto('/');
+  await importAndReachDecomposition(page, 'fixtures/stl/symmetric-spinner.stl');
+
+  await expect.poll(() => page.evaluate(async () => new Promise<unknown>((resolve, reject) => {
+    const open = indexedDB.open('spinner-laser-kit');
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const database = open.result;
+      const request = database.transaction('projects', 'readonly').objectStore('projects').get('untitled-project');
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        database.close();
+        resolve(request.result);
+      };
+    };
+  }))).toMatchObject({
+    step: 'decomposition',
+    repair: { mode: 'safe', algorithmVersion: 'safe-repair-v1', meshSha256: expect.stringMatching(/^[0-9a-f]{64}$/) },
+  });
+
+  await page.reload();
+  await page.getByLabel('開啟已儲存專案').selectOption('untitled-project');
+  await page.getByRole('button', { name: '載入專案' }).click();
+  await expect(page.getByText(/請重新附加原始 STL/)).toBeVisible();
+  await expect(page.getByRole('heading', { name: '匯入與修復' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '軸心與尺寸' })).toBeDisabled();
+
+  await page.getByLabel('STL 模型檔案').setInputFiles('fixtures/stl/open-triangle.stl');
+  await page.getByRole('button', { name: '分析模型' }).click();
+  await expect(page.getByRole('alert')).toContainText('原始 STL 指紋不符');
+  await expect(page.getByRole('button', { name: '軸心與尺寸' })).toBeDisabled();
+
+  await page.getByLabel('STL 模型檔案').setInputFiles('fixtures/stl/symmetric-spinner.stl');
+  await page.getByRole('button', { name: '分析模型' }).click();
+  await expect(page.getByRole('heading', { name: '自動拆件' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '紋理與材料' })).toBeDisabled();
+});
