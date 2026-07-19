@@ -63,17 +63,21 @@ export function repairMeshAdvanced(original: TriangleMesh, safeMesh: TriangleMes
     holeReasons.push('只能自動補合單一邊界環');
   } else if (boundary.loops.length === 1) {
     const loop = orientLoopForCap(boundary.loops[0], boundary.edges);
-    const validationReason = validateHole(original, safeMesh, split.positions, loop);
-    if (validationReason) {
-      holeReasons.push(validationReason);
+    if (!loop) {
+      holeReasons.push('缺口邊界方向不一致，無法安全補合');
     } else {
-      const predictedTriangleCount = indices.length / 3 + loop.length - 2;
-      assertTriangleLimit(predictedTriangleCount, triangleLimit);
-      const cap = triangulatePlanarLoop(split.positions, loop);
-      if (cap === undefined) holeReasons.push('缺口無法安全三角剖分');
-      else {
-        indices.push(...cap);
-        filledHoles = 1;
+      const validationReason = validateHole(original, safeMesh, split.positions, loop);
+      if (validationReason) {
+        holeReasons.push(validationReason);
+      } else {
+        const predictedTriangleCount = indices.length / 3 + loop.length - 2;
+        assertTriangleLimit(predictedTriangleCount, triangleLimit);
+        const cap = triangulatePlanarLoop(split.positions, loop);
+        if (cap === undefined) holeReasons.push('缺口無法安全三角剖分');
+        else {
+          indices.push(...cap);
+          filledHoles = 1;
+        }
       }
     }
   }
@@ -281,7 +285,7 @@ function addIncidentBoundaryEdge(
 function orientLoopForCap(
   loop: readonly number[],
   edges: ReadonlyMap<string, EdgeIncidence>,
-): readonly number[] {
+): readonly number[] | undefined {
   let sameDirection = 0;
   for (let index = 0; index < loop.length; index += 1) {
     const from = loop[index];
@@ -289,9 +293,8 @@ function orientLoopForCap(
     const boundaryUse = edges.get(edgeKey(from, to))!.uses[0];
     if (boundaryUse.from === from && boundaryUse.to === to) sameDirection += 1;
   }
-  return sameDirection * 2 >= loop.length
-    ? [loop[0], ...loop.slice(1).reverse()]
-    : loop;
+  if (sameDirection !== 0 && sameDirection !== loop.length) return undefined;
+  return sameDirection === loop.length ? [loop[0], ...loop.slice(1).reverse()] : loop;
 }
 
 function validateHole(
@@ -322,6 +325,9 @@ function validateHole(
       return '缺口不是可安全補合的平面';
     }
   }
+  const dropAxis = dominantAxis(plane.normal);
+  const projected = projectLoopLocally(positions, loop, dropAxis);
+  if (polygonHasSelfIntersection(projected)) return '缺口邊界自相交，無法安全補合';
   return undefined;
 }
 
@@ -329,10 +335,12 @@ function triangulatePlanarLoop(positions: readonly number[], loop: readonly numb
   const plane = loopPlane(positions, loop);
   if (!plane) return undefined;
   const dropAxis = dominantAxis(plane.normal);
-  const projected = loop.map((vertex) => project(pointAt(positions, vertex), dropAxis));
+  const projected = projectLoopLocally(positions, loop, dropAxis);
   const area = signedArea(projected);
-  const scale = Math.max(1, ...projected.flatMap(([x, y]) => [Math.abs(x), Math.abs(y)]));
-  const epsilon = 128 * Number.EPSILON * scale ** 2;
+  const xs = projected.map((point) => point[0]);
+  const ys = projected.map((point) => point[1]);
+  const extent = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+  const epsilon = Math.max(Number.MIN_VALUE, 128 * Number.EPSILON * extent ** 2);
   if (Math.abs(area) <= epsilon) return undefined;
   const orientation = Math.sign(area);
   const remaining = loop.map((_, index) => index);
@@ -416,8 +424,12 @@ function buildResult(
 ): MeshRepairResult {
   const after = analyzeMeshProblems(mesh);
   const comparison = compareMeshes(original, mesh);
+  const orientationReasons = hasInconsistentEdgeOrientation(mesh.indices)
+    ? ['修復結果仍有面方向不一致']
+    : [];
   const blockingReasons = [...new Set([
     ...specificReasons,
+    ...orientationReasons,
     ...meshRepairBlockingReasons(after, comparison),
   ])];
   return {
@@ -430,6 +442,14 @@ function buildResult(
     accepted: blockingReasons.length === 0,
     blockingReasons,
   };
+}
+
+function hasInconsistentEdgeOrientation(indices: ArrayLike<number>): boolean {
+  return [...edgeIncidences(indices).values()].some((edge) => {
+    if (edge.uses.length !== 2) return false;
+    const [first, second] = edge.uses;
+    return first.from !== second.to || first.to !== second.from;
+  });
 }
 
 function compactMesh(data: MeshData): TriangleMesh {
@@ -510,21 +530,22 @@ function loopPlane(
   positions: readonly number[],
   loop: readonly number[],
 ): { readonly origin: Vec3; readonly normal: Vec3 } | undefined {
-  let originX = 0;
-  let originY = 0;
-  let originZ = 0;
+  const anchor = pointAt(positions, loop[0]);
+  let originX = anchor[0];
+  let originY = anchor[1];
+  let originZ = anchor[2];
   let nx = 0;
   let ny = 0;
   let nz = 0;
   for (let index = 0; index < loop.length; index += 1) {
-    const current = pointAt(positions, loop[index]);
-    const next = pointAt(positions, loop[(index + 1) % loop.length]);
+    const current = subtract(pointAt(positions, loop[index]), anchor);
+    const next = subtract(pointAt(positions, loop[(index + 1) % loop.length]), anchor);
     originX += current[0] / loop.length;
     originY += current[1] / loop.length;
     originZ += current[2] / loop.length;
-    nx += (current[1] - next[1]) * (current[2] + next[2]);
-    ny += (current[2] - next[2]) * (current[0] + next[0]);
-    nz += (current[0] - next[0]) * (current[1] + next[1]);
+    nx += current[1] * next[2] - current[2] * next[1];
+    ny += current[2] * next[0] - current[0] * next[2];
+    nz += current[0] * next[1] - current[1] * next[0];
   }
   const length = Math.hypot(nx, ny, nz);
   if (!(length > 0) || !Number.isFinite(length)) return undefined;
@@ -562,6 +583,16 @@ function project(point: Vec3, dropAxis: 0 | 1 | 2): readonly [number, number] {
   return [point[0], point[1]];
 }
 
+function projectLoopLocally(
+  positions: readonly number[],
+  loop: readonly number[],
+  dropAxis: 0 | 1 | 2,
+): readonly (readonly [number, number])[] {
+  const projected = loop.map((vertex) => project(pointAt(positions, vertex), dropAxis));
+  const origin = projected[0];
+  return projected.map((point) => [point[0] - origin[0], point[1] - origin[1]]);
+}
+
 function signedArea(points: readonly (readonly [number, number])[]): number {
   let twiceArea = 0;
   for (let index = 0; index < points.length; index += 1) {
@@ -591,6 +622,66 @@ function pointInTriangle(
   return cross2(a, b, point) * orientation >= -epsilon
     && cross2(b, c, point) * orientation >= -epsilon
     && cross2(c, a, point) * orientation >= -epsilon;
+}
+
+function polygonHasSelfIntersection(points: readonly (readonly [number, number])[]): boolean {
+  const xs = points.map((point) => point[0]);
+  const ys = points.map((point) => point[1]);
+  const extent = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+  const coordinateEpsilon = Math.max(Number.MIN_VALUE, 128 * Number.EPSILON * extent);
+  const areaEpsilon = Math.max(Number.MIN_VALUE, coordinateEpsilon * extent);
+  for (let first = 0; first < points.length; first += 1) {
+    const firstNext = (first + 1) % points.length;
+    for (let second = first + 1; second < points.length; second += 1) {
+      const secondNext = (second + 1) % points.length;
+      if (first === second || firstNext === second || secondNext === first) continue;
+      if (segmentsIntersect(
+        points[first],
+        points[firstNext],
+        points[second],
+        points[secondNext],
+        coordinateEpsilon,
+        areaEpsilon,
+      )) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function segmentsIntersect(
+  a: readonly [number, number],
+  b: readonly [number, number],
+  c: readonly [number, number],
+  d: readonly [number, number],
+  coordinateEpsilon: number,
+  areaEpsilon: number,
+): boolean {
+  const abc = cross2(a, b, c);
+  const abd = cross2(a, b, d);
+  const cda = cross2(c, d, a);
+  const cdb = cross2(c, d, b);
+  if (((abc > areaEpsilon && abd < -areaEpsilon) || (abc < -areaEpsilon && abd > areaEpsilon))
+    && ((cda > areaEpsilon && cdb < -areaEpsilon) || (cda < -areaEpsilon && cdb > areaEpsilon))) {
+    return true;
+  }
+  return (Math.abs(abc) <= areaEpsilon && pointOnSegment(c, a, b, coordinateEpsilon))
+    || (Math.abs(abd) <= areaEpsilon && pointOnSegment(d, a, b, coordinateEpsilon))
+    || (Math.abs(cda) <= areaEpsilon && pointOnSegment(a, c, d, coordinateEpsilon))
+    || (Math.abs(cdb) <= areaEpsilon && pointOnSegment(b, c, d, coordinateEpsilon));
+}
+
+function pointOnSegment(
+  point: readonly [number, number],
+  start: readonly [number, number],
+  end: readonly [number, number],
+  epsilon: number,
+): boolean {
+  return point[0] >= Math.min(start[0], end[0]) - epsilon
+    && point[0] <= Math.max(start[0], end[0]) + epsilon
+    && point[1] >= Math.min(start[1], end[1]) - epsilon
+    && point[1] <= Math.max(start[1], end[1]) + epsilon;
 }
 
 function numericTolerance(...values: number[]): number {

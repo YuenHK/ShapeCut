@@ -101,6 +101,48 @@ describe('bounded advanced mesh repair', () => {
     expect(result.comparison.volumeChangePercent).toBeCloseTo(0, 12);
     expect(result.accepted).toBe(true);
   });
+
+  test('rejects a planar boundary loop whose non-adjacent edges intersect', () => {
+    const original = selfIntersectingBoundaryMesh();
+
+    const result = repairMeshAdvanced(original, repairMeshSafe(original).mesh);
+
+    expect(result.changes.filledHoles).toBe(0);
+    expect(result.accepted).toBe(false);
+    expect(result.blockingReasons).toContain('缺口邊界自相交，無法安全補合');
+  });
+
+  test('rejects mixed directed boundary edges instead of majority-voting cap orientation', () => {
+    const original = mixedDirectionBoundaryMesh();
+
+    const result = repairMeshAdvanced(original, repairMeshSafe(original).mesh);
+
+    expect(result.changes.filledHoles).toBe(0);
+    expect(result.accepted).toBe(false);
+    expect(result.blockingReasons).toContain('缺口邊界方向不一致，無法安全補合');
+  });
+
+  test('does not accept a closed result with same-direction incident faces', () => {
+    const original = tetrahedronWithOneReversedFace();
+
+    const result = repairMeshAdvanced(original, repairMeshSafe(original).mesh);
+
+    expect(result.after.inspection).toMatchObject({ boundaryEdgeCount: 0, nonManifoldEdgeCount: 0 });
+    expect(result.accepted).toBe(false);
+    expect(result.blockingReasons).toContain('修復結果仍有面方向不一致');
+  });
+
+  test('triangulates the same legal hole at the origin and after a large translation', () => {
+    const atOrigin = boxWithOneMissingTriangle(100, 0.5, 0.5);
+    const translated = translateMesh(atOrigin, [1e8, 1e8, 1e8]);
+
+    const originResult = repairMeshAdvanced(atOrigin, repairMeshSafe(atOrigin).mesh);
+    const translatedResult = repairMeshAdvanced(translated, repairMeshSafe(translated).mesh);
+
+    expect(originResult.changes.filledHoles).toBe(1);
+    expect(translatedResult.changes.filledHoles).toBe(1);
+    expect(translatedResult.after.inspection.boundaryEdgeCount).toBe(0);
+  });
 });
 
 function tetrahedron(): TriangleMesh {
@@ -218,6 +260,89 @@ function reverseWinding(mesh: TriangleMesh): TriangleMesh {
     [indices[offset + 1], indices[offset + 2]] = [indices[offset + 2], indices[offset + 1]];
   }
   return { positions: mesh.positions.slice(), indices };
+}
+
+function selfIntersectingBoundaryMesh(): TriangleMesh {
+  const positions: number[] = [];
+  const indices: number[] = [];
+  for (let vertex = 0; vertex < 5; vertex += 1) {
+    const angle = vertex * Math.PI * 2 / 5;
+    positions.push(Math.cos(angle) * 0.1, Math.sin(angle) * 0.1, 0);
+  }
+  const apex = positions.length / 3;
+  positions.push(0, 0, 100);
+  const starOrder = [0, 2, 4, 1, 3];
+  for (let index = 0; index < starOrder.length; index += 1) {
+    indices.push(apex, starOrder[index], starOrder[(index + 1) % starOrder.length]);
+  }
+  for (let shell = 0; shell < 7; shell += 1) {
+    const offset = positions.length / 3;
+    const x = 10 + shell * 12;
+    positions.push(
+      x, 0, 0,
+      x + 10, 0, 0,
+      x, 10, 0,
+      x, 0, 10,
+    );
+    indices.push(
+      offset, offset + 2, offset + 1,
+      offset, offset + 1, offset + 3,
+      offset + 1, offset + 2, offset + 3,
+      offset + 2, offset, offset + 3,
+    );
+  }
+  return { positions: new Float64Array(positions), indices: new Uint32Array(indices) };
+}
+
+function mixedDirectionBoundaryMesh(): TriangleMesh {
+  const box = boxWithOneMissingTriangle(100, 0.5, 0.5);
+  const positions = [...box.positions];
+  const indices = [...box.indices];
+  [indices[16], indices[17]] = [indices[17], indices[16]];
+  for (let shell = 0; shell < 7; shell += 1) {
+    const offset = positions.length / 3;
+    const x = 10 + shell * 12;
+    positions.push(
+      x, 20, 0,
+      x + 10, 20, 0,
+      x, 30, 0,
+      x, 20, 10,
+    );
+    indices.push(
+      offset, offset + 2, offset + 1,
+      offset, offset + 1, offset + 3,
+      offset + 1, offset + 2, offset + 3,
+      offset + 2, offset, offset + 3,
+    );
+  }
+  return { positions: new Float64Array(positions), indices: new Uint32Array(indices) };
+}
+
+function tetrahedronWithOneReversedFace(): TriangleMesh {
+  const mesh = tetrahedron();
+  const positions = new Float64Array([
+    ...mesh.positions,
+    -10, -10, -10,
+    10, -10, -10,
+    -10, 10, -10,
+    -10, -10, 10,
+  ]);
+  const indices = new Uint32Array([
+    ...mesh.indices,
+    4, 6, 5,
+    4, 5, 7,
+    5, 6, 7,
+    6, 4, 7,
+  ]);
+  [indices[4], indices[5]] = [indices[5], indices[4]];
+  return { positions, indices };
+}
+
+function translateMesh(mesh: TriangleMesh, offset: readonly [number, number, number]): TriangleMesh {
+  return {
+    positions: new Float64Array(mesh.positions.map((value, index) => value + offset[index % 3])),
+    indices: mesh.indices.slice(),
+  };
 }
 
 function cloneMesh(mesh: TriangleMesh): TriangleMesh {
