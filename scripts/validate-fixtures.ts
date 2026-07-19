@@ -47,7 +47,7 @@ for (const entry of manifest.models) {
       const expected = entry.expectedAxis!;
       const alignment = Math.abs(axis.direction[0] * expected[0] + axis.direction[1] * expected[1] + axis.direction[2] * expected[2]);
       const profile = sampleLathedProfile(mesh, { ...axis, confirmed: true }, 64);
-      const kit = generateParts(profile, { thicknessMm: 3, fitAllowanceMm: { loose: 0.2, slip: 0.12, snug: 0.06, press: 0 } }, { ribCount: 6, ringLayers: 2, shaftMm: 2, fit: 'snug' });
+      const kit = generateParts(profile, { thicknessMm: 3, fitAllowanceMm: { loose: 0.2, slip: 0.12, snug: 0.06, press: 0 } }, { splitPositionPercent: 40, ribCount: 6, ringLayers: 2, shaftMm: 2, fit: 'snug' });
       const output = kitOutput(kit);
       const pass = alignment >= 0.9 && axis.confidence >= AUTOMATIC_AXIS_CONFIDENCE_THRESHOLD && kit.parts.length > 0;
       if (pass) autoSuccess += 1;
