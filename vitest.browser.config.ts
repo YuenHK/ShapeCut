@@ -3,7 +3,7 @@ import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
   plugins: [react()],
-  optimizeDeps: { include: ['comlink'] },
+  optimizeDeps: { include: ['comlink', 'three', 'three/examples/jsm/controls/OrbitControls.js'] },
   test: {
     include: ['src/**/*.browser.test.{ts,tsx}'],
     setupFiles: ['./src/test/setup.ts'],
