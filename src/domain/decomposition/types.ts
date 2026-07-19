@@ -32,6 +32,8 @@ export type PartInstance = {
 };
 
 export type DecompositionOptions = {
+  /** Radial hub boundary as a percentage of the sampled outer radius. */
+  readonly splitPositionPercent: number;
   readonly ribCount: 4 | 6 | 8 | 10 | 12;
   readonly ringLayers: number;
   readonly shaftMm: number;

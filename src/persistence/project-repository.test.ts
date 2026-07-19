@@ -50,6 +50,14 @@ describe('ProjectRepository', () => {
     expect((await repository.get(expected.id))?.settings.ribCount).toBe(6);
   });
 
+  it.each([9, 91])('rejects persisted split positions outside the 10-90 radial boundary: %s', async (splitPositionPercent) => {
+    const value = await project();
+    await expect(repository.save({
+      ...value,
+      settings: { ...value.settings, splitPositionPercent },
+    })).rejects.toThrow(/splitPositionPercent/);
+  });
+
   it('rejects downstream project state without repair provenance and repaired mesh fingerprint', async () => {
     await expect(repository.save(await project({ repair: undefined }))).rejects.toThrow(/repair provenance/i);
   });

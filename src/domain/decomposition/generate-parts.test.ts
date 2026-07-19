@@ -77,8 +77,33 @@ function radialFeature(center: number, width: number, depth: number, angle: numb
 }
 
 describe('generateParts', () => {
+  test('uses splitPositionPercent as the radial hub boundary and changes physical hub and rib geometry', () => {
+    const cylindrical: LathedProfile = { samples: [{ z: -30, radius: 30 }, { z: 0, radius: 30 }, { z: 30, radius: 30 }] };
+    const common = { splitPositionPercent: 40, ribCount: 4 as const, ringLayers: 1, shaftMm: 3, fit: 'snug' as const };
+    const inner = generateParts(cylindrical, material, { ...common, splitPositionPercent: 30 });
+    const outer = generateParts(cylindrical, material, { ...common, splitPositionPercent: 60 });
+    const hubRadius = (kit: typeof inner): number => Math.max(...kit.parts.find(({ kind }) => kind === 'hub-layer')!.outline.points.map(([x, y]) => Math.hypot(x, y)));
+
+    expect(hubRadius(inner)).toBeCloseTo(9, 10);
+    expect(hubRadius(outer)).toBeCloseTo(18, 10);
+    expect(inner.parts.find(({ kind }) => kind === 'hub-layer')!.outline.points)
+      .not.toEqual(outer.parts.find(({ kind }) => kind === 'hub-layer')!.outline.points);
+    expect(inner.parts.find(({ kind }) => kind === 'rib')!.outline.points)
+      .not.toEqual(outer.parts.find(({ kind }) => kind === 'rib')!.outline.points);
+  });
+
+  test.each([9, 91, Number.NaN, Number.POSITIVE_INFINITY])('rejects unsafe radial split position %s', (splitPositionPercent) => {
+    expect(() => generateParts(profile, material, {
+      ribCount: 4,
+      ringLayers: 1,
+      shaftMm: 3,
+      fit: 'snug',
+      splitPositionPercent,
+    })).toThrowError(expect.objectContaining({ code: 'OPTIONS' }));
+  });
+
   test('hashes actual geometry, instance placement, and complete joint frames with collision guards', () => {
-    const options = { ribCount: 4 as const, ringLayers: 3, shaftMm: 3, fit: 'snug' as const };
+    const options = { splitPositionPercent: 40, ribCount: 4 as const, ringLayers: 3, shaftMm: 3, fit: 'snug' as const };
     const kit = generateParts(profile, material, options);
     for (const joint of kit.joints) expect(joint.frame).toMatchObject({ materialThicknessMm: 3, fitAllowanceMm: 0.1 });
     const ids = [
@@ -103,7 +128,7 @@ describe('generateParts', () => {
   });
 
   test.each([1e-6, 1e6])('preserves complete notch, joint, and instance similarity at scale %g', (factor) => {
-    const options = { ribCount: 6 as const, ringLayers: 3, shaftMm: 3, fit: 'snug' as const };
+    const options = { splitPositionPercent: 40, ribCount: 6 as const, ringLayers: 3, shaftMm: 3, fit: 'snug' as const };
     const base = generateParts(profile, material, options);
     const scaled = generateParts(
       { samples: profile.samples.map(({ z, radius }) => ({ z: z * factor, radius: radius * factor })) },
@@ -135,7 +160,7 @@ describe('generateParts', () => {
   });
 
   test('resolves every physical hub layer and spacer through stable assembly instances', () => {
-    const options = { ribCount: 4 as const, ringLayers: 3, shaftMm: 3, fit: 'snug' as const };
+    const options = { splitPositionPercent: 40, ribCount: 4 as const, ringLayers: 3, shaftMm: 3, fit: 'snug' as const };
     const kit = generateParts(profile, material, options);
     expect(kit).toHaveProperty('instances');
     const instances = (kit as typeof kit & { instances: readonly { id: string; partId: string; axialZ: number; angleRad?: number }[] }).instances;
@@ -174,7 +199,7 @@ describe('generateParts', () => {
   ] as const)('cuts a %s mm %s shaft polygon whose inradius is the physical target', (shaftMm, fit, target) => {
     const allowances = { loose: 0.4, slip: 0.25, snug: 0.1, press: 0 } as const;
     const largeProfile: LathedProfile = { samples: [{ z: -100, radius: 80 }, { z: 0, radius: 100 }, { z: 100, radius: 80 }] };
-    const kit = generateParts(largeProfile, { thicknessMm: 3, fitAllowanceMm: allowances }, { ribCount: 4, ringLayers: 1, shaftMm, fit });
+    const kit = generateParts(largeProfile, { thicknessMm: 3, fitAllowanceMm: allowances }, { splitPositionPercent: 40, ribCount: 4, ringLayers: 1, shaftMm, fit });
     const hub = kit.parts.find((part) => part.kind === 'hub-layer')!;
     const hole = hub.holes[hub.holeMetadata![0].polygonIndex];
     const edgeDistance = (a: readonly [number, number], b: readonly [number, number]): number => Math.abs(a[0] * b[1] - a[1] * b[0]) / Math.hypot(b[0] - a[0], b[1] - a[1]);
@@ -193,12 +218,12 @@ describe('generateParts', () => {
     expect(validateNotches([midpointHoleBreach], regularPolygon(2.29, 32), [regularPolygon(2.09, 32, true)], 0.001)).toBe(false);
     const oldHubCut = radialFeature(34.6466, 3.1, 2.4, Math.PI / 3);
     expect(validateNotches([oldHubCut], regularPolygon(36, 32), [regularPolygon(1.55, 32, true)], 0.06)).toBe(false);
-    expect(() => generateParts({ samples: [{ z: -20, radius: 2.3 }, { z: 20, radius: 2.3 }] }, { thicknessMm: 0.2, fitAllowanceMm: 0.4 }, { ribCount: 4, ringLayers: 1, shaftMm: 0.02, fit: 'snug' })).not.toThrow();
-    expect(() => generateParts({ samples: [{ z: -135, radius: 90 }, { z: 135, radius: 90 }] }, material, { ribCount: 6, ringLayers: 1, shaftMm: 3, fit: 'snug' })).not.toThrow();
+    expect(() => generateParts({ samples: [{ z: -20, radius: 2.3 }, { z: 20, radius: 2.3 }] }, { thicknessMm: 0.2, fitAllowanceMm: 0.4 }, { splitPositionPercent: 40, ribCount: 4, ringLayers: 1, shaftMm: 0.02, fit: 'snug' })).not.toThrow();
+    expect(() => generateParts({ samples: [{ z: -135, radius: 90 }, { z: 135, radius: 90 }] }, material, { splitPositionPercent: 40, ribCount: 6, ringLayers: 1, shaftMm: 3, fit: 'snug' })).not.toThrow();
   });
 
   test.each([4, 6, 8, 10, 12] as const)('builds %i unique positive-radius spokes clear of the shaft', (ribCount) => {
-    const kit = generateParts(profile, material, { ribCount, ringLayers: 2, shaftMm: 3, fit: 'snug' });
+    const kit = generateParts(profile, material, { splitPositionPercent: 40, ribCount, ringLayers: 2, shaftMm: 3, fit: 'snug' });
     const ribs = kit.parts.filter((part) => part.kind === 'rib');
     const shaftRadius = kit.parts.find((part) => part.kind === 'hub-layer')!.holeMetadata![0].radiusMm;
     expect(ribs).toHaveLength(ribCount);
@@ -221,7 +246,7 @@ describe('generateParts', () => {
 
   test('cuts real complementary open notches with no positive-area plate/rib collision', () => {
     const thickness = 3;
-    const kit = generateParts(profile, { thicknessMm: thickness, fitAllowanceMm: 0.1 }, { ribCount: 4, ringLayers: 1, shaftMm: 3, fit: 'snug' });
+    const kit = generateParts(profile, { thicknessMm: thickness, fitAllowanceMm: 0.1 }, { splitPositionPercent: 40, ribCount: 4, ringLayers: 1, shaftMm: 3, fit: 'snug' });
     const plates = kit.parts.filter((part) => part.kind === 'hub-layer' || part.kind === 'outer-ring');
     expect(plates).toHaveLength(2);
     for (const plate of plates) {
@@ -268,26 +293,26 @@ describe('generateParts', () => {
       { z: -12, radius: 9 }, { z: 0, radius: 24 }, { z: 4.6, radius: 20 },
       { z: 4.7, radius: 4 }, { z: 4.8, radius: 20 }, { z: 12, radius: 9 },
     ] };
-    const kit = generateParts(notched, material, { ribCount: 4, ringLayers: 1, shaftMm: 3, fit: 'snug' });
+    const kit = generateParts(notched, material, { splitPositionPercent: 40, ribCount: 4, ringLayers: 1, shaftMm: 3, fit: 'snug' });
     const ring = kit.parts.find((part) => part.kind === 'outer-ring')!;
     expect(Math.max(...ring.outline.points.map(([x, y]) => Math.hypot(x, y)))).toBeLessThan(4);
   });
   test('rejects radial slots whose corners breach hub/ring margins or overlap neighbours', () => {
     const large: LathedProfile = { samples: [{ z: -50, radius: 80 }, { z: 0, radius: 100 }, { z: 50, radius: 80 }] };
-    expect(() => generateParts(large, { thicknessMm: 38.9, fitAllowanceMm: 0.1 }, { ribCount: 12, ringLayers: 1, shaftMm: 62, fit: 'snug' })).toThrowError(expect.objectContaining({ code: 'JOINT' }));
+    expect(() => generateParts(large, { thicknessMm: 38.9, fitAllowanceMm: 0.1 }, { splitPositionPercent: 40, ribCount: 12, ringLayers: 1, shaftMm: 62, fit: 'snug' })).toThrowError(expect.objectContaining({ code: 'JOINT' }));
   });
 
   test('rejects tabs wider than center spacing and emits simple legal rib outlines', () => {
     const tall: LathedProfile = { samples: [{ z: -50, radius: 20 }, { z: 0, radius: 100 }, { z: 50, radius: 20 }] };
-    expect(() => generateParts(tall, { thicknessMm: 38.9, fitAllowanceMm: 0.1 }, { ribCount: 4, ringLayers: 1, shaftMm: 2, fit: 'snug' })).toThrowError(expect.objectContaining({ code: 'JOINT' }));
-    const legal = generateParts(profile, material, { ribCount: 8, ringLayers: 3, shaftMm: 3, fit: 'snug' });
+    expect(() => generateParts(tall, { thicknessMm: 38.9, fitAllowanceMm: 0.1 }, { splitPositionPercent: 40, ribCount: 4, ringLayers: 1, shaftMm: 2, fit: 'snug' })).toThrowError(expect.objectContaining({ code: 'JOINT' }));
+    const legal = generateParts(profile, material, { splitPositionPercent: 40, ribCount: 8, ringLayers: 3, shaftMm: 3, fit: 'snug' });
     expect(legal.parts.filter((part) => part.kind === 'rib').every((part) => isSimplePolygon(part.outline))).toBe(true);
   });
 
   test('builds ribs from every meridional profile sample rather than a bounding rectangle', () => {
     const left: LathedProfile = { samples: [{ z: -10, radius: 4 }, { z: 0, radius: 18 }, { z: 10, radius: 4 }] };
     const right: LathedProfile = { samples: [{ z: -10, radius: 4 }, { z: 0, radius: 10 }, { z: 10, radius: 4 }] };
-    const options = { ribCount: 4 as const, ringLayers: 1, shaftMm: 2, fit: 'snug' as const };
+    const options = { splitPositionPercent: 40, ribCount: 4 as const, ringLayers: 1, shaftMm: 2, fit: 'snug' as const };
     const leftRib = generateParts(left, material, options).parts.find((part) => part.kind === 'rib')!;
     const rightRib = generateParts(right, material, options).parts.find((part) => part.kind === 'rib')!;
     expect(leftRib.outline.points).not.toEqual(rightRib.outline.points);
@@ -298,7 +323,7 @@ describe('generateParts', () => {
   });
 
   test('maps cut slots and in-material rib contacts to one shared mating frame', () => {
-    const kit = generateParts(profile, material, { ribCount: 4, ringLayers: 2, shaftMm: 3, fit: 'snug' });
+    const kit = generateParts(profile, material, { splitPositionPercent: 40, ribCount: 4, ringLayers: 2, shaftMm: 3, fit: 'snug' });
     const pairs = new Map<string, typeof kit.joints[number][]>();
     for (const joint of kit.joints) pairs.set(joint.id, [...(pairs.get(joint.id) ?? []), joint]);
     for (const pair of pairs.values()) {
@@ -330,12 +355,12 @@ describe('generateParts', () => {
 
   test('uses selected fit allowance exactly for concentric shaft clearance', () => {
     const allowances = { loose: 0.4, slip: 0.25, snug: 0.1, press: 0 } as const;
-    const radii = (['press', 'snug', 'slip', 'loose'] as const).map((fit) => generateParts(profile, { thicknessMm: 3, fitAllowanceMm: allowances }, { ribCount: 4, ringLayers: 2, shaftMm: 3, fit }).parts.find((part) => part.kind === 'hub-layer')!.holeMetadata![0].radiusMm);
+    const radii = (['press', 'snug', 'slip', 'loose'] as const).map((fit) => generateParts(profile, { thicknessMm: 3, fitAllowanceMm: allowances }, { splitPositionPercent: 40, ribCount: 4, ringLayers: 2, shaftMm: 3, fit }).parts.find((part) => part.kind === 'hub-layer')!.holeMetadata![0].radiusMm);
     expect(radii).toEqual([1.5, 1.55, 1.625, 1.7]);
   });
 
   test('connects both spacer instances on opposite hub sides in the assembly graph', () => {
-    const kit = generateParts(profile, material, { ribCount: 4, ringLayers: 2, shaftMm: 3, fit: 'snug' });
+    const kit = generateParts(profile, material, { splitPositionPercent: 40, ribCount: 4, ringLayers: 2, shaftMm: 3, fit: 'snug' });
     const spacer = kit.parts.find((part) => part.kind === 'spacer')!;
     const edges = kit.assembly.filter((edge): edge is Extract<typeof edge, { kind: 'placement' }> => edge.kind === 'placement' && edge.partId === spacer.id);
     expect(edges.map((edge) => edge.instance).sort()).toEqual(['negative-z', 'positive-z']);
@@ -346,7 +371,7 @@ describe('generateParts', () => {
   });
 
   test('uses discriminated assembly edges with complete referential integrity', () => {
-    const kit = generateParts(profile, material, { ribCount: 6, ringLayers: 2, shaftMm: 3, fit: 'snug' });
+    const kit = generateParts(profile, material, { splitPositionPercent: 40, ribCount: 6, ringLayers: 2, shaftMm: 3, fit: 'snug' });
     const jointIds = new Set(kit.joints.map((joint) => joint.id));
     const placementIds = new Set<string>();
     for (const edge of kit.assembly) {
@@ -360,11 +385,11 @@ describe('generateParts', () => {
   });
 
   test('detects deterministic content hash collisions instead of sharing IDs', () => {
-    expect(() => generateParts(profile, material, { ribCount: 4, ringLayers: 2, shaftMm: 3, fit: 'snug' }, { hasher: () => '0'.repeat(32) })).toThrowError(expect.objectContaining({ code: 'HASH_COLLISION' }));
+    expect(() => generateParts(profile, material, { splitPositionPercent: 40, ribCount: 4, ringLayers: 2, shaftMm: 3, fit: 'snug' }, { hasher: () => '0'.repeat(32) })).toThrowError(expect.objectContaining({ code: 'HASH_COLLISION' }));
   });
   test('adds two symmetric washer spacers only for multilayer rings without changing ideal balance', () => {
-    const multi = generateParts(profile, material, { ribCount: 8, ringLayers: 3, shaftMm: 3, fit: 'snug' });
-    const single = generateParts(profile, material, { ribCount: 8, ringLayers: 1, shaftMm: 3, fit: 'snug' });
+    const multi = generateParts(profile, material, { splitPositionPercent: 40, ribCount: 8, ringLayers: 3, shaftMm: 3, fit: 'snug' });
+    const single = generateParts(profile, material, { splitPositionPercent: 40, ribCount: 8, ringLayers: 1, shaftMm: 3, fit: 'snug' });
     const spacers = multi.parts.filter((part) => part.kind === 'spacer');
     expect(spacers).toHaveLength(1);
     expect(spacers[0].quantity).toBe(2);
@@ -375,7 +400,7 @@ describe('generateParts', () => {
   });
 
   test('generates the requested hybrid kit with valid consistently wound polygons', () => {
-    const kit = generateParts(profile, material, { ribCount: 8, ringLayers: 3, shaftMm: 3, fit: 'snug' });
+    const kit = generateParts(profile, material, { splitPositionPercent: 40, ribCount: 8, ringLayers: 3, shaftMm: 3, fit: 'snug' });
     expect(kit.parts.filter((part) => part.kind === 'rib')).toHaveLength(8);
     expect(kit.parts.filter((part) => part.kind === 'outer-ring')).toHaveLength(3);
     expect(kit.parts.some((part) => part.kind === 'hub-layer')).toBe(true);
@@ -401,7 +426,7 @@ describe('generateParts', () => {
   });
 
   test.each([4, 6, 8, 10, 12] as const)('places %i deterministic ribs in opposite angular pairs', (ribCount) => {
-    const kit = generateParts(profile, material, { ribCount, ringLayers: 2, shaftMm: 3, fit: 'slip' });
+    const kit = generateParts(profile, material, { splitPositionPercent: 40, ribCount, ringLayers: 2, shaftMm: 3, fit: 'slip' });
     const ribs = kit.parts.filter((part) => part.kind === 'rib');
     expect(ribs).toHaveLength(ribCount);
     for (let index = 0; index < ribCount / 2; index += 1) {
@@ -410,7 +435,7 @@ describe('generateParts', () => {
   });
 
   test('pairs every joint without orphans at the allowance-adjusted width', () => {
-    const kit = generateParts(profile, material, { ribCount: 6, ringLayers: 2, shaftMm: 3, fit: 'snug' });
+    const kit = generateParts(profile, material, { splitPositionPercent: 40, ribCount: 6, ringLayers: 2, shaftMm: 3, fit: 'snug' });
     const grouped = new Map<string, typeof kit.joints>();
     for (const joint of kit.joints) grouped.set(joint.id, [...(grouped.get(joint.id) ?? []), joint]);
     expect([...grouped.values()].every((pair) => pair.length === 2 && pair[0].role !== pair[1].role)).toBe(true);
@@ -421,7 +446,7 @@ describe('generateParts', () => {
   test('is deterministic, input-immutable, scale-aware, and changes IDs with options', () => {
     const deterministicMaterial: MaterialInput = { thicknessMm: 3, fitAllowanceMm: { loose: 0.3, slip: 0.2, snug: 0.1, press: 0 } };
     const snapshot = JSON.stringify({ profile, material: deterministicMaterial });
-    const options = { ribCount: 8 as const, ringLayers: 3, shaftMm: 3, fit: 'snug' as const };
+    const options = { splitPositionPercent: 40, ribCount: 8 as const, ringLayers: 3, shaftMm: 3, fit: 'snug' as const };
     const first = generateParts(profile, deterministicMaterial, options);
     const second = generateParts(profile, deterministicMaterial, options);
     expect(second).toEqual(first);
@@ -433,7 +458,7 @@ describe('generateParts', () => {
   });
 
   test('scales every geometry dimension while preserving dimensionless balance state', () => {
-    const options = { ribCount: 8 as const, ringLayers: 3, shaftMm: 3, fit: 'snug' as const };
+    const options = { splitPositionPercent: 40, ribCount: 8 as const, ringLayers: 3, shaftMm: 3, fit: 'snug' as const };
     const base = generateParts(profile, material, options);
     const factor = 2.5;
     const scaled = generateParts(
@@ -460,13 +485,13 @@ describe('generateParts', () => {
 
   test('uses stable IDs derived only from each part relevant geometry and role', () => {
     const fitMap = { loose: 0.3, slip: 0.2, snug: 0.1, press: 0 } as const;
-    const snug = generateParts(profile, { thicknessMm: 3, fitAllowanceMm: fitMap }, { ribCount: 8, ringLayers: 3, shaftMm: 3, fit: 'snug' });
-    const press = generateParts(profile, { thicknessMm: 3, fitAllowanceMm: fitMap }, { ribCount: 8, ringLayers: 3, shaftMm: 3, fit: 'press' });
+    const snug = generateParts(profile, { thicknessMm: 3, fitAllowanceMm: fitMap }, { splitPositionPercent: 40, ribCount: 8, ringLayers: 3, shaftMm: 3, fit: 'snug' });
+    const press = generateParts(profile, { thicknessMm: 3, fitAllowanceMm: fitMap }, { splitPositionPercent: 40, ribCount: 8, ringLayers: 3, shaftMm: 3, fit: 'press' });
     for (const kind of ['hub-layer', 'rib', 'outer-ring'] as const) {
       expect(press.parts.filter((part) => part.kind === kind).map((part) => part.id)).not.toEqual(snug.parts.filter((part) => part.kind === kind).map((part) => part.id));
     }
     expect(press.parts.find((part) => part.kind === 'spacer')?.id).not.toBe(snug.parts.find((part) => part.kind === 'spacer')?.id);
-    const fewer = generateParts(profile, { thicknessMm: 3, fitAllowanceMm: fitMap }, { ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' });
+    const fewer = generateParts(profile, { thicknessMm: 3, fitAllowanceMm: fitMap }, { splitPositionPercent: 40, ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' });
     expect(fewer.parts.filter((part) => part.kind === 'spacer').map((part) => part.id)).toEqual(snug.parts.filter((part) => part.kind === 'spacer').map((part) => part.id));
     expect(fewer.parts.filter((part) => part.kind === 'hub-layer').map((part) => part.id)).toEqual(snug.parts.filter((part) => part.kind === 'hub-layer').map((part) => part.id));
     expect(fewer.instances.filter((instance) => fewer.parts.find(({ id }) => id === instance.partId)?.kind === 'hub-layer').map(({ id }) => id)).not.toEqual(snug.instances.filter((instance) => snug.parts.find(({ id }) => id === instance.partId)?.kind === 'hub-layer').map(({ id }) => id));
@@ -476,32 +501,32 @@ describe('generateParts', () => {
 
   test('accepts zero-radius tips by deriving the hub from the central profile structure', () => {
     const pointed: LathedProfile = { samples: [{ z: -10, radius: 0 }, { z: 0, radius: 20 }, { z: 10, radius: 0 }] };
-    expect(() => generateParts(pointed, material, { ribCount: 6, ringLayers: 2, shaftMm: 3, fit: 'snug' })).not.toThrow();
-    expect(() => generateParts({ samples: [{ z: -1, radius: 0 }, { z: 1, radius: 0 }] }, material, { ribCount: 6, ringLayers: 2, shaftMm: 1, fit: 'snug' })).toThrowError(expect.objectContaining({ code: 'PROFILE' }));
+    expect(() => generateParts(pointed, material, { splitPositionPercent: 40, ribCount: 6, ringLayers: 2, shaftMm: 3, fit: 'snug' })).not.toThrow();
+    expect(() => generateParts({ samples: [{ z: -1, radius: 0 }, { z: 1, radius: 0 }] }, material, { splitPositionPercent: 40, ribCount: 6, ringLayers: 2, shaftMm: 1, fit: 'snug' })).toThrowError(expect.objectContaining({ code: 'PROFILE' }));
   });
 
   test.each([
-    [null, material, { ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' }, 'PROFILE'],
-    [{ samples: null }, material, { ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' }, 'PROFILE'],
-    [profile, null, { ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' }, 'MATERIAL'],
-    [profile, { thicknessMm: 3, fitAllowanceMm: null }, { ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' }, 'MATERIAL'],
+    [null, material, { splitPositionPercent: 40, ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' }, 'PROFILE'],
+    [{ samples: null }, material, { splitPositionPercent: 40, ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' }, 'PROFILE'],
+    [profile, null, { splitPositionPercent: 40, ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' }, 'MATERIAL'],
+    [profile, { thicknessMm: 3, fitAllowanceMm: null }, { splitPositionPercent: 40, ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' }, 'MATERIAL'],
     [profile, material, null, 'OPTIONS'],
-    [profile, material, { ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'invalid' }, 'OPTIONS'],
-    [profile, { thicknessMm: 3, fitAllowanceMm: { loose: 0, slip: 0, snug: 0 } }, { ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' }, 'MATERIAL'],
-    [profile, { thicknessMm: 3, fitAllowanceMm: { loose: 0, slip: 0, snug: 0, press: Infinity } }, { ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' }, 'MATERIAL'],
+    [profile, material, { splitPositionPercent: 40, ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'invalid' }, 'OPTIONS'],
+    [profile, { thicknessMm: 3, fitAllowanceMm: { loose: 0, slip: 0, snug: 0 } }, { splitPositionPercent: 40, ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' }, 'MATERIAL'],
+    [profile, { thicknessMm: 3, fitAllowanceMm: { loose: 0, slip: 0, snug: 0, press: Infinity } }, { splitPositionPercent: 40, ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' }, 'MATERIAL'],
   ] as const)('never leaks TypeError for malformed unknown input %#', (badProfile, badMaterial, badOptions, code) => {
     expect(() => generateParts(badProfile as never, badMaterial as never, badOptions as never)).toThrowError(expect.objectContaining({ name: 'DecompositionError', code }));
   });
 
   test.each([
-    [{ samples: [] }, material, { ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' }, 'PROFILE'],
-    [{ samples: [{ z: 0, radius: 2 }, { z: -1, radius: 3 }] }, material, { ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' }, 'PROFILE'],
-    [profile, { thicknessMm: 0, fitAllowanceMm: 0 }, { ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' }, 'MATERIAL'],
-    [profile, { thicknessMm: 3, fitAllowanceMm: -0.1 }, { ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' }, 'MATERIAL'],
-    [profile, material, { ribCount: 5, ringLayers: 2, shaftMm: 3, fit: 'snug' }, 'OPTIONS'],
-    [profile, material, { ribCount: 8, ringLayers: 0, shaftMm: 3, fit: 'snug' }, 'OPTIONS'],
-    [profile, material, { ribCount: 8, ringLayers: 2, shaftMm: 30, fit: 'snug' }, 'SHAFT'],
-    [profile, { thicknessMm: 30, fitAllowanceMm: 1 }, { ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' }, 'JOINT'],
+    [{ samples: [] }, material, { splitPositionPercent: 40, ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' }, 'PROFILE'],
+    [{ samples: [{ z: 0, radius: 2 }, { z: -1, radius: 3 }] }, material, { splitPositionPercent: 40, ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' }, 'PROFILE'],
+    [profile, { thicknessMm: 0, fitAllowanceMm: 0 }, { splitPositionPercent: 40, ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' }, 'MATERIAL'],
+    [profile, { thicknessMm: 3, fitAllowanceMm: -0.1 }, { splitPositionPercent: 40, ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' }, 'MATERIAL'],
+    [profile, material, { splitPositionPercent: 40, ribCount: 5, ringLayers: 2, shaftMm: 3, fit: 'snug' }, 'OPTIONS'],
+    [profile, material, { splitPositionPercent: 40, ribCount: 8, ringLayers: 0, shaftMm: 3, fit: 'snug' }, 'OPTIONS'],
+    [profile, material, { splitPositionPercent: 40, ribCount: 8, ringLayers: 2, shaftMm: 30, fit: 'snug' }, 'SHAFT'],
+    [profile, { thicknessMm: 30, fitAllowanceMm: 1 }, { splitPositionPercent: 40, ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' }, 'JOINT'],
   ] as const)('rejects invalid decomposition input with typed code %#', (badProfile, badMaterial, badOptions, code) => {
     expect(() => generateParts(badProfile as LathedProfile, badMaterial as MaterialInput, badOptions as never)).toThrowError(expect.objectContaining({ name: 'DecompositionError', code }));
   });
@@ -541,7 +566,7 @@ describe('sampleLathedProfile', () => {
     const sampled = sampleLathedProfile(lathedSurface(narrow.samples), confirmedAxis, 64);
     expect(sampled.samples.length).toBeLessThanOrEqual(4096);
     expect(sampled.samples.some(({ z, radius }) => Math.abs(z - 4.7) < 1e-12 && radius < 1.01)).toBe(true);
-    expect(() => generateParts(sampled, material, { ribCount: 4, ringLayers: 1, shaftMm: 3, fit: 'snug' })).toThrowError(expect.objectContaining({ code: 'JOINT' }));
+    expect(() => generateParts(sampled, material, { splitPositionPercent: 40, ribCount: 4, ringLayers: 1, shaftMm: 3, fit: 'snug' })).toThrowError(expect.objectContaining({ code: 'JOINT' }));
   });
 
   test('is invariant when the axis origin is translated by 1e16 along its direction', () => {
@@ -586,7 +611,7 @@ describe('sampleLathedProfile', () => {
       return { z, radius: 80 + 20 * (1 - (z / 100) ** 2) };
     });
     const started = performance.now();
-    const kit = generateParts({ samples }, material, { ribCount: 12, ringLayers: 3, shaftMm: 3, fit: 'snug' });
+    const kit = generateParts({ samples }, material, { splitPositionPercent: 40, ribCount: 12, ringLayers: 3, shaftMm: 3, fit: 'snug' });
     const elapsed = performance.now() - started;
     const rib = kit.parts.find((part) => part.kind === 'rib')!;
     expect(polygonValidation.isSimpleXMonotonePolygon(rib.outline)).toBe(true);

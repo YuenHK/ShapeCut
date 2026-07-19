@@ -105,11 +105,13 @@ function validate(profileValue: unknown, materialValue: unknown, optionsValue: u
   if ((map && !['loose', 'slip', 'snug', 'press'].every((fit) => Object.hasOwn(map, fit))) || values.length !== (map ? 4 : 1) || !Number.isFinite(material.thicknessMm) || material.thicknessMm <= 0 || values.some((value) => !Number.isFinite(value) || value < 0)) throw new DecompositionError('MATERIAL', 'Invalid material dimensions');
   if (!record(optionsValue)) throw new DecompositionError('OPTIONS', 'Options must be an object');
   const options = optionsValue as DecompositionOptions;
-  if (!RIB_COUNTS.has(options.ribCount) || !Number.isInteger(options.ringLayers) || options.ringLayers < 1 || options.ringLayers > 24 || !['loose', 'slip', 'snug', 'press'].includes(options.fit)) throw new DecompositionError('OPTIONS', 'Unsupported options');
+  if (!Number.isFinite(options.splitPositionPercent) || options.splitPositionPercent < 10 || options.splitPositionPercent > 90
+    || !RIB_COUNTS.has(options.ribCount) || !Number.isInteger(options.ringLayers) || options.ringLayers < 1 || options.ringLayers > 24
+    || !['loose', 'slip', 'snug', 'press'].includes(options.fit)) throw new DecompositionError('OPTIONS', 'Unsupported options');
   let outer = 0;
   for (const sample of profile.samples) outer = Math.max(outer, sample.radius);
   if (outer <= 0) throw new DecompositionError('PROFILE', 'Profile has no radial structure');
-  const hub = outer * 0.4, height = profile.samples.at(-1)!.z - profile.samples[0].z;
+  const hub = outer * options.splitPositionPercent / 100, height = profile.samples.at(-1)!.z - profile.samples[0].z;
   const clearance = fitAllowance(material, options.fit);
   const shaftTargetRadius = options.shaftMm / 2 + clearance / 2;
   const shaftPolygonRadius = shaftTargetRadius / Math.cos(Math.PI / CIRCLE_SEGMENTS);

@@ -75,7 +75,7 @@ function adjacentRibWitness(kit: SpinnerKit, thickness: number): readonly [numbe
 
 describe('assembly collision review regressions', () => {
   test.each([4, 6, 8, 10, 12] as const)('has no positive-volume adjacent-rib slab witness for N=%i', (ribCount) => {
-    const kit = generateParts(profile, material, { ribCount, ringLayers: 2, shaftMm: 3, fit: 'snug' });
+    const kit = generateParts(profile, material, { splitPositionPercent: 40, ribCount, ringLayers: 2, shaftMm: 3, fit: 'snug' });
     expect(adjacentRibWitness(kit, material.thicknessMm)).toBeUndefined();
     const ribInner = Math.min(...kit.parts.find((part) => part.kind === 'rib')!.outline.points.map(([, radial]) => radial));
     const hub = kit.parts.find((part) => part.kind === 'hub-layer')!;
@@ -90,7 +90,7 @@ describe('assembly collision review regressions', () => {
   });
 
   test('removes the review N=8 adjacent-rib witness from both actual 3D solids', () => {
-    const kit = generateParts(profile, material, { ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' });
+    const kit = generateParts(profile, material, { splitPositionPercent: 40, ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' });
     const ribs = kit.instances.filter((instance) => partAndInstance(kit, instance).kind === 'rib').sort((left, right) => (left.angleRad ?? 0) - (right.angleRad ?? 0));
     const witness = [1.847759, 0.765367, 0] as const;
     expect(ribSolidContains(partAndInstance(kit, ribs[0]), ribs[0], witness, 3)
@@ -98,7 +98,7 @@ describe('assembly collision review regressions', () => {
   });
 
   test('keeps both multilayer spacer solids radially clear of every rib', () => {
-    const kit = generateParts(profile, material, { ribCount: 4, ringLayers: 2, shaftMm: 3, fit: 'snug' });
+    const kit = generateParts(profile, material, { splitPositionPercent: 40, ribCount: 4, ringLayers: 2, shaftMm: 3, fit: 'snug' });
     const rib = kit.instances.find((instance) => partAndInstance(kit, instance).kind === 'rib' && instance.angleRad === 0)!;
     const ribPart = partAndInstance(kit, rib);
     const spacers = kit.instances.filter((instance) => partAndInstance(kit, instance).kind === 'spacer');
@@ -118,13 +118,13 @@ describe('assembly collision review regressions', () => {
 
   test('rejects the exact necked spacer/ring witness when radial clearance leaves no ring tab', () => {
     const necked = { samples: [{ z: -12, radius: 10 }, { z: -8, radius: 24 }, { z: -3, radius: 5 }, { z: 12, radius: 5 }] };
-    expect(() => generateParts(necked, material, { ribCount: 4, ringLayers: 2, shaftMm: 3, fit: 'snug' }))
+    expect(() => generateParts(necked, material, { splitPositionPercent: 40, ribCount: 4, ringLayers: 2, shaftMm: 3, fit: 'snug' }))
       .toThrowError(expect.objectContaining({ code: 'JOINT' }));
   });
 
   test('runs the production analytic collision audit and identifies both colliding instances', () => {
     const auditProfile = { samples: [{ z: -12, radius: 10 }, { z: -8, radius: 24 }, { z: -3, radius: 7 }, { z: 12, radius: 7 }] };
-    const kit = generateParts(auditProfile, material, { ribCount: 4, ringLayers: 2, shaftMm: 3, fit: 'snug' });
+    const kit = generateParts(auditProfile, material, { splitPositionPercent: 40, ribCount: 4, ringLayers: 2, shaftMm: 3, fit: 'snug' });
     expect(() => validateAssemblyCollisions(kit, material, auditProfile)).not.toThrow();
 
     const spacer = kit.instances.find((instance) => partAndInstance(kit, instance).kind === 'spacer')!;
@@ -145,7 +145,7 @@ describe('assembly collision review regressions', () => {
   });
 
   test('audit catches injected adjacent-rib and joint-corridor review collisions with instance IDs', () => {
-    const kit = generateParts(profile, material, { ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' });
+    const kit = generateParts(profile, material, { splitPositionPercent: 40, ribCount: 8, ringLayers: 2, shaftMm: 3, fit: 'snug' });
     const ribs = kit.instances.filter((instance) => partAndInstance(kit, instance).kind === 'rib');
     const oldReviewOutline: Polygon2 = { points: [[-1, 1.611869], [1, 1.611869], [1, 10], [-1, 10]] };
     const collidingRibs = { ...kit, parts: kit.parts.map((part) => part.kind === 'rib' ? { ...part, outline: oldReviewOutline } : part) };

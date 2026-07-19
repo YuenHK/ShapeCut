@@ -11,7 +11,7 @@ const StoredRepairSchema = z.object({
   meshSha256: z.string().regex(/^[0-9a-f]{64}$/i, 'Invalid repaired mesh SHA-256').transform((value) => value.toLowerCase()),
 }).strict();
 const SettingsSchema = z.object({
-  splitPositionPercent: z.number().finite().min(0).max(100),
+  splitPositionPercent: z.number().finite().min(10).max(90),
   ribCount: z.union([z.literal(4), z.literal(6), z.literal(8), z.literal(10), z.literal(12)]),
   ringLayers: z.number().int().min(1).max(24),
   shaftMm: z.number().finite().positive(),

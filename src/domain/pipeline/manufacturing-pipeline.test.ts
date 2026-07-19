@@ -79,6 +79,49 @@ const worker = {
 };
 
 describe('manufacturing vertical pipeline', () => {
+  it('propagates radial split position into hub, rib, and nested CUT geometry', async () => {
+    const base = input(
+      'c'.repeat(64),
+      lathedSurface([
+        { z: -30, radius: 30 },
+        { z: 0, radius: 30 },
+        { z: 30, radius: 30 },
+      ]),
+    );
+    const inner = await createManufacturingArtifacts({
+      ...base,
+      settings: { ...base.settings, splitPositionPercent: 30, ribCount: 4, ringLayers: 1 },
+    }, worker);
+    const outer = await createManufacturingArtifacts({
+      ...base,
+      settings: { ...base.settings, splitPositionPercent: 60, ribCount: 4, ringLayers: 1 },
+    }, worker);
+    const hubRadius = (artifacts: typeof inner): number => Math.max(...artifacts.kit.value.parts
+      .find(({ kind }) => kind === 'hub-layer')!.outline.points.map(([x, y]) => Math.hypot(x, y)));
+    const profileOuterRadius = Math.max(...inner.profile.value.samples.map(({ radius }) => radius));
+    const cutGeometry = (artifacts: typeof inner) => artifacts.document.value.sheets.flatMap(({ entities }) => entities
+      .filter(({ layer }) => layer === 'CUT')
+      .map(({ contour, polygon }) => ({ contour, points: polygon.points })));
+
+    expect(hubRadius(inner)).toBeCloseTo(profileOuterRadius * 0.3, 10);
+    expect(hubRadius(outer)).toBeCloseTo(profileOuterRadius * 0.6, 10);
+    expect(inner.kit.value.parts.find(({ kind }) => kind === 'rib')!.outline.points)
+      .not.toEqual(outer.kit.value.parts.find(({ kind }) => kind === 'rib')!.outline.points);
+    expect(cutGeometry(inner)).not.toEqual(cutGeometry(outer));
+  });
+
+  it.each([9, 91])('rejects an unsafe pipeline split position of %s percent', async (splitPositionPercent) => {
+    const unsafe = input('d'.repeat(64), lathedSurface([
+      { z: -30, radius: 30 },
+      { z: 0, radius: 30 },
+      { z: 30, radius: 30 },
+    ]));
+    await expect(createManufacturingArtifacts({
+      ...unsafe,
+      settings: { ...unsafe.settings, splitPositionPercent },
+    }, worker)).rejects.toThrow(/split position|10.*90/i);
+  });
+
   it('binds every artifact to one input version and produces different CUT geometry for meaningfully different meshes', async () => {
     const narrow = input(
       'a'.repeat(64),

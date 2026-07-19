@@ -117,6 +117,7 @@ export async function createManufacturingArtifacts(
   const materialReadiness = classifyMaterialReadiness(input.material);
   const profile = sampleLathedProfile(input.mesh, axis, 64);
   const decompositionOptions: DecompositionOptions = {
+    splitPositionPercent: input.settings.splitPositionPercent,
     ribCount: input.settings.ribCount as DecompositionOptions['ribCount'],
     ringLayers: input.settings.ringLayers,
     shaftMm: input.settings.shaftMm,
@@ -212,6 +213,7 @@ function validateInput(input: ManufacturingPipelineInput): void {
   if (![input.settings.splitPositionPercent, input.settings.ringLayers, input.settings.shaftMm, input.settings.textureStrength, input.settings.sheetWidthMm, input.settings.sheetHeightMm].every(Number.isFinite)) {
     throw new RangeError('Pipeline settings must be finite');
   }
+  if (input.settings.splitPositionPercent < 10 || input.settings.splitPositionPercent > 90) throw new RangeError('Split position must be between 10 and 90 percent');
   if (input.settings.textureStrength < 0 || input.settings.textureStrength > 1) throw new RangeError('Texture strength must be between zero and one');
   if (![4, 6, 8, 10, 12].includes(input.settings.ribCount)) throw new RangeError('Rib count is unsupported');
 }
