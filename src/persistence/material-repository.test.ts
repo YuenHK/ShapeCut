@@ -4,7 +4,7 @@ import Dexie from 'dexie';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ZodError } from 'zod';
 
-import type { MaterialProfileV1 } from '../domain/materials/schema';
+import { classifyMaterialReadiness, type MaterialProfileV1 } from '../domain/materials/schema';
 import { createMaterialDatabase, type MaterialDatabase } from './database';
 import { MaterialRepository } from './material-repository';
 
@@ -130,5 +130,43 @@ describe('MaterialRepository', () => {
     });
 
     await expect(repository.get(completeProfile.id)).rejects.toBeInstanceOf(ZodError);
+  });
+
+  it('imports a complete V1 JSON document through the validating repository boundary', async () => {
+    const imported = await repository.importJson(JSON.stringify(completeProfile));
+
+    expect(imported).toEqual(completeProfile);
+    expect(await repository.get(completeProfile.id)).toEqual(completeProfile);
+    expect(classifyMaterialReadiness(imported)).toEqual({ status: 'ready', reasons: [] });
+  });
+
+  it('rejects malformed or schema-invalid JSON without writing a partial material record', async () => {
+    await expect(repository.importJson('{"schemaVersion":1')).rejects.toThrow(/JSON/i);
+    await expect(repository.importJson(JSON.stringify({
+      ...completeProfile,
+      safetyEvidence: { ...completeProfile.safetyEvidence, manufacturer: '' },
+    }))).rejects.toBeInstanceOf(ZodError);
+
+    expect(await repository.list()).toEqual([]);
+  });
+
+  it('persists a calibratable profile without promoting missing coupon and operator evidence to ready', async () => {
+    const pending = {
+      ...completeProfile,
+      calibratedAt: null,
+      physicalCouponVerified: false,
+      operatorApproval: undefined,
+    };
+
+    const imported = await repository.importJson(JSON.stringify(pending));
+
+    expect(classifyMaterialReadiness(imported)).toMatchObject({
+      status: 'confirm',
+      reasons: expect.arrayContaining([
+        expect.objectContaining({ code: 'physical-calibration-required' }),
+        expect.objectContaining({ code: 'operator-approval-required' }),
+      ]),
+    });
+    expect(await repository.get(completeProfile.id)).toEqual(pending);
   });
 });

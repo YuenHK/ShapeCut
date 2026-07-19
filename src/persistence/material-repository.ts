@@ -39,6 +39,16 @@ export class MaterialRepository {
     return structuredClone(profile);
   }
 
+  async importJson(source: string): Promise<MaterialProfileV1> {
+    let value: unknown;
+    try {
+      value = JSON.parse(source);
+    } catch (error) {
+      throw new SyntaxError('Material profile JSON is invalid', { cause: error });
+    }
+    return this.put(value);
+  }
+
   async get(id: string): Promise<MaterialProfileV1 | undefined> {
     const value = await this.database.materials.get(MaterialIdSchema.parse(id));
     return value === undefined ? undefined : decodeStoredProfile(value);
