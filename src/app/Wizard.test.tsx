@@ -2,6 +2,8 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { AxisCandidate } from '../domain/axis/find-axis';
+import { defaultPendingMaterialProfile } from '../domain/materials/default-profiles';
+import { classifyMaterialReadiness, type MaterialProfileV1 } from '../domain/materials/schema';
 import type { MeshProblemReport, MeshRepairResult, TriangleMesh } from '../domain/mesh/types';
 import type { ManufacturingArtifacts } from '../domain/pipeline/manufacturing-pipeline';
 import { SourceFingerprintError, type StoredProjectV1 } from '../persistence/project-repository';
@@ -22,6 +24,41 @@ const axis: AxisCandidate = {
 const mesh: TriangleMesh = {
   positions: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1]),
   indices: new Uint32Array([0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3]),
+};
+
+const readyTestMaterial: MaterialProfileV1 = {
+  ...defaultPendingMaterialProfile('plywood-3')!,
+  id: 'test-only-ready-birch-b42',
+  machine: 'TEST ONLY Trotec Q400 #1',
+  materialCode: 'TEST-BIRCH-PLY-B42',
+  materialName: 'TEST ONLY ready birch plywood',
+  batchNotes: 'TEST ONLY exact manufacturer batch B42 measured at four corners',
+  calibratedAt: '2026-07-19T01:02:03.000Z',
+  physicalCouponVerified: true,
+  operatorApproval: {
+    operatorName: 'Test Operator',
+    qualification: 'TEST ONLY qualified laser cutter operator',
+    signedAt: '2026-07-19T01:02:03.000Z',
+    signature: 'TEST-OPERATOR-SIGNATURE-B42',
+    couponId: 'TEST-COUPON-B42',
+  },
+  safetyEvidence: {
+    kind: 'allowlisted',
+    category: 'laser-approved-plywood',
+    compositionKnown: true,
+    manufacturer: 'TEST ONLY Timber Company',
+    productId: 'TEST BIRCH PLY B42',
+    laserSafetyReference: 'TEST ONLY manufacturer safety reference B42',
+  },
+};
+
+const pendingTestMaterial: MaterialProfileV1 = {
+  ...readyTestMaterial,
+  id: 'test-only-pending-birch-b42',
+  materialName: 'TEST ONLY pending birch plywood',
+  calibratedAt: null,
+  physicalCouponVerified: false,
+  operatorApproval: undefined,
 };
 
 function report({
@@ -144,8 +181,15 @@ function artifactResult(issues: readonly { readonly code: string; readonly sever
 }
 
 function successfulServices(): WizardServices {
+  const pendingBuiltin = defaultPendingMaterialProfile('plywood-3')!;
   return {
     cancelGeometry: vi.fn(),
+    listMaterials: vi.fn().mockResolvedValue([{
+      source: 'builtin',
+      profile: pendingBuiltin,
+      readiness: classifyMaterialReadiness(pendingBuiltin),
+    }]),
+    saveMaterialJson: vi.fn().mockRejectedValue(new Error('Material storage is unavailable in this test')),
     inspectAndRepair: vi.fn().mockResolvedValue(analysis()),
     advancedRepair: vi.fn().mockResolvedValue({
       ...repair({ mode: 'advanced' }),
@@ -158,6 +202,15 @@ function successfulServices(): WizardServices {
     buildKit: vi.fn().mockResolvedValue(new Uint8Array([1, 2, 3])),
     downloadKit: vi.fn().mockResolvedValue(undefined),
   };
+}
+
+async function reachEngraving(user: ReturnType<typeof userEvent.setup>): Promise<void> {
+  await user.upload(screen.getByLabelText('STL 模型檔案'), new File(['solid test'], 'spinner.stl'));
+  await user.click(screen.getByRole('button', { name: '分析模型' }));
+  await user.click(screen.getByRole('button', { name: '確認軸心' }));
+  await user.click(screen.getByRole('button', { name: '下一步' }));
+  await user.click(screen.getByRole('button', { name: '接受拆件建議' }));
+  expect(await screen.findByRole('heading', { name: '紋理與材料' })).toBeVisible();
 }
 
 function storedProject(overrides: Partial<StoredProjectV1> = {}): StoredProjectV1 {
@@ -188,6 +241,75 @@ function repositoryWith(project: StoredProjectV1) {
 }
 
 describe('Wizard', () => {
+  it('lists a ready stored profile and loads, validates, saves, and selects its edited JSON', async () => {
+    const user = userEvent.setup();
+    const edited = { ...readyTestMaterial, machine: 'TEST ONLY edited Q400' };
+    const services = Object.assign(successfulServices(), {
+      listMaterials: vi.fn().mockResolvedValue([
+        { source: 'builtin', profile: defaultPendingMaterialProfile('plywood-3')!, readiness: classifyMaterialReadiness(defaultPendingMaterialProfile('plywood-3')) },
+        { source: 'stored', profile: readyTestMaterial, readiness: classifyMaterialReadiness(readyTestMaterial) },
+      ]),
+      saveMaterialJson: vi.fn().mockResolvedValue({ source: 'stored', profile: edited, readiness: classifyMaterialReadiness(edited) }),
+    });
+    render(<Wizard services={services as never} />);
+    await reachEngraving(user);
+
+    const materialSelect = screen.getByLabelText('材料設定檔');
+    expect(await screen.findByRole('option', { name: /TEST ONLY ready birch plywood.*已就緒/ })).toBeVisible();
+    await user.selectOptions(materialSelect, readyTestMaterial.id);
+    await user.click(screen.getByRole('button', { name: '載入所選設定檔 JSON' }));
+    expect(screen.getByLabelText('材料設定檔 JSON')).toHaveValue(JSON.stringify(readyTestMaterial, null, 2));
+
+    fireEvent.change(screen.getByLabelText('材料設定檔 JSON'), { target: { value: JSON.stringify(edited) } });
+    await user.click(screen.getByRole('button', { name: '驗證並儲存材料設定檔' }));
+
+    expect(services.saveMaterialJson).toHaveBeenCalledWith(JSON.stringify(edited));
+    expect(await screen.findByRole('status')).toHaveTextContent(`已儲存並選取材料設定檔：${edited.materialName}`);
+    expect(materialSelect).toHaveValue(edited.id);
+    await user.click(screen.getByRole('button', { name: '產生雕刻與材料設定' }));
+    expect(services.createArtifacts).toHaveBeenLastCalledWith(expect.objectContaining({
+      settings: expect.objectContaining({ materialId: edited.id }),
+    }));
+  });
+
+  it('shows a controlled error when material JSON validation fails and does not change selection', async () => {
+    const user = userEvent.setup();
+    const services = Object.assign(successfulServices(), {
+      listMaterials: vi.fn().mockResolvedValue([
+        { source: 'builtin', profile: defaultPendingMaterialProfile('plywood-3')!, readiness: classifyMaterialReadiness(defaultPendingMaterialProfile('plywood-3')) },
+      ]),
+      saveMaterialJson: vi.fn().mockRejectedValue(new SyntaxError('Material profile JSON is invalid')),
+    });
+    render(<Wizard services={services as never} />);
+    await reachEngraving(user);
+
+    fireEvent.change(screen.getByLabelText('材料設定檔 JSON'), { target: { value: '{"schemaVersion":1' } });
+    await user.click(screen.getByRole('button', { name: '驗證並儲存材料設定檔' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('操作失敗：Material profile JSON is invalid');
+    expect(screen.getByLabelText('材料設定檔')).toHaveValue('plywood-3');
+  });
+
+  it('labels stored profiles missing coupon and operator evidence as pending and keeps their preflight blocked', async () => {
+    const user = userEvent.setup();
+    const services = Object.assign(successfulServices(), {
+      listMaterials: vi.fn().mockResolvedValue([
+        { source: 'stored', profile: pendingTestMaterial, readiness: classifyMaterialReadiness(pendingTestMaterial) },
+      ]),
+      saveMaterialJson: vi.fn(),
+      createArtifacts: vi.fn().mockResolvedValue(artifactResult([
+        { code: 'material-calibration', severity: 'blocking', message: 'Physical coupon and signed operator approval are pending.', fixes: [] },
+      ])),
+    });
+    render(<Wizard services={services as never} />);
+    await reachEngraving(user);
+
+    expect(await screen.findByRole('option', { name: /TEST ONLY pending birch plywood.*待確認/ })).toBeVisible();
+    expect(screen.getByText(/Physical coupon and signed operator approval are pending/)).toBeVisible();
+    await user.click(screen.getByRole('button', { name: '產生雕刻與材料設定' }));
+    expect(screen.getByRole('button', { name: '匯出製作套件' })).toBeDisabled();
+  });
+
   it('opens a saved project through the startup chooser but keeps every downstream step locked until reanalysis', async () => {
     const user = userEvent.setup();
     const saved = storedProject();

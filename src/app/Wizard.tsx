@@ -17,6 +17,7 @@ import {
   type ProjectRepository,
   type StoredProjectV1,
 } from '../persistence/project-repository';
+import type { MaterialCatalogEntry } from './material-catalog';
 import { createProjectStore, type WizardSettings } from './project-store';
 import { AxisStep } from './steps/AxisStep';
 import { DecompositionStep } from './steps/DecompositionStep';
@@ -38,6 +39,8 @@ type ManufacturingArtifactRequest = Omit<ManufacturingPipelineInput, 'material'>
 
 export type WizardServices = {
   cancelGeometry(): void;
+  listMaterials(): Promise<readonly MaterialCatalogEntry[]>;
+  saveMaterialJson(source: string): Promise<MaterialCatalogEntry>;
   inspectAndRepair(file: File): Promise<RepairImportResult>;
   advancedRepair(original: TriangleMesh, safeMesh: TriangleMesh): Promise<AdvancedRepairResult>;
   serializeRepairedSTL(mesh: TriangleMesh, mode: 'safe' | 'advanced'): Promise<ArrayBuffer>;
@@ -77,8 +80,21 @@ export function Wizard({ services, repository, eagerPreview = false }: { readonl
   const [savedProjects, setSavedProjects] = useState<readonly StoredProjectV1[]>([]);
   const [selectedSavedProjectId, setSelectedSavedProjectId] = useState('');
   const [pendingProject, setPendingProject] = useState<StoredProjectV1>();
+  const [materials, setMaterials] = useState<readonly MaterialCatalogEntry[]>([]);
+  const [materialJson, setMaterialJson] = useState('');
+  const [materialStatus, setMaterialStatus] = useState<string>();
 
   useEffect(() => () => services.cancelGeometry(), [services]);
+
+  useEffect(() => {
+    let active = true;
+    void services.listMaterials().then((entries) => {
+      if (active) setMaterials(entries);
+    }).catch((error) => {
+      if (active) setOperationError(error instanceof Error ? error.message : '無法讀取材料設定檔');
+    });
+    return () => { active = false; };
+  }, [services]);
 
   useEffect(() => {
     if (!repository) return;
@@ -326,6 +342,30 @@ export function Wizard({ services, repository, eagerPreview = false }: { readonl
     setIssues([]);
   };
 
+  const loadSelectedMaterialJson = (): void => {
+    const selected = materials.find(({ profile }) => profile.id === store.getState().settings.materialId);
+    if (!selected) {
+      setOperationError('找不到所選材料設定檔');
+      return;
+    }
+    setOperationError(undefined);
+    setMaterialJson(JSON.stringify(selected.profile, null, 2));
+    setMaterialStatus(`已載入材料設定檔：${selected.profile.materialName}`);
+  };
+
+  const saveMaterialJson = (): void => {
+    const source = materialJson;
+    void execute('workflow', async (isCurrent) => {
+      const saved = await services.saveMaterialJson(source);
+      const refreshed = await services.listMaterials();
+      if (!isCurrent()) return;
+      setMaterials(refreshed);
+      updateSettings({ materialId: saved.profile.id });
+      setMaterialJson(JSON.stringify(saved.profile, null, 2));
+      setMaterialStatus(`已儲存並選取材料設定檔：${saved.profile.materialName}`);
+    });
+  };
+
   const navigateToStep = (target: WorkflowStep): void => {
     if (busyAction) {
       if (target !== 'import') return;
@@ -404,7 +444,20 @@ export function Wizard({ services, repository, eagerPreview = false }: { readonl
         setIssues(preflightIssues(result));
         if (state.goToStep('engraving')) setFurthestStep((value) => Math.max(value, 3));
       })} />}
-      {state.step === 'engraving' && <EngravingStep settings={state.settings} busy={busyAction !== undefined} onChange={updateSettings} onGenerate={() => void execute('workflow', async (isCurrent) => {
+      {state.step === 'engraving' && <EngravingStep
+        settings={state.settings}
+        busy={busyAction !== undefined}
+        materials={materials}
+        materialJson={materialJson}
+        materialStatus={materialStatus}
+        onMaterialJson={setMaterialJson}
+        onLoadMaterialJson={loadSelectedMaterialJson}
+        onSaveMaterialJson={saveMaterialJson}
+        onChange={(changes) => {
+          setMaterialStatus(undefined);
+          updateSettings(changes);
+        }}
+        onGenerate={() => void execute('workflow', async (isCurrent) => {
         const request = artifactRequest();
         const requestVersion = manufacturingRequestVersion(request);
         const result = await services.createArtifacts(request);

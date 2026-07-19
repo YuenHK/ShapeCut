@@ -1,6 +1,10 @@
-import { render, screen } from '@testing-library/react'
+import JSZip from 'jszip'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import symmetricSmoothStl from '../../fixtures/acceptance/symmetric-smooth.stl?raw'
+import { defaultPendingMaterialProfile } from '../domain/materials/default-profiles'
+import type { MaterialProfileV1 } from '../domain/materials/schema'
 import type { MeshProblemReport, MeshRepairResult, TriangleMesh } from '../domain/mesh/types'
 import type { ManufacturingArtifacts } from '../domain/pipeline/manufacturing-pipeline'
 import type { ImportRepairAnalysis } from '../workers/geometry-api'
@@ -67,6 +71,32 @@ const zeroReport: MeshProblemReport = {
 const tinyMesh: TriangleMesh = {
   positions: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1]),
   indices: new Uint32Array([0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3]),
+}
+
+const readyBrowserMaterial: MaterialProfileV1 = {
+  ...defaultPendingMaterialProfile('plywood-3')!,
+  id: 'test-only-browser-ready-birch-b42',
+  machine: 'TEST ONLY Trotec Q400 browser fixture',
+  materialCode: 'TEST-BIRCH-PLY-B42',
+  materialName: 'TEST ONLY browser ready birch plywood',
+  batchNotes: 'TEST ONLY exact manufacturer batch B42 measured at four corners',
+  calibratedAt: '2026-07-19T01:02:03.000Z',
+  physicalCouponVerified: true,
+  operatorApproval: {
+    operatorName: 'Test Browser Operator',
+    qualification: 'TEST ONLY qualified laser cutter operator',
+    signedAt: '2026-07-19T01:02:03.000Z',
+    signature: 'TEST-BROWSER-OPERATOR-SIGNATURE-B42',
+    couponId: 'TEST-BROWSER-COUPON-B42',
+  },
+  safetyEvidence: {
+    kind: 'allowlisted',
+    category: 'laser-approved-plywood',
+    compositionKnown: true,
+    manufacturer: 'TEST ONLY Timber Company',
+    productId: 'TEST BIRCH PLY B42',
+    laserSafetyReference: 'TEST ONLY manufacturer safety reference B42',
+  },
 }
 
 function acceptedImport(sourceHash: string): ImportRepairAnalysis {
@@ -252,6 +282,119 @@ describe('App browser smoke test', () => {
     })).rejects.toThrow(/pipeline|version|版本/i)
     expect(packageBuilder).not.toHaveBeenCalled()
   })
+
+  it('merges stored profiles with read-only pending defaults and prevents stored records from shadowing built-in IDs', async () => {
+    const materialRepository = {
+      list: vi.fn().mockResolvedValue([readyBrowserMaterial]),
+      get: vi.fn().mockResolvedValue(readyBrowserMaterial),
+      importJson: vi.fn().mockResolvedValue(readyBrowserMaterial),
+    }
+    const services = createAppServices({
+      getGeometry: () => ({} as never),
+      materialRepository: materialRepository as never,
+    } as never)
+
+    const catalog = await services.listMaterials()
+    expect(catalog.filter(({ source }) => source === 'builtin')).toHaveLength(4)
+    expect(catalog.find(({ profile }) => profile.id === 'plywood-3')).toMatchObject({
+      source: 'builtin',
+      readiness: { status: 'confirm' },
+    })
+    expect(catalog.find(({ profile }) => profile.id === readyBrowserMaterial.id)).toMatchObject({
+      source: 'stored',
+      readiness: { status: 'ready' },
+    })
+
+    await expect(services.saveMaterialJson(JSON.stringify({ ...readyBrowserMaterial, id: 'plywood-3' }))).rejects.toThrow(/built-in|內置|reserved/i)
+    expect(materialRepository.importJson).not.toHaveBeenCalled()
+  })
+
+  it('imports and edits a signed stored TEST profile, keeps incomplete evidence blocked, and downloads a revalidated real ZIP', async () => {
+    const user = userEvent.setup()
+    const createdBlobs: Blob[] = []
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockImplementation((value) => {
+      createdBlobs.push(value as Blob)
+      return `blob:material-app-${createdBlobs.length}`
+    })
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined)
+    render(<App />)
+
+    await user.upload(
+      screen.getByLabelText('STL 模型檔案'),
+      new File([symmetricSmoothStl], 'symmetric-smooth.stl', { type: 'model/stl' }),
+    )
+    await user.click(screen.getByRole('button', { name: '分析模型' }))
+    await user.click(await screen.findByRole('button', { name: '確認軸心' }, { timeout: 15_000 }))
+    await user.click(screen.getByRole('button', { name: '下一步' }))
+    await user.click(screen.getByRole('button', { name: '接受拆件建議' }))
+    expect(await screen.findByRole('heading', { name: '紋理與材料' }, { timeout: 15_000 })).toBeVisible()
+
+    const editor = screen.getByLabelText('材料設定檔 JSON')
+    const save = screen.getByRole('button', { name: '驗證並儲存材料設定檔' })
+    fireEvent.change(editor, { target: { value: '{"schemaVersion":1' } })
+    await user.click(save)
+    expect(await screen.findByText(/Material profile JSON is invalid/i)).toBeVisible()
+
+    const missingIdentity = {
+      ...readyBrowserMaterial,
+      safetyEvidence: { ...readyBrowserMaterial.safetyEvidence, manufacturer: '' },
+    }
+    fireEvent.change(editor, { target: { value: JSON.stringify(missingIdentity) } })
+    await user.click(save)
+    await vi.waitFor(() => {
+      const validationAlert = screen.getAllByRole('alert').find((element) =>
+        element.textContent?.includes('"manufacturer"')
+        && element.textContent.includes('"too_small"'),
+      )
+      expect(validationAlert).toBeVisible()
+    })
+
+    const pending = {
+      ...readyBrowserMaterial,
+      calibratedAt: null,
+      physicalCouponVerified: false,
+      operatorApproval: undefined,
+    }
+    fireEvent.change(editor, { target: { value: JSON.stringify(pending) } })
+    await user.click(save)
+    expect(await screen.findByRole('status')).toHaveTextContent(/已儲存並選取/)
+    await user.selectOptions(screen.getByLabelText('材料設定檔'), pending.id)
+    await user.click(screen.getByRole('button', { name: '產生雕刻與材料設定' }))
+    expect(await screen.findByRole('button', { name: '匯出製作套件' }, { timeout: 15_000 })).toBeDisabled()
+
+    await user.click(screen.getByRole('button', { name: '紋理與材料' }))
+    await user.click(screen.getByRole('button', { name: '載入所選設定檔 JSON' }))
+    const reopenedEditor = screen.getByLabelText('材料設定檔 JSON') as HTMLTextAreaElement
+    expect(JSON.parse(reopenedEditor.value)).toEqual(pending)
+    fireEvent.change(reopenedEditor, { target: { value: JSON.stringify(readyBrowserMaterial) } })
+    await user.click(screen.getByRole('button', { name: '驗證並儲存材料設定檔' }))
+    await vi.waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/已儲存並選取/))
+    await vi.waitFor(() => expect(screen.getByLabelText('材料準備狀態')).toHaveTextContent('已就緒'))
+    await user.selectOptions(screen.getByLabelText('材料設定檔'), readyBrowserMaterial.id)
+    await user.click(screen.getByRole('button', { name: '產生雕刻與材料設定' }))
+    const exportButton = await screen.findByRole('button', { name: '匯出製作套件' }, { timeout: 15_000 })
+    expect(exportButton).toBeEnabled()
+    await user.click(exportButton)
+    await vi.waitFor(() => expect(click).toHaveBeenCalled(), { timeout: 15_000 })
+
+    const zipBlob = createdBlobs.find(({ type }) => type === 'application/zip')
+    expect(zipBlob).toBeDefined()
+    const zip = await JSZip.loadAsync(await zipBlob!.arrayBuffer())
+    const project = JSON.parse(await zip.file('03-settings/project-settings.json')!.async('string'))
+    expect(project.preflight).toMatchObject({
+      canExport: true,
+      materialReadiness: { status: 'ready', reasons: [] },
+      physicalApproval: 'approved',
+      materialProfile: {
+        id: readyBrowserMaterial.id,
+        physicalCouponVerified: true,
+        operatorApproval: { couponId: readyBrowserMaterial.operatorApproval!.couponId },
+      },
+    })
+    expect(project.document.sheets.flatMap((sheet: { entities: readonly { layer: string }[] }) => sheet.entities).some(({ layer }: { layer: string }) => layer === 'CUT')).toBe(true)
+    expect(await zip.file('01-cut-files/material-sheet-01.svg')!.async('string')).toContain('id="layer-CUT"')
+    expect(createObjectURL).toHaveBeenCalledWith(expect.objectContaining({ type: 'application/zip' }))
+  }, 45_000)
 
   it('disposes the import worker and never submits after unmount during the initial file read', async () => {
     const user = userEvent.setup()

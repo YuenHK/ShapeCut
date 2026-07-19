@@ -1,9 +1,15 @@
 import { useEffect, useMemo, useRef } from 'react';
-import { defaultPendingMaterialProfile } from '../domain/materials/default-profiles';
-import type { MaterialProfileV1 } from '../domain/materials/schema';
 import { createManufacturingArtifacts } from '../domain/pipeline/manufacturing-pipeline';
+import { createMaterialDatabase } from '../persistence/database';
+import { MaterialRepository } from '../persistence/material-repository';
 import { ProjectRepository, sha256Hex } from '../persistence/project-repository';
 import { createGeometryWorkerClient, type GeometryClient } from '../workers/geometry-client';
+import {
+  listMaterialCatalog,
+  resolveMaterialProfile,
+  saveStoredMaterialJson,
+  type MaterialRepositoryPort,
+} from './material-catalog';
 import { Wizard, type WizardServices } from './Wizard';
 
 type AppGeometryClient = Pick<GeometryClient,
@@ -16,7 +22,7 @@ export type AppServiceDependencies = {
   readonly cancelGeometry?: () => void;
   readonly fingerprint?: typeof sha256Hex;
   readonly packageBuilder?: PackageBuilder;
-  readonly getMaterial?: (id: string) => Promise<MaterialProfileV1 | undefined>;
+  readonly materialRepository?: MaterialRepositoryPort;
 };
 
 export function createAppServices({
@@ -27,11 +33,13 @@ export function createAppServices({
     const { buildPackage } = await import('../export/package');
     return buildPackage(project);
   },
-  getMaterial = async (id) => defaultPendingMaterialProfile(id),
+  materialRepository,
 }: AppServiceDependencies): WizardServices {
   let latestImportRequest = 0;
   return {
     cancelGeometry,
+    listMaterials: () => listMaterialCatalog(materialRepository),
+    saveMaterialJson: (source) => saveStoredMaterialJson(materialRepository, source),
     inspectAndRepair: async (file) => {
       const request = ++latestImportRequest;
       const geometry = getGeometry();
@@ -78,7 +86,7 @@ export function createAppServices({
       }
     },
     createArtifacts: async (input) => {
-      const material = await getMaterial(input.settings.materialId);
+      const material = await resolveMaterialProfile(materialRepository, input.settings.materialId);
       if (!material) throw new Error(`找不到完整材料設定檔：${input.settings.materialId}`);
       const geometry = getGeometry();
       return createManufacturingArtifacts({ ...input, material }, {
@@ -142,13 +150,16 @@ async function measureWorkerStage<T>(name: string, operation: () => Promise<T>):
 }
 
 export function App() {
-  const repository = useMemo(() => new ProjectRepository(), []);
+  const database = useMemo(() => createMaterialDatabase(), []);
+  const repository = useMemo(() => new ProjectRepository(database), [database]);
+  const materialRepository = useMemo(() => new MaterialRepository(database), [database]);
   const geometryRef = useRef<GeometryClient | undefined>(undefined);
   const services = useMemo<WizardServices>(() => createAppServices({
     getGeometry: () => geometryRef.current ??= createGeometryWorkerClient(),
     cancelGeometry: () => geometryRef.current?.cancelActive(),
-  }), []);
-  useEffect(() => () => { repository.close(); geometryRef.current?.dispose(); }, [repository]);
+    materialRepository,
+  }), [materialRepository]);
+  useEffect(() => () => { database.close(); geometryRef.current?.dispose(); }, [database]);
   const canEagerlyCreateWebGl = typeof WebGLRenderingContext !== 'undefined';
   return (
     <main>
