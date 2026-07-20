@@ -24,32 +24,43 @@ export type DownloadedOutline = {
 export type RemovalRecord = { readonly id: string; readonly order: number; readonly index: number; readonly zStart: number; readonly zEnd: number; readonly removedComponentCount: number };
 
 function checkedRecords(records: RemovalRecord[], label: string): RemovalRecord[] {
-  if (new Set(records.map(({ id }) => id)).size !== records.length || new Set(records.map(({ index }) => index)).size !== records.length) throw new Error(`${label} contains duplicate layer identity`);
-  return records.sort((a, b) => a.order - b.order);
+  if (records.some(({ order, index, zStart, zEnd, removedComponentCount }) => !Number.isSafeInteger(order) || !Number.isSafeInteger(index) || !Number.isFinite(zStart) || !Number.isFinite(zEnd) || !Number.isSafeInteger(removedComponentCount))) throw new Error(`${label} contains malformed layer metadata`);
+  if (new Set(records.map(({ id }) => id)).size !== records.length || new Set(records.map(({ index }) => index)).size !== records.length || new Set(records.map(({ order }) => order)).size !== records.length) throw new Error(`${label} contains duplicate layer identity`);
+  return records;
 }
 
 export function parseSvgRemovalRecords(svg: string): RemovalRecord[] {
-  return checkedRecords([...svg.matchAll(/<polygon id="([^"]+)"[^>]*data-outline-order="(\d+)"[^>]*data-outline-index="(\d+)"[^>]*data-z-start="([^"]+)"[^>]*data-z-end="([^"]+)"[^>]*data-removed-component-count="(\d+)"/g)].map((match) => ({ id: match[1], order: Number(match[2]), index: Number(match[3]), zStart: Number(match[4]), zEnd: Number(match[5]), removedComponentCount: Number(match[6]) })), 'SVG');
+  const markers = [...svg.matchAll(/<polygon\b[^>]*\bdata-outline-order=/g)];
+  const records = [...svg.matchAll(/<polygon id="([^"]+)"[^>]*data-outline-order="(\d+)"[^>]*data-outline-index="(\d+)"[^>]*data-z-start="([^"]+)"[^>]*data-z-end="([^"]+)"[^>]*data-removed-component-count="(\d+)"/g)].map((match) => ({ id: match[1], order: Number(match[2]), index: Number(match[3]), zStart: Number(match[4]), zEnd: Number(match[5]), removedComponentCount: Number(match[6]) }));
+  if (markers.length !== records.length) throw new Error('SVG contains malformed layer metadata marker');
+  return checkedRecords(records, 'SVG');
 }
 
 export function parseDxfRemovalRecords(dxf: string): RemovalRecord[] {
-  return checkedRecords([...dxf.matchAll(/999\nOUTLINE_LAYER:([^:\n]+):(\d+):(\d+):([^:\n]+):([^:\n]+):\d+:[^:\n]+:(\d+)\n/g)].map((match) => ({ id: match[1], order: Number(match[2]), index: Number(match[3]), zStart: Number(match[4]), zEnd: Number(match[5]), removedComponentCount: Number(match[6]) })), 'DXF');
+  const markers = [...dxf.matchAll(/OUTLINE_LAYER:/g)];
+  const records = [...dxf.matchAll(/999\nOUTLINE_LAYER:([^:\n]+):(\d+):(\d+):([^:\n]+):([^:\n]+):\d+:[^:\n]+:(\d+)\n/g)].map((match) => ({ id: match[1], order: Number(match[2]), index: Number(match[3]), zStart: Number(match[4]), zEnd: Number(match[5]), removedComponentCount: Number(match[6]) }));
+  if (markers.length !== records.length) throw new Error('DXF contains malformed layer metadata marker');
+  return checkedRecords(records, 'DXF');
 }
 
 export function parsePdfRemovalRecords(keywords: string): RemovalRecord[] {
-  return checkedRecords(keywords.split(/\s+/).flatMap((token) => {
+  const tokens = keywords.split(/\s+/), markers = tokens.filter((token) => token.startsWith('outline-layer:'));
+  const records = markers.flatMap((token) => {
     const match = token.match(/^outline-layer:([^:]+):(\d+):(\d+):\d+:[^:]+:([^:]+):([^:]+):(\d+)$/);
     return match ? [{ id: match[1], order: Number(match[2]), index: Number(match[3]), zStart: Number(match[4]), zEnd: Number(match[5]), removedComponentCount: Number(match[6]) }] : [];
-  }), 'PDF');
+  });
+  if (markers.length !== records.length) throw new Error('PDF contains malformed layer metadata marker');
+  return checkedRecords(records, 'PDF');
 }
 
 export function assertExactRemovalRecords(actual: readonly RemovalRecord[], expected: readonly RemovalRecord[]): void {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error('Removal layer records do not exactly match canonical order and identity');
 }
 
-function exactlyOne(text: string, pattern: RegExp, expected: string, label: string): void {
+export function exactlyOneProvenance(text: string, markerPattern: RegExp, pattern: RegExp, expected: string, label: string): void {
+  const markers = [...text.matchAll(markerPattern)];
   const matches = [...text.matchAll(pattern)];
-  if (matches.length !== 1 || matches[0][1] !== expected) throw new Error(`${label} must contain exactly one matching removal provenance record`);
+  if (markers.length !== 1 || matches.length !== 1 || matches[0][1] !== expected) throw new Error(`${label} must contain exactly one matching removal provenance record`);
 }
 
 export async function selectModel(page: Page, fixture: string | { name: string; mimeType: string; buffer: Buffer }, beforeSetInput?: () => Promise<void>) {
@@ -110,12 +121,12 @@ async function inspectOutlineDownload(download: Download): Promise<DownloadedOut
   assertExactRemovalRecords(parsePdfRemovalRecords(pdf.getKeywords() ?? ''), expectedRecords);
   expect(new Set(expectedRecords.map(({ id }) => id)).size).toBe(expectedRecords.length);
   expect(new Set(expectedRecords.map(({ index }) => index)).size).toBe(expectedRecords.length);
-  exactlyOne(svg, /<svg [^>]*data-removed-component-count="(\d+)"/g, String(manifest.removedComponentCount), 'SVG aggregate');
-  exactlyOne(svg, /<svg [^>]*data-removal-evidence-fingerprint="([0-9a-f]+)"/g, manifest.removalEvidenceFingerprint, 'SVG fingerprint');
-  exactlyOne(dxf, /REMOVED_COMPONENT_COUNT:(\d+)\n/g, String(manifest.removedComponentCount), 'DXF aggregate');
-  exactlyOne(dxf, /REMOVAL_EVIDENCE_FINGERPRINT:([0-9a-f]+)\n/g, manifest.removalEvidenceFingerprint, 'DXF fingerprint');
-  exactlyOne(pdf.getKeywords() ?? '', /(?:^|\s)removed-components:(\d+)(?=\s|$)/g, String(manifest.removedComponentCount), 'PDF aggregate');
-  exactlyOne(pdf.getKeywords() ?? '', /(?:^|\s)removal-evidence:([0-9a-f]+)(?=\s|$)/g, manifest.removalEvidenceFingerprint, 'PDF fingerprint');
+  exactlyOneProvenance(svg, /<svg [^>]*data-removed-component-count=/g, /<svg [^>]*data-removed-component-count="(\d+)"/g, String(manifest.removedComponentCount), 'SVG aggregate');
+  exactlyOneProvenance(svg, /<svg [^>]*data-removal-evidence-fingerprint=/g, /<svg [^>]*data-removal-evidence-fingerprint="([0-9a-f]+)"/g, manifest.removalEvidenceFingerprint, 'SVG fingerprint');
+  exactlyOneProvenance(dxf, /REMOVED_COMPONENT_COUNT:/g, /REMOVED_COMPONENT_COUNT:(\d+)\n/g, String(manifest.removedComponentCount), 'DXF aggregate');
+  exactlyOneProvenance(dxf, /REMOVAL_EVIDENCE_FINGERPRINT:/g, /REMOVAL_EVIDENCE_FINGERPRINT:([0-9a-f]+)\n/g, manifest.removalEvidenceFingerprint, 'DXF fingerprint');
+  exactlyOneProvenance(pdf.getKeywords() ?? '', /removed-components:/g, /(?:^|\s)removed-components:(\d+)(?=\s|$)/g, String(manifest.removedComponentCount), 'PDF aggregate');
+  exactlyOneProvenance(pdf.getKeywords() ?? '', /removal-evidence:/g, /(?:^|\s)removal-evidence:([0-9a-f]+)(?=\s|$)/g, manifest.removalEvidenceFingerprint, 'PDF fingerprint');
   expect(project.document.sheets.flatMap(({ entities }) => entities).map(({ id }) => id)).toEqual(manifest.layers.map(({ id }) => id));
   return { manifest, project, entries, sha256: createHash('sha256').update(bytes).digest('hex') };
 }

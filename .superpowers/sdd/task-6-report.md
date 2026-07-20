@@ -75,3 +75,10 @@ Both real-file UI cases completed in approximately 2.5 seconds, showed `已簡�
 - E2E now independently parses complete ordered SVG polygon attributes, DXF `OUTLINE_LAYER` comments, and PDF `outline-layer` keyword records before exact deep comparison with manifest/project evidence.
 - Parsers require exact cardinality and unique layer IDs/indexes; unit mutations prove missing, extra, swapped, duplicate-ID, and duplicate-index records fail, including records whose removal counts are identical.
 - Aggregate removal and evidence-fingerprint metadata must occur exactly once per SVG, DXF, and PDF and equal the canonical values.
+
+## Malformed-record follow-up
+
+- Parsers preserve encounter order; they never sort metadata into canonical order before comparison.
+- Every SVG polygon metadata marker, DXF `OUTLINE_LAYER` marker, and PDF `outline-layer` marker must parse exactly. A marker that is malformed cannot disappear from the parsed result.
+- Raw-artifact mutation tests cover missing, extra valid, extra malformed, swapped-order, duplicate-ID, and duplicate-index records for SVG, DXF, and PDF, including equal removal counts.
+- Aggregate and fingerprint checks separately enumerate all markers before parsing values, so malformed or duplicated provenance markers are rejected.

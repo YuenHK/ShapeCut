@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assertExactRemovalRecords, parseDxfRemovalRecords, parsePdfRemovalRecords, parseSvgRemovalRecords, type RemovalRecord } from '../../e2e/helpers';
+import { assertExactRemovalRecords, exactlyOneProvenance, parseDxfRemovalRecords, parsePdfRemovalRecords, parseSvgRemovalRecords, type RemovalRecord } from '../../e2e/helpers';
 
 const records: RemovalRecord[] = [
   { id: 'a', order: 1, index: 4, zStart: 0, zEnd: 1, removedComponentCount: 2 },
@@ -26,5 +26,21 @@ describe('exact E2E removal record parsers', () => {
     expect(() => parseSvgRemovalRecords(`${svg}${svg}`)).toThrow(/duplicate/i);
     expect(() => parseDxfRemovalRecords(`${dxf}${dxf}`)).toThrow(/duplicate/i);
     expect(() => parsePdfRemovalRecords(`${pdf} ${pdf}`)).toThrow(/duplicate/i);
+  });
+
+  it.each([
+    ['SVG', parseSvgRemovalRecords, svg, svg.split('/>')[0] + '/>', `${svg}${svg}`, svg.replace('data-outline-index="9"', 'data-outline-index="4"'), `${svg}<polygon data-outline-order="3"/>`, svg.split('/>').reverse().join('/>')],
+    ['DXF', parseDxfRemovalRecords, dxf, dxf.split('999\nOUTLINE_LAYER:b')[0], `${dxf}${dxf}`, dxf.replace(':2:9:1:2:', ':2:4:1:2:'), `${dxf}999\nOUTLINE_LAYER:bad\n`, dxf.match(/999\nOUTLINE_LAYER:[\s\S]*?\n(?=999|$)/g)!.reverse().join('')],
+    ['PDF', parsePdfRemovalRecords, pdf, pdf.split(' outline-layer:b')[0], `${pdf} ${pdf}`, pdf.replace(':2:9:4:', ':2:4:4:'), `${pdf} outline-layer:bad`, pdf.split(' ').reverse().join(' ')],
+  ])('rejects raw %s missing/extra/duplicate/malformed/swapped records', (_label, parser, _valid, missing, extra, duplicate, malformed, swapped) => {
+    for (const artifact of [missing, extra, duplicate, malformed, swapped]) {
+      expect(() => assertExactRemovalRecords(parser(artifact), records)).toThrow();
+    }
+  });
+
+  it('rejects malformed and duplicated aggregate/fingerprint markers before value parsing', () => {
+    expect(() => exactlyOneProvenance('REMOVED_COMPONENT_COUNT:bad\n', /REMOVED_COMPONENT_COUNT:/g, /REMOVED_COMPONENT_COUNT:(\d+)\n/g, '2', 'DXF')).toThrow();
+    expect(() => exactlyOneProvenance('removed-components:2 removed-components:2', /removed-components:/g, /(?:^|\s)removed-components:(\d+)(?=\s|$)/g, '2', 'PDF')).toThrow();
+    expect(() => exactlyOneProvenance('<svg data-removal-evidence-fingerprint="bad">', /<svg [^>]*data-removal-evidence-fingerprint=/g, /<svg [^>]*data-removal-evidence-fingerprint="([0-9a-f]+)"/g, 'abcd', 'SVG')).toThrow();
   });
 });
