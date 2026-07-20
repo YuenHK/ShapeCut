@@ -54,3 +54,11 @@ Both real-file UI cases completed in approximately 2.5 seconds, showed `已簡�
 - The positive regression reconciles aggregate and per-layer counts through the canonical document, manifest, project JSON, SVG attributes, DXF comments, PDF keywords/regeneration, and all five ZIP records.
 - Four independently structured-cloned forgeries are rejected: aggregate mutation, layer mutation, aggregate/layer mismatch, and exact-mode non-zero evidence.
 - The real Group browser acceptance independently reads all five ZIP records and reconciles the same non-zero aggregate/per-layer evidence across manifest, project JSON, SVG, DXF, and PDF.
+
+## Per-layer identity follow-up
+
+- Ordered project/manifest evidence is compared as exact `{id, order, zStart, zEnd, removedComponentCount}` records.
+- SVG, DXF, and PDF assertions bind the same layer ID and order to its exact count; count-only substring checks are not used. Duplicate count values therefore cannot hide an ID/order swap.
+- ZIP acceptance parses and checks every record independently rather than relying only on byte equality with pre-ZIP values.
+- Performance elapsed time excludes Node-side fixture construction and writing. The browser Long Tasks timestamp is captured inside the selection helper immediately before `setInputFiles`, preserving coverage of input change and browser file reading.
+- `docs/validation/software-results.md` now describes the current one-click workflow, fail-closed thresholds, current timing evidence, and removal-metadata contract; wizard-era claims were removed.

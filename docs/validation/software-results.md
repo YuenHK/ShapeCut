@@ -1,81 +1,25 @@
-# 軟件驗收結果
+# Software validation results
 
-日期：2026-07-19　分支：`feat/spinner-laser-kit`
+Last verified: 2026-07-20
 
-## 自動測試
+ShapeCut now exposes one workflow: selecting one STL immediately runs analysis, exact slicing when safe, otherwise bounded 2.5D largest-exterior projection, validation, and package generation. There are no repair, axis, material, decomposition, next-step, or export-confirmation controls in the main UI.
 
-| 關卡 | 結果 |
-|---|---:|
-| Vitest unit/component | 425/425 通過（25 個 test files） |
-| Chromium browser | 33/33 通過（4 個 test files） |
-| Playwright E2E | 9/9 通過（single worker，避免幾何 benchmark 與另一個 repair worker 爭用 CPU） |
-| 10 個代表性 STL | 8 個自動成功；1 個要求人工軸心；1 個 topology blocking；10/10 通過 |
-| TypeScript | 通過 |
-| Vite production build | 通過（343 modules transformed） |
-| 非根路徑 PWA build | `/school/spinner/` manifest、icon、service worker URL／scope 及 cache shell 全部通過 |
-| 100k triangles | 2,895 ms 到可互動軸心頁；最長 main-thread task 75 ms |
-| 500k triangles | 1,377 ms 受控返回 resource-limit `操作失敗`：unique vertices 超過 300,000 上限 |
-| 真實拆件／雕刻 worker | 首次 pipeline 89 ms；decomposition 11.6 ms；engraving 3.3 ms |
+## Current automated evidence
 
-E2E 已實際驗證：真實封閉 STL 完成軟件流程，但預設材料因欠精確材料身份、實體 coupon 及合資格操作員簽署而阻止 production 匯出；開放 STL 停在匯入步驟；低對稱 fixture 必須輸入有限非零手動軸心；頁面重載後必須重新附加並核對原始 STL。另有 real-fixture integration 使用兩個不同 STL 及明確標示 `TEST ONLY` 的完整 synthetic signed profile，經真正 readiness／preflight gate 建立套件，再逐 entity 驗證 SVG、DXF、PDF、JSON 與 ZIP；兩個 STL 的 profile、CUT geometry 及使用尺寸均不同。這個 synthetic profile 只屬自動測試證據，不代表任何實物或 production 批准。完整 fresh matrix 指令為 `npm run test`、`npm run test:browser -- --run --browser=chromium`、`npm run test:e2e -- --workers=1`、`npm run validate:fixtures`、`npm run typecheck`、`npm run build` 及 `npm run test:performance`。
+- Safe acceptance STL: one selection reaches `exact` / `success` and downloads the five-record package.
+- Open or empty inputs: fail closed in plain Traditional Chinese when no valid projected exterior exists.
+- Both external Knight acceptance files: one selection reaches `outline-2.5d` / `warning`, shows `已簡化模型`, and downloads the package. External files are supplied only through environment variables and are never committed.
+- Group acceptance reconciles a non-zero removed-component aggregate and ordered per-layer records across manifest JSON, project JSON, SVG, DXF, PDF, and the ZIP entries.
+- Runtime integration starts from a structured-cloned `convertAutomatically()` result with genuine non-zero raster removal. Forged aggregate, layer, aggregate/layer mismatch, swapped identity metadata, and exact-mode non-zero evidence fail closed.
 
-Final re-review 亦在真實 Chromium App 流程中驗證：從 raw `symmetric-smooth.stl` 經真實 worker／pipeline，先匯入缺 coupon／操作員證據的 stored profile 並確認 production 匯出保持 disabled，再把同一 profile 編輯成完整簽署的 `TEST ONLY` ready profile；下載後用 JSZip 重開套件，重新驗證 `canExport: true`、`materialReadiness: ready`、`physicalApproval: approved`、coupon／操作員證據、CUT entities 及 SVG `CUT` layer。無效 JSON、欠 manufacturer 身份及 reserved 內置 ID 均被拒絕；四個內置 profile 始終唯讀及 pending。
+## Resource and responsiveness evidence
 
-`splitPositionPercent` 現定義為 radial hub boundary：`hubRadius = outerRadius × splitPositionPercent / 100`。同一 outer radius 30 mm 的幾何 oracle 實測 30% 產生 9 mm hub、60% 產生 18 mm hub，且 rib outline 及排版後 CUT polygon coordinates 均不同；domain 同時拒絕 9、91、NaN、Infinity，pipeline 及 persisted project schema 亦拒絕 10–90 範圍外值。若百分比合法但 shaft／接合等實際幾何不安全，既有 decomposition safety checks 仍 fail-closed。
+- The 100k-triangle browser test starts its elapsed clock immediately before file selection and its Long Tasks clock immediately before `setInputFiles`, therefore including input change and browser file reading. It must complete within 35 seconds with no application main-thread task of 100 ms or longer.
+- The 500k-triangle case must end as a plain resource/time failure within 20 seconds.
+- The latest local verification completed the 100k case in approximately 3.5 seconds and the 500k rejection in approximately 1.0 second. Timings vary by machine; fixed assertions remain authoritative.
 
-效能數字來自 2026-07-19 的本機 Chromium single-worker final re-review fresh run，只量使用者按「分析模型」至互動軸心或明確 resource-limit 結果；測試端 fixture 建立及 `setInputFiles` 傳輸在計時範圍外。數字會隨機器及當時系統負載波動，驗收門檻仍為 100k 少於 3,000 ms、最長 main-thread task 少於 100 ms，以及 500k 在 15,000 ms 內受控返回具體結果。
+## Output safety contract
 
-## Knight Fortress 真實 STL regression
+All formats are regenerated from the same canonical CUT contours and provenance. Per-layer removal metadata binds layer ID, order, Z interval, and count; the aggregate must equal the layer sum. Exact output requires every removal count to be zero. ZIP records are exactly `cut.svg`, `cut.dxf`, `preview.pdf`, `project.json`, and `manifest.json`.
 
-外部使用者 fixture `Copy of Beyblade X Knight Fortress.stl` 未加入 repository；E2E 在 fixture 存在時實際執行，亦可用 `KNIGHT_FORTRESS_STL` 明確指定路徑，缺失時會清楚 skip，避免 CI 假失敗。
-
-| 階段 | 開放邊界 | 非流形邊 | 退化三角形 | 重複三角形 | 結果 |
-|---|---:|---:|---:|---:|---|
-| 原始模型 | 0 | 105 | 63 | 33 | 可解析；沒有誤報為「讀不到檔案」 |
-| 安全修復 | 41 | 49 | 0 | 0 | 未通過安全檢查；保持 blocking |
-| 進階修復 | 41 | 49 | 0 | 0 | 未通過安全檢查；`非流形面扇無法在限制內安全拆分` |
-
-真實 browser workflow 同時確認：必須明確勾選同意才可執行進階修復；`使用進階修復` 保持 disabled；「軸心與尺寸」保持鎖定。進階結果只可下載供外部檢查，不能進入自動拆件。E2E 下載 `Copy of Beyblade X Knight Fortress-repaired.stl` 後用 STL parser 重新讀取，得到 41／49／0／0；按「復原原始模型」後回復 0／105／63／33。以上結果不表示 Knight Fortress 已成功修復。
-
-## 10 個代表性 STL
-
-執行：`npm run validate:fixtures`
-
-| 模型 | 類別 | 結果 | 軸向 alignment | confidence | 零件 |
-|---|---|---|---:|---:|---:|
-| symmetric-smooth.stl | 平滑 | 自動軸心＋可編輯拆件 | 1.000 | 1.000 | 10 |
-| symmetric-textured.stl | 紋理 | 自動軸心＋可編輯拆件 | 1.000 | 0.984 | 10 |
-| hollow-shell.stl | 中空殼 | 自動軸心＋可編輯拆件 | 1.000 | 0.810 | 10 |
-| wide-outer-ring.stl | 寬外環 | 自動軸心＋可編輯拆件 | 1.000 | 1.000 | 10 |
-| thin-profile.stl | 薄壁空殼 | 自動軸心＋可編輯拆件 | 1.000 | 0.919 | 10 |
-| tall-spindle.stl | 修長 | 自動軸心＋可編輯拆件 | 1.000 | 0.994 | 10 |
-| squat-disc.stl | 扁碟 | 自動軸心＋可編輯拆件 | 1.000 | 0.920 | 10 |
-| stepped-profile.stl | 階梯輪廓 | 自動軸心＋可編輯拆件 | 1.000 | 0.955 | 10 |
-| low-symmetry.stl | 低對稱 | 要求手動軸心 | — | 0.523 | — |
-| invalid-open.stl | 無效網格 | blocking：開放邊界 | — | — | — |
-
-自動成功率為 8/10；`low-symmetry.stl` 的 0.523 低於 UI 自動確認門檻 0.8，`invalid-open.stl` 則由真實 topology inspection 阻止。validator 亦比較至少兩個自動模型的 geometry SHA-256 及輸出尺寸，確認不是共用固定輸出。所有模型由本專案程序化產生，以 CC0-1.0 發佈；重建指令為 `node scripts/generate-acceptance-fixtures.mjs`。
-
-## 三材料軟件狀態
-
-| 材料 | 軟件支援 | 廠商 Laser 身份證明 | 實體 coupon | 最終製作套件 |
-|---|---|---|---|---|
-| 3 mm birch plywood | 已支援 | 待操作員填寫產品／批次 | 待切割 | 待 coupon 合格後輸出 |
-| 3 mm cardboard | 已支援 | 待操作員填寫產品／批次 | 待切割 | 待 coupon 合格後輸出 |
-| 3 mm cast acrylic | 只接受廠商確認可 Laser 加工的 cast PMMA | 待操作員附資料表 | 待切割 | 待 coupon 合格後輸出 |
-
-軟件可產生 calibration coupon；預設材料 profile 全部保持 pending，不能產生 production 製作 ZIP。只有在合資格操作員填寫精確機器／產品／批次／安全證據、完成實體 coupon，並以姓名、資格、時間、簽署及 coupon ID 簽批後，材料才可變成 `ready`。production 匯出邊界會重新驗證完整 `MaterialProfileV1`，不能只靠 UI checkbox 或偽造 `ready` 字串繞過。
-
-App 現提供 validated JSON 匯入／編輯／儲存路徑，並從 IndexedDB 列出 stored profiles；選取 profile 後，pipeline 會在每次產生 artifacts 前按 ID 重新讀取完整記錄。這個功能只讓真實已完成證據的 profile 可被軟件使用，並不代替下列實體關卡。
-
-預校準 coupon 已由實際 coupon 引擎產生；重建指令為 `npm run generate:coupons`：
-
-- `fixtures/acceptance/material-coupons/pending-plywood-3-coupon.svg`
-- `fixtures/acceptance/material-coupons/pending-cardboard-3-coupon.svg`
-- `fixtures/acceptance/material-coupons/pending-cast-pmma-3-coupon.svg`
-
-以上 SVG 只供合資格操作員以正確機器、產品、批次及厚度重新確認後進行校準，並非已批准的最終陀螺製作檔。校準結果須記錄於 `docs/validation/physical-sample-form.md`，再更新對應材料 profile，方可輸出 production manufacturing package。
-
-## 尚未完成的實物關卡
-
-以下結果不能由自動化或模擬代替，目前狀態為 **待合資格 Laser 操作員執行**：三材料 coupon、kerf／卡榫實測、雕刻級別、組裝、軸孔同心度、低速試轉、結構破壞檢查。未有簽署結果前，Task 15 的物理部分及整體 production manufacturing approval 不得標記完成。
+2.5D output remains an approximate outer-profile result, not a repaired 3D solid. Holes, internal details, and smaller disconnected components are removed. Output remains material-independent and supplies no laser power, speed, or passes.

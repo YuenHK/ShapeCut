@@ -13,14 +13,15 @@ export type DownloadedOutline = {
     readonly layers: readonly { readonly id: string; readonly order: number; readonly zStart: number; readonly zEnd: number; readonly removedComponentCount: number }[];
   };
   readonly project: { readonly document: {
-    readonly outline: { readonly removedComponentCount: number; readonly layers: readonly { readonly id: string; readonly pointCount: number }[] };
+    readonly outline: { readonly removedComponentCount: number; readonly layers: readonly { readonly id: string; readonly order: number; readonly zStart: number; readonly zEnd: number; readonly pointCount: number; readonly removedComponentCount: number }[] };
     readonly sheets: readonly { readonly entities: readonly { readonly id: string; readonly polygon: { readonly points: readonly (readonly [number, number])[] } }[] }[];
   } };
   readonly entries: readonly string[];
   readonly sha256: string;
 };
 
-export async function selectModel(page: Page, fixture: string | { name: string; mimeType: string; buffer: Buffer }) {
+export async function selectModel(page: Page, fixture: string | { name: string; mimeType: string; buffer: Buffer }, beforeSetInput?: () => Promise<void>) {
+  await beforeSetInput?.();
   await page.getByLabel('選擇 STL 模型').setInputFiles(fixture);
 }
 
@@ -60,15 +61,20 @@ async function inspectOutlineDownload(download: Download): Promise<DownloadedOut
   expect(svg).toContain(manifest.sourceHash);
   expect(dxf).toContain(manifest.sourceHash);
   expect(project.document.outline.layers.map(({ id }) => id)).toEqual(manifest.layers.map(({ id }) => id));
+  expect(project.document.outline.layers.map(({ id, order, zStart, zEnd, removedComponentCount }) => ({ id, order, zStart, zEnd, removedComponentCount })))
+    .toEqual(manifest.layers.map(({ id, order, zStart, zEnd, removedComponentCount }) => ({ id, order, zStart, zEnd, removedComponentCount })));
   expect(project.document.outline.removedComponentCount).toBe(manifest.removedComponentCount);
   expect(manifest.layers.reduce((sum, layer) => sum + layer.removedComponentCount, 0)).toBe(manifest.removedComponentCount);
   expect(svg).toContain(`data-removed-component-count="${manifest.removedComponentCount}"`);
   expect(dxf).toContain(`REMOVED_COMPONENT_COUNT:${manifest.removedComponentCount}`);
   expect(pdf.getKeywords()).toContain(`removed-components:${manifest.removedComponentCount}`);
   for (const layer of manifest.layers) {
-    expect(svg).toContain(`data-removed-component-count="${layer.removedComponentCount}"`);
-    expect(dxf).toContain(`:${layer.removedComponentCount}\n`);
-    expect(pdf.getKeywords()).toContain(`:${layer.removedComponentCount}`);
+    const svgRecord = new RegExp(`<polygon id="${layer.id}"[^>]*data-outline-order="${layer.order}"[^>]*data-z-start="${layer.zStart}"[^>]*data-z-end="${layer.zEnd}"[^>]*data-removed-component-count="${layer.removedComponentCount}"`);
+    expect(svg).toMatch(svgRecord);
+    expect(dxf).toContain(`OUTLINE_LAYER:${layer.id}:${layer.order}:${layer.zStart}:${layer.zEnd}:`);
+    expect(dxf).toMatch(new RegExp(`OUTLINE_LAYER:${layer.id}:${layer.order}:${layer.zStart}:${layer.zEnd}:[^\\n]*:${layer.removedComponentCount}\\n`));
+    const pdfRecord = new RegExp(`^outline-layer:${layer.id}:${layer.order}:.*:${layer.zStart}:${layer.zEnd}:${layer.removedComponentCount}$`);
+    expect(pdf.getKeywords()?.split(/\s+/).some((token) => pdfRecord.test(token))).toBe(true);
   }
   expect(project.document.sheets.flatMap(({ entities }) => entities).map(({ id }) => id)).toEqual(manifest.layers.map(({ id }) => id));
   return { manifest, project, entries, sha256: createHash('sha256').update(bytes).digest('hex') };

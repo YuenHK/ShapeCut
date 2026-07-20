@@ -141,6 +141,10 @@ function polygonRecords(svg: string) {
   });
 }
 
+async function pdfKeywords(bytes: Uint8Array): Promise<string[]> {
+  return (PDFDocument.load(bytes).then((pdf) => pdf.getKeywords() ?? '')).then((keywords) => keywords.split(/\s+/));
+}
+
 describe('material-independent outline package', () => {
   it('reconciles authentic runtime component-removal evidence and rejects every structured-clone forgery', async () => {
     const runtime = structuredClone(await convertAutomatically({
@@ -159,6 +163,17 @@ describe('material-independent outline package', () => {
     expect(output.manifest.layers.map((item) => item.removedComponentCount))
       .toEqual(runtime.layers.map((item) => item.removedComponentCount));
     expect(project.document.outline.removedComponentCount).toBe(runtime.removedComponentCount);
+    const layerEvidence = runtime.layers.map((item, index) => ({
+      id: item.id, order: index + 1, zStart: item.zStart, zEnd: item.zEnd,
+      removedComponentCount: item.removedComponentCount,
+    }));
+    expect(project.document.outline.layers.map(({ id, order, zStart, zEnd, removedComponentCount }: typeof layerEvidence[number]) => ({ id, order, zStart, zEnd, removedComponentCount })))
+      .toEqual(layerEvidence);
+    for (const layer of layerEvidence) {
+      expect(output.cutSvg).toMatch(new RegExp(`<polygon id="${layer.id}"[^>]*data-outline-order="${layer.order}"[^>]*data-z-start="${layer.zStart}"[^>]*data-z-end="${layer.zEnd}"[^>]*data-removed-component-count="${layer.removedComponentCount}"`));
+      expect(output.cutDxf).toMatch(new RegExp(`OUTLINE_LAYER:${layer.id}:${layer.order}:${layer.zStart}:${layer.zEnd}:[^\\n]*:${layer.removedComponentCount}\\n`));
+      await expect(pdfKeywords(output.previewPdf)).resolves.toContain(`outline-layer:${layer.id}:${layer.order}:${runtime.layers[layer.order - 1].contour.outer.length}:${output.manifest.layers[layer.order - 1].boundsMm[0]}x${output.manifest.layers[layer.order - 1].boundsMm[1]}:${layer.zStart}:${layer.zEnd}:${layer.removedComponentCount}`);
+    }
     expect(output.cutSvg).toContain(`data-removed-component-count="${runtime.removedComponentCount}"`);
     expect(output.cutDxf).toContain(`REMOVED_COMPONENT_COUNT:${runtime.removedComponentCount}`);
     const pdf = await PDFDocument.load(output.previewPdf);
