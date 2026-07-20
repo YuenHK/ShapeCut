@@ -4,11 +4,13 @@ import type { TriangleMesh } from '../mesh/types';
 import {
   interpenetratingTetrahedra,
   openTetrahedron,
+  separatedClosedCylinders,
   tetrahedron,
 } from '../../test/mesh-builders';
 import {
   AutomaticOutlineError,
   convertAutomatically,
+  removalEvidenceFingerprint,
   type AutomaticOutlineProgressStage,
 } from './automatic-outline-pipeline';
 import * as extraction from '../outline-2.5d/extract';
@@ -124,6 +126,16 @@ describe('automatic outline pipeline', () => {
     expect(result.warnings).toContain('精確切片失敗，已改用 2.5D 外形模式');
     expect(result.layers.reduce((sum, layer) => sum + layer.removedComponentCount, 0)).toBe(result.removedComponentCount);
     expect(result.layers.every((layer) => layer.sourceBoundsMm !== undefined)).toBe(true);
+  });
+
+  it('falls back to projection with authentic removal evidence for disconnected closed slices', async () => {
+    const result = await convertAutomatically({ bytes: writeBinarySTL(separatedClosedCylinders(), 'safe') });
+
+    expect(result).toMatchObject({ mode: 'outline-2.5d', status: 'warning', repairAccepted: true });
+    expect(result.warnings).toContain('精確切片失敗，已改用 2.5D 外形模式');
+    expect(result.removedComponentCount).toBeGreaterThan(0);
+    expect(result.layers.reduce((sum, layer) => sum + layer.removedComponentCount, 0)).toBe(result.removedComponentCount);
+    expect(result.removalEvidenceFingerprint).toBe(removalEvidenceFingerprint(result));
   });
 
   it('uses a deterministic shortest-bounds axis with a warning when no candidate is trusted', async () => {

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import type { TriangleMesh } from '../mesh/types';
 import { DEFAULT_OUTLINE_BUDGETS, type OutlineAxisSelection, type OutlineLayerSpec } from './types';
-import { extractExactContours, extractProjectedContours } from './extract';
+import { ExactContourAmbiguityError, extractExactContours, extractProjectedContours } from './extract';
 import { validateOutlineLayer } from './validate';
 
 const selection: OutlineAxisSelection = {
@@ -111,15 +111,14 @@ describe('extractProjectedContours', () => {
 });
 
 describe('extractExactContours', () => {
-  test('extracts the greatest closed slice deterministically', () => {
+  test('fails closed instead of silently choosing one disconnected closed slice', () => {
     const twoComponents = combine(box(0, 0, 20, 12), box(40, 0, 4, 4));
-    const first = extractExactContours(twoComponents, selection, specs, DEFAULT_OUTLINE_BUDGETS);
-    expect(first).toEqual(extractExactContours(reverseTriangleOrder(twoComponents), selection, specs, DEFAULT_OUTLINE_BUDGETS));
-    expect(first.removedComponentCount).toBe(0);
-    expect(first.layers[0].removedComponentCount).toBe(0);
-    expect(first.layers[0].sourceAreaMm2).toBeCloseTo(240, 6);
-    expect(first.layers[0].sourceBoundsMm).toEqual({ minX: -6, minY: -10, maxX: 6, maxY: 10 });
-    expect(validateOutlineLayer(first.layers[0]).ok).toBe(true);
+    for (const candidate of [twoComponents, reverseTriangleOrder(twoComponents)]) {
+      expect(() => extractExactContours(candidate, selection, specs, DEFAULT_OUTLINE_BUDGETS))
+        .toThrow(ExactContourAmbiguityError);
+      expect(() => extractExactContours(candidate, selection, specs, DEFAULT_OUTLINE_BUDGETS))
+        .toThrow(/multiple closed loops/i);
+    }
   });
 
   test('rejects open segment graphs', () => {

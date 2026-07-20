@@ -46,3 +46,24 @@ export function interpenetratingTetrahedra(): TriangleMesh {
     ]),
   };
 }
+
+export function separatedClosedCylinders(segments = 32): TriangleMesh {
+  const positions: number[] = [], indices: number[] = [];
+  for (const centerX of [-8, 8]) {
+    const offset = positions.length / 3;
+    positions.push(centerX, 0, -1, centerX, 0, 1);
+    for (let index = 0; index < segments; index += 1) {
+      const angle = index / segments * Math.PI * 2;
+      positions.push(centerX + 5 * Math.cos(angle), 5 * Math.sin(angle), -1);
+      positions.push(centerX + 5 * Math.cos(angle), 5 * Math.sin(angle), 1);
+    }
+    for (let index = 0; index < segments; index += 1) {
+      const next = (index + 1) % segments;
+      const bottom = offset + 2 + index * 2, top = bottom + 1;
+      const nextBottom = offset + 2 + next * 2, nextTop = nextBottom + 1;
+      indices.push(offset, bottom, nextBottom, offset + 1, nextTop, top);
+      indices.push(bottom, top, nextTop, bottom, nextTop, nextBottom);
+    }
+  }
+  return { positions: new Float64Array(positions), indices: new Uint32Array(indices) };
+}

@@ -95,3 +95,9 @@ Both real-file UI cases completed in approximately 2.5 seconds, showed `已簡�
 - Each required SVG polygon attribute is first counted lexically as a whitespace-delimited XML assignment, independent of its quote style or value, and only then parsed as exactly one canonical double-quoted value. Name substrings in other attributes do not count.
 - Table-driven mutations reject canonical plus unquoted, canonical plus single-quoted, and malformed plus canonical assignments for every required polygon attribute.
 - PDF validation counts every global `outline-layer:` occurrence before parsing canonical whitespace-delimited records. Embedded, punctuation-prefixed, and duplicate embedded malformed markers can no longer disappear from the oracle.
+
+## Ambiguous exact-contour fallback
+
+- A safe disconnected closed-solid regression proved exact slicing previously found multiple closed loops and silently selected the largest. The extraction boundary now throws the typed `ExactContourAmbiguityError` whenever any layer contains more than one valid closed loop; single-loop exact behavior remains unchanged.
+- The automatic pipeline catches that topology ambiguity and falls back to projected 2.5D output with warning status, the explicit exact-to-projected warning, and authentic per-layer component-removal counts whose sum is the positive aggregate.
+- Runtime, export, and browser E2E regressions use two separated closed cylinders. They recompute the removal-evidence fingerprint and reconcile warning, counts, identity, fingerprint, geometry, and all ZIP outputs rather than constructing positive evidence by hand.

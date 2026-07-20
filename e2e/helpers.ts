@@ -8,6 +8,7 @@ export type DownloadedOutline = {
   readonly manifest: {
     readonly mode: 'exact' | 'outline-2.5d';
     readonly status: 'success' | 'warning';
+    readonly warnings: readonly string[];
     readonly sourceHash: string;
     readonly removedComponentCount: number;
     readonly removalEvidenceFingerprint: string;

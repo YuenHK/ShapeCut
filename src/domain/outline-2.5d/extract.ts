@@ -281,6 +281,9 @@ export function extractExactContours(
     checkDeadline(deadline);
     const spec = specs[index];
     const loops = exactLoops(sliceSegments(projected, spec.zMid, deadline), projected.planarDiameter, deadline);
+    if (loops.length !== 1) {
+      throw new ExactContourAmbiguityError('Exact contour has multiple closed loops');
+    }
     const candidates = loops.map((points) => ({
       points,
       area: Math.abs(signedArea(points, deadline)),

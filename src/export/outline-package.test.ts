@@ -5,7 +5,7 @@ import type { OutlineLayer } from '../domain/outline-2.5d/extract';
 import type { AutomaticOutlineResult } from '../domain/pipeline/automatic-outline-pipeline';
 import { convertAutomatically, removalEvidenceFingerprint } from '../domain/pipeline/automatic-outline-pipeline';
 import { writeBinarySTL } from '../domain/mesh/write-stl';
-import { openTetrahedron } from '../test/mesh-builders';
+import { openTetrahedron, separatedClosedCylinders } from '../test/mesh-builders';
 import type { TriangleMesh } from '../domain/mesh/types';
 import {
   createOutlineDocument,
@@ -154,6 +154,21 @@ async function pdfKeywords(bytes: Uint8Array): Promise<string[]> {
 }
 
 describe('material-independent outline package', () => {
+  it('reconciles exact-to-projected fallback evidence from disconnected closed slices', async () => {
+    const runtime = await convertAutomatically({ bytes: writeBinarySTL(separatedClosedCylinders(), 'safe') });
+    expect(runtime).toMatchObject({ mode: 'outline-2.5d', status: 'warning', repairAccepted: true });
+    expect(runtime.warnings).toContain('精確切片失敗，已改用 2.5D 外形模式');
+    expect(runtime.removedComponentCount).toBeGreaterThan(0);
+    expect(runtime.removalEvidenceFingerprint).toBe(removalEvidenceFingerprint(runtime));
+
+    const output = await createOutlinePackage(runtime);
+    expect(output.manifest.removalEvidenceFingerprint).toBe(runtime.removalEvidenceFingerprint);
+    expect(output.manifest.removedComponentCount).toBe(runtime.removedComponentCount);
+    expect(output.manifest.layers.map((item) => item.removedComponentCount))
+      .toEqual(runtime.layers.map((item) => item.removedComponentCount));
+    await expect(verifyOutlinePackage(output)).resolves.toBeUndefined();
+  });
+
   it('reconciles authentic runtime component-removal evidence and rejects every structured-clone forgery', async () => {
     const runtime = structuredClone(await convertAutomatically({
       bytes: writeBinarySTL(separatedOpenComponents(), 'safe'),
