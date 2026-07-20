@@ -124,12 +124,48 @@ describe('OneClickConverter', () => {
 
     await screen.findByRole('heading', { name: '轉換完成' });
     expect(screen.getByRole('status')).toHaveTextContent('需注意');
-    expect(screen.getByText('已簡化模型')).toBeVisible();
+    expect(screen.getAllByText('已簡化模型')[0]).toBeVisible();
+    expect(screen.getByText(/不同材料厚度會改變堆疊後高度/)).toBeVisible();
     expect(screen.getByRole('link', { name: '下載 ZIP 製作套件' })).toHaveAttribute('href', 'blob:zip');
     for (const name of ['SVG', 'DXF', 'PDF', 'JSON']) expect(screen.getByRole('link', { name: `下載 ${name}` })).toBeVisible();
     expect(screen.getByText('10 × 5 mm')).toBeVisible();
     expect(screen.getByText('總高度 1 mm')).toBeVisible();
     expect(screen.getByRole('img', { name: '實際外形切片預覽' })).toHaveAttribute('viewBox', '0 0 10 5');
+  });
+
+  it('reports an exact-mode warning without falsely claiming that the model was simplified', async () => {
+    const user = userEvent.setup();
+    const axisWarning = '未找到可信旋轉軸，已使用模型最短包圍盒軸';
+    const exactWarning = { ...result, status: 'warning' as const, warnings: [axisWarning] };
+    render(<OneClickConverter services={services({ convert: vi.fn().mockResolvedValue(exactWarning) })} />);
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'exact-warning.stl'));
+    await screen.findByRole('heading', { name: '轉換完成' });
+
+    expect(screen.queryByText('已簡化模型')).toBeNull();
+    expect(screen.queryByText(/內部細節、孔洞/)).toBeNull();
+    expect(screen.getAllByText(axisWarning)[0]).toBeVisible();
+  });
+
+  it('provides keyboard-accessible technical data from the actual result and points to JSON diagnostics', async () => {
+    const user = userEvent.setup();
+    const warning = { ...result, mode: 'outline-2.5d' as const, status: 'warning' as const, warnings: ['已簡化模型', '正式製作前應先試切少量零件'] };
+    render(<OneClickConverter services={services({ convert: vi.fn().mockResolvedValue(warning) })} />);
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'private-name.stl'));
+    await screen.findByRole('heading', { name: '轉換完成' });
+
+    const summary = screen.getByText('技術資料');
+    const details = summary.closest('details');
+    expect(details).not.toHaveAttribute('open');
+    summary.focus();
+    expect(summary).toHaveFocus();
+    await user.click(summary);
+    expect(details).toHaveAttribute('open');
+    expect(details).toHaveTextContent('outline-2.5d');
+    expect(details).toHaveTextContent('warning');
+    expect(details).toHaveTextContent('a'.repeat(32));
+    expect(details).toHaveTextContent('正式製作前應先試切少量零件');
+    expect(details).toHaveTextContent('JSON manifest');
+    expect(details).not.toHaveTextContent('private-name.stl');
   });
 
   it('renders an SVG path from the actual contour instead of a fixed decorative shape', async () => {

@@ -39,3 +39,13 @@
 - The visual checklist now contains all five approved stages, including `正在準備下載`.
 - Download URL creation is transactional: if any later URL creation fails, all earlier URLs are revoked before the original error is rethrown.
 - Follow-up verification: focused UI 10/10, Chromium 1/1, full unit suite 33 files and 870/870 tests, typecheck and diff-check passed.
+
+## Warning-accuracy follow-up
+
+- RED proved that exact-mode warnings were incorrectly labelled as simplified, the 2.5D card omitted the material-thickness effect, diagnostics had no accessible disclosure, and filenames retained the source basename.
+- Simplification claims now render only for `outline-2.5d`; exact-mode warnings surface their actual warning text without hole/internal-detail claims.
+- The 2.5D warning explicitly explains that material thickness changes final stack height.
+- Added keyboard-operable `技術資料` details containing the real mode, status, source fingerprint, layer count, warning list, and a pointer to the JSON manifest. It contains no source filename or local path.
+- Browser downloads now use generic `shapecut-*` names, independent of the selected source filename.
+- Strengthened the Chromium fixture to include a structurally valid layer and verified real SVG preview plus Enter-key disclosure behavior.
+- Final verification: focused UI 13/13, Chromium 1/1, full unit suite 33 files and 873/873 tests, typecheck and diff-check passed.

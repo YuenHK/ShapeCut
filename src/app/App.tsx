@@ -3,10 +3,6 @@ import { createOutlinePackage } from '../export/outline-package';
 import { createGeometryWorkerClient, type GeometryClient } from '../workers/geometry-client';
 import { OneClickConverter, type OneClickConverterServices, type OutlineDownloads } from './OneClickConverter';
 
-function safeBaseName(fileName = 'model.stl'): string {
-  return fileName.replace(/^.*[\\/]/u, '').replace(/\.stl$/iu, '').replace(/[^\p{L}\p{N}_.-]+/gu, '-') || 'model';
-}
-
 function objectUrl(content: BlobPart, type: string, fileName: string) {
   return { href: URL.createObjectURL(new Blob([content], { type })), fileName };
 }
@@ -19,8 +15,7 @@ export type OutlineDownloadContents = {
   readonly manifestJson: string;
 };
 
-export function createDownloadUrls(files: OutlineDownloadContents, fileName?: string): OutlineDownloads {
-  const base = safeBaseName(fileName);
+export function createDownloadUrls(files: OutlineDownloadContents, _fileName?: string): OutlineDownloads {
   const created: string[] = [];
   const make = (content: BlobPart, type: string, name: string) => {
     const download = objectUrl(content, type, name);
@@ -29,11 +24,11 @@ export function createDownloadUrls(files: OutlineDownloadContents, fileName?: st
   };
   try {
     return {
-      zip: make(files.zip as BlobPart, 'application/zip', `${base}-shapecut.zip`),
-      svg: make(files.cutSvg, 'image/svg+xml;charset=utf-8', `${base}-cut.svg`),
-      dxf: make(files.cutDxf, 'application/dxf;charset=utf-8', `${base}-cut.dxf`),
-      pdf: make(files.previewPdf as BlobPart, 'application/pdf', `${base}-preview.pdf`),
-      json: make(files.manifestJson, 'application/json;charset=utf-8', `${base}-manifest.json`),
+      zip: make(files.zip as BlobPart, 'application/zip', 'shapecut-outline.zip'),
+      svg: make(files.cutSvg, 'image/svg+xml;charset=utf-8', 'shapecut-cut.svg'),
+      dxf: make(files.cutDxf, 'application/dxf;charset=utf-8', 'shapecut-cut.dxf'),
+      pdf: make(files.previewPdf as BlobPart, 'application/pdf', 'shapecut-preview.pdf'),
+      json: make(files.manifestJson, 'application/json;charset=utf-8', 'shapecut-manifest.json'),
     };
   } catch (error) {
     for (const href of created) {

@@ -73,6 +73,7 @@ progress::-webkit-progress-bar { background: var(--mint-100); } progress::-webki
 .result-badge.failure { margin-inline: auto; color: var(--danger); background: #ffe7eb; }
 .warning-panel { margin-top: 26px; padding: 18px 20px; border: 1px solid #f0cf79; border-radius: 16px; color: #68430a; background: #fff9e8; }
 .warning-panel p { margin: 7px 0 0; line-height: 1.55; }
+.warning-panel ul { margin: 8px 0 0; padding-left: 22px; line-height: 1.55; }
 .result-grid { display: grid; margin: 28px 0; grid-template-columns: 1fr 1fr; gap: 28px; align-items: stretch; }
 .outline-preview { display: grid; min-height: 210px; padding: 20px; place-items: center; overflow: hidden; border-radius: 18px; background: var(--mint-50); }
 .outline-preview svg { width: 100%; height: 170px; overflow: visible; }
@@ -86,6 +87,14 @@ progress::-webkit-progress-bar { background: var(--mint-100); } progress::-webki
 .secondary-downloads { display: grid; margin: 12px 0 24px; grid-template-columns: repeat(4, 1fr); gap: 10px; }
 .secondary-downloads a { display: grid; min-height: 44px; place-items: center; border: 1px solid var(--mint-300); border-radius: 12px; color: var(--mint-700); font-size: .84rem; font-weight: 800; text-decoration: none; }
 .result-card > .change-file-button { display: flex; width: max-content; margin: 0 auto; }
+.technical-details { margin: 0 0 24px; border: 1px solid var(--mint-100); border-radius: 14px; background: var(--mint-50); }
+.technical-details summary { min-height: 44px; padding: 12px 16px; color: var(--mint-700); font-weight: 800; cursor: pointer; }
+.technical-details summary:focus-visible { outline: 3px solid #176ad0; outline-offset: 3px; }
+.technical-details > :not(summary) { margin-left: 18px; margin-right: 18px; }
+.technical-details dl { display: grid; gap: 1px; overflow: hidden; border-radius: 10px; background: var(--mint-100); }
+.technical-details dl div { display: flex; padding: 10px 12px; justify-content: space-between; gap: 16px; background: white; }
+.technical-details dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
+.technical-details h2 { margin-top: 18px; font-size: 1rem; }.technical-details > p:last-child { margin-bottom: 18px; color: var(--muted); }
 .failure-card p:not(.result-badge) { color: var(--muted); line-height: 1.6; }
 .failure-card .primary-button { margin-top: 12px; }
 

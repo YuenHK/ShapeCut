@@ -36,4 +36,20 @@ describe('App', () => {
     expect(revoke).toHaveBeenNthCalledWith(2, 'blob:svg');
     expect(revoke).toHaveBeenCalledTimes(2);
   });
+
+  it('uses generic private download names rather than deriving them from the source file name', () => {
+    const create = vi.fn()
+      .mockReturnValueOnce('blob:zip').mockReturnValueOnce('blob:svg').mockReturnValueOnce('blob:dxf')
+      .mockReturnValueOnce('blob:pdf').mockReturnValueOnce('blob:json');
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: create });
+    const generated = createDownloadUrls({
+      zip: new Uint8Array([1]), cutSvg: '<svg/>', cutDxf: 'DXF',
+      previewPdf: new Uint8Array([2]), manifestJson: '{}',
+    }, '/Users/person/private-model.stl');
+
+    expect(Object.values(generated).map(({ fileName }) => fileName)).toEqual([
+      'shapecut-outline.zip', 'shapecut-cut.svg', 'shapecut-cut.dxf',
+      'shapecut-preview.pdf', 'shapecut-manifest.json',
+    ]);
+  });
 });

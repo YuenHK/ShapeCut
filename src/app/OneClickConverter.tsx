@@ -242,6 +242,7 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
 
   const { result, downloads } = view;
   const warning = result.status === 'warning';
+  const simplified = result.mode === 'outline-2.5d';
   const presentation = outlinePresentation(result);
   return (
     <section className="converter-card result-card" aria-labelledby="result-title">
@@ -253,7 +254,8 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
           <p className="file-name">{view.fileName}</p>
         </div>
       </div>
-      {warning && <div className="warning-panel"><strong>已簡化模型</strong><p>內部細節、孔洞及細小分離零件已被忽略。正式製作前請先試切。</p></div>}
+      {warning && simplified && <div className="warning-panel"><strong>已簡化模型</strong><p>內部細節、孔洞及細小分離零件已被忽略。不同材料厚度會改變堆疊後高度；正式製作前請先試切。</p></div>}
+      {warning && !simplified && <div className="warning-panel"><strong>處理提示</strong><ul>{result.warnings.map((item) => <li key={item}>{item}</li>)}</ul></div>}
       <div className="result-grid">
         <div className="outline-preview">
           {presentation ? <svg role="img" aria-label="實際外形切片預覽" viewBox={presentation.viewBox} preserveAspectRatio="xMidYMid meet">
@@ -273,6 +275,23 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
       <nav className="secondary-downloads" aria-label="其他下載格式">
         {(['svg', 'dxf', 'pdf', 'json'] as const).map((kind) => <a key={kind} href={downloads[kind].href} download={downloads[kind].fileName}>下載 {kind.toUpperCase()}</a>)}
       </nav>
+      <details className="technical-details">
+        <summary onKeyDown={(event) => {
+          if (event.key !== 'Enter' && event.key !== ' ') return;
+          event.preventDefault();
+          const details = event.currentTarget.parentElement as HTMLDetailsElement;
+          details.open = !details.open;
+        }}>技術資料</summary>
+        <dl>
+          <div><dt>模式</dt><dd>{result.mode}</dd></div>
+          <div><dt>狀態</dt><dd>{result.status}</dd></div>
+          <div><dt>來源 fingerprint</dt><dd><code>{result.sourceHash}</code></dd></div>
+          <div><dt>切片數量</dt><dd>{result.layers.length}</dd></div>
+        </dl>
+        <h2>處理提示</h2>
+        {result.warnings.length > 0 ? <ul>{result.warnings.map((item) => <li key={item}>{item}</li>)}</ul> : <p>沒有額外提示。</p>}
+        <p>完整診斷、層次和來源資料亦已收錄於 JSON manifest。</p>
+      </details>
       <ModelInput compact onFile={(file) => void processFile(file)} />
     </section>
   );
