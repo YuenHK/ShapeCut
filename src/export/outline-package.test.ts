@@ -462,6 +462,10 @@ describe('material-independent outline package', () => {
     'source: file:///Users/private/model.stl',
     String.raw`source=\\server\share\model.stl`,
     String.raw`source=C:\Users\private\model.stl`,
+    String.raw`source->C:\Users\private\model.obj`,
+    String.raw`source|D:\private alias\model.obj`,
+    String.raw`source;\\server\share\model.obj`,
+    String.raw`source@\\server-name\share name\model.obj`,
     'contact=owner@example.com',
     'laserPower=80',
     'laserpower=80',
@@ -488,6 +492,7 @@ describe('material-independent outline package', () => {
     '<svg><use href="/assets/icon.svg" /></svg>',
     '<svg><image href="/assets/icon.svg"></image></svg>',
     '<svg><a><style></style><metadata></metadata><switch><animate></animate></switch></a></svg>',
+    String.raw`<svg><style>.icon::before { content: "\\26"; }</style></svg>`,
     'background-image: url(https://example.com/icon.svg)',
   ])('allows ordinary SVG vocabulary without privacy/process false positives: %s', async (warning) => {
     await expect(createOutlinePackage(result({

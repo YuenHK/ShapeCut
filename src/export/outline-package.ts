@@ -34,7 +34,7 @@ const FILE_URI_PATTERN = /\bfile:\/\/(?:\/|[\p{L}\p{N}._~-]+\/)[^\s"'<>]+/iu;
 const SVG_TAG_PATTERN = /<[^>]*>/g;
 const SVG_ROOT_RELATIVE_URL_ATTRIBUTE_PATTERN = /\b(?:href|src)\s*=\s*\\?(["'])(\/(?!\/)[^\\"'<>]*)\\?\1/gi;
 const POSIX_PATH_PATTERN = /(?:^|[^\p{L}\p{N}_\/])\/(?![/>])/u;
-const WINDOWS_PATH_PATTERN = /(?:^|[\s=:'"(])(?:[A-Za-z]:[\\/][^\s"'<>]+|\\\\[^\\\s"'<>]+\\[^\s"'<>]+)(?=$|[\s"',;)])/u;
+const WINDOWS_PATH_PATTERN = /(?:^|[^\p{L}\p{N}_\\/])(?:[A-Za-z]:[\\/]|\\{2,4}(?!\\)[^\\\s"'<>]+\\{1,2}(?!\\)[^\\\s"'<>]+)/u;
 const SOURCE_FILE_PATTERN = /(?:^|[\\/])[^\\/\s]*\.stl(?:[\\/]|$)/i;
 const FORBIDDEN_PROCESS_PATTERN = /(?:slot|hole|engrave|power|speed|passes)/i;
 const PROJECTED_WARNINGS = Object.freeze([
