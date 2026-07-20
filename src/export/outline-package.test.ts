@@ -435,24 +435,63 @@ describe('material-independent outline package', () => {
   it.each([
     'source=/Users/private/model.stl',
     'source=/Users/private+alias/model.stl',
+    'source=/Users/private@alias/model.obj',
+    'source=/Users/private%20alias/model.obj',
+    'source="/Users/private alias/model.obj"',
+    'source: /Users/alias!#$&()*+,;=@[]^_`{}~/model.obj',
+    'source;/Users/private/model.obj',
+    'source|/etc/passwd',
+    'source->/var/tmp/model.obj',
+    'source href="/Users/private/model.obj"',
+    'source=href="/etc/passwd"',
+    '<svg><use href="/etc/passwd" /></svg>',
+    '<svg><use href="/Volumes/School/private/model.obj" /></svg>',
+    '<svg><use href="/mnt/private/model.obj" /></svg>',
+    '<svg><use href="/srv/private/model.obj" /></svg>',
+    '<svg><use href="/Users%2Fprivate/model.obj" /></svg>',
+    '<svg><use href="/assets/../../Users/private/model.obj" /></svg>',
+    '<svg><use href="/assets/%2e%2e/%2e%2e/Users/private/model.obj" /></svg>',
+    '<svg><use href="/assets%2F..%2FUsers%2Fprivate/model.obj" /></svg>',
+    '<svg><use href="/assets/icon.svg?source=/Users/private/model.obj" /></svg>',
+    '<svg><use href="/assets/icon.svg%3Fsource=%2FUsers%2Fprivate%2Fmodel.obj" /></svg>',
+    'source=</Users/private/model.obj',
+    '</Users/private/model.obj>',
+    'source=</Users>',
+    'source=</etc>',
+    'source=</home>',
     'source: file:///Users/private/model.stl',
     String.raw`source=\\server\share\model.stl`,
     String.raw`source=C:\Users\private\model.stl`,
     'contact=owner@example.com',
     'laserPower=80',
     'laserpower=80',
+    'machinepower=80',
+    'machine-power=80',
+    'machine_power=80',
     'cut_speed=20',
     'cutspeed=20',
+    'machinespeed=20',
+    'machine.speed=20',
     'laserpasses=2',
+    'machinepasses=2',
+    'machine-pass-es=2',
     'passes:2',
   ])('rejects embedded privacy or process provenance: %s', async (warning) => {
     await expect(createOutlinePackage(result({ warnings: [...PROJECTED_WARNINGS, warning] })))
       .rejects.toThrow(/private|path|email|process|setting|warning/i);
   });
 
-  it('allows ordinary SVG vocabulary without privacy/process false positives', async () => {
+  it.each([
+    'outline path uses fill="none" and stroke="#000"; source=outline.svg',
+    '<svg xmlns="http://www.w3.org/2000/svg"><g><path d="M0 0L1 1"/></g></svg>',
+    '<svg><use href="#shape" /></svg>',
+    '<svg><use href="/assets/icon.svg" /></svg>',
+    '<svg><image href="/assets/icon.svg"></image></svg>',
+    '<svg><a><style></style><metadata></metadata><switch><animate></animate></switch></a></svg>',
+    'background-image: url(https://example.com/icon.svg)',
+  ])('allows ordinary SVG vocabulary without privacy/process false positives: %s', async (warning) => {
     await expect(createOutlinePackage(result({
-      warnings: [...PROJECTED_WARNINGS, 'outline path uses fill="none" and stroke="#000"; source=outline.svg'],
+      warnings: [...PROJECTED_WARNINGS, warning],
     }))).resolves.toBeDefined();
   });
 });

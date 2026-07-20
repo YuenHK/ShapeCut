@@ -31,10 +31,12 @@ const HASH_PATTERN = /^[0-9a-f]{32}$/i;
 const SAFE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$/;
 const EMAIL_PATTERN = /\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b/;
 const FILE_URI_PATTERN = /\bfile:\/\/(?:\/|[\p{L}\p{N}._~-]+\/)[^\s"'<>]+/iu;
-const POSIX_PATH_PATTERN = /(?:^|[\s=:'"(])\/(?![\/< >])[\p{L}\p{N}._~+%-]+(?:\/[\p{L}\p{N}._~+%-]+)*(?=$|[\s"',;)]|\.[A-Za-z0-9]+$)/u;
+const SVG_TAG_PATTERN = /<[^>]*>/g;
+const SVG_ROOT_RELATIVE_URL_ATTRIBUTE_PATTERN = /\b(?:href|src)\s*=\s*\\?(["'])(\/(?!\/)[^\\"'<>]*)\\?\1/gi;
+const POSIX_PATH_PATTERN = /(?:^|[^\p{L}\p{N}_\/])\/(?![/>])/u;
 const WINDOWS_PATH_PATTERN = /(?:^|[\s=:'"(])(?:[A-Za-z]:[\\/][^\s"'<>]+|\\\\[^\\\s"'<>]+\\[^\s"'<>]+)(?=$|[\s"',;)])/u;
 const SOURCE_FILE_PATTERN = /(?:^|[\\/])[^\\/\s]*\.stl(?:[\\/]|$)/i;
-const FORBIDDEN_PROCESS_PATTERN = /\b(?:slot|hole|engrave|engraving|power|speed|passes?|(?:laser|cut)(?:power|speed|passes?))\b/i;
+const FORBIDDEN_PROCESS_PATTERN = /(?:slot|hole|engrave|power|speed|passes)/i;
 const PROJECTED_WARNINGS = Object.freeze([
   '已簡化模型',
   '原始內部細節、孔洞及細小分離零件已被忽略',
@@ -82,14 +84,53 @@ type MeasuredLayer = {
   readonly minY: number;
 };
 
+function isPublicSvgResource(path: string): boolean {
+  let decoded = path;
+  try {
+    for (let pass = 0; pass < 4; pass += 1) {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) break;
+      decoded = next;
+    }
+  } catch {
+    return false;
+  }
+  if (/%[0-9a-f]{2}/i.test(decoded) || decoded.includes('\\') || /[?#]/.test(decoded)) return false;
+  const segments = decoded.split('/');
+  return segments[0] === ''
+    && segments[1]?.toLowerCase() === 'assets'
+    && segments.length > 2
+    && segments.slice(2).every((segment) => segment !== '' && segment !== '.' && segment !== '..');
+}
+
+function svgAwarePrivacyScanText(value: string): string {
+  const openElements: string[] = [];
+  return value.replace(SVG_TAG_PATTERN, (tag) => {
+    const closing = tag.match(/^<\/([A-Za-z][A-Za-z0-9:._-]*)\s*>$/);
+    if (closing) {
+      const name = closing[1].toLowerCase();
+      if (openElements.at(-1) !== name) return tag;
+      openElements.pop();
+      return '';
+    }
+    const opening = tag.match(/^<([A-Za-z][A-Za-z0-9:._-]*)(?:\s|\/?>)/);
+    if (opening && !/\/\s*>$/.test(tag)) openElements.push(opening[1].toLowerCase());
+    return tag.replace(
+      SVG_ROOT_RELATIVE_URL_ATTRIBUTE_PATTERN,
+      (attribute, _quote: string, path: string) => isPublicSvgResource(path) ? '' : attribute,
+    );
+  });
+}
+
 function assertPublicText(value: string, label: string): void {
+  const privacyScanText = svgAwarePrivacyScanText(value);
   const privateMatch = value.match(EMAIL_PATTERN) ?? value.match(FILE_URI_PATTERN)
-    ?? value.match(POSIX_PATH_PATTERN) ?? value.match(WINDOWS_PATH_PATTERN) ?? value.match(SOURCE_FILE_PATTERN);
+    ?? privacyScanText.match(POSIX_PATH_PATTERN) ?? value.match(WINDOWS_PATH_PATTERN) ?? value.match(SOURCE_FILE_PATTERN);
   if (privateMatch) {
     throw new RangeError(`${label} must not contain a private path or email address`);
   }
-  const separatedProcessText = value.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[\W_]+/g, ' ');
-  if (FORBIDDEN_PROCESS_PATTERN.test(separatedProcessText)) {
+  const normalizedProcessText = value.normalize('NFKC').replace(/[^A-Za-z0-9]+/g, '');
+  if (FORBIDDEN_PROCESS_PATTERN.test(normalizedProcessText)) {
     throw new RangeError(`${label} must not contain slots, holes, engraving, or process settings`);
   }
 }
