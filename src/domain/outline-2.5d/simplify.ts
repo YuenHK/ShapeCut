@@ -11,20 +11,20 @@ function checkDeadline(deadline: number): void {
   if (Date.now() > deadline) throw new RangeError('Contour extraction exceeded the runtime budget');
 }
 
-export function signedArea(points: readonly Point2[], deadline = Infinity): number {
+export function signedArea(points: readonly Point2[], deadline = Infinity, checkpoint: () => void = () => undefined): number {
   let twiceArea = 0;
   for (let index = 0; index < points.length; index += 1) {
-    if ((index & 255) === 0) checkDeadline(deadline);
+    if ((index & 63) === 0) { checkpoint(); checkDeadline(deadline); }
     const point = points[index], next = points[(index + 1) % points.length];
     twiceArea += point[0] * next[1] - next[0] * point[1];
   }
   return twiceArea / 2;
 }
 
-export function contourBounds(points: readonly Point2[], deadline = Infinity): Bounds2 {
+export function contourBounds(points: readonly Point2[], deadline = Infinity, checkpoint: () => void = () => undefined): Bounds2 {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (let index = 0; index < points.length; index += 1) {
-    if ((index & 255) === 0) checkDeadline(deadline);
+    if ((index & 63) === 0) { checkpoint(); checkDeadline(deadline); }
     const [x, y] = points[index];
     minX = Math.min(minX, x); minY = Math.min(minY, y);
     maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);

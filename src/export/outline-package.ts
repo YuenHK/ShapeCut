@@ -55,8 +55,10 @@ const checkPackageDeadline = (deadline: number, now: () => number = Date.now): v
   if (!Number.isFinite(deadline) || now() > deadline) throw new RangeError('Outline package exceeded the shared deadline');
 };
 type PackageDeadlineOptions = { readonly now?: () => number; readonly onCheckpoint?: (label: string) => void };
+type PackageDeadlineInput = PackageDeadlineOptions | (() => number);
 type PackageCheckpoint = (label: string) => void;
-const packageCheckpoint = (deadline: number, options: PackageDeadlineOptions): PackageCheckpoint => (label) => {
+const packageCheckpoint = (deadline: number, input: PackageDeadlineInput): PackageCheckpoint => (label) => {
+  const options = typeof input === 'function' ? { now: input } : input;
   options.onCheckpoint?.(label);
   checkPackageDeadline(deadline, options.now ?? Date.now);
 };
@@ -203,11 +205,11 @@ function assertSafetyProvenance(value: Pick<AutomaticOutlineResult, 'mode' | 'st
 
 function measured(layer: OutlineLayer, checkpoint: PackageCheckpoint = () => undefined): MeasuredLayer {
   checkpoint('create:measure-layer');
-  const validation = validateOutlineLayer(layer);
+  const validation = validateOutlineLayer(layer, Infinity, () => checkpoint('create:outline-validation-loop'));
   if (!validation.ok) throw new RangeError(`Invalid outline layer ${layer.id}: ${validation.reasons.join('; ')}`);
   if (!SAFE_ID_PATTERN.test(layer.id)) throw new RangeError('Outline layer IDs must be safe portable identifiers');
   assertPublicText(layer.id, 'Outline layer ID');
-  const bounds = contourBounds(layer.contour.outer);
+  const bounds = contourBounds(layer.contour.outer, Infinity, () => checkpoint('create:contour-bounds-loop'));
   const width = bounds.maxX - bounds.minX, height = bounds.maxY - bounds.minY;
   if (width > MAX_PART_MM || height > MAX_PART_MM) {
     throw new RangeError('Outline part exceeds the 990 mm size limit and cannot be rescaled');
@@ -381,7 +383,7 @@ function manifestFromDocument(document: ManufacturingDocument, checkpoint: Packa
   };
 }
 
-export async function createOutlinePackage(result: AutomaticOutlineResult, deadline = Date.now() + DEFAULT_OUTLINE_BUDGETS.maxRuntimeMs, options: PackageDeadlineOptions = {}): Promise<OutlinePackage> {
+export async function createOutlinePackage(result: AutomaticOutlineResult, deadline = Date.now() + DEFAULT_OUTLINE_BUDGETS.maxRuntimeMs, options: PackageDeadlineInput = {}): Promise<OutlinePackage> {
   const checkpoint = packageCheckpoint(deadline, options);
   checkpoint('create:start');
   const document = createOutlineDocument(result, checkpoint);
@@ -533,7 +535,7 @@ function validateOutlineDocument(document: ManufacturingDocument, checkpoint: Pa
       || signedArea(entity.polygon.points) >= 0) {
       throw new RangeError('Outline document polygon must be finite, simple, unique, non-zero, and clockwise');
     }
-    const bounds = contourBounds(entity.polygon.points);
+    const bounds = contourBounds(entity.polygon.points, Infinity, () => checkpoint('verify:entity-bounds-loop'));
     const actualWidth = bounds.maxX - bounds.minX, actualHeight = bounds.maxY - bounds.minY;
     if (!nearlyEqual(bounds.minX, cursorX) || !nearlyEqual(bounds.minY, cursorY)
       || !nearlyEqual(actualWidth, width) || !nearlyEqual(actualHeight, height)
@@ -543,7 +545,7 @@ function validateOutlineDocument(document: ManufacturingDocument, checkpoint: Pa
       || (bounds.maxY > sheet.height - MARGIN_MM && !nearlyEqual(bounds.maxY, sheet.height - MARGIN_MM))) {
       throw new RangeError('Outline document geometry violates bounds, 5 mm margins, deterministic placement, or no-rescaling');
     }
-    if (sheetPolygons.some((polygon) => polygonsIntersectOrTouch(polygon, entity.polygon, () => checkpoint('verify:polygon-intersection-loop')))) {
+    if (sheetPolygons.some((polygon) => polygonsIntersectOrTouch(polygon, entity.polygon, (label) => checkpoint(`verify:polygon-overlap:${label ?? 'segment-loop'}`)))) {
       throw new RangeError('Outline document parts overlap or touch');
     }
     sheetPolygons.push(entity.polygon);
@@ -599,7 +601,7 @@ function relativeDifference(left: number, right: number): number {
   return Math.abs(left - right) / Math.max(Number.MIN_VALUE, Math.abs(left));
 }
 
-export async function verifyOutlinePackage(output: OutlinePackage, deadline = Date.now() + DEFAULT_OUTLINE_BUDGETS.maxRuntimeMs, options: PackageDeadlineOptions = {}): Promise<void> {
+export async function verifyOutlinePackage(output: OutlinePackage, deadline = Date.now() + DEFAULT_OUTLINE_BUDGETS.maxRuntimeMs, options: PackageDeadlineInput = {}): Promise<void> {
   const checkpoint = packageCheckpoint(deadline, options);
   checkpoint('verify:start');
   validateOutlineDocument(output.document, checkpoint);

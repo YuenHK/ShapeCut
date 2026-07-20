@@ -166,6 +166,11 @@ describe('material-independent outline package', () => {
   it('fails a package deterministically when its shared deadline is already exhausted', async () => {
     await expect(createOutlinePackage(result(), 0)).rejects.toThrow(/shared deadline/i);
   });
+  it('preserves the legacy third-argument now function', async () => {
+    await expect(createOutlinePackage(result(), 5, () => 6)).rejects.toThrow(/shared deadline/i);
+    const output = await createOutlinePackage(result());
+    await expect(verifyOutlinePackage(output, 5, () => 6)).rejects.toThrow(/shared deadline/i);
+  });
   it('fails immediately after an awaited ZIP read crosses a valid shared deadline', async () => {
     const output = await createOutlinePackage(result());
     let time = 0;
@@ -184,6 +189,7 @@ describe('material-independent outline package', () => {
   });
   it.each([
     ['create:document-point-loop', 'create'],
+    ['create:outline-validation-loop', 'create'],
     ['verify:polygon-validation-loop', 'verify'],
     ['verify:metadata-layer-loop', 'verify'],
   ])('fails inside the labeled %s heavy loop during %s', async (expiryLabel, phase) => {

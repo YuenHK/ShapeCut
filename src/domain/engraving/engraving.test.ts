@@ -5,6 +5,7 @@ import { cloneEngravingMap, levelAt, type EngravingMap, type HeightField } from 
 import { quantizeHeightField } from './quantize';
 import { applyProtectedZones } from './protected-zones';
 import { symmetrizeEngraving } from './symmetrize';
+import { polygonIntersectionArea } from './geometry';
 
 function rectangle(minX: number, minY: number, maxX: number, maxY: number): Polygon2 {
   return { points: [[minX, minY], [maxX, minY], [maxX, maxY], [minX, maxY]] };
@@ -244,4 +245,14 @@ test('height cells may share an edge without positive-area overlap', () => {
     { heightMm: 0, polygon: rectangle(0, 0, 1, 1) },
     { heightMm: 1, polygon: rectangle(1, 0, 2, 1) },
   ] }, 4).regions).toHaveLength(2);
+});
+
+test('polygon overlap exposes the exact triangulation checkpoint', () => {
+  const labels: string[] = [];
+  expect(() => polygonIntersectionArea(
+    regularPolygon(0, 0, 10, 12), regularPolygon(1, 0, 10, 12),
+    (label) => { labels.push(label); if (label === 'triangulate:inner-loop') throw new RangeError('deadline'); },
+  )).toThrow('deadline');
+  expect(labels.at(-1)).toBe('triangulate:inner-loop');
+  expect(labels).not.toContain('intersection:triangle-pair-loop');
 });

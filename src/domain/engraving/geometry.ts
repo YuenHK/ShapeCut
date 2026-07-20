@@ -118,7 +118,7 @@ function pointInTriangle(point: Point2, a: Point2, b: Point2, c: Point2, toleran
   return first >= -tolerance && second >= -tolerance && third >= -tolerance;
 }
 
-function triangulate(polygon: Polygon2): Point2[][] {
+function triangulate(polygon: Polygon2, checkpoint: (label: string) => void = () => undefined): Point2[][] {
   const signature = polygonSignature(polygon);
   const cached = triangulationCache.get(polygon);
   if (cached?.signature === signature) return cached.value;
@@ -127,13 +127,17 @@ function triangulate(polygon: Polygon2): Point2[][] {
   const scale = geometryScale(polygon), areaTolerance = scale * scale * 128 * Number.EPSILON;
   let guard = 0;
   while (indices.length > 3 && guard++ < points.length * points.length) {
+    checkpoint('triangulate:outer-loop');
     let clipped = false;
     for (let offset = 0; offset < indices.length; offset += 1) {
+      if ((offset & 63) === 0) checkpoint('triangulate:inner-loop');
       const before = indices[(offset + indices.length - 1) % indices.length], current = indices[offset], after = indices[(offset + 1) % indices.length];
       const a = points[before], b = points[current], c = points[after];
       if (cross(a, b, c) <= areaTolerance) continue;
       let contains = false;
-      for (const candidate of indices) {
+      for (let candidateIndex = 0; candidateIndex < indices.length; candidateIndex += 1) {
+        if ((candidateIndex & 63) === 0) checkpoint('triangulate:candidate-loop');
+        const candidate = indices[candidateIndex];
         if (candidate === before || candidate === current || candidate === after) continue;
         if (pointInTriangle(points[candidate], a, b, c, areaTolerance)) { contains = true; break; }
       }
@@ -186,15 +190,17 @@ function boundsOverlap(left: Bounds, right: Bounds, tolerance: number): boolean 
     && left.maxY >= right.minY - tolerance && right.maxY >= left.minY - tolerance;
 }
 
-export function polygonIntersectionArea(left: Polygon2, right: Polygon2): number {
+export function polygonIntersectionArea(left: Polygon2, right: Polygon2, checkpoint: (label: string) => void = () => undefined): number {
   const tolerance = lengthTolerance([left, right]);
   if (!boundsOverlap(bounds(left), bounds(right), tolerance)) return 0;
-  const leftTriangles = triangulate(left), rightTriangles = triangulate(right);
+  const leftTriangles = triangulate(left, checkpoint), rightTriangles = triangulate(right, checkpoint);
   if (leftTriangles.length === 0 || rightTriangles.length === 0) return Number.NaN;
   const scale = Math.min(geometryScale(left), geometryScale(right));
   const areaTolerance = scale * scale * 512 * Number.EPSILON;
   let sum = 0, correction = 0;
+  let comparisons = 0;
   for (const first of leftTriangles) for (const second of rightTriangles) {
+    if ((comparisons++ & 63) === 0) checkpoint('intersection:triangle-pair-loop');
     const value = triangleIntersectionArea(first, second, areaTolerance);
     const next = sum + value;
     correction += Math.abs(sum) >= Math.abs(value) ? (sum - next) + value : (value - next) + sum;
@@ -203,11 +209,11 @@ export function polygonIntersectionArea(left: Polygon2, right: Polygon2): number
   return sum + correction;
 }
 
-export function polygonsOverlapArea(left: Polygon2, right: Polygon2): boolean {
+export function polygonsOverlapArea(left: Polygon2, right: Polygon2, checkpoint: (label: string) => void = () => undefined): boolean {
   const tolerance = lengthTolerance([left, right]);
   if (!boundsOverlap(bounds(left), bounds(right), tolerance)) return false;
   if (canonicalPolygonKey(left) === canonicalPolygonKey(right)) return true;
-  const intersectionArea = polygonIntersectionArea(left, right);
+  const intersectionArea = polygonIntersectionArea(left, right, checkpoint);
   if (!Number.isFinite(intersectionArea)) return true;
   const smallerArea = Math.min(polygonMassProperties(left).area, polygonMassProperties(right).area);
   // Uncertainty is bounded relative to an accepted polygon's own area. A
@@ -216,8 +222,8 @@ export function polygonsOverlapArea(left: Polygon2, right: Polygon2): boolean {
   return intersectionArea > areaTolerance;
 }
 
-export function polygonsIntersectOrTouch(left: Polygon2, right: Polygon2, checkpoint: () => void = () => undefined): boolean {
-  if (polygonsOverlapArea(left, right)) return true;
+export function polygonsIntersectOrTouch(left: Polygon2, right: Polygon2, checkpoint: (label?: string) => void = () => undefined): boolean {
+  if (polygonsOverlapArea(left, right, (label) => checkpoint(label))) return true;
   const tolerance = lengthTolerance([left, right]);
   if (!boundsOverlap(bounds(left), bounds(right), tolerance)) return false;
   for (let leftIndex = 0; leftIndex < left.points.length; leftIndex += 1) for (let rightIndex = 0; rightIndex < right.points.length; rightIndex += 1) {

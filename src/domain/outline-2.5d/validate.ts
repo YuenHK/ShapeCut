@@ -23,19 +23,19 @@ function segmentsIntersect(a: Point2, b: Point2, c: Point2, d: Point2, areaToler
   return onSegment(a, b, c) || onSegment(a, b, d) || onSegment(c, d, a) || onSegment(c, d, b);
 }
 
-function isSimpleWithinDeadline(points: readonly Point2[], deadline: number): boolean | undefined {
+function isSimpleWithinDeadline(points: readonly Point2[], deadline: number, checkpoint: () => void): boolean | undefined {
   let scale = Number.MIN_VALUE;
   for (let index = 0; index < points.length; index += 1) {
-    if ((index & 63) === 0 && expired(deadline)) return undefined;
+    if ((index & 63) === 0) { checkpoint(); if (expired(deadline)) return undefined; }
     scale = Math.max(scale, Math.abs(points[index][0]), Math.abs(points[index][1]));
   }
   const areaTolerance = scale * scale * 64 * Number.EPSILON;
   const lengthTolerance = scale * 64 * Number.EPSILON;
   for (let first = 0; first < points.length; first += 1) {
-    if ((first & 15) === 0 && expired(deadline)) return undefined;
+    checkpoint(); if (expired(deadline)) return undefined;
     const firstNext = (first + 1) % points.length;
     for (let second = first + 1; second < points.length; second += 1) {
-      if ((second & 63) === 0 && expired(deadline)) return undefined;
+      if ((second & 63) === 0) { checkpoint(); if (expired(deadline)) return undefined; }
       const secondNext = (second + 1) % points.length;
       if (first === second || firstNext === second || secondNext === first) continue;
       if (segmentsIntersect(points[first], points[firstNext], points[second], points[secondNext], areaTolerance, lengthTolerance)) return false;
@@ -44,7 +44,7 @@ function isSimpleWithinDeadline(points: readonly Point2[], deadline: number): bo
   return true;
 }
 
-export function validateOutlineLayer(layer: OutlineLayer, deadline = Infinity): OutlineValidation {
+export function validateOutlineLayer(layer: OutlineLayer, deadline = Infinity, checkpoint: () => void = () => undefined): OutlineValidation {
   const reasons: string[] = [], points = layer.contour.outer;
   if (expired(deadline)) return { ok: false, reasons: [RUNTIME_REASON] };
   if (!Number.isInteger(layer.index) || layer.index < 0) reasons.push('Layer index must be a non-negative integer');
@@ -55,7 +55,7 @@ export function validateOutlineLayer(layer: OutlineLayer, deadline = Infinity): 
   let finite = true, hasAdjacentDuplicate = false;
   const unique = new Set<string>();
   for (let index = 0; index < points.length; index += 1) {
-    if ((index & 63) === 0 && expired(deadline)) return { ok: false, reasons: [...reasons, RUNTIME_REASON] };
+    if ((index & 63) === 0) { checkpoint(); if (expired(deadline)) return { ok: false, reasons: [...reasons, RUNTIME_REASON] }; }
     const [x, y] = points[index];
     if (!Number.isFinite(x) || !Number.isFinite(y)) finite = false;
     unique.add(`${x}:${y}`);
@@ -67,11 +67,11 @@ export function validateOutlineLayer(layer: OutlineLayer, deadline = Infinity): 
   if (hasAdjacentDuplicate) reasons.push('Contour has a zero-length edge or adjacent duplicate point');
   let area = 0;
   if (points.length >= 3 && finite) {
-    try { area = signedArea(points, deadline); } catch { return { ok: false, reasons: [...reasons, RUNTIME_REASON] }; }
+    try { area = signedArea(points, deadline, checkpoint); } catch { return { ok: false, reasons: [...reasons, RUNTIME_REASON] }; }
   }
   if (!Number.isFinite(area) || area >= 0) reasons.push('Contour must have positive geometric area and clockwise winding');
   if (points.length >= 3 && points.length <= 4096 && finite && !hasAdjacentDuplicate) {
-    const simple = isSimpleWithinDeadline(points, deadline);
+    const simple = isSimpleWithinDeadline(points, deadline, checkpoint);
     if (simple === undefined) return { ok: false, reasons: [...reasons, RUNTIME_REASON] };
     if (!simple) reasons.push('Contour self-intersects');
   }
@@ -94,7 +94,7 @@ export function validateOutlineLayer(layer: OutlineLayer, deadline = Infinity): 
     reasons.push('Source contour bounds must be finite and positive');
   } else if (points.length > 0 && finite) {
     let simplifiedBounds;
-    try { simplifiedBounds = contourBounds(points, deadline); } catch { return { ok: false, reasons: [...reasons, RUNTIME_REASON] }; }
+    try { simplifiedBounds = contourBounds(points, deadline, checkpoint); } catch { return { ok: false, reasons: [...reasons, RUNTIME_REASON] }; }
     const sourceWidth = sourceBounds.maxX - sourceBounds.minX, sourceHeight = sourceBounds.maxY - sourceBounds.minY;
     const drift = [
       Math.abs(simplifiedBounds.minX - sourceBounds.minX) / sourceWidth,

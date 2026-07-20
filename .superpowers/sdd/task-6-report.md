@@ -157,3 +157,10 @@ Both real-file UI cases completed in approximately 2.5 seconds, showed `已簡�
 - The test seam now names every phase instead of depending on a checkpoint count. The async regression remains valid through `verify:zip-entry:cut.svg:before-read`, changes the injected clock only at `verify:zip-entry:cut.svg:after-read`, and proves that this exact post-await checkpoint rejects with the shared-deadline error.
 - Deterministic synchronous regressions expire at `create:document-point-loop`, `verify:metadata-layer-loop`, and `verify:polygon-validation-loop`. The self-intersection validator checkpoints every outer edge and at most every 64 inner comparisons.
 - Creation/document sorting, layer and manifest metadata mapping, flattening, canonical/SVG/DXF parsing, SVG/DXF/PDF generation, ZIP/PDF async operations, polygon validation/intersection, and final returns all receive the same labeled checkpoint closure and absolute deadline. Pure-domain callers retain no-op defaults.
+
+## Deep polygon deadline propagation
+
+- Polygon overlap now propagates checkpoints through area-overlap detection, both triangulations, triangulation outer/inner/candidate loops, and the triangle-pair O(n²) loop. Cadence is bounded to at most 64 inner comparisons; defaults preserve existing domain callers.
+- A domain regression expires exactly at `triangulate:inner-loop`, proves that `intersection:triangle-pair-loop` was never reached, and therefore identifies the true interrupted phase rather than merely observing a later package failure.
+- Initial package creation passes the shared checkpoint through `validateOutlineLayer`, self-intersection scanning, signed-area/bounds scans, and the subsequent contour-bounds measurement. `create:outline-validation-loop` expiry fails before document construction proceeds.
+- Exported creation and verification accept both the labeled options object and the earlier third-argument `now()` function; legacy function-call tests prove that an expired clock is not silently ignored.
