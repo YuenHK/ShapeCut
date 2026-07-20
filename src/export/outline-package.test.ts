@@ -166,6 +166,14 @@ describe('material-independent outline package', () => {
   it('fails a package deterministically when its shared deadline is already exhausted', async () => {
     await expect(createOutlinePackage(result(), 0)).rejects.toThrow(/shared deadline/i);
   });
+  it('fails deterministically when a valid deadline expires mid-verification', async () => {
+    const output = await createOutlinePackage(result());
+    let checkpoints = 0;
+    const now = () => (++checkpoints < 25 ? 0 : 6);
+
+    await expect(verifyOutlinePackage(output, 5, now)).rejects.toThrow(/shared deadline/i);
+    expect(checkpoints).toBe(25);
+  });
   it('requires and reconciles sanitized diagnostics across canonical outputs', async () => {
     const missing = structuredClone(result());
     delete (missing as unknown as { diagnostics?: AutomaticOutlineResult['diagnostics'] }).diagnostics;

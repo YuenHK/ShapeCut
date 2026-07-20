@@ -5,10 +5,14 @@ function escape(value: string): string {
   return value.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 }
 
-export function writeSheetSvg(sheet: ManufacturingSheet): string {
+export function writeSheetSvg(sheet: ManufacturingSheet, checkpoint: () => void = () => undefined): string {
   const groups = usedLayers(sheet).map((layer) => {
     const paths = sheet.entities.filter((entity) => entity.layer === layer).map((entity) => {
-      const points = entity.polygon.points.map(([x, y]) => `${x},${y}`).join(' ');
+      checkpoint();
+      const points = entity.polygon.points.map(([x, y], index) => {
+        if ((index & 127) === 0) checkpoint();
+        return `${x},${y}`;
+      }).join(' ');
       return `<polygon id="${escape(entity.id)}" data-part-id="${escape(entity.partId)}" data-instance="${entity.instance}" data-contour="${entity.contour}" points="${points}"/>`;
     }).join('');
     return `<g id="layer-${layer}" data-process="${layer}">${paths}</g>`;

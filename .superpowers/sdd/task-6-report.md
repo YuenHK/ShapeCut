@@ -145,3 +145,9 @@ Both real-file UI cases completed in approximately 2.5 seconds, showed `已簡�
 - Full E2E using both external absolute-path environment variables: 12/12 passed, zero skips. Knight Fortress completed with warning/download in 2.5 seconds; Knight Fortress Group completed with warning/download in 3.0 seconds.
 - Fixtures: 10/10 passed. Performance: 2/2 passed. Typecheck and production build passed.
 - The two user STL files remain external and untracked; their absolute paths are supplied only as process environment values and do not appear in tracked source or artifacts.
+
+## Deadline completion follow-up
+
+- One absolute packaging deadline now survives unchanged through creation and verification. Checkpoints run after every awaited PDF/ZIP boundary, after each ZIP entry decompression/read, inside document, SVG, DXF, and PDF polygon loops, and immediately before every successful package/verification return.
+- A deterministic injected clock starts below the deadline and crosses it at the 25th verification checkpoint. The verification rejects instead of succeeding, without wall-clock sleeps or timing-sensitive assertions.
+- Production continues to use `Date.now`; the worker still converts every deadline failure into the public typed `TIME_LIMIT` error across Comlink.

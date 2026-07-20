@@ -59,9 +59,9 @@ export async function buildPackage(project: ManufacturingProject): Promise<Manuf
   return { sheets, assemblyPdf, projectJson, zip: await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' }) };
 }
 
-export function writeOutlineSvg(sheet: ManufacturingSheet, metadata: OutlineDocumentMetadata): string {
+export function writeOutlineSvg(sheet: ManufacturingSheet, metadata: OutlineDocumentMetadata, checkpoint: () => void = () => undefined): string {
   const layers = new Map(metadata.layers.map((layer) => [layer.id, layer]));
-  return writeSheetSvg(sheet)
+  return writeSheetSvg(sheet, checkpoint)
     .replace('<svg ', `<svg data-outline-source-hash="${metadata.sourceHash}" data-outline-mode="${metadata.mode}" data-outline-status="${metadata.status}" data-repair-accepted="${metadata.repairAccepted}" data-removed-component-count="${metadata.removedComponentCount}" data-removal-evidence-fingerprint="${metadata.removalEvidenceFingerprint}" data-diagnostics-fingerprint="${metadata.diagnosticsFingerprint}" data-axis-source="${metadata.axisSource}" data-material-independent="true" `)
     .replace(/<polygon id="([^"]+)"/g, (match, id: string) => {
       const layer = layers.get(id);
@@ -70,7 +70,7 @@ export function writeOutlineSvg(sheet: ManufacturingSheet, metadata: OutlineDocu
     });
 }
 
-export function writeOutlineDxf(sheet: ManufacturingSheet, metadata: OutlineDocumentMetadata): string {
+export function writeOutlineDxf(sheet: ManufacturingSheet, metadata: OutlineDocumentMetadata, checkpoint: () => void = () => undefined): string {
   const comments = [
     `999\nOUTLINE_SOURCE_HASH:${metadata.sourceHash}\n`,
     `999\nOUTLINE_MODE:${metadata.mode}\n`,
@@ -83,15 +83,17 @@ export function writeOutlineDxf(sheet: ManufacturingSheet, metadata: OutlineDocu
     '999\nMATERIAL_INDEPENDENT:true\n',
     ...metadata.layers.map((layer) => `999\nOUTLINE_LAYER:${layer.id}:${layer.order}:${layer.index}:${layer.zStart}:${layer.zEnd}:${layer.pointCount}:${layer.boundsMm[0]}x${layer.boundsMm[1]}:${layer.removedComponentCount}\n`),
   ].join('');
-  return writeSheetDxf(sheet).replace('0\nEOF\n', `${comments}0\nEOF\n`);
+  return writeSheetDxf(sheet, checkpoint).replace('0\nEOF\n', `${comments}0\nEOF\n`);
 }
 
 export async function writeOutlinePreviewPdf(
   metadata: OutlineDocumentMetadata,
   sheets: readonly ManufacturingSheet[],
+  checkpoint: () => void = () => undefined,
 ): Promise<Uint8Array> {
   const pointsPerMm = 72 / 25.4;
   const pdf = await PDFDocument.create({ updateMetadata: false });
+  checkpoint();
   const fixedDate = new Date('2000-01-01T00:00:00.000Z');
   pdf.setTitle('Universal outline preview');
   pdf.setSubject('Canonical CUT contour preview');
@@ -113,9 +115,12 @@ export async function writeOutlinePreviewPdf(
     ...metadata.layers.map((layer) => `outline-layer:${layer.id}:${layer.order}:${layer.index}:${layer.pointCount}:${layer.boundsMm[0]}x${layer.boundsMm[1]}:${layer.zStart}:${layer.zEnd}:${layer.removedComponentCount}`),
   ]);
   for (const sheet of sheets) {
+    checkpoint();
     const page = pdf.addPage([sheet.width * pointsPerMm, sheet.height * pointsPerMm]);
     for (const entity of sheet.entities) {
+      checkpoint();
       for (let index = 0; index < entity.polygon.points.length; index += 1) {
+        if ((index & 127) === 0) checkpoint();
         const start = entity.polygon.points[index];
         const end = entity.polygon.points[(index + 1) % entity.polygon.points.length];
         page.drawLine({
@@ -127,7 +132,9 @@ export async function writeOutlinePreviewPdf(
       }
     }
   }
-  return pdf.save({ useObjectStreams: false });
+  const output = await pdf.save({ useObjectStreams: false });
+  checkpoint();
+  return output;
 }
 
 export async function writeOutlineZip(files: {
@@ -136,14 +143,16 @@ export async function writeOutlineZip(files: {
   readonly previewPdf: Uint8Array;
   readonly projectJson: string;
   readonly manifestJson: string;
-}): Promise<Uint8Array> {
+}, checkpoint: () => void = () => undefined): Promise<Uint8Array> {
   const zip = new JSZip();
   zip.file('cut.svg', files.cutSvg);
   zip.file('cut.dxf', files.cutDxf);
   zip.file('preview.pdf', files.previewPdf);
   zip.file('project.json', files.projectJson);
   zip.file('manifest.json', files.manifestJson);
-  return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
+  const output = await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
+  checkpoint();
+  return output;
 }
 
 export function flattenOutlineSheets(document: ManufacturingDocument): ManufacturingSheet {

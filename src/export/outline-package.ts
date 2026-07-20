@@ -51,8 +51,8 @@ const PROJECTED_WARNINGS = Object.freeze([
 ]);
 const FALLBACK_AXIS_WARNING = '未找到可信旋轉軸，已使用模型最短包圍盒軸';
 const EXACT_FALLBACK_WARNING = '精確切片失敗，已改用 2.5D 外形模式';
-const checkPackageDeadline = (deadline: number): void => {
-  if (!Number.isFinite(deadline) || Date.now() > deadline) throw new RangeError('Outline package exceeded the shared deadline');
+const checkPackageDeadline = (deadline: number, now: () => number = Date.now): void => {
+  if (!Number.isFinite(deadline) || now() > deadline) throw new RangeError('Outline package exceeded the shared deadline');
 };
 
 export type OutlineManifestV1 = {
@@ -364,23 +364,25 @@ function manifestFromDocument(document: ManufacturingDocument): OutlineManifestV
   };
 }
 
-export async function createOutlinePackage(result: AutomaticOutlineResult, deadline = Date.now() + DEFAULT_OUTLINE_BUDGETS.maxRuntimeMs): Promise<OutlinePackage> {
-  checkPackageDeadline(deadline);
+export async function createOutlinePackage(result: AutomaticOutlineResult, deadline = Date.now() + DEFAULT_OUTLINE_BUDGETS.maxRuntimeMs, now: () => number = Date.now): Promise<OutlinePackage> {
+  const checkpoint = () => checkPackageDeadline(deadline, now);
+  checkpoint();
   const document = createOutlineDocument(result);
-  checkPackageDeadline(deadline);
+  checkpoint();
   const manifest = manifestFromDocument(document);
   const metadata = requireMetadata(document);
   const exportSheet = flattenOutlineSheets(document);
-  const cutSvg = writeOutlineSvg(exportSheet, metadata);
-  const cutDxf = writeOutlineDxf(exportSheet, metadata);
-  const previewPdf = await writeOutlinePreviewPdf(metadata, document.sheets);
-  checkPackageDeadline(deadline);
+  const cutSvg = writeOutlineSvg(exportSheet, metadata, checkpoint);
+  const cutDxf = writeOutlineDxf(exportSheet, metadata, checkpoint);
+  const previewPdf = await writeOutlinePreviewPdf(metadata, document.sheets, checkpoint);
+  checkpoint();
   const projectJson = writeOutlineProjectJson(document);
   const manifestJson = JSON.stringify(manifest, null, 2);
-  const zip = await writeOutlineZip({ cutSvg, cutDxf, previewPdf, projectJson, manifestJson });
-  checkPackageDeadline(deadline);
+  const zip = await writeOutlineZip({ cutSvg, cutDxf, previewPdf, projectJson, manifestJson }, checkpoint);
+  checkpoint();
   const output = { document, manifest, cutSvg, cutDxf, previewPdf, projectJson, manifestJson, zip };
-  await verifyOutlinePackage(output, deadline);
+  await verifyOutlinePackage(output, deadline, now);
+  checkpoint();
   return output;
 }
 
@@ -389,7 +391,8 @@ function requireMetadata(document: ManufacturingDocument): OutlineDocumentMetada
   return document.outline;
 }
 
-function validateOutlineDocument(document: ManufacturingDocument): void {
+function validateOutlineDocument(document: ManufacturingDocument, checkpoint: () => void = () => undefined): void {
+  checkpoint();
   const metadata = requireMetadata(document);
   if (!Array.isArray(metadata.layers) || metadata.layers.length === 0
     || metadata.layers.length > DEFAULT_OUTLINE_BUDGETS.maxLayers) {
@@ -428,10 +431,11 @@ function validateOutlineDocument(document: ManufacturingDocument): void {
       || item.areaDriftRatio < 0 || item.areaDriftRatio > 0.03 + 1e-12)) {
     throw new RangeError('Outline diagnostic provenance is invalid');
   }
-  for (const warning of metadata.warnings) assertPublicText(warning, 'Outline warning');
+  for (const warning of metadata.warnings) { checkpoint(); assertPublicText(warning, 'Outline warning'); }
   if (metadata.layers.length !== document.manifest.length) throw new RangeError('Outline document layer manifest mismatch');
   const ids = new Set<string>();
   for (const [index, layer] of metadata.layers.entries()) {
+    checkpoint();
     const source = layer.sourceBoundsMm;
     if (!SAFE_ID_PATTERN.test(layer.id) || ids.has(layer.id) || layer.order !== index + 1
       || !Number.isSafeInteger(layer.pointCount) || layer.pointCount < 3 || layer.pointCount > 4096
@@ -480,6 +484,7 @@ function validateOutlineDocument(document: ManufacturingDocument): void {
   };
 
   for (const [index, layer] of metadata.layers.entries()) {
+    checkpoint();
     const [width, height] = layer.boundsMm;
     if (cursorX + width > canvasWidth - MARGIN_MM && entityIndex > 0) {
       cursorX = MARGIN_MM;
@@ -505,6 +510,7 @@ function validateOutlineDocument(document: ManufacturingDocument): void {
       throw new RangeError('Outline document polygon must be finite, simple, unique, non-zero, and clockwise');
     }
     const uniquePoints = new Set(entity.polygon.points.map((point: readonly [number, number]) => `${point[0]}:${point[1]}`));
+    checkpoint();
     const area = polygonMassProperties(entity.polygon).area;
     if (uniquePoints.size !== entity.polygon.points.length || !Number.isFinite(area) || area <= 0
       || signedArea(entity.polygon.points) >= 0) {
@@ -574,10 +580,11 @@ function relativeDifference(left: number, right: number): number {
   return Math.abs(left - right) / Math.max(Number.MIN_VALUE, Math.abs(left));
 }
 
-export async function verifyOutlinePackage(output: OutlinePackage, deadline = Date.now() + DEFAULT_OUTLINE_BUDGETS.maxRuntimeMs): Promise<void> {
-  checkPackageDeadline(deadline);
-  validateOutlineDocument(output.document);
-  checkPackageDeadline(deadline);
+export async function verifyOutlinePackage(output: OutlinePackage, deadline = Date.now() + DEFAULT_OUTLINE_BUDGETS.maxRuntimeMs, now: () => number = Date.now): Promise<void> {
+  const checkpoint = () => checkPackageDeadline(deadline, now);
+  checkpoint();
+  validateOutlineDocument(output.document, checkpoint);
+  checkpoint();
   const expectedManifest = manifestFromDocument(output.document);
   if (exactJson(output.manifest) !== exactJson(expectedManifest)
     || exactJson(JSON.parse(output.manifestJson)) !== exactJson(expectedManifest)) {
@@ -594,16 +601,17 @@ export async function verifyOutlinePackage(output: OutlinePackage, deadline = Da
     throw new RangeError('Outline geometry reconciliation mismatch');
   }
   const metadata = requireMetadata(output.document);
-  if (output.cutSvg !== writeOutlineSvg(exportSheet, metadata) || output.cutDxf !== writeOutlineDxf(exportSheet, metadata)) {
+  if (output.cutSvg !== writeOutlineSvg(exportSheet, metadata, checkpoint) || output.cutDxf !== writeOutlineDxf(exportSheet, metadata, checkpoint)) {
     throw new RangeError('Outline metadata reconciliation mismatch');
   }
-  const expectedPdf = await writeOutlinePreviewPdf(metadata, output.document.sheets);
-  checkPackageDeadline(deadline);
+  const expectedPdf = await writeOutlinePreviewPdf(metadata, output.document.sheets, checkpoint);
+  checkpoint();
   if (expectedPdf.length !== output.previewPdf.length
     || expectedPdf.some((byte, index) => byte !== output.previewPdf[index])) {
     throw new RangeError('Outline PDF content and CUT geometry reconciliation mismatch');
   }
   const pdf = await PDFDocument.load(output.previewPdf);
+  checkpoint();
   const keywords = pdf.getKeywords() ?? '';
   const requiredKeywords = [
     `outline-source:${metadata.sourceHash}`,
@@ -626,9 +634,10 @@ export async function verifyOutlinePackage(output: OutlinePackage, deadline = Da
 
   [output.cutSvg, output.cutDxf, output.projectJson, output.manifestJson].forEach((value) => assertPublicText(value, 'Outline package'));
   const zip = await JSZip.loadAsync(output.zip);
-  checkPackageDeadline(deadline);
+  checkpoint();
   const entries = Object.entries(zip.files).sort(([left], [right]) => left.localeCompare(right));
   for (const [path, entry] of entries) {
+    checkpoint();
     const originalPath = entry.unsafeOriginalName ?? path;
     assertPublicText(path, 'Outline ZIP entry');
     assertPublicText(originalPath, 'Outline ZIP original entry');
@@ -639,12 +648,18 @@ export async function verifyOutlinePackage(output: OutlinePackage, deadline = Da
     throw new RangeError('Outline ZIP entry reconciliation mismatch');
   }
   const zippedPdf = await zip.file('preview.pdf')!.async('uint8array');
-  if (await zip.file('cut.svg')!.async('string') !== output.cutSvg
-    || await zip.file('cut.dxf')!.async('string') !== output.cutDxf
-    || await zip.file('project.json')!.async('string') !== output.projectJson
-    || await zip.file('manifest.json')!.async('string') !== output.manifestJson
+  checkpoint();
+  const zippedSvg = await zip.file('cut.svg')!.async('string'); checkpoint();
+  const zippedDxf = await zip.file('cut.dxf')!.async('string'); checkpoint();
+  const zippedProject = await zip.file('project.json')!.async('string'); checkpoint();
+  const zippedManifest = await zip.file('manifest.json')!.async('string'); checkpoint();
+  if (zippedSvg !== output.cutSvg
+    || zippedDxf !== output.cutDxf
+    || zippedProject !== output.projectJson
+    || zippedManifest !== output.manifestJson
     || zippedPdf.length !== output.previewPdf.length
     || zippedPdf.some((byte, index) => byte !== output.previewPdf[index])) {
     throw new RangeError('Outline ZIP package reconciliation mismatch');
   }
+  checkpoint();
 }
