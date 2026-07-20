@@ -26,6 +26,7 @@ export type OutlineDocumentLayer = {
   readonly sourceBoundsMm: Readonly<{ minX: number; minY: number; maxX: number; maxY: number }>;
   readonly pointCount: number;
   readonly sheetIndex: number;
+  readonly removedComponentCount: number;
 };
 export type OutlineDocumentMetadata = {
   readonly mode: OutlineMode;

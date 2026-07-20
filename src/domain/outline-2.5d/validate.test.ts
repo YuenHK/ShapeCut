@@ -13,6 +13,7 @@ function layer(outer: readonly Point2[], overrides: Partial<OutlineLayer> = {}):
     sourceAreaMm2: 1,
     simplifiedAreaMm2: 1,
     sourceBoundsMm: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
+    removedComponentCount: 0,
     ...overrides,
   };
 }
@@ -20,6 +21,10 @@ function layer(outer: readonly Point2[], overrides: Partial<OutlineLayer> = {}):
 const square = [[0, 0], [0, 1], [1, 1], [1, 0]] as const;
 
 describe('validateOutlineLayer', () => {
+  test('rejects forged removed-component evidence', () => {
+    expect(validateOutlineLayer(layer(square, { removedComponentCount: -1 })).ok).toBe(false);
+    expect(validateOutlineLayer(layer(square, { removedComponentCount: 1.5 })).ok).toBe(false);
+  });
   test('accepts a finite clockwise simple contour', () => {
     expect(validateOutlineLayer(layer(square))).toEqual({ ok: true, reasons: [] });
   });

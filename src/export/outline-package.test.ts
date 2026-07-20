@@ -34,6 +34,7 @@ function layer(
   zStart: number,
   zEnd: number,
   outer: OutlineLayer['contour']['outer'],
+  removedComponentCount = 0,
 ): OutlineLayer {
   const xs = outer.map(([x]) => x), ys = outer.map(([, y]) => y);
   const sourceAreaMm2 = Math.abs(outer.reduce((sum, point, pointIndex) => {
@@ -52,6 +53,7 @@ function layer(
       minX: Math.min(...xs), minY: Math.min(...ys),
       maxX: Math.max(...xs), maxY: Math.max(...ys),
     },
+    removedComponentCount,
   };
 }
 
@@ -87,7 +89,7 @@ function result(overrides: Partial<AutomaticOutlineResult> = {}): AutomaticOutli
       },
     },
     repairAccepted: false,
-    removedComponentCount: 7,
+    removedComponentCount: 0,
     ...overrides,
   };
 }
@@ -103,7 +105,7 @@ async function synchronizedOutput(output: OutlinePackage, document: OutlinePacka
     repairAccepted: metadata.repairAccepted,
     removedComponentCount: metadata.removedComponentCount,
     axisSource: metadata.axisSource,
-    layers: metadata.layers.map(({ id, order, zStart, zEnd, boundsMm }) => ({ id, order, zStart, zEnd, boundsMm })),
+    layers: metadata.layers.map(({ id, order, zStart, zEnd, boundsMm, removedComponentCount }) => ({ id, order, zStart, zEnd, boundsMm, removedComponentCount })),
     materialIndependent: true as const,
   };
   const exportSheet = flattenOutlineSheets(document);
@@ -125,12 +127,15 @@ function polygonRecords(svg: string) {
 }
 
 describe('material-independent outline package', () => {
-  it('preserves the measured removed-component count in reconciled metadata', async () => {
-    const output = await createOutlinePackage(result({ removedComponentCount: 7 }));
-    expect(output.document.outline?.removedComponentCount).toBe(7);
-    expect(output.manifest.removedComponentCount).toBe(7);
-    expect(JSON.parse(output.manifestJson).removedComponentCount).toBe(7);
-    expect(JSON.parse(output.projectJson).document.outline.removedComponentCount).toBe(7);
+  it('rejects forged aggregate, per-layer mismatch, and exact removal evidence', async () => {
+    await expect(createOutlinePackage(result({ removedComponentCount: 7 }))).rejects.toThrow(/removed-component/i);
+    const projectedLayer = layer('removed', 0, 0, 1, [[0, 0], [0, 3], [3, 3], [3, 0]], 2);
+    await expect(createOutlinePackage(result({ layers: [projectedLayer], removedComponentCount: 1 }))).rejects.toThrow(/removed-component/i);
+    await expect(createOutlinePackage(result({
+      mode: 'exact', status: 'success', warnings: [], repairAccepted: true,
+      axis: { axis: { ...result().axis.axis, confidence: 1 }, source: 'candidate' },
+      layers: [projectedLayer], removedComponentCount: 2,
+    }))).rejects.toThrow(/removed-component/i);
   });
   it('lays out one CUT part per layer in increasing Z order with tight deterministic bounds', () => {
     const document = createOutlineDocument(result());

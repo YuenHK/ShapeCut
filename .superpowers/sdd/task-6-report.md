@@ -40,3 +40,10 @@ Both real-file UI cases completed in approximately 2.5 seconds, showed `已簡�
 
 - Browser timings are machine-dependent; assertions retain the approved fixed resource/time limits and were not weakened.
 - 2.5D remains an approximate largest-exterior workflow. The warning and safety documentation explicitly state that holes, internal detail, and smaller disconnected components are removed.
+
+## Review follow-up
+
+- Performance timing now starts immediately before `setInputFiles`, so the input change and browser file read are included. Test-generated large STL files use Playwright's per-test output directory and are never repository artifacts. The unchanged `<100 ms` long-task assertion passed; 100k completed in approximately 3.6 seconds and 500k failed safely in approximately 1.0 second.
+- Removal evidence is now measured per layer. Projected layers receive `raster.componentCount - 1`; exact layers and exact aggregate are always zero. The public result aggregate must equal the per-layer sum.
+- Canonical document, manifest, project JSON, SVG, DXF, PDF, and ZIP generation carry the aggregate and per-layer values. Validation rejects negative/non-integer values, a forged aggregate, a forged layer count, an aggregate/layer mismatch, and any non-zero exact evidence.
+- Follow-up verification: focused domain/pipeline/export/worker 448/448, full unit 875/875, Chromium 27/27, real-file E2E 11/11 with zero skips, performance 2/2, typecheck/build/diff check passed.

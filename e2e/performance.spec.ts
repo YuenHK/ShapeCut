@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { writeFile } from 'node:fs/promises';
 import { selectModel } from './helpers';
 
 function binaryTetrahedra(triangleCount: number): Buffer {
@@ -20,8 +21,10 @@ test('100k triangle selection stays off the main thread and reaches a bounded re
   await page.goto('/');
   await page.evaluate(() => { (window as unknown as { longTasks: { startTime: number; duration: number }[] }).longTasks = []; new PerformanceObserver((list) => (window as unknown as { longTasks: { startTime: number; duration: number }[] }).longTasks.push(...list.getEntries().map(({ startTime, duration }) => ({ startTime, duration })))).observe({ type: 'longtask', buffered: true }); });
   const started = Date.now();
-  await selectModel(page, { name: '100k.stl', mimeType: 'model/stl', buffer: binaryTetrahedra(100_000) });
+  const fixturePath = testInfo.outputPath('100k.stl');
+  await writeFile(fixturePath, binaryTetrahedra(100_000));
   const fileSelected = await page.evaluate(() => performance.now());
+  await selectModel(page, fixturePath);
   await expect(page.getByRole('status').filter({ hasText: /轉換完成/ }).or(page.getByRole('alert'))).toBeVisible({ timeout: 35_000 });
   const elapsedMs = Date.now() - started;
   const longestMainThreadTaskMs = await page.evaluate((selected) => Math.max(0, ...(window as unknown as { longTasks: { startTime: number; duration: number }[] }).longTasks.filter(({ startTime }) => startTime >= selected).map(({ duration }) => duration)), fileSelected);
@@ -34,7 +37,9 @@ test('500k triangle selection fails within the resource/time boundary', async ({
   test.setTimeout(25_000);
   await page.goto('/');
   const started = Date.now();
-  await selectModel(page, { name: '500k.stl', mimeType: 'model/stl', buffer: binaryTetrahedra(500_000) });
+  const fixturePath = testInfo.outputPath('500k.stl');
+  await writeFile(fixturePath, binaryTetrahedra(500_000));
+  await selectModel(page, fixturePath);
   const alert = page.getByRole('alert');
   await expect(alert).toBeVisible({ timeout: 20_000 });
   await expect(alert).toContainText(/模型太複雜|處理時間過長/);

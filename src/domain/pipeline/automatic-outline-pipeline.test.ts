@@ -94,6 +94,8 @@ describe('automatic outline pipeline', () => {
       warnings: [],
     });
     expect(result.layers).toHaveLength(6);
+    expect(result.removedComponentCount).toBe(0);
+    expect(result.layers.every((layer) => layer.removedComponentCount === 0)).toBe(true);
     expect(result.layers.every((layer) => layer.sourceBoundsMm !== undefined)).toBe(true);
     expect(result.sourceHash).toMatch(/^[0-9a-f]{32}$/);
     expect(progress).toEqual(['reading', 'analyzing', 'simplifying', 'slicing', 'packaging']);
@@ -110,6 +112,7 @@ describe('automatic outline pipeline', () => {
     expect(result.status).toBe('warning');
     expect(result.repairAccepted).toBe(false);
     expect(result.layers.length).toBeGreaterThan(0);
+    expect(result.layers.reduce((sum, layer) => sum + layer.removedComponentCount, 0)).toBe(result.removedComponentCount);
     expect(result.warnings).toContain('已簡化模型');
     expect(result.layers.every((layer) => layer.sourceBoundsMm !== undefined)).toBe(true);
   });
@@ -119,6 +122,7 @@ describe('automatic outline pipeline', () => {
 
     expect(result).toMatchObject({ mode: 'outline-2.5d', status: 'warning', repairAccepted: true });
     expect(result.warnings).toContain('精確切片失敗，已改用 2.5D 外形模式');
+    expect(result.layers.reduce((sum, layer) => sum + layer.removedComponentCount, 0)).toBe(result.removedComponentCount);
     expect(result.layers.every((layer) => layer.sourceBoundsMm !== undefined)).toBe(true);
   });
 

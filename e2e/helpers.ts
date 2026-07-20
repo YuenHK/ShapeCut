@@ -9,7 +9,7 @@ export type DownloadedOutline = {
     readonly status: 'success' | 'warning';
     readonly sourceHash: string;
     readonly removedComponentCount: number;
-    readonly layers: readonly { readonly id: string; readonly order: number; readonly zStart: number; readonly zEnd: number }[];
+    readonly layers: readonly { readonly id: string; readonly order: number; readonly zStart: number; readonly zEnd: number; readonly removedComponentCount: number }[];
   };
   readonly project: { readonly document: {
     readonly outline: { readonly removedComponentCount: number; readonly layers: readonly { readonly id: string; readonly pointCount: number }[] };
@@ -59,6 +59,7 @@ async function inspectOutlineDownload(download: Download): Promise<DownloadedOut
   expect(dxf).toContain(manifest.sourceHash);
   expect(project.document.outline.layers.map(({ id }) => id)).toEqual(manifest.layers.map(({ id }) => id));
   expect(project.document.outline.removedComponentCount).toBe(manifest.removedComponentCount);
+  expect(manifest.layers.reduce((sum, layer) => sum + layer.removedComponentCount, 0)).toBe(manifest.removedComponentCount);
   expect(project.document.sheets.flatMap(({ entities }) => entities).map(({ id }) => id)).toEqual(manifest.layers.map(({ id }) => id));
   return { manifest, project, entries, sha256: createHash('sha256').update(bytes).digest('hex') };
 }

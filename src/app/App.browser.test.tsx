@@ -14,6 +14,7 @@ describe('App real browser one-click flow', () => {
         contour: { outer: [[0, 0], [10, 0], [10, 5], [0, 5]], holes: [] },
         sourceAreaMm2: 50, simplifiedAreaMm2: 50,
         sourceBoundsMm: { minX: 0, minY: 0, maxX: 10, maxY: 5 },
+        removedComponentCount: 0,
       }],
       axis: {
         source: 'candidate',

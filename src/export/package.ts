@@ -62,11 +62,11 @@ export async function buildPackage(project: ManufacturingProject): Promise<Manuf
 export function writeOutlineSvg(sheet: ManufacturingSheet, metadata: OutlineDocumentMetadata): string {
   const layers = new Map(metadata.layers.map((layer) => [layer.id, layer]));
   return writeSheetSvg(sheet)
-    .replace('<svg ', `<svg data-outline-source-hash="${metadata.sourceHash}" data-outline-mode="${metadata.mode}" data-outline-status="${metadata.status}" data-repair-accepted="${metadata.repairAccepted}" data-axis-source="${metadata.axisSource}" data-material-independent="true" `)
+    .replace('<svg ', `<svg data-outline-source-hash="${metadata.sourceHash}" data-outline-mode="${metadata.mode}" data-outline-status="${metadata.status}" data-repair-accepted="${metadata.repairAccepted}" data-removed-component-count="${metadata.removedComponentCount}" data-axis-source="${metadata.axisSource}" data-material-independent="true" `)
     .replace(/<polygon id="([^"]+)"/g, (match, id: string) => {
       const layer = layers.get(id);
       if (!layer) throw new RangeError(`SVG entity ${id} is missing outline metadata`);
-      return `${match} data-outline-order="${layer.order}" data-z-start="${layer.zStart}" data-z-end="${layer.zEnd}" data-bounds-mm="${layer.boundsMm[0]}x${layer.boundsMm[1]}"`;
+      return `${match} data-outline-order="${layer.order}" data-z-start="${layer.zStart}" data-z-end="${layer.zEnd}" data-bounds-mm="${layer.boundsMm[0]}x${layer.boundsMm[1]}" data-removed-component-count="${layer.removedComponentCount}"`;
     });
 }
 
@@ -76,9 +76,10 @@ export function writeOutlineDxf(sheet: ManufacturingSheet, metadata: OutlineDocu
     `999\nOUTLINE_MODE:${metadata.mode}\n`,
     `999\nOUTLINE_STATUS:${metadata.status}\n`,
     `999\nREPAIR_ACCEPTED:${metadata.repairAccepted}\n`,
+    `999\nREMOVED_COMPONENT_COUNT:${metadata.removedComponentCount}\n`,
     `999\nAXIS_SOURCE:${metadata.axisSource}\n`,
     '999\nMATERIAL_INDEPENDENT:true\n',
-    ...metadata.layers.map((layer) => `999\nOUTLINE_LAYER:${layer.id}:${layer.order}:${layer.zStart}:${layer.zEnd}:${layer.pointCount}:${layer.boundsMm[0]}x${layer.boundsMm[1]}\n`),
+    ...metadata.layers.map((layer) => `999\nOUTLINE_LAYER:${layer.id}:${layer.order}:${layer.zStart}:${layer.zEnd}:${layer.pointCount}:${layer.boundsMm[0]}x${layer.boundsMm[1]}:${layer.removedComponentCount}\n`),
   ].join('');
   return writeSheetDxf(sheet).replace('0\nEOF\n', `${comments}0\nEOF\n`);
 }
@@ -102,9 +103,10 @@ export async function writeOutlinePreviewPdf(
     `outline-mode:${metadata.mode}`,
     `outline-status:${metadata.status}`,
     `repair-accepted:${metadata.repairAccepted}`,
+    `removed-components:${metadata.removedComponentCount}`,
     `axis-source:${metadata.axisSource}`,
     'material-independent:true',
-    ...metadata.layers.map((layer) => `outline-layer:${layer.id}:${layer.order}:${layer.pointCount}:${layer.boundsMm[0]}x${layer.boundsMm[1]}:${layer.zStart}:${layer.zEnd}`),
+    ...metadata.layers.map((layer) => `outline-layer:${layer.id}:${layer.order}:${layer.pointCount}:${layer.boundsMm[0]}x${layer.boundsMm[1]}:${layer.zStart}:${layer.zEnd}:${layer.removedComponentCount}`),
   ]);
   for (const sheet of sheets) {
     const page = pdf.addPage([sheet.width * pointsPerMm, sheet.height * pointsPerMm]);

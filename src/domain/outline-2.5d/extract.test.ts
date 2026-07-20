@@ -66,6 +66,7 @@ describe('extractProjectedContours', () => {
 
     expect(first).toEqual(shuffled);
     expect(first.removedComponentCount).toBeGreaterThanOrEqual(1);
+    expect(first.layers.reduce((sum, layer) => sum + layer.removedComponentCount, 0)).toBe(first.removedComponentCount);
     expect(first.layers).toHaveLength(1);
     expect(first.layers[0].contour.holes).toEqual([]);
     expect(validateOutlineLayer(first.layers[0]).ok).toBe(true);
@@ -114,7 +115,8 @@ describe('extractExactContours', () => {
     const twoComponents = combine(box(0, 0, 20, 12), box(40, 0, 4, 4));
     const first = extractExactContours(twoComponents, selection, specs, DEFAULT_OUTLINE_BUDGETS);
     expect(first).toEqual(extractExactContours(reverseTriangleOrder(twoComponents), selection, specs, DEFAULT_OUTLINE_BUDGETS));
-    expect(first.removedComponentCount).toBe(1);
+    expect(first.removedComponentCount).toBe(0);
+    expect(first.layers[0].removedComponentCount).toBe(0);
     expect(first.layers[0].sourceAreaMm2).toBeCloseTo(240, 6);
     expect(first.layers[0].sourceBoundsMm).toEqual({ minX: -6, minY: -10, maxX: 6, maxY: 10 });
     expect(validateOutlineLayer(first.layers[0]).ok).toBe(true);

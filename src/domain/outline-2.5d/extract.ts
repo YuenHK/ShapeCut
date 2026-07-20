@@ -14,6 +14,7 @@ export type OutlineLayer = {
   readonly sourceAreaMm2: number;
   readonly simplifiedAreaMm2: number;
   readonly sourceBoundsMm: Bounds2;
+  readonly removedComponentCount: number;
 };
 export type OutlineExtraction = {
   readonly layers: readonly OutlineLayer[];
@@ -70,6 +71,7 @@ function makeLayer(
   tolerance: number,
   budgets: OutlineBudgets,
   deadline: number,
+  removedComponentCount: number,
 ): OutlineLayer {
   checkDeadline(deadline);
   const sourceAreaMm2 = Math.abs(signedArea(source, deadline));
@@ -94,6 +96,7 @@ function makeLayer(
     sourceAreaMm2,
     simplifiedAreaMm2,
     sourceBoundsMm,
+    removedComponentCount,
   };
   const validation = validateOutlineLayer(layer, deadline);
   if (!validation.ok) throw new RangeError(`Invalid outline layer: ${validation.reasons.join('; ')}`);
@@ -121,7 +124,7 @@ export function extractProjectedContours(
     const spec = specs[index];
     const raster = rasterProjectLayer(projected, spec, budgets, deadline);
     removedComponentCount += raster.componentCount - 1;
-    layers.push(makeLayer(spec, raster.outer, tolerance, budgets, deadline));
+    layers.push(makeLayer(spec, raster.outer, tolerance, budgets, deadline, raster.componentCount - 1));
   }
   return { layers, cellSizeMm, removedComponentCount };
 }
@@ -272,7 +275,6 @@ export function extractExactContours(
   validateBudgets(budgets);
   const projected = projectMesh(mesh, selection, deadline);
   validateRequest(projected, specs, budgets, deadline);
-  let removedComponentCount = 0;
   const tolerance = Math.max(rasterCellSize(projected) * 1.5, projected.planarDiameter * 0.001);
   const layers: OutlineLayer[] = [];
   for (let index = 0; index < specs.length; index += 1) {
@@ -286,8 +288,7 @@ export function extractExactContours(
     }));
     candidates.sort((left, right) => { checkDeadline(deadline); return right.area - left.area
       || left.minimum[0] - right.minimum[0] || left.minimum[1] - right.minimum[1]; });
-    removedComponentCount += candidates.length - 1;
-    layers.push(makeLayer(spec, candidates[0].points, tolerance, budgets, deadline));
+    layers.push(makeLayer(spec, candidates[0].points, tolerance, budgets, deadline, 0));
   }
-  return { layers, removedComponentCount };
+  return { layers, removedComponentCount: 0 };
 }

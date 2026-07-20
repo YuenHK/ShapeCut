@@ -48,6 +48,7 @@ export function validateOutlineLayer(layer: OutlineLayer, deadline = Infinity): 
   const reasons: string[] = [], points = layer.contour.outer;
   if (expired(deadline)) return { ok: false, reasons: [RUNTIME_REASON] };
   if (!Number.isInteger(layer.index) || layer.index < 0) reasons.push('Layer index must be a non-negative integer');
+  if (!Number.isSafeInteger(layer.removedComponentCount) || layer.removedComponentCount < 0) reasons.push('Removed component count must be a non-negative safe integer');
   if (![layer.zStart, layer.zEnd].every(Number.isFinite) || layer.zEnd <= layer.zStart) reasons.push('Layer Z interval must be finite and positive');
   if (layer.contour.holes.length !== 0) reasons.push('Outline layers must not contain holes');
   if (points.length > 4096) reasons.push('Contour exceeds 4096 points');

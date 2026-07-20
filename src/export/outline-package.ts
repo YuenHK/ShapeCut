@@ -67,6 +67,7 @@ export type OutlineManifestV1 = {
     readonly zStart: number;
     readonly zEnd: number;
     readonly boundsMm: readonly [number, number];
+    readonly removedComponentCount: number;
   }[];
   readonly materialIndependent: true;
 };
@@ -206,6 +207,11 @@ function sortedLayers(result: AutomaticOutlineResult): MeasuredLayer[] {
     throw new RangeError('Outline removed-component count must be a non-negative safe integer');
   }
   if (!['exact', 'outline-2.5d'].includes(result.mode)) throw new RangeError('Outline mode provenance is invalid');
+  const measuredRemoved = result.layers.reduce((sum, layer) => sum + layer.removedComponentCount, 0);
+  if (!Number.isSafeInteger(measuredRemoved) || measuredRemoved !== result.removedComponentCount
+    || (result.mode === 'exact' && measuredRemoved !== 0)) {
+    throw new RangeError('Outline removed-component evidence is inconsistent');
+  }
   if (!['success', 'warning', 'failure'].includes(result.status)) throw new RangeError('Outline status provenance is invalid');
   if (result.status === 'failure' || result.layers.length === 0) throw new RangeError('Cannot package a failed or empty outline result');
   if (result.layers.length > DEFAULT_OUTLINE_BUDGETS.maxLayers) throw new RangeError('Outline result exceeds the 24-layer pipeline budget');
@@ -285,6 +291,7 @@ export function createOutlineDocument(result: AutomaticOutlineResult): Manufactu
       sourceBoundsMm: { ...item.layer.sourceBoundsMm },
       pointCount: item.layer.contour.outer.length,
       sheetIndex,
+      removedComponentCount: item.layer.removedComponentCount,
     });
     cursorX += item.width + SPACING_MM;
     rowHeight = Math.max(rowHeight, item.height);
@@ -325,7 +332,7 @@ function manifestFromDocument(document: ManufacturingDocument): OutlineManifestV
     repairAccepted: metadata.repairAccepted,
     removedComponentCount: metadata.removedComponentCount,
     axisSource: metadata.axisSource,
-    layers: metadata.layers.map(({ id, order, zStart, zEnd, boundsMm }) => ({ id, order, zStart, zEnd, boundsMm })),
+    layers: metadata.layers.map(({ id, order, zStart, zEnd, boundsMm, removedComponentCount }) => ({ id, order, zStart, zEnd, boundsMm, removedComponentCount })),
     materialIndependent: true,
   };
 }
@@ -381,6 +388,7 @@ function validateOutlineDocument(document: ManufacturingDocument): void {
     if (!SAFE_ID_PATTERN.test(layer.id) || ids.has(layer.id) || layer.order !== index + 1
       || !Number.isSafeInteger(layer.pointCount) || layer.pointCount < 3 || layer.pointCount > 4096
       || !Number.isSafeInteger(layer.sheetIndex) || layer.sheetIndex < 0
+      || !Number.isSafeInteger(layer.removedComponentCount) || layer.removedComponentCount < 0
       || !Array.isArray(layer.boundsMm) || layer.boundsMm.length !== 2
       || ![layer.zStart, layer.zEnd, ...layer.boundsMm].every(Number.isFinite) || layer.zEnd <= layer.zStart
       || layer.boundsMm[0] <= 0 || layer.boundsMm[1] <= 0 || layer.boundsMm[0] > MAX_PART_MM || layer.boundsMm[1] > MAX_PART_MM
@@ -398,6 +406,11 @@ function validateOutlineDocument(document: ManufacturingDocument): void {
     }
     assertPublicText(layer.id, 'Outline layer ID');
     ids.add(layer.id);
+  }
+  const removedComponentCount = metadata.layers.reduce((sum, layer) => sum + layer.removedComponentCount, 0);
+  if (!Number.isSafeInteger(removedComponentCount) || removedComponentCount !== metadata.removedComponentCount
+    || (metadata.mode === 'exact' && removedComponentCount !== 0)) {
+    throw new RangeError('Outline removed-component evidence is inconsistent');
   }
 
   const canvasWidth = Math.min(1000, Math.max(300, Math.ceil(Math.max(...metadata.layers.map(({ boundsMm }) => boundsMm[0])) + 10)));
@@ -541,9 +554,10 @@ export async function verifyOutlinePackage(output: OutlinePackage): Promise<void
     `outline-mode:${metadata.mode}`,
     `outline-status:${metadata.status}`,
     `repair-accepted:${metadata.repairAccepted}`,
+    `removed-components:${metadata.removedComponentCount}`,
     `axis-source:${metadata.axisSource}`,
     'material-independent:true',
-    ...metadata.layers.map((layer) => `outline-layer:${layer.id}:${layer.order}:${layer.pointCount}:${layer.boundsMm[0]}x${layer.boundsMm[1]}:${layer.zStart}:${layer.zEnd}`),
+    ...metadata.layers.map((layer) => `outline-layer:${layer.id}:${layer.order}:${layer.pointCount}:${layer.boundsMm[0]}x${layer.boundsMm[1]}:${layer.zStart}:${layer.zEnd}:${layer.removedComponentCount}`),
   ];
   const actualKeywords = keywords === '' ? [] : keywords.split(/\s+/);
   if (exactJson(actualKeywords) !== exactJson(requiredKeywords)) throw new RangeError('Outline PDF metadata reconciliation mismatch');
