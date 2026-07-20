@@ -47,3 +47,10 @@ Both real-file UI cases completed in approximately 2.5 seconds, showed `已簡�
 - Removal evidence is now measured per layer. Projected layers receive `raster.componentCount - 1`; exact layers and exact aggregate are always zero. The public result aggregate must equal the per-layer sum.
 - Canonical document, manifest, project JSON, SVG, DXF, PDF, and ZIP generation carry the aggregate and per-layer values. Validation rejects negative/non-integer values, a forged aggregate, a forged layer count, an aggregate/layer mismatch, and any non-zero exact evidence.
 - Follow-up verification: focused domain/pipeline/export/worker 448/448, full unit 875/875, Chromium 27/27, real-file E2E 11/11 with zero skips, performance 2/2, typecheck/build/diff check passed.
+
+## Runtime reconciliation regression
+
+- A real `convertAutomatically()` result from a synthetic, separated-component broken mesh is structured-cloned before packaging. It has genuine non-zero raster removal evidence; no handcrafted result helper supplies the positive evidence.
+- The positive regression reconciles aggregate and per-layer counts through the canonical document, manifest, project JSON, SVG attributes, DXF comments, PDF keywords/regeneration, and all five ZIP records.
+- Four independently structured-cloned forgeries are rejected: aggregate mutation, layer mutation, aggregate/layer mismatch, and exact-mode non-zero evidence.
+- The real Group browser acceptance independently reads all five ZIP records and reconciles the same non-zero aggregate/per-layer evidence across manifest, project JSON, SVG, DXF, and PDF.

@@ -3,6 +3,10 @@ import { PDFDocument, StandardFonts } from 'pdf-lib';
 import { describe, expect, it } from 'vitest';
 import type { OutlineLayer } from '../domain/outline-2.5d/extract';
 import type { AutomaticOutlineResult } from '../domain/pipeline/automatic-outline-pipeline';
+import { convertAutomatically } from '../domain/pipeline/automatic-outline-pipeline';
+import { writeBinarySTL } from '../domain/mesh/write-stl';
+import { openTetrahedron } from '../test/mesh-builders';
+import type { TriangleMesh } from '../domain/mesh/types';
 import {
   createOutlineDocument,
   createOutlinePackage,
@@ -94,6 +98,17 @@ function result(overrides: Partial<AutomaticOutlineResult> = {}): AutomaticOutli
   };
 }
 
+function separatedOpenComponents(): TriangleMesh {
+  const first = openTetrahedron();
+  return {
+    positions: new Float64Array([
+      ...first.positions,
+      ...Array.from(first.positions, (value, index) => value + (index % 3 === 0 ? 10 : 0)),
+    ]),
+    indices: new Uint32Array([...first.indices, ...Array.from(first.indices, (index) => index + 4)]),
+  };
+}
+
 async function synchronizedOutput(output: OutlinePackage, document: OutlinePackage['document']): Promise<OutlinePackage> {
   const metadata = document.outline!;
   const manifest = {
@@ -127,6 +142,45 @@ function polygonRecords(svg: string) {
 }
 
 describe('material-independent outline package', () => {
+  it('reconciles authentic runtime component-removal evidence and rejects every structured-clone forgery', async () => {
+    const runtime = structuredClone(await convertAutomatically({
+      bytes: writeBinarySTL(separatedOpenComponents(), 'safe'),
+    }));
+    expect(runtime.mode).toBe('outline-2.5d');
+    expect(runtime.removedComponentCount).toBeGreaterThan(0);
+    expect(runtime.layers.reduce((sum, item) => sum + item.removedComponentCount, 0)).toBe(runtime.removedComponentCount);
+
+    const output = await createOutlinePackage(runtime);
+    const project = JSON.parse(output.projectJson);
+    expect(output.document.outline?.removedComponentCount).toBe(runtime.removedComponentCount);
+    expect(output.document.outline?.layers.map((item) => item.removedComponentCount))
+      .toEqual(runtime.layers.map((item) => item.removedComponentCount));
+    expect(output.manifest.removedComponentCount).toBe(runtime.removedComponentCount);
+    expect(output.manifest.layers.map((item) => item.removedComponentCount))
+      .toEqual(runtime.layers.map((item) => item.removedComponentCount));
+    expect(project.document.outline.removedComponentCount).toBe(runtime.removedComponentCount);
+    expect(output.cutSvg).toContain(`data-removed-component-count="${runtime.removedComponentCount}"`);
+    expect(output.cutDxf).toContain(`REMOVED_COMPONENT_COUNT:${runtime.removedComponentCount}`);
+    const pdf = await PDFDocument.load(output.previewPdf);
+    expect(pdf.getKeywords()).toContain(`removed-components:${runtime.removedComponentCount}`);
+    const zip = await JSZip.loadAsync(output.zip);
+    expect(Object.keys(zip.files).sort()).toEqual(['cut.dxf', 'cut.svg', 'manifest.json', 'preview.pdf', 'project.json']);
+    expect(await zip.file('cut.svg')!.async('string')).toBe(output.cutSvg);
+    expect(await zip.file('cut.dxf')!.async('string')).toBe(output.cutDxf);
+    expect(await zip.file('manifest.json')!.async('string')).toBe(output.manifestJson);
+    expect(await zip.file('project.json')!.async('string')).toBe(output.projectJson);
+    expect(await zip.file('preview.pdf')!.async('uint8array')).toEqual(output.previewPdf);
+
+    const forgedAggregate = structuredClone(runtime); Object.assign(forgedAggregate, { removedComponentCount: runtime.removedComponentCount + 1 });
+    const forgedLayer = structuredClone(runtime); Object.assign(forgedLayer.layers[0], { removedComponentCount: forgedLayer.layers[0].removedComponentCount + 1 });
+    const mismatch = structuredClone(runtime); Object.assign(mismatch.layers.at(-1)!, { removedComponentCount: mismatch.layers.at(-1)!.removedComponentCount + 2 });
+    const forgedExact = structuredClone(runtime);
+    Object.assign(forgedExact, { mode: 'exact', status: 'success', warnings: [], repairAccepted: true });
+    Object.assign(forgedExact.axis, { source: 'candidate' }); Object.assign(forgedExact.axis.axis, { confidence: 1 });
+    for (const forged of [forgedAggregate, forgedLayer, mismatch, forgedExact]) {
+      await expect(createOutlinePackage(forged)).rejects.toThrow();
+    }
+  });
   it('rejects forged aggregate, per-layer mismatch, and exact removal evidence', async () => {
     await expect(createOutlinePackage(result({ removedComponentCount: 7 }))).rejects.toThrow(/removed-component/i);
     const projectedLayer = layer('removed', 0, 0, 1, [[0, 0], [0, 3], [3, 3], [3, 0]], 2);

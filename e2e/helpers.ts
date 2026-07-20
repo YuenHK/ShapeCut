@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import JSZip from 'jszip';
+import { PDFDocument } from 'pdf-lib';
 import { expect, type Download, type Page } from '@playwright/test';
 
 export type DownloadedOutline = {
@@ -55,11 +56,20 @@ async function inspectOutlineDownload(download: Download): Promise<DownloadedOut
   const project = JSON.parse(await zip.file('project.json')!.async('string')) as DownloadedOutline['project'];
   const svg = await zip.file('cut.svg')!.async('string');
   const dxf = await zip.file('cut.dxf')!.async('string');
+  const pdf = await PDFDocument.load(await zip.file('preview.pdf')!.async('uint8array'));
   expect(svg).toContain(manifest.sourceHash);
   expect(dxf).toContain(manifest.sourceHash);
   expect(project.document.outline.layers.map(({ id }) => id)).toEqual(manifest.layers.map(({ id }) => id));
   expect(project.document.outline.removedComponentCount).toBe(manifest.removedComponentCount);
   expect(manifest.layers.reduce((sum, layer) => sum + layer.removedComponentCount, 0)).toBe(manifest.removedComponentCount);
+  expect(svg).toContain(`data-removed-component-count="${manifest.removedComponentCount}"`);
+  expect(dxf).toContain(`REMOVED_COMPONENT_COUNT:${manifest.removedComponentCount}`);
+  expect(pdf.getKeywords()).toContain(`removed-components:${manifest.removedComponentCount}`);
+  for (const layer of manifest.layers) {
+    expect(svg).toContain(`data-removed-component-count="${layer.removedComponentCount}"`);
+    expect(dxf).toContain(`:${layer.removedComponentCount}\n`);
+    expect(pdf.getKeywords()).toContain(`:${layer.removedComponentCount}`);
+  }
   expect(project.document.sheets.flatMap(({ entities }) => entities).map(({ id }) => id)).toEqual(manifest.layers.map(({ id }) => id));
   return { manifest, project, entries, sha256: createHash('sha256').update(bytes).digest('hex') };
 }
