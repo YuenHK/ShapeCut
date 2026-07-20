@@ -46,6 +46,11 @@ describe('PWA deployment paths', () => {
     });
     expect(JSON.stringify(manifest)).not.toMatch(/陀螺|spinner|material/i);
     expect(manifest.icons[0].src).toBe('icon.svg');
+    const icon = await readFile(join(output, manifest.icons[0].src), 'utf8');
+    expect(icon).toContain('ShapeCut layered outline');
+    expect(icon).toContain('#14b8a6');
+    expect(icon).toContain('#fff');
+    expect(icon).not.toMatch(/#0f172a|#38bdf8|#f59e0b|陀螺|spinner|material/i);
 
     const scripts = (await readdir(join(output, 'assets'))).filter((file) => file.endsWith('.js'));
     const javascript = (await Promise.all(scripts.map((file) => readFile(join(output, 'assets', file), 'utf8')))).join('\n');
