@@ -483,8 +483,15 @@ describe('material-independent outline package', () => {
     String.raw`source|D:\private alias\model.obj`,
     String.raw`source;\\server\share\model.obj`,
     String.raw`source@\\server-name\share name\model.obj`,
+    String.raw`source;\\\\\server\share\model.obj`,
+    String.raw`source;\\server\\\share\model.obj`,
     'source=//Users/private/model.obj',
     'source;//server/share/model.obj',
+    'source;//server//share/model.obj',
+    ...Array.from({ length: 11 }, (_, leadingIndex) => Array.from({ length: 12 }, (_, separatorIndex) => separatorIndex + 1).map((separatorCount) =>
+      `source;${'\\'.repeat(leadingIndex + 2)}server${'\\'.repeat(separatorCount)}share\\model.obj`)).flat(),
+    ...Array.from({ length: 11 }, (_, leadingIndex) => Array.from({ length: 12 }, (_, separatorIndex) => separatorIndex + 1).map((separatorCount) =>
+      `source;${'/'.repeat(leadingIndex + 2)}server${'/'.repeat(separatorCount)}share/model.obj`)).flat(),
     'source=%2FUsers%2Fprivate%2Fmodel.obj',
     'source=%252FUsers%252Fprivate%252Fmodel.obj',
     'source=%252525252FUsers%252525252Fprivate',
