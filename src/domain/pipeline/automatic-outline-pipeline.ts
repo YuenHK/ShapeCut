@@ -1,5 +1,5 @@
 import { findAxisCandidates } from '../axis/find-axis';
-import { parseSTL } from '../mesh/parse-stl';
+import { MAX_STL_BYTES, parseSTL } from '../mesh/parse-stl';
 import { analyzeMeshProblems } from '../mesh/problem-report';
 import { repairMeshSafe } from '../mesh/repair-mesh';
 import type { MeshProblemReport, TriangleMesh } from '../mesh/types';
@@ -125,6 +125,9 @@ export async function convertAutomatically(
   request: AutomaticOutlineRequest,
   onProgress?: AutomaticOutlineProgress,
 ): Promise<AutomaticOutlineResult> {
+  if (request.bytes.byteLength > MAX_STL_BYTES) {
+    throw new AutomaticOutlineError('RESOURCE_LIMIT', '模型超出安全處理資源上限');
+  }
   const deadline = Date.now() + DEFAULT_OUTLINE_BUDGETS.maxRuntimeMs;
   let lastStage = -1;
   const stages: readonly AutomaticOutlineProgressStage[] = ['reading', 'analyzing', 'simplifying', 'slicing', 'packaging'];

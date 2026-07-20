@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { AutomaticOutlineError, type AutomaticOutlineResult } from '../domain/pipeline/automatic-outline-pipeline';
+import { MAX_STL_BYTES } from '../domain/mesh/parse-stl';
 import { SupersededError } from '../workers/geometry-client';
 import {
   OneClickConverter,
@@ -55,6 +56,26 @@ function services(overrides: Partial<OneClickConverterServices> = {}): OneClickC
 }
 
 describe('OneClickConverter', () => {
+  it('rejects an oversized file before reading bytes and permits a retry', async () => {
+    const user = userEvent.setup();
+    const api = services();
+    const oversized = new File(['x'], 'oversized.stl');
+    const arrayBuffer = vi.fn();
+    Object.defineProperties(oversized, { size: { value: MAX_STL_BYTES + 1 }, arrayBuffer: { value: arrayBuffer } });
+    render(<OneClickConverter services={api} />);
+
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), oversized);
+    expect(await screen.findByRole('alert')).toHaveTextContent('模型太複雜');
+    expect(arrayBuffer).not.toHaveBeenCalled();
+    expect(api.convert).not.toHaveBeenCalled();
+    expect(api.package).not.toHaveBeenCalled();
+    expect(api.cancel).toHaveBeenCalledOnce();
+
+    await user.click(screen.getByRole('button', { name: '選擇另一個模型' }));
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['solid model'], 'retry.stl'));
+    await screen.findByRole('heading', { name: '轉換完成' });
+    expect(api.convert).toHaveBeenCalledOnce();
+  });
   it('starts the whole workflow immediately after one file selection and exposes no wizard controls', async () => {
     const user = userEvent.setup();
     const api = services();

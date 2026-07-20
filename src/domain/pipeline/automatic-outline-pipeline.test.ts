@@ -14,6 +14,7 @@ import {
   type AutomaticOutlineProgressStage,
 } from './automatic-outline-pipeline';
 import * as extraction from '../outline-2.5d/extract';
+import { MAX_STL_BYTES } from '../mesh/parse-stl';
 
 function cylinder(segments = 32): TriangleMesh {
   const positions: number[] = [0, 0, -1, 0, 0, 1];
@@ -165,6 +166,14 @@ describe('automatic outline pipeline', () => {
   it('maps unreadable bytes to a typed invalid STL error', async () => {
     await expect(convertAutomatically({ bytes: new ArrayBuffer(1) }))
       .rejects.toMatchObject({ code: 'INVALID_STL' } satisfies Partial<AutomaticOutlineError>);
+  });
+
+  it('rejects oversized bytes before progress, hashing, or parsing work', async () => {
+    const onProgress = vi.fn();
+    const forged = { byteLength: MAX_STL_BYTES + 1 } as ArrayBuffer;
+    await expect(convertAutomatically({ bytes: forged }, onProgress))
+      .rejects.toMatchObject({ code: 'RESOURCE_LIMIT' } satisfies Partial<AutomaticOutlineError>);
+    expect(onProgress).not.toHaveBeenCalled();
   });
 
   it('maps raster budget exhaustion to a typed resource limit error', async () => {

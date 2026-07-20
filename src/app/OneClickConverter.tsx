@@ -5,6 +5,7 @@ import {
   type AutomaticOutlineResult,
 } from '../domain/pipeline/automatic-outline-pipeline';
 import { SupersededError } from '../workers/geometry-client';
+import { MAX_STL_BYTES } from '../domain/mesh/parse-stl';
 
 export type DownloadFile = { readonly href: string; readonly fileName: string };
 export type OutlineDownloads = {
@@ -163,6 +164,10 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
     const current = ++requestId.current;
     services.cancel();
     releaseCurrentDownloads();
+    if (file.size > MAX_STL_BYTES) {
+      setView({ kind: 'failure', fileName: file.name, message: failureMessage(new AutomaticOutlineError('RESOURCE_LIMIT', '模型超出安全處理資源上限')) });
+      return;
+    }
     setView({ kind: 'processing', fileName: file.name, stage: 'reading' });
     let lastProgressIndex = 0;
     try {

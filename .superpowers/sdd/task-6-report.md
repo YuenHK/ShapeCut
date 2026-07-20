@@ -104,7 +104,7 @@ Both real-file UI cases completed in approximately 2.5 seconds, showed `已簡�
 
 ## Projected resolution fidelity
 
-- Projected extraction now fails closed before rasterization when the selected planar dimensions cannot absorb one raster cell within the approved three-percent bounds-drift limit. It never enlarges, clips, or rescales the model silently.
+- Projected extraction now fails closed after retaining and tracing the raster component, before accepting a layer, when its measured dimensions exceed the approved three-percent bounds-drift limit. It never enlarges, clips, or rescales the model silently.
 - Reviewer repro sizes 0.1 mm, 0.2 mm, and 1 mm are rejected deterministically; a 20 mm broken box remains within three percent. The existing remote-small-component regression remains valid and Knight Fortress integration is unchanged.
 - The pipeline maps unresolved projected resolution to typed `NO_OUTLINE` instead of returning an invalid manufacturing outline.
 
@@ -182,3 +182,9 @@ Both real-file UI cases completed in approximately 2.5 seconds, showed `已簡�
 - The deadline-heavy overlap path no longer creates and compares complete canonical key strings. It canonicalizes forward/reverse rotation into token sequences and compares equal lengths token-by-token at `canonical-equivalence:token-compare`, with first-token and 64-token cadence.
 - Rotated and reversed polygons compare equivalent before triangulation; a near-different polygon proceeds to triangulation. The expiry regression stops exactly at the equivalence token comparison and proves no triangle-pair label was reached.
 - The exported string-returning `canonicalPolygonKey` remains available for non-package compatibility. Audit confirms it is not called or compared in the package deadline overlap path.
+
+## Direct span drift and oversized input guard
+
+- Bounds drift is the maximum direct width/height ratio between retained output and component-local source evidence. Canonical package validation recomputes the same ratio from source bounds and CUT geometry and rejects mismatched diagnostics.
+- The deterministic 18 mm regression produces a 19 mm raster span: each old opposite-edge ratio is only 2.78 percent, while direct span drift is 5.56 percent. It now fails closed; a resolvable 20 mm case remains at or below three percent.
+- `MAX_STL_BYTES` is the single 128 MiB contract. The UI checks `File.size` before `arrayBuffer`, cancels stale work, shows the Traditional Chinese resource-limit failure, and permits retry. The pipeline checks `byteLength` before progress, hashing, parsing, or allocation loops and returns typed `RESOURCE_LIMIT`.
