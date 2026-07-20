@@ -107,3 +107,9 @@ Both real-file UI cases completed in approximately 2.5 seconds, showed `已簡�
 - Projected extraction now fails closed before rasterization when the selected planar dimensions cannot absorb one raster cell within the approved three-percent bounds-drift limit. It never enlarges, clips, or rescales the model silently.
 - Reviewer repro sizes 0.1 mm, 0.2 mm, and 1 mm are rejected deterministically; a 20 mm broken box remains within three percent. The existing remote-small-component regression remains valid and Knight Fortress integration is unchanged.
 - The pipeline maps unresolved projected resolution to typed `NO_OUTLINE` instead of returning an invalid manufacturing outline.
+
+## Restartable worker packaging
+
+- Package creation, PDF generation, ZIP generation, and package verification now run behind `GeometryApi.packageOutline` in the restartable geometry worker. Only structured-clone-safe download contents return, with ZIP and PDF buffer ownership transferred.
+- Conversion and packaging share the latest-job gate. Selecting a replacement model terminates the worker executing either phase; stale packaging rejects with typed `SupersededError`, and the replacement runs in a fresh worker.
+- A real Chromium worker regression starts a six-layer, 4,096-points-per-layer package, supersedes it after submission, proves worker termination and stale rejection, then completes the replacement. E2E observes main-thread long tasks through conversion and download preparation with the unchanged sub-100 ms threshold.

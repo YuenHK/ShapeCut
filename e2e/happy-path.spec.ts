@@ -25,6 +25,12 @@ test('reload returns to a private upload state without retaining the STL', async
 
 test('disconnected safe solids fall back and export authentic removal evidence', async ({ page }) => {
   await page.goto('/');
+  await page.evaluate(() => {
+    (window as unknown as { packageLongTasks: PerformanceEntry[] }).packageLongTasks = [];
+    new PerformanceObserver((list) => (window as unknown as { packageLongTasks: PerformanceEntry[] }).packageLongTasks.push(...list.getEntries()))
+      .observe({ type: 'longtask', buffered: true });
+  });
+  const started = await page.evaluate(() => performance.now());
   await selectModel(page, {
     name: 'disconnected-closed-cylinders.stl',
     mimeType: 'model/stl',
@@ -36,4 +42,7 @@ test('disconnected safe solids fall back and export authentic removal evidence',
   expect(output.manifest.warnings).toContain('精確切片失敗，已改用 2.5D 外形模式');
   expect(output.manifest.removedComponentCount).toBeGreaterThan(0);
   expectFiniteClosedSingleContours(output);
+  const longestMainThreadTask = await page.evaluate((startTime) => Math.max(0, ...(window as unknown as { packageLongTasks: PerformanceEntry[] })
+    .packageLongTasks.filter((entry) => entry.startTime >= startTime).map((entry) => entry.duration)), started);
+  expect(longestMainThreadTask).toBeLessThan(100);
 });

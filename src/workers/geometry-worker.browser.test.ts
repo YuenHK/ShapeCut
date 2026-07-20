@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { finalizer } from 'comlink';
 import { writeBinarySTL } from '../domain/mesh/write-stl';
+import { removalEvidenceFingerprint } from '../domain/pipeline/automatic-outline-pipeline';
 import type { TriangleMesh } from '../domain/mesh/types';
 import {
   interpenetratingTetrahedra,
   openTetrahedron,
+  separatedClosedCylinders,
   tetrahedron,
   tetrahedronWithOneReversedFace,
 } from '../test/mesh-builders';
@@ -12,6 +14,10 @@ import type { GeometryClient } from './geometry-client';
 import { createGeometryWorkerClient } from './geometry-client';
 
 const clients: GeometryClient[] = [];
+const scaledOpenTetrahedron = () => {
+  const mesh = openTetrahedron();
+  return { ...mesh, positions: new Float64Array(Array.from(mesh.positions, (value) => value * 20)) };
+};
 
 afterEach(() => {
   for (const client of clients.splice(0)) client.dispose();
@@ -21,7 +27,7 @@ describe('geometry worker boundary', () => {
   it('proxies automatic progress monotonically across Comlink and transfers the STL bytes', async () => {
     const client = createGeometryWorkerClient();
     clients.push(client);
-    const source = writeBinarySTL(openTetrahedron(), 'safe');
+    const source = writeBinarySTL(scaledOpenTetrahedron(), 'safe');
     const progress: string[] = [];
     const released = vi.fn();
     const onProgress = Object.assign(
@@ -181,13 +187,49 @@ describe('geometry worker boundary', () => {
       expect.objectContaining({ type: 'APPLY' }),
     ));
 
-    const replacement = client.convertAutomatically({ bytes: writeBinarySTL(openTetrahedron(), 'safe') });
+    const replacement = client.convertAutomatically({ bytes: writeBinarySTL(scaledOpenTetrahedron(), 'safe') });
 
     await expect(first).resolves.toBeInstanceOf(Error);
     await expect(first).resolves.toMatchObject({ name: 'SupersededError', code: 'SUPERSEDED', jobId: 1 });
     await expect(replacement).resolves.toMatchObject({ mode: 'outline-2.5d', status: 'warning' });
     expect(terminate).toHaveBeenCalled();
     await vi.waitFor(() => expect(released).toHaveBeenCalledOnce());
+  });
+
+  it('terminates in-flight outline packaging when a replacement conversion starts', async () => {
+    const client = createGeometryWorkerClient();
+    clients.push(client);
+    const runtime = await client.convertAutomatically({ bytes: writeBinarySTL(separatedClosedCylinders(256), 'safe') });
+    for (const layer of runtime.layers) {
+      const clockwise = layer.contour.outer.reduce((sum, point, index) => {
+        const next = layer.contour.outer[(index + 1) % layer.contour.outer.length];
+        return sum + point[0] * next[1] - next[0] * point[1];
+      }, 0) < 0;
+      const points = Array.from({ length: 4096 }, (_, index) => {
+        const angle = (clockwise ? -1 : 1) * index / 4096 * Math.PI * 2;
+        return [5 * Math.cos(angle), 5 * Math.sin(angle)] as const;
+      });
+      const area = Math.abs(points.reduce((sum, point, index) => {
+        const next = points[(index + 1) % points.length];
+        return sum + point[0] * next[1] - next[0] * point[1];
+      }, 0) / 2);
+      Object.assign(layer, {
+        contour: { outer: points, holes: [] }, sourceAreaMm2: area, simplifiedAreaMm2: area,
+        sourceBoundsMm: { minX: -5, minY: -5, maxX: 5, maxY: 5 },
+      });
+    }
+    Object.assign(runtime, { removalEvidenceFingerprint: removalEvidenceFingerprint(runtime) });
+    const terminate = vi.spyOn(Worker.prototype, 'terminate');
+    const postMessage = vi.spyOn(Worker.prototype, 'postMessage');
+    const priorApplyCount = postMessage.mock.calls.length;
+    const first = client.packageOutline(runtime).catch((error: unknown) => error);
+    await vi.waitFor(() => expect(postMessage.mock.calls.length).toBeGreaterThan(priorApplyCount));
+
+    const replacement = client.convertAutomatically({ bytes: writeBinarySTL(separatedClosedCylinders(), 'safe') });
+
+    await expect(first).resolves.toMatchObject({ name: 'SupersededError', code: 'SUPERSEDED' });
+    await expect(replacement).resolves.toMatchObject({ mode: 'outline-2.5d', status: 'warning' });
+    expect(terminate).toHaveBeenCalled();
   });
 
   it('still terminates and recreates when progress finalization throws during cancel', async () => {
@@ -206,7 +248,7 @@ describe('geometry worker boundary', () => {
 
     let replacement!: ReturnType<GeometryClient['convertAutomatically']>;
     expect(() => {
-      replacement = client.convertAutomatically({ bytes: writeBinarySTL(openTetrahedron(), 'safe') });
+      replacement = client.convertAutomatically({ bytes: writeBinarySTL(scaledOpenTetrahedron(), 'safe') });
     }).not.toThrow();
 
     await expect(first).resolves.toMatchObject({ name: 'SupersededError', code: 'SUPERSEDED' });
@@ -240,12 +282,12 @@ describe('geometry worker boundary', () => {
       }, options);
     } as typeof MessagePort.prototype.addEventListener);
     const first = client.convertAutomatically(
-      { bytes: writeBinarySTL(openTetrahedron(), 'safe') },
+      { bytes: writeBinarySTL(scaledOpenTetrahedron(), 'safe') },
       (stage) => { observed.push(`old:${stage}`); },
     ).catch((error: unknown) => error);
     await vi.waitFor(() => expect(queuedMessages.length).toBeGreaterThan(0));
     const replacement = client.convertAutomatically(
-      { bytes: writeBinarySTL(openTetrahedron(), 'safe') },
+      { bytes: writeBinarySTL(scaledOpenTetrahedron(), 'safe') },
       (stage) => { observed.push(`new:${stage}`); },
     );
     addEventListener.mockRestore();

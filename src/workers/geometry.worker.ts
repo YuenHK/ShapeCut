@@ -14,7 +14,8 @@ import {
 } from '../domain/pipeline/automatic-outline-pipeline';
 import type { MeshRepairResult, TriangleMesh } from '../domain/mesh/types';
 import { writeBinarySTL } from '../domain/mesh/write-stl';
-import type { GeometryApi, ImportRepairAnalysis, MeshAnalysis } from './geometry-api';
+import { createOutlinePackage } from '../export/outline-package';
+import type { GeometryApi, ImportRepairAnalysis, MeshAnalysis, OutlinePackageTransfer } from './geometry-api';
 
 function previewMesh(mesh: TriangleMesh, maximumTriangles = 2_000): TriangleMesh {
   const indexLimit = Math.min(mesh.indices.length, maximumTriangles * 3);
@@ -65,6 +66,17 @@ const geometryApi: GeometryApi = {
     } finally {
       progressProxy?.[releaseProxy]();
     }
+  },
+  async packageOutline(result) {
+    const output = await createOutlinePackage(result);
+    const packaged: OutlinePackageTransfer = {
+      zip: output.zip,
+      cutSvg: output.cutSvg,
+      cutDxf: output.cutDxf,
+      previewPdf: output.previewPdf,
+      manifestJson: output.manifestJson,
+    };
+    return transfer(packaged, [packaged.zip.buffer, packaged.previewPdf.buffer]);
   },
   async inspect(input) {
     const sourceHash = hashBuffer(input);

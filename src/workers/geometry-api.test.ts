@@ -38,6 +38,7 @@ function inspectOnly(inspect: GeometryApi['inspect']): GeometryApi {
   return {
     inspect,
     convertAutomatically: vi.fn(),
+    packageOutline: vi.fn(),
     inspectAndFindAxes: vi.fn(),
     analyzeAndRepairForImport: vi.fn(),
     repairAdvanced: vi.fn(),
@@ -346,5 +347,19 @@ describe('geometry worker client', () => {
     await expect(serialization).resolves.toHaveProperty('byteLength', 84);
     expect(client.latestJobId).toBe(2);
     remote.resolve(importRepairAnalysis('ignored'));
+  });
+
+  it('supersedes in-flight outline packaging before starting the replacement job', async () => {
+    const pending = deferred<never>();
+    const api = inspectOnly(vi.fn());
+    api.packageOutline = vi.fn(() => pending.promise);
+    api.convertAutomatically = vi.fn().mockResolvedValue(automaticResult('replacement'));
+    const client = makeGeometryClient(api);
+
+    const first = client.packageOutline(automaticResult('first'));
+    const replacement = client.convertAutomatically({ bytes: new ArrayBuffer(1) });
+
+    await expect(first).rejects.toBeInstanceOf(SupersededError);
+    await expect(replacement).resolves.toMatchObject({ sourceHash: 'replacement' });
   });
 });

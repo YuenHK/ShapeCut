@@ -13,6 +13,13 @@ import type { STLRepairMode } from '../domain/mesh/write-stl';
 
 export type SerializedMesh = TriangleMesh;
 export type AutomaticOutlineProgressTransport = AutomaticOutlineProgress | MessagePort;
+export type OutlinePackageTransfer = {
+  readonly zip: Uint8Array;
+  readonly cutSvg: string;
+  readonly cutDxf: string;
+  readonly previewPdf: Uint8Array;
+  readonly manifestJson: string;
+};
 
 export type MeshAnalysis = {
   readonly sourceHash: string;
@@ -50,6 +57,7 @@ export type GeometryApi = {
     request: AutomaticOutlineRequest,
     onProgress?: AutomaticOutlineProgressTransport,
   ): Promise<AutomaticOutlineResult>;
+  packageOutline(result: AutomaticOutlineResult): Promise<OutlinePackageTransfer>;
   inspectAndFindAxes(input: ArrayBuffer): Promise<ImportAnalysis>;
   analyzeAndRepairForImport(input: ArrayBuffer): Promise<ImportRepairAnalysis>;
   repairAdvanced(original: SerializedMesh, safeMesh: SerializedMesh): Promise<MeshRepairResult>;

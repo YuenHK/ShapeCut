@@ -17,6 +17,7 @@ import type {
   ImportAnalysis,
   ImportRepairAnalysis,
   MeshAnalysis,
+  OutlinePackageTransfer,
   SerializedMesh,
 } from './geometry-api';
 
@@ -50,6 +51,7 @@ export type GeometryClient = {
     request: AutomaticOutlineRequest,
     onProgress?: AutomaticOutlineProgress,
   ): Promise<AutomaticOutlineResult>;
+  packageOutline(result: AutomaticOutlineResult): Promise<OutlinePackageTransfer>;
   analyzeForImport(input: ArrayBuffer): Promise<ImportAnalysis>;
   analyzeAndRepairForImport(input: ArrayBuffer): Promise<ImportRepairAnalysis>;
   repairAdvanced(original: SerializedMesh, safeMesh: SerializedMesh): Promise<MeshRepairResult>;
@@ -119,6 +121,7 @@ export function makeGeometryClient(api: GeometryApi, options: GeometryClientOpti
         gatedProgress,
       );
     }),
+    packageOutline: (result) => run(() => api.packageOutline(result)),
     analyzeForImport: (input) => run(() => api.inspectAndFindAxes(options.transferInput?.(input) ?? input)),
     analyzeAndRepairForImport: (input) => run(() => (
       api.analyzeAndRepairForImport(options.transferInput?.(input) ?? input)
@@ -223,6 +226,7 @@ function dynamicApi(
         throw error;
       }
     },
+    packageOutline: (result) => getRemote().packageOutline(result),
     inspectAndFindAxes: (input) => getRemote().inspectAndFindAxes(input),
     analyzeAndRepairForImport: (input) => getRemote().analyzeAndRepairForImport(input),
     repairAdvanced: (original, safeMesh) => getRemote().repairAdvanced(original, safeMesh),

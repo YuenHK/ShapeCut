@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef } from 'react';
-import { createOutlinePackage } from '../export/outline-package';
 import { createGeometryWorkerClient, type GeometryClient } from '../workers/geometry-client';
 import { OneClickConverter, type OneClickConverterServices, type OutlineDownloads } from './OneClickConverter';
 
@@ -38,10 +37,6 @@ export function createDownloadUrls(files: OutlineDownloadContents, _fileName?: s
   }
 }
 
-export function packageDownloads(result: Parameters<typeof createOutlinePackage>[0], fileName?: string): Promise<OutlineDownloads> {
-  return createOutlinePackage(result).then((files) => createDownloadUrls(files, fileName));
-}
-
 export function createOneClickServices(
   getGeometry: () => GeometryClient,
   cancel = () => getGeometry().cancelActive(),
@@ -49,7 +44,7 @@ export function createOneClickServices(
   return {
     cancel,
     convert: (bytes, onProgress) => getGeometry().convertAutomatically({ bytes }, onProgress),
-    package: packageDownloads,
+    package: (result, fileName) => getGeometry().packageOutline(result).then((files) => createDownloadUrls(files, fileName)),
   };
 }
 
