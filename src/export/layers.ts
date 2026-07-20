@@ -1,6 +1,7 @@
 import type { Polygon2 } from '../domain/decomposition/types';
 import { pointLocation, polygonIntersectionArea, polygonMassProperties, polygonsIntersectOrTouch, validatePolygon } from '../domain/engraving/geometry';
 import { MaterialProfileSchema, type MaterialProfileV1 } from '../domain/materials/schema';
+import type { OutlineMode, OutlineResultStatus } from '../domain/outline-2.5d/types';
 
 export type LayerName = 'CUT' | 'SCORE' | `ENGRAVE_${1 | 2 | 3 | 4 | 5}`;
 export const LAYER_ORDER: readonly LayerName[] = ['CUT', 'SCORE', 'ENGRAVE_1', 'ENGRAVE_2', 'ENGRAVE_3', 'ENGRAVE_4', 'ENGRAVE_5'];
@@ -16,6 +17,24 @@ export type LayerEntity = {
 export type ManufacturingSheet = { readonly width: number; readonly height: number; readonly entities: readonly LayerEntity[] };
 export type PartManifest = { readonly partId: string; readonly quantity: number; readonly assemblyOrder: number };
 export type ArtifactReference = { readonly inputFingerprint: string };
+export type OutlineDocumentLayer = {
+  readonly id: string;
+  readonly order: number;
+  readonly zStart: number;
+  readonly zEnd: number;
+  readonly boundsMm: readonly [number, number];
+  readonly sourceBoundsMm: Readonly<{ minX: number; minY: number; maxX: number; maxY: number }>;
+  readonly pointCount: number;
+  readonly sheetIndex: number;
+};
+export type OutlineDocumentMetadata = {
+  readonly mode: OutlineMode;
+  readonly sourceHash: string;
+  readonly status: OutlineResultStatus;
+  readonly warnings: readonly string[];
+  readonly layers: readonly OutlineDocumentLayer[];
+  readonly materialIndependent: true;
+};
 export type ExportPreflightEvidence = {
   readonly inputFingerprint: string;
   readonly canExport: boolean;
@@ -33,6 +52,7 @@ export type ManufacturingDocument = {
   readonly unit: 'mm';
   readonly sheets: readonly ManufacturingSheet[];
   readonly manifest: readonly PartManifest[];
+  readonly outline?: OutlineDocumentMetadata;
 };
 export type ManufacturingProject = {
   readonly schemaVersion: 1;

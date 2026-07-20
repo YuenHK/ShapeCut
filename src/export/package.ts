@@ -1,7 +1,13 @@
 import JSZip from 'jszip';
 import { classifyMaterialReadiness } from '../domain/materials/schema';
 import { writeSheetDxf } from './dxf';
-import { validateProject, type ManufacturingProject } from './layers';
+import {
+  validateProject,
+  type ManufacturingDocument,
+  type ManufacturingProject,
+  type ManufacturingSheet,
+  type OutlineDocumentMetadata,
+} from './layers';
 import { writeAssemblyPdf, writeTextPdf } from './pdf';
 import { writeProjectJson } from './project-json';
 import { writePartsMapSvg, writeSheetSvg } from './svg';
@@ -50,6 +56,71 @@ export async function buildPackage(project: ManufacturingProject): Promise<Manuf
   zip.file('03-settings/project-settings.json', projectJson);
   zip.file('preflight-report.pdf', preflightPdf);
   return { sheets, assemblyPdf, projectJson, zip: await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' }) };
+}
+
+export function writeOutlineSvg(sheet: ManufacturingSheet, metadata: OutlineDocumentMetadata): string {
+  const layers = new Map(metadata.layers.map((layer) => [layer.id, layer]));
+  return writeSheetSvg(sheet)
+    .replace('<svg ', `<svg data-outline-source-hash="${metadata.sourceHash}" data-material-independent="true" `)
+    .replace(/<polygon id="([^"]+)"/g, (match, id: string) => {
+      const layer = layers.get(id);
+      if (!layer) throw new RangeError(`SVG entity ${id} is missing outline metadata`);
+      return `${match} data-outline-order="${layer.order}" data-z-start="${layer.zStart}" data-z-end="${layer.zEnd}" data-bounds-mm="${layer.boundsMm[0]}x${layer.boundsMm[1]}"`;
+    });
+}
+
+export function writeOutlineDxf(sheet: ManufacturingSheet, metadata: OutlineDocumentMetadata): string {
+  const comments = [
+    `999\nOUTLINE_SOURCE_HASH:${metadata.sourceHash}\n`,
+    '999\nMATERIAL_INDEPENDENT:true\n',
+    ...metadata.layers.map((layer) => `999\nOUTLINE_LAYER:${layer.id}:${layer.order}:${layer.zStart}:${layer.zEnd}:${layer.pointCount}:${layer.boundsMm[0]}x${layer.boundsMm[1]}\n`),
+  ].join('');
+  return writeSheetDxf(sheet).replace('0\nEOF\n', `${comments}0\nEOF\n`);
+}
+
+export async function writeOutlinePreviewPdf(metadata: OutlineDocumentMetadata): Promise<Uint8Array> {
+  return writeTextPdf(
+    'Universal outline preview',
+    metadata.layers.map((layer) => `${layer.order}. ${layer.id} (${layer.pointCount} points, ${layer.boundsMm[0]} x ${layer.boundsMm[1]} mm)`),
+    [
+      `outline-source:${metadata.sourceHash}`,
+      `outline-mode:${metadata.mode}`,
+      `outline-status:${metadata.status}`,
+      'material-independent:true',
+      ...metadata.layers.map((layer) => `outline-layer:${layer.id}:${layer.order}:${layer.pointCount}:${layer.boundsMm[0]}x${layer.boundsMm[1]}:${layer.zStart}:${layer.zEnd}`),
+    ],
+  );
+}
+
+export async function writeOutlineZip(files: {
+  readonly cutSvg: string;
+  readonly cutDxf: string;
+  readonly previewPdf: Uint8Array;
+  readonly projectJson: string;
+  readonly manifestJson: string;
+}): Promise<Uint8Array> {
+  const zip = new JSZip();
+  zip.file('cut.svg', files.cutSvg);
+  zip.file('cut.dxf', files.cutDxf);
+  zip.file('preview.pdf', files.previewPdf);
+  zip.file('project.json', files.projectJson);
+  zip.file('manifest.json', files.manifestJson);
+  return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
+}
+
+export function flattenOutlineSheets(document: ManufacturingDocument): ManufacturingSheet {
+  const gap = 5;
+  const width = Math.max(...document.sheets.map((sheet) => sheet.width));
+  let yOffset = 0;
+  const entities = document.sheets.flatMap((sheet) => {
+    const translated = sheet.entities.map((entity) => ({
+      ...entity,
+      polygon: { points: entity.polygon.points.map(([x, y]) => [x, y + yOffset] as const) },
+    }));
+    yOffset += sheet.height + gap;
+    return translated;
+  });
+  return { width, height: yOffset - gap, entities };
 }
 
 export function preflightReportLines(project: ManufacturingProject): string[] {
