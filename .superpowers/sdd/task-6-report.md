@@ -176,3 +176,9 @@ Both real-file UI cases completed in approximately 2.5 seconds, showed `已簡�
 - Polygon cache identity uses an incrementally computed bounded fingerprint plus a coordinate-token snapshot. A matching fingerprint and length must still pass checkpointed exact coordinate comparison before reuse; a forced-collision mutation regression proves that collision never returns stale canonical data.
 - Canonical forward-versus-backward selection compares tokens at `canonical:forward-backward-compare`; selected-key production checks `canonical:key-assembly`. Large token joins and whole canonical-string comparisons are absent from the deadline path.
 - Ear clipping no longer calls native `splice`. It shifts indices explicitly with `triangulate:index-shift` at the first and every 64 shifted elements. A 130-point regression expires during an early-ear shift and proves triangle-pair processing was never reached.
+
+## Incremental canonical overlap equivalence
+
+- The deadline-heavy overlap path no longer creates and compares complete canonical key strings. It canonicalizes forward/reverse rotation into token sequences and compares equal lengths token-by-token at `canonical-equivalence:token-compare`, with first-token and 64-token cadence.
+- Rotated and reversed polygons compare equivalent before triangulation; a near-different polygon proceeds to triangulation. The expiry regression stops exactly at the equivalence token comparison and proves no triangle-pair label was reached.
+- The exported string-returning `canonicalPolygonKey` remains available for non-package compatibility. Audit confirms it is not called or compared in the package deadline overlap path.

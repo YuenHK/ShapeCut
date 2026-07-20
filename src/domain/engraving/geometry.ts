@@ -257,7 +257,7 @@ export function polygonIntersectionArea(left: Polygon2, right: Polygon2, checkpo
 export function polygonsOverlapArea(left: Polygon2, right: Polygon2, checkpoint: (label: string) => void = () => undefined): boolean {
   const tolerance = lengthTolerance([left, right], (label) => checkpoint(`overlap:${label}`));
   if (!boundsOverlap(bounds(left, (label) => checkpoint(`overlap:left-${label}`)), bounds(right, (label) => checkpoint(`overlap:right-${label}`)), tolerance)) return false;
-  if (canonicalPolygonKey(left, (label) => checkpoint(`overlap:left-${label}`)) === canonicalPolygonKey(right, (label) => checkpoint(`overlap:right-${label}`))) return true;
+  if (canonicalPolygonsEqual(left, right, (label) => checkpoint(`overlap:${label}`))) return true;
   const intersectionArea = polygonIntersectionArea(left, right, (label) => checkpoint(`overlap:${label}`));
   if (!Number.isFinite(intersectionArea)) return true;
   const smallerArea = Math.min(
@@ -336,6 +336,59 @@ export function canonicalPolygonKey(polygon: Polygon2, checkpoint: GeometryCheck
   }
   canonicalKeyCache.set(polygon, { signature, value: key });
   return key;
+}
+
+function canonicalTokenSequence(polygon: Polygon2, checkpoint: GeometryCheckpoint): readonly string[] {
+  const scale = geometryScale(polygon, (label) => checkpoint(`canonical-sequence:geometry-scale:${label}`));
+  const tolerance = Math.max(Number.MIN_VALUE, scale * 1024 * Number.EPSILON);
+  const encoded = new Array<string>(polygon.points.length), reversed = new Array<string>(polygon.points.length);
+  for (let index = 0; index < polygon.points.length; index += 1) {
+    scanCheckpoint(checkpoint, 'canonical-sequence:encoding-scan', index);
+    const [x, y] = polygon.points[index];
+    encoded[index] = `${Math.round(x / tolerance)},${Math.round(y / tolerance)}`;
+  }
+  for (let index = 0; index < encoded.length; index += 1) {
+    scanCheckpoint(checkpoint, 'canonical-sequence:reverse-scan', index);
+    reversed[index] = encoded[encoded.length - index - 1];
+  }
+  const leastRotation = (values: readonly string[]): number => {
+    let left = 0, right = 1, offset = 0;
+    while (left < values.length && right < values.length && offset < values.length) {
+      scanCheckpoint(checkpoint, 'canonical-sequence:least-rotation-scan', offset);
+      const first = values[(left + offset) % values.length], second = values[(right + offset) % values.length];
+      if (first === second) { offset += 1; continue; }
+      if (first > second) { left += offset + 1; if (left === right) left += 1; }
+      else { right += offset + 1; if (left === right) right += 1; }
+      offset = 0;
+    }
+    return Math.min(left, right);
+  };
+  const forwardStart = leastRotation(encoded), backwardStart = leastRotation(reversed);
+  let source = encoded, start = forwardStart;
+  for (let index = 0; index < encoded.length; index += 1) {
+    scanCheckpoint(checkpoint, 'canonical-sequence:orientation-compare', index);
+    const forward = encoded[(forwardStart + index) % encoded.length], backward = reversed[(backwardStart + index) % reversed.length];
+    if (forward === backward) continue;
+    if (backward < forward) { source = reversed; start = backwardStart; }
+    break;
+  }
+  const output = new Array<string>(source.length);
+  for (let index = 0; index < source.length; index += 1) {
+    scanCheckpoint(checkpoint, 'canonical-sequence:reorder-scan', index);
+    output[index] = source[(start + index) % source.length];
+  }
+  return output;
+}
+
+function canonicalPolygonsEqual(left: Polygon2, right: Polygon2, checkpoint: GeometryCheckpoint): boolean {
+  if (left.points.length !== right.points.length) return false;
+  const leftTokens = canonicalTokenSequence(left, (label) => checkpoint(`canonical-equivalence:left:${label}`));
+  const rightTokens = canonicalTokenSequence(right, (label) => checkpoint(`canonical-equivalence:right:${label}`));
+  for (let index = 0; index < leftTokens.length; index += 1) {
+    scanCheckpoint(checkpoint, 'canonical-equivalence:token-compare', index);
+    if (leftTokens[index] !== rightTokens[index]) return false;
+  }
+  return true;
 }
 
 export function polygonMassProperties(polygon: Polygon2, checkpoint: GeometryCheckpoint = noCheckpoint): { readonly area: number; readonly centroid: Point2 } {

@@ -259,20 +259,43 @@ test('polygon overlap exposes the exact triangulation checkpoint', () => {
 
 test.each([
   ['overlap:length-tolerance:coordinate-scan', 'overlap', 'triangulate:outer-loop'],
-  ['overlap:left-canonical:signature:scan', 'overlap', 'overlap:intersection:triangle-pair-loop'],
+  ['overlap:canonical-equivalence:left:canonical-sequence:encoding-scan', 'canonical-overlap', 'overlap:intersection:triangle-pair-loop'],
   ['triangulate:signature:scan', 'intersection', 'triangulate:inner-loop'],
   ['triangulate:signed-area:scan', 'intersection', 'triangulate:inner-loop'],
   ['triangulate:geometry-scale:bounds:scan', 'intersection', 'triangulate:inner-loop'],
 ] as const)('expires exactly in polygon preparation phase %s', (expiryLabel, operation, forbiddenLabel) => {
   const labels: string[] = [];
-  const left = regularPolygon(0, 0, 10, 130), right = regularPolygon(1, 0, 10, 131);
+  const left = regularPolygon(0, 0, 10, 130), right = operation === 'canonical-overlap'
+    ? { points: [...left.points.slice(1), left.points[0]] }
+    : regularPolygon(1, 0, 10, 131);
   const checkpoint = (label: string) => { labels.push(label); if (label === expiryLabel) throw new RangeError('deadline'); };
-  const invoke = () => operation === 'overlap'
+  const invoke = () => operation !== 'intersection'
     ? polygonsOverlapArea(left, right, checkpoint)
     : polygonIntersectionArea(left, right, checkpoint);
   expect(invoke).toThrow('deadline');
   expect(labels.at(-1)).toBe(expiryLabel);
   expect(labels).not.toContain(forbiddenLabel);
+});
+
+test('canonical overlap equivalence compares tokens incrementally before triangulation', () => {
+  const base = regularPolygon(0, 0, 10, 130);
+  const rotated: Polygon2 = { points: [...base.points.slice(37), ...base.points.slice(0, 37)] };
+  const reversed: Polygon2 = { points: [...base.points].reverse() };
+  expect(polygonsOverlapArea(base, rotated)).toBe(true);
+  expect(polygonsOverlapArea(base, reversed)).toBe(true);
+
+  const labels: string[] = [];
+  expect(() => polygonsOverlapArea(base, rotated, (label) => {
+    labels.push(label);
+    if (label === 'overlap:canonical-equivalence:token-compare') throw new RangeError('deadline');
+  })).toThrow('deadline');
+  expect(labels.at(-1)).toBe('overlap:canonical-equivalence:token-compare');
+  expect(labels).not.toContain('overlap:intersection:triangle-pair-loop');
+
+  const near: Polygon2 = { points: base.points.map(([x, y], index) => index === 0 ? [x + 0.01, y] as const : [x, y] as const) };
+  const differentLabels: string[] = [];
+  polygonsOverlapArea(base, near, (label) => differentLabels.push(label));
+  expect(differentLabels).toContain('overlap:triangulate:outer-loop');
 });
 
 test.each(['canonical:forward-backward-compare', 'canonical:key-assembly'])(
