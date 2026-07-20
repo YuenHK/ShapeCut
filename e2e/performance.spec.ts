@@ -25,7 +25,9 @@ test('100k triangle selection stays off the main thread and reaches a bounded re
   const started = Date.now();
   let fileSelected = 0;
   await selectModel(page, fixturePath, async () => { fileSelected = await page.evaluate(() => performance.now()); });
-  await expect(page.getByRole('status').filter({ hasText: /轉換完成/ }).or(page.getByRole('alert'))).toBeVisible({ timeout: 35_000 });
+  const alert = page.getByRole('alert');
+  await expect(alert).toBeVisible({ timeout: 35_000 });
+  await expect(alert).toContainText('模型太複雜，超出這次可處理的上限');
   const elapsedMs = Date.now() - started;
   const longestMainThreadTaskMs = await page.evaluate((selected) => Math.max(0, ...(window as unknown as { longTasks: { startTime: number; duration: number }[] }).longTasks.filter(({ startTime }) => startTime >= selected).map(({ duration }) => duration)), fileSelected);
   await testInfo.attach('100k-performance.json', { body: JSON.stringify({ elapsedMs, longestMainThreadTaskMs }), contentType: 'application/json' });

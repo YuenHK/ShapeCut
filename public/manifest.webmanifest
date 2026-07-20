@@ -1,11 +1,11 @@
 {
-  "name": "陀螺 Laser Kit",
-  "short_name": "Laser Kit",
-  "description": "將旋轉對稱 STL 轉換成多材料 Laser cut 製作套件。",
+  "name": "ShapeCut",
+  "short_name": "ShapeCut",
+  "description": "私隱優先的一鍵 STL 至 Laser Cut 通用外形工具。",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
-  "background_color": "#f8fafc",
-  "theme_color": "#0f172a",
+  "background_color": "#ffffff",
+  "theme_color": "#14b8a6",
   "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
 }

@@ -33,9 +33,18 @@ describe('PWA deployment paths', () => {
     const index = await readFile(join(output, 'index.html'), 'utf8');
     expect(index).toContain('href="/school/spinner/manifest.webmanifest"');
     expect(index).toContain('href="/school/spinner/icon.svg"');
+    expect(index).toContain('<title>ShapeCut</title>');
+    expect(index).toContain('content="#14b8a6"');
+    expect(index).not.toMatch(/陀螺 Laser Kit|多材料/i);
 
     const manifest = JSON.parse(await readFile(join(output, 'manifest.webmanifest'), 'utf8'));
     expect(manifest).toMatchObject({ start_url: './', scope: './' });
+    expect(manifest).toMatchObject({
+      name: 'ShapeCut', short_name: 'ShapeCut',
+      description: '私隱優先的一鍵 STL 至 Laser Cut 通用外形工具。',
+      background_color: '#ffffff', theme_color: '#14b8a6',
+    });
+    expect(JSON.stringify(manifest)).not.toMatch(/陀螺|spinner|material/i);
     expect(manifest.icons[0].src).toBe('icon.svg');
 
     const scripts = (await readdir(join(output, 'assets'))).filter((file) => file.endsWith('.js'));
