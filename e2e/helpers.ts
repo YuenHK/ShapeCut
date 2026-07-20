@@ -34,9 +34,12 @@ export function parseSvgRemovalRecords(svg: string): RemovalRecord[] {
   // cut.svg reserves every polygon as a canonical layer carrier; unrelated polygons fail closed.
   const carriers = [...svg.matchAll(/<polygon\b[^>]*>/g)].map((match) => match[0]);
   const attribute = (tag: string, name: string): string => {
-    const matches = [...tag.matchAll(new RegExp(`(?:\\s)${name}\\s*=\\s*"([^"]*)"`, 'g'))];
-    if (matches.length !== 1) throw new Error(`SVG polygon must contain exactly one ${name} attribute`);
-    return matches[0][1];
+    // Attribute names are whitespace-delimited in XML. Count every assignment first so
+    // an unquoted or single-quoted duplicate cannot disappear from the canonical parser.
+    const lexical = [...tag.matchAll(new RegExp(`(?:\\s)${name}\\s*=`, 'g'))];
+    const parsed = [...tag.matchAll(new RegExp(`(?:\\s)${name}\\s*=\\s*"([^"]*)"`, 'g'))];
+    if (lexical.length !== 1 || parsed.length !== 1) throw new Error(`SVG polygon must contain exactly one valid ${name} attribute`);
+    return parsed[0][1];
   };
   const integerAttribute = (tag: string, name: string): number => {
     const value = attribute(tag, name);
@@ -72,12 +75,13 @@ export function parseDxfRemovalRecords(dxf: string): RemovalRecord[] {
 }
 
 export function parsePdfRemovalRecords(keywords: string): RemovalRecord[] {
-  const tokens = keywords.split(/\s+/), markers = tokens.filter((token) => token.startsWith('outline-layer:'));
-  const records = markers.flatMap((token) => {
+  const markerCount = [...keywords.matchAll(/outline-layer:/g)].length;
+  const tokens = keywords.split(/\s+/).filter((token) => token.startsWith('outline-layer:'));
+  const records = tokens.flatMap((token) => {
     const match = token.match(/^outline-layer:([^:]+):(\d+):(\d+):\d+:[^:]+:([^:]+):([^:]+):(\d+)$/);
     return match ? [{ id: match[1], order: Number(match[2]), index: Number(match[3]), zStart: Number(match[4]), zEnd: Number(match[5]), removedComponentCount: Number(match[6]) }] : [];
   });
-  if (markers.length !== records.length) throw new Error('PDF contains malformed layer metadata marker');
+  if (markerCount !== records.length) throw new Error('PDF contains malformed layer metadata marker');
   return checkedRecords(records, 'PDF');
 }
 

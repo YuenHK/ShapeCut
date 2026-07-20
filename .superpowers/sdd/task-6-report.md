@@ -89,3 +89,9 @@ Both real-file UI cases completed in approximately 2.5 seconds, showed `已簡�
 - Every polygon must contain exactly one complete valid set of `id`, `data-outline-index`, `data-outline-order`, `data-z-start`, `data-z-end`, and `data-removed-component-count`; missing, malformed, and duplicate attributes are rejected before canonical comparison.
 - SVG root aggregate and evidence-fingerprint attributes are counted lexically, independent of whitespace around `=`, and must occur exactly once with the exact canonical value.
 - Raw mutation tests cover an extra polygon, every required polygon attribute missing/malformed/duplicated (including an invalid layer ID), and root attributes with whitespace, malformed unquoted values, and duplicates.
+
+## Complete metadata marker counting
+
+- Each required SVG polygon attribute is first counted lexically as a whitespace-delimited XML assignment, independent of its quote style or value, and only then parsed as exactly one canonical double-quoted value. Name substrings in other attributes do not count.
+- Table-driven mutations reject canonical plus unquoted, canonical plus single-quoted, and malformed plus canonical assignments for every required polygon attribute.
+- PDF validation counts every global `outline-layer:` occurrence before parsing canonical whitespace-delimited records. Embedded, punctuation-prefixed, and duplicate embedded malformed markers can no longer disappear from the oracle.

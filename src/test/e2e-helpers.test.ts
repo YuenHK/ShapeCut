@@ -45,7 +45,7 @@ describe('exact E2E removal record parsers', () => {
   });
 
   it('enumerates every SVG polygon and rejects missing, corrupt, or duplicate identifying attributes', () => {
-    expect(() => parseSvgRemovalRecords(`${svg}<polygon id="extra"/>`)).toThrow(/exactly one data-outline-order/i);
+    expect(() => parseSvgRemovalRecords(`${svg}<polygon id="extra"/>`)).toThrow(/exactly one valid data-outline-order/i);
     for (const name of ['id', 'data-outline-order', 'data-outline-index', 'data-z-start', 'data-z-end', 'data-removed-component-count']) {
       const missing = svg.replace(new RegExp(`\\s${name}="[^"]*"`), '');
       expect(() => parseSvgRemovalRecords(missing)).toThrow();
@@ -54,7 +54,22 @@ describe('exact E2E removal record parsers', () => {
       expect(() => parseSvgRemovalRecords(corrupt)).toThrow();
       const duplicate = svg.replace(new RegExp(`${name}="([^"]*)"`), `${name}="$1" ${name}="$1"`);
       expect(() => parseSvgRemovalRecords(duplicate)).toThrow(/exactly one|malformed/i);
+      const validAndUnquoted = svg.replace(new RegExp(`${name}="([^"]*)"`), `${name}="$1" ${name}=bad`);
+      expect(() => parseSvgRemovalRecords(validAndUnquoted)).toThrow(/exactly one valid/i);
+      const validAndSingleQuoted = svg.replace(new RegExp(`${name}="([^"]*)"`), `${name}="$1" ${name}='bad'`);
+      expect(() => parseSvgRemovalRecords(validAndSingleQuoted)).toThrow(/exactly one valid/i);
+      const malformedAndValid = svg.replace(new RegExp(`${name}="([^"]*)"`), `${name}=bad ${name}="$1"`);
+      expect(() => parseSvgRemovalRecords(malformedAndValid)).toThrow(/exactly one valid/i);
     }
+    expect(() => parseSvgRemovalRecords(svg.replace('id="a"', 'data-shadow-id="ignored" id="a"'))).not.toThrow();
+  });
+
+  it.each([
+    ['embedded malformed marker', `${pdf} junkoutline-layer:bad`],
+    ['punctuation-prefixed marker', `${pdf} ,outline-layer:bad`],
+    ['duplicate embedded marker', `${pdf} junkoutline-layer:a:1:4:4:10x10:0:1:2`],
+  ])('rejects every lexical PDF outline marker: %s', (_label, artifact) => {
+    expect(() => parsePdfRemovalRecords(artifact)).toThrow(/malformed layer metadata marker/i);
   });
 
   it('lexically rejects malformed or duplicate SVG root provenance with whitespace around equals', () => {
