@@ -101,6 +101,12 @@ describe('extractProjectedContours', () => {
     expect(() => extractProjectedContours(box(0, 0, 2, 2), selection, [{ index: 0, zStart: 3, zEnd: 4, zMid: 3.5 }], DEFAULT_OUTLINE_BUDGETS)).toThrow(/empty/i);
     expect(() => extractProjectedContours(box(0, 0, 1_000, 20), selection, specs, DEFAULT_OUTLINE_BUDGETS)).toThrow(/budget/i);
   });
+
+  test('rejects a layer midpoint outside its public interval', () => {
+    expect(() => extractProjectedContours(box(0, 0, 2, 2), selection, [
+      { index: 0, zStart: -0.5, zEnd: 0.5, zMid: 0.75 },
+    ], DEFAULT_OUTLINE_BUDGETS)).toThrow(/midpoint|zMid|interval/i);
+  });
 });
 
 describe('extractExactContours', () => {
@@ -110,10 +116,67 @@ describe('extractExactContours', () => {
     expect(first).toEqual(extractExactContours(reverseTriangleOrder(twoComponents), selection, specs, DEFAULT_OUTLINE_BUDGETS));
     expect(first.removedComponentCount).toBe(1);
     expect(first.layers[0].sourceAreaMm2).toBeCloseTo(240, 6);
+    expect(first.layers[0].sourceBoundsMm).toEqual({ minX: -6, minY: -10, maxX: 6, maxY: 10 });
     expect(validateOutlineLayer(first.layers[0]).ok).toBe(true);
   });
 
   test('rejects open segment graphs', () => {
     expect(() => extractExactContours(box(0, 0, 10, 8, 2, 3), selection, specs, DEFAULT_OUTLINE_BUDGETS)).toThrow(/open/i);
+  });
+
+  test('accepts an exact plane through an ordinary shared vertex', () => {
+    const tetrahedron = mesh([
+      0, 1, 0,
+      0, 0, 1,
+      -1, -1, -1,
+      1, -1, -1,
+    ], [0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3]);
+    const result = extractExactContours(tetrahedron, selection, specs, DEFAULT_OUTLINE_BUDGETS);
+    expect(result.layers).toHaveLength(1);
+    expect(validateOutlineLayer(result.layers[0]).ok).toBe(true);
+  });
+
+  test('accepts shared plane edges contributed from opposite sides exactly once', () => {
+    const octahedron = mesh([
+      1, 0, 0, 0, 1, 0, -1, 0, 0, 0, -1, 0,
+      0, 0, 1, 0, 0, -1,
+    ], [
+      4, 0, 1, 4, 1, 2, 4, 2, 3, 4, 3, 0,
+      5, 1, 0, 5, 2, 1, 5, 3, 2, 5, 0, 3,
+    ]);
+    const result = extractExactContours(octahedron, selection, [
+      { index: 0, zStart: 0, zMid: 0, zEnd: 0.5 },
+    ], DEFAULT_OUTLINE_BUDGETS);
+    expect(result.layers[0].sourceAreaMm2).toBeCloseTo(2, 8);
+    expect(validateOutlineLayer(result.layers[0]).ok).toBe(true);
+  });
+
+  test('fails closed for a one-sided shared plane edge', () => {
+    const foldedTangency = mesh([
+      -1, 0, 0, 1, 0, 0, 0, 1, 1, 0, -1, 1,
+    ], [0, 1, 2, 1, 0, 3]);
+    expect(() => extractExactContours(foldedTangency, selection, specs, DEFAULT_OUTLINE_BUDGETS)).toThrow(/shared plane edge.*ambiguous/i);
+  });
+
+  test('fails closed for a coplanar triangle', () => {
+    expect(() => extractExactContours(sheet(0, 0, 2, 2), selection, specs, DEFAULT_OUTLINE_BUDGETS)).toThrow(/coplanar/i);
+  });
+
+  test('rejects a layer midpoint outside its public interval', () => {
+    expect(() => extractExactContours(box(0, 0, 2, 2), selection, [
+      { index: 0, zStart: -0.5, zEnd: 0.5, zMid: -0.75 },
+    ], DEFAULT_OUTLINE_BUDGETS)).toThrow(/midpoint|zMid|interval/i);
+  });
+
+  test('fails closed when the runtime budget expires during bounded work', () => {
+    const originalNow = Date.now;
+    let now = 0;
+    Date.now = () => { now += 10_001; return now; };
+    try {
+      expect(() => extractExactContours(box(0, 0, 20, 12), selection, specs, DEFAULT_OUTLINE_BUDGETS)).toThrow(/runtime budget/i);
+      expect(() => extractProjectedContours(box(0, 0, 20, 12), selection, specs, DEFAULT_OUTLINE_BUDGETS)).toThrow(/runtime budget/i);
+    } finally {
+      Date.now = originalNow;
+    }
   });
 });

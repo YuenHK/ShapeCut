@@ -1,7 +1,7 @@
 import type { Point2 } from '../decomposition/types';
 import type { TriangleMesh } from '../mesh/types';
 import { projectMesh, rasterCellSize, rasterProjectLayer, type ProjectedMesh } from './raster';
-import { contourBounds, signedArea, simplifyClosedLoop } from './simplify';
+import { contourBounds, signedArea, simplifyClosedLoop, type Bounds2 } from './simplify';
 import type { OutlineAxisSelection, OutlineBudgets, OutlineLayerSpec } from './types';
 import { validateOutlineLayer } from './validate';
 
@@ -13,6 +13,7 @@ export type OutlineLayer = {
   readonly contour: { readonly outer: readonly Point2[]; readonly holes: readonly [] };
   readonly sourceAreaMm2: number;
   readonly simplifiedAreaMm2: number;
+  readonly sourceBoundsMm: Bounds2;
 };
 export type OutlineExtraction = {
   readonly layers: readonly OutlineLayer[];
@@ -20,18 +21,36 @@ export type OutlineExtraction = {
   readonly removedComponentCount: number;
 };
 
-function validateRequest(projected: ProjectedMesh, specs: readonly OutlineLayerSpec[], budgets: OutlineBudgets): void {
-  if (specs.length === 0 || specs.length > budgets.maxLayers) throw new RangeError('Contour extraction requires layers within budget');
-  if (projected.triangles.length * specs.length > budgets.maxTriangleLayerTests) {
-    throw new RangeError('Contour extraction exceeds the triangle-layer test budget');
-  }
-  if (!Number.isFinite(budgets.maxRuntimeMs) || budgets.maxRuntimeMs <= 0 || budgets.maxContourPointsPerLayer > 4096) {
+function checkDeadline(deadline: number): void {
+  if (Date.now() > deadline) throw new RangeError('Contour extraction exceeded the runtime budget');
+}
+
+function validateBudgets(budgets: OutlineBudgets): void {
+  if (!Number.isFinite(budgets.maxRuntimeMs) || budgets.maxRuntimeMs <= 0
+    || !Number.isInteger(budgets.maxContourPointsPerLayer) || budgets.maxContourPointsPerLayer < 3
+    || budgets.maxContourPointsPerLayer > 4096) {
     throw new RangeError('Contour extraction requires valid fail-closed budgets');
   }
 }
 
-function withinDrift(source: readonly Point2[], simplified: readonly Point2[]): boolean {
-  const sourceBounds = contourBounds(source), simplifiedBounds = contourBounds(simplified);
+function validateRequest(projected: ProjectedMesh, specs: readonly OutlineLayerSpec[], budgets: OutlineBudgets, deadline: number): void {
+  checkDeadline(deadline);
+  if (specs.length === 0 || specs.length > budgets.maxLayers) throw new RangeError('Contour extraction requires layers within budget');
+  if (projected.triangles.length * specs.length > budgets.maxTriangleLayerTests) {
+    throw new RangeError('Contour extraction exceeds the triangle-layer test budget');
+  }
+  for (let index = 0; index < specs.length; index += 1) {
+    if ((index & 63) === 0) checkDeadline(deadline);
+    const spec = specs[index];
+    if (![spec.zStart, spec.zMid, spec.zEnd].every(Number.isFinite) || spec.zEnd <= spec.zStart
+      || spec.zMid < spec.zStart || spec.zMid > spec.zEnd) {
+      throw new RangeError('Contour extraction requires each finite layer interval to contain its midpoint');
+    }
+  }
+}
+
+function withinDrift(sourceBounds: Bounds2, simplified: readonly Point2[], deadline: number): boolean {
+  const simplifiedBounds = contourBounds(simplified, deadline);
   const sourceWidth = sourceBounds.maxX - sourceBounds.minX, sourceHeight = sourceBounds.maxY - sourceBounds.minY;
   const ratios = [
     Math.abs(simplifiedBounds.minX - sourceBounds.minX) / Math.max(sourceWidth, Number.EPSILON),
@@ -42,18 +61,27 @@ function withinDrift(source: readonly Point2[], simplified: readonly Point2[]): 
   return ratios.every((ratio) => ratio <= 0.03 + 1e-12);
 }
 
-function makeLayer(spec: OutlineLayerSpec, source: readonly Point2[], tolerance: number, budgets: OutlineBudgets): OutlineLayer {
-  const sourceAreaMm2 = Math.abs(signedArea(source));
+function makeLayer(
+  spec: OutlineLayerSpec,
+  source: readonly Point2[],
+  tolerance: number,
+  budgets: OutlineBudgets,
+  deadline: number,
+): OutlineLayer {
+  checkDeadline(deadline);
+  const sourceAreaMm2 = Math.abs(signedArea(source, deadline));
+  const sourceBoundsMm = contourBounds(source, deadline);
   let currentTolerance = tolerance;
-  let simplified = simplifyClosedLoop(source, currentTolerance, budgets.maxContourPointsPerLayer);
-  let simplifiedAreaMm2 = Math.abs(signedArea(simplified));
-  for (let attempt = 0; attempt < 16 && (!withinDrift(source, simplified)
+  let simplified = simplifyClosedLoop(source, currentTolerance, budgets.maxContourPointsPerLayer, deadline);
+  let simplifiedAreaMm2 = Math.abs(signedArea(simplified, deadline));
+  for (let attempt = 0; attempt < 16 && (!withinDrift(sourceBoundsMm, simplified, deadline)
     || Math.abs(simplifiedAreaMm2 - sourceAreaMm2) / sourceAreaMm2 > 0.03); attempt += 1) {
+    checkDeadline(deadline);
     currentTolerance /= 2;
-    simplified = simplifyClosedLoop(source, currentTolerance, budgets.maxContourPointsPerLayer);
-    simplifiedAreaMm2 = Math.abs(signedArea(simplified));
+    simplified = simplifyClosedLoop(source, currentTolerance, budgets.maxContourPointsPerLayer, deadline);
+    simplifiedAreaMm2 = Math.abs(signedArea(simplified, deadline));
   }
-  if (!withinDrift(source, simplified)) throw new RangeError('Simplified contour bounds drift exceeds three percent');
+  if (!withinDrift(sourceBoundsMm, simplified, deadline)) throw new RangeError('Simplified contour bounds drift exceeds three percent');
   const layer: OutlineLayer = {
     id: `outline-layer-${spec.index}`,
     index: spec.index,
@@ -62,8 +90,9 @@ function makeLayer(spec: OutlineLayerSpec, source: readonly Point2[], tolerance:
     contour: { outer: simplified, holes: [] },
     sourceAreaMm2,
     simplifiedAreaMm2,
+    sourceBoundsMm,
   };
-  const validation = validateOutlineLayer(layer);
+  const validation = validateOutlineLayer(layer, deadline);
   if (!validation.ok) throw new RangeError(`Invalid outline layer: ${validation.reasons.join('; ')}`);
   return layer;
 }
@@ -74,48 +103,94 @@ export function extractProjectedContours(
   specs: readonly OutlineLayerSpec[],
   budgets: OutlineBudgets,
 ): OutlineExtraction {
-  const started = Date.now(), deadline = started + budgets.maxRuntimeMs;
-  const projected = projectMesh(mesh, selection); validateRequest(projected, specs, budgets);
+  validateBudgets(budgets);
+  const deadline = Date.now() + budgets.maxRuntimeMs;
+  const projected = projectMesh(mesh, selection, deadline); validateRequest(projected, specs, budgets, deadline);
   const cellSizeMm = rasterCellSize(projected);
   const width = Math.ceil((projected.maxX - projected.minX) / cellSizeMm) + 3;
   const height = Math.ceil((projected.maxY - projected.minY) / cellSizeMm) + 3;
   if (width * height * specs.length > budgets.maxRasterCellsTotal) throw new RangeError('Projected contour exceeds the total raster cell budget');
   let removedComponentCount = 0;
   const tolerance = Math.max(cellSizeMm * 1.5, projected.planarDiameter * 0.001);
-  const layers = specs.map((spec) => {
+  const layers: OutlineLayer[] = [];
+  for (let index = 0; index < specs.length; index += 1) {
+    checkDeadline(deadline);
+    const spec = specs[index];
     const raster = rasterProjectLayer(projected, spec, budgets, deadline);
     removedComponentCount += raster.componentCount - 1;
-    return makeLayer(spec, raster.outer, tolerance, budgets);
-  });
+    layers.push(makeLayer(spec, raster.outer, tolerance, budgets, deadline));
+  }
   return { layers, cellSizeMm, removedComponentCount };
 }
 
 type Segment = readonly [Point2, Point2];
+type PlaneEdge = { readonly segment: Segment; readonly side: -1 | 1 };
+
 function sliceSegments(projected: ProjectedMesh, z: number, deadline: number): readonly Segment[] {
   const epsilon = Math.max(1e-9, projected.planarDiameter * 1e-10), segments: Segment[] = [];
+  const planeEdges = new Map<string, PlaneEdge[]>();
+  const pointKey = ([x, y]: Point2): string => `${Math.round(x / epsilon)},${Math.round(y / epsilon)}`;
+  const segmentKey = ([a, b]: Segment): string => {
+    const ka = pointKey(a), kb = pointKey(b);
+    return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+  };
   for (let triangleIndex = 0; triangleIndex < projected.triangles.length; triangleIndex += 1) {
-    if ((triangleIndex & 1023) === 0 && Date.now() > deadline) throw new RangeError('Contour extraction exceeded the runtime budget');
+    if ((triangleIndex & 255) === 0) checkDeadline(deadline);
     const triangle = projected.triangles[triangleIndex];
     const vertices = triangle.map((index) => projected.vertices[index]);
     const distances = vertices.map((vertex) => vertex[2] - z);
     if (distances.every((value) => value > epsilon) || distances.every((value) => value < -epsilon)) continue;
-    if (distances.every((value) => Math.abs(value) <= epsilon)) throw new RangeError('Exact contour intersects a coplanar triangle');
+    const onPlane = distances.map((distance, index) => Math.abs(distance) <= epsilon ? index : -1).filter((index) => index >= 0);
+    if (onPlane.length === 3) throw new RangeError('Exact contour intersects a coplanar triangle');
+    if (onPlane.length === 2) {
+      const offPlane = [0, 1, 2].find((index) => !onPlane.includes(index))!;
+      const segment: Segment = [
+        [vertices[onPlane[0]][0], vertices[onPlane[0]][1]],
+        [vertices[onPlane[1]][0], vertices[onPlane[1]][1]],
+      ];
+      const key = segmentKey(segment), values = planeEdges.get(key) ?? [];
+      values.push({ segment, side: distances[offPlane] > 0 ? 1 : -1 });
+      planeEdges.set(key, values);
+      continue;
+    }
+    if (onPlane.length === 1) {
+      const vertexIndex = onPlane[0], others = [0, 1, 2].filter((index) => index !== vertexIndex);
+      if (distances[others[0]] * distances[others[1]] >= 0) continue;
+      const a = vertices[others[0]], b = vertices[others[1]], da = distances[others[0]], db = distances[others[1]];
+      const t = da / (da - db);
+      segments.push([
+        [vertices[vertexIndex][0], vertices[vertexIndex][1]],
+        [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t],
+      ]);
+      continue;
+    }
     const intersections: Point2[] = [];
     for (let edge = 0; edge < 3; edge += 1) {
       const a = vertices[edge], b = vertices[(edge + 1) % 3], da = distances[edge], db = distances[(edge + 1) % 3];
-      if (Math.abs(da) <= epsilon) intersections.push([a[0], a[1]]);
       if ((da < -epsilon && db > epsilon) || (da > epsilon && db < -epsilon)) {
-        const t = da / (da - db); intersections.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+        const t = da / (da - db);
+        intersections.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
       }
     }
-    const unique = intersections.filter((point, index) => intersections.findIndex((other) => Math.hypot(point[0] - other[0], point[1] - other[1]) <= epsilon) === index);
-    if (unique.length === 2 && Math.hypot(unique[0][0] - unique[1][0], unique[0][1] - unique[1][1]) > epsilon) segments.push([unique[0], unique[1]]);
-    else if (unique.length !== 0) throw new RangeError('Exact contour triangle intersection is ambiguous');
+    if (intersections.length !== 2
+      || Math.hypot(intersections[0][0] - intersections[1][0], intersections[0][1] - intersections[1][1]) <= epsilon) {
+      throw new RangeError('Exact contour triangle intersection is ambiguous');
+    }
+    segments.push([intersections[0], intersections[1]]);
+  }
+  let edgeGroupIndex = 0;
+  for (const values of planeEdges.values()) {
+    if ((edgeGroupIndex++ & 255) === 0) checkDeadline(deadline);
+    if (values.length !== 2 || values[0].side === values[1].side) {
+      throw new RangeError('Exact contour shared plane edge is ambiguous');
+    }
+    segments.push(values[0].segment);
   }
   return segments;
 }
 
-function exactLoops(segments: readonly Segment[], diameter: number): readonly (readonly Point2[])[] {
+function exactLoops(segments: readonly Segment[], diameter: number, deadline: number): readonly (readonly Point2[])[] {
+  checkDeadline(deadline);
   if (segments.length === 0) throw new RangeError('Exact contour has an empty segment graph');
   const quantum = Math.max(1e-9, diameter * 1e-9);
   const key = ([x, y]: Point2) => `${Math.round(x / quantum)},${Math.round(y / quantum)}`;
@@ -126,21 +201,36 @@ function exactLoops(segments: readonly Segment[], diameter: number): readonly (r
       points.set(pointKey, candidate);
     }
   };
-  for (const [a, b] of segments) {
+  const uniqueEdges = new Set<string>();
+  for (let index = 0; index < segments.length; index += 1) {
+    if ((index & 255) === 0) checkDeadline(deadline);
+    const [a, b] = segments[index];
     const ka = key(a), kb = key(b);
     if (ka === kb) continue;
+    const edgeKey = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+    if (uniqueEdges.has(edgeKey)) throw new RangeError('Exact contour segment graph overlaps');
+    uniqueEdges.add(edgeKey);
     retainCanonicalPoint(ka, a); retainCanonicalPoint(kb, b);
-    adjacency.set(ka, [...(adjacency.get(ka) ?? []), kb]); adjacency.set(kb, [...(adjacency.get(kb) ?? []), ka]);
+    const aNeighbors = adjacency.get(ka), bNeighbors = adjacency.get(kb);
+    if (aNeighbors) aNeighbors.push(kb); else adjacency.set(ka, [kb]);
+    if (bNeighbors) bNeighbors.push(ka); else adjacency.set(kb, [ka]);
   }
-  if (adjacency.size === 0 || [...adjacency.values()].some((neighbors) => neighbors.length !== 2 || neighbors[0] === neighbors[1])) {
-    throw new RangeError('Exact contour segment graph is open or non-manifold');
+  if (adjacency.size === 0) throw new RangeError('Exact contour segment graph is open or non-manifold');
+  for (const neighbors of adjacency.values()) {
+    checkDeadline(deadline);
+    if (neighbors.length !== 2 || neighbors[0] === neighbors[1]) throw new RangeError('Exact contour segment graph is open or non-manifold');
+    neighbors.sort((left, right) => { checkDeadline(deadline); return left.localeCompare(right); });
   }
-  for (const neighbors of adjacency.values()) neighbors.sort();
   const visited = new Set<string>(), loops: Point2[][] = [];
-  for (const start of [...adjacency.keys()].sort()) {
+  const starts = [...adjacency.keys()];
+  starts.sort((left, right) => { checkDeadline(deadline); return left.localeCompare(right); });
+  for (let startIndex = 0; startIndex < starts.length; startIndex += 1) {
+    if ((startIndex & 255) === 0) checkDeadline(deadline);
+    const start = starts[startIndex];
     if (visited.has(start)) continue;
     const loop: Point2[] = []; let previous: string | undefined, current = start;
     for (let guard = 0; guard <= adjacency.size; guard += 1) {
+      if ((guard & 255) === 0) checkDeadline(deadline);
       if (visited.has(current) && current !== start) throw new RangeError('Exact contour segment graph overlaps');
       if (current === start && loop.length > 0) break;
       visited.add(current); loop.push(points.get(current)!);
@@ -154,8 +244,13 @@ function exactLoops(segments: readonly Segment[], diameter: number): readonly (r
   return loops;
 }
 
-function minimumCoordinates(points: readonly Point2[]): readonly [number, number] {
-  return [Math.min(...points.map(([x]) => x)), Math.min(...points.map(([, y]) => y))];
+function minimumCoordinates(points: readonly Point2[], deadline: number): readonly [number, number] {
+  let minX = Infinity, minY = Infinity;
+  for (let index = 0; index < points.length; index += 1) {
+    if ((index & 255) === 0) checkDeadline(deadline);
+    minX = Math.min(minX, points[index][0]); minY = Math.min(minY, points[index][1]);
+  }
+  return [minX, minY];
 }
 
 export function extractExactContours(
@@ -164,21 +259,25 @@ export function extractExactContours(
   specs: readonly OutlineLayerSpec[],
   budgets: OutlineBudgets,
 ): OutlineExtraction {
-  const deadline = Date.now() + budgets.maxRuntimeMs, projected = projectMesh(mesh, selection);
-  validateRequest(projected, specs, budgets);
+  validateBudgets(budgets);
+  const deadline = Date.now() + budgets.maxRuntimeMs, projected = projectMesh(mesh, selection, deadline);
+  validateRequest(projected, specs, budgets, deadline);
   let removedComponentCount = 0;
   const tolerance = Math.max(rasterCellSize(projected) * 1.5, projected.planarDiameter * 0.001);
-  const layers = specs.map((spec) => {
-    if (Date.now() > deadline) throw new RangeError('Contour extraction exceeded the runtime budget');
-    const loops = [...exactLoops(sliceSegments(projected, spec.zMid, deadline), projected.planarDiameter)];
-    loops.sort((left, right) => {
-      const areaDifference = Math.abs(signedArea(right)) - Math.abs(signedArea(left));
-      if (areaDifference !== 0) return areaDifference;
-      const [leftX, leftY] = minimumCoordinates(left), [rightX, rightY] = minimumCoordinates(right);
-      return leftX - rightX || leftY - rightY;
-    });
-    removedComponentCount += loops.length - 1;
-    return makeLayer(spec, loops[0], tolerance, budgets);
-  });
+  const layers: OutlineLayer[] = [];
+  for (let index = 0; index < specs.length; index += 1) {
+    checkDeadline(deadline);
+    const spec = specs[index];
+    const loops = exactLoops(sliceSegments(projected, spec.zMid, deadline), projected.planarDiameter, deadline);
+    const candidates = loops.map((points) => ({
+      points,
+      area: Math.abs(signedArea(points, deadline)),
+      minimum: minimumCoordinates(points, deadline),
+    }));
+    candidates.sort((left, right) => { checkDeadline(deadline); return right.area - left.area
+      || left.minimum[0] - right.minimum[0] || left.minimum[1] - right.minimum[1]; });
+    removedComponentCount += candidates.length - 1;
+    layers.push(makeLayer(spec, candidates[0].points, tolerance, budgets, deadline));
+  }
   return { layers, removedComponentCount };
 }
