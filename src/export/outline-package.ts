@@ -31,9 +31,10 @@ const HASH_PATTERN = /^[0-9a-f]{32}$/i;
 const SAFE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$/;
 const EMAIL_PATTERN = /\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b/;
 const FILE_URI_PATTERN = /\bfile:\/\/(?:\/|[\p{L}\p{N}._~-]+\/)[^\s"'<>]+/iu;
-const POSIX_PATH_PATTERN = /(?:^|[\s=:'"(])\/(?![\/< >])[\p{L}\p{N}._~-]+(?:\/[\p{L}\p{N}._~-]+)*(?=$|[\s"',;)]|\.[A-Za-z0-9]+$)/u;
+const POSIX_PATH_PATTERN = /(?:^|[\s=:'"(])\/(?![\/< >])[\p{L}\p{N}._~+%-]+(?:\/[\p{L}\p{N}._~+%-]+)*(?=$|[\s"',;)]|\.[A-Za-z0-9]+$)/u;
 const WINDOWS_PATH_PATTERN = /(?:^|[\s=:'"(])(?:[A-Za-z]:[\\/][^\s"'<>]+|\\\\[^\\\s"'<>]+\\[^\s"'<>]+)(?=$|[\s"',;)])/u;
-const FORBIDDEN_PROCESS_PATTERN = /\b(?:slot|hole|engrave|engraving|power|speed|passes?)\b/i;
+const SOURCE_FILE_PATTERN = /(?:^|[\\/])[^\\/\s]*\.stl(?:[\\/]|$)/i;
+const FORBIDDEN_PROCESS_PATTERN = /\b(?:slot|hole|engrave|engraving|power|speed|passes?|(?:laser|cut)(?:power|speed|passes?))\b/i;
 const PROJECTED_WARNINGS = Object.freeze([
   '已簡化模型',
   '原始內部細節、孔洞及細小分離零件已被忽略',
@@ -83,7 +84,7 @@ type MeasuredLayer = {
 
 function assertPublicText(value: string, label: string): void {
   const privateMatch = value.match(EMAIL_PATTERN) ?? value.match(FILE_URI_PATTERN)
-    ?? value.match(POSIX_PATH_PATTERN) ?? value.match(WINDOWS_PATH_PATTERN);
+    ?? value.match(POSIX_PATH_PATTERN) ?? value.match(WINDOWS_PATH_PATTERN) ?? value.match(SOURCE_FILE_PATTERN);
   if (privateMatch) {
     throw new RangeError(`${label} must not contain a private path or email address`);
   }
@@ -484,7 +485,14 @@ export async function verifyOutlinePackage(output: OutlinePackage): Promise<void
 
   [output.cutSvg, output.cutDxf, output.projectJson, output.manifestJson].forEach((value) => assertPublicText(value, 'Outline package'));
   const zip = await JSZip.loadAsync(output.zip);
-  const paths = Object.keys(zip.files).filter((path) => !zip.files[path].dir).sort();
+  const entries = Object.entries(zip.files).sort(([left], [right]) => left.localeCompare(right));
+  for (const [path, entry] of entries) {
+    const originalPath = entry.unsafeOriginalName ?? path;
+    assertPublicText(path, 'Outline ZIP entry');
+    assertPublicText(originalPath, 'Outline ZIP original entry');
+    if (originalPath !== path) throw new RangeError('Outline ZIP original entry name is unsafe or was sanitized');
+  }
+  const paths = entries.map(([path]) => path);
   if (exactJson(paths) !== exactJson(['cut.dxf', 'cut.svg', 'manifest.json', 'preview.pdf', 'project.json'])) {
     throw new RangeError('Outline ZIP entry reconciliation mismatch');
   }

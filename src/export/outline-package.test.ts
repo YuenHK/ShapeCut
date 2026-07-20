@@ -400,13 +400,50 @@ describe('material-independent outline package', () => {
   });
 
   it.each([
+    'extra/',
+    'owner@example.com/',
+    '/Users/private+alias/model/',
+    'laserpower=80/',
+    'source.stl/',
+  ])('rejects every extra ZIP record and scans directory names: %s', async (entryName) => {
+    const output = await createOutlinePackage(result());
+    const zip = await JSZip.loadAsync(output.zip);
+    zip.file(entryName, '', { dir: true });
+    const mutated = { ...output, zip: await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' }) };
+
+    await expect(verifyOutlinePackage(mutated)).rejects.toThrow(/ZIP|entry|private|path|email|process|STL|source/i);
+  });
+
+  it('rejects an unsafe original ZIP record name that JSZip sanitizes to an allowed key', async () => {
+    const output = await createOutlinePackage(result());
+    const zip = await JSZip.loadAsync(output.zip);
+    zip.remove('cut.svg');
+    zip.file('../cut.svg', output.cutSvg);
+    delete zip.files['../'];
+    const mutated = {
+      ...output,
+      zip: await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' }),
+    };
+    const reparsed = await JSZip.loadAsync(mutated.zip);
+    expect(Object.keys(reparsed.files).sort()).toEqual(['cut.dxf', 'cut.svg', 'manifest.json', 'preview.pdf', 'project.json']);
+    expect(reparsed.file('cut.svg')!.unsafeOriginalName).toBe('../cut.svg');
+    expect(await reparsed.file('cut.svg')!.async('string')).toBe(output.cutSvg);
+
+    await expect(verifyOutlinePackage(mutated)).rejects.toThrow(/ZIP|entry|original|unsafe|travers|path/i);
+  });
+
+  it.each([
     'source=/Users/private/model.stl',
+    'source=/Users/private+alias/model.stl',
     'source: file:///Users/private/model.stl',
     String.raw`source=\\server\share\model.stl`,
     String.raw`source=C:\Users\private\model.stl`,
     'contact=owner@example.com',
     'laserPower=80',
+    'laserpower=80',
     'cut_speed=20',
+    'cutspeed=20',
+    'laserpasses=2',
     'passes:2',
   ])('rejects embedded privacy or process provenance: %s', async (warning) => {
     await expect(createOutlinePackage(result({ warnings: [...PROJECTED_WARNINGS, warning] })))
