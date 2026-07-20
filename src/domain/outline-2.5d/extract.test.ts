@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import type { TriangleMesh } from '../mesh/types';
 import { DEFAULT_OUTLINE_BUDGETS, type OutlineAxisSelection, type OutlineLayerSpec } from './types';
-import { ExactContourAmbiguityError, extractExactContours, extractProjectedContours } from './extract';
+import { ExactContourAmbiguityError, extractExactContours, extractProjectedContours, outlineBoundsDriftMetrics } from './extract';
 import { validateOutlineLayer } from './validate';
 
 const selection: OutlineAxisSelection = {
@@ -85,6 +85,22 @@ describe('extractProjectedContours', () => {
     expect(source.maxY - source.minY).toBeCloseTo(20, 8);
     expect(result.layers[0].removedComponentCount).toBeGreaterThan(0);
     expect(result.layers[0].boundsDriftRatio).toBeGreaterThan(0);
+  });
+
+  test('rejects accumulated opposite-edge drift above three percent', () => {
+    const metrics = outlineBoundsDriftMetrics(
+      { minX: -9, minY: -9, maxX: 9, maxY: 9 },
+      { minX: -9.5, minY: -9.5, maxX: 9.5, maxY: 9.5 },
+    );
+    expect(metrics.legacyEdge).toBeLessThanOrEqual(0.03);
+    expect(metrics.direct).toBeGreaterThan(0.03);
+    const candidate = combine(box(0, 0, 18, 18, 2, 3), box(180, 180, 1, 1, 2, 3));
+    expect(() => extractProjectedContours(candidate, selection, specs, DEFAULT_OUTLINE_BUDGETS)).toThrow(/drift|three percent/i);
+  });
+
+  test('accepts direct width and height drift at or below three percent', () => {
+    const result = extractProjectedContours(box(0, 0, 20, 20, 2, 3), selection, specs, DEFAULT_OUTLINE_BUDGETS);
+    expect(result.layers[0].boundsDriftRatio).toBeLessThanOrEqual(0.03 + 1e-12);
   });
 
   test('keeps the largest component, fills holes, and is deterministic after triangle shuffling', () => {

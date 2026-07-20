@@ -465,8 +465,8 @@ function validateOutlineDocument(document: ManufacturingDocument, checkpoint: Pa
       || layer.boundsMm[0] <= 0 || layer.boundsMm[1] <= 0 || layer.boundsMm[0] > MAX_PART_MM || layer.boundsMm[1] > MAX_PART_MM
       || !source || ![source.minX, source.minY, source.maxX, source.maxY].every(Number.isFinite)
       || source.maxX <= source.minX || source.maxY <= source.minY
-      || relativeDifference(source.maxX - source.minX, layer.boundsMm[0]) > 0.06 + 1e-12
-      || relativeDifference(source.maxY - source.minY, layer.boundsMm[1]) > 0.06 + 1e-12) {
+      || relativeDifference(source.maxX - source.minX, layer.boundsMm[0]) > 0.03 + 1e-12
+      || relativeDifference(source.maxY - source.minY, layer.boundsMm[1]) > 0.03 + 1e-12) {
       throw new RangeError('Outline document identity, bounds, or sourceBounds provenance is invalid');
     }
     if (index > 0) {
@@ -537,6 +537,14 @@ function validateOutlineDocument(document: ManufacturingDocument, checkpoint: Pa
     }
     const bounds = contourBounds(entity.polygon.points, Infinity, () => checkpoint('verify:entity-bounds-loop'));
     const actualWidth = bounds.maxX - bounds.minX, actualHeight = bounds.maxY - bounds.minY;
+    const sourceWidth = layer.sourceBoundsMm.maxX - layer.sourceBoundsMm.minX;
+    const sourceHeight = layer.sourceBoundsMm.maxY - layer.sourceBoundsMm.minY;
+    const recomputedBoundsDrift = Math.max(
+      Math.abs(actualWidth - sourceWidth) / sourceWidth, Math.abs(actualHeight - sourceHeight) / sourceHeight,
+    );
+    if (!nearlyEqual(recomputedBoundsDrift, metadata.diagnostics.layers[index].boundsDriftRatio)) {
+      throw new RangeError('Outline diagnostic bounds drift does not match canonical geometry');
+    }
     if (!nearlyEqual(bounds.minX, cursorX) || !nearlyEqual(bounds.minY, cursorY)
       || !nearlyEqual(actualWidth, width) || !nearlyEqual(actualHeight, height)
       || (bounds.minX < MARGIN_MM && !nearlyEqual(bounds.minX, MARGIN_MM))

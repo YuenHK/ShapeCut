@@ -57,24 +57,23 @@ function validateRequest(projected: ProjectedMesh, specs: readonly OutlineLayerS
 }
 
 function withinDrift(sourceBounds: Bounds2, simplified: readonly Point2[], deadline: number): boolean {
-  const simplifiedBounds = contourBounds(simplified, deadline);
-  const sourceWidth = sourceBounds.maxX - sourceBounds.minX, sourceHeight = sourceBounds.maxY - sourceBounds.minY;
-  const ratios = [
-    Math.abs(simplifiedBounds.minX - sourceBounds.minX) / Math.max(sourceWidth, Number.EPSILON),
-    Math.abs(simplifiedBounds.maxX - sourceBounds.maxX) / Math.max(sourceWidth, Number.EPSILON),
-    Math.abs(simplifiedBounds.minY - sourceBounds.minY) / Math.max(sourceHeight, Number.EPSILON),
-    Math.abs(simplifiedBounds.maxY - sourceBounds.maxY) / Math.max(sourceHeight, Number.EPSILON),
-  ];
-  return ratios.every((ratio) => ratio <= 0.03 + 1e-12);
+  return boundsDriftRatio(sourceBounds, simplified, deadline) <= 0.03 + 1e-12;
+}
+
+export function outlineBoundsDriftMetrics(source: Bounds2, output: Bounds2): { readonly direct: number; readonly legacyEdge: number } {
+  const width = source.maxX - source.minX, height = source.maxY - source.minY;
+  return {
+    direct: Math.max(Math.abs((output.maxX - output.minX) - width) / width, Math.abs((output.maxY - output.minY) - height) / height),
+    legacyEdge: Math.max(
+      Math.abs(output.minX - source.minX) / width, Math.abs(output.maxX - source.maxX) / width,
+      Math.abs(output.minY - source.minY) / height, Math.abs(output.maxY - source.maxY) / height,
+    ),
+  };
 }
 
 function boundsDriftRatio(sourceBounds: Bounds2, simplified: readonly Point2[], deadline: number): number {
   const result = contourBounds(simplified, deadline);
-  const width = sourceBounds.maxX - sourceBounds.minX, height = sourceBounds.maxY - sourceBounds.minY;
-  return Math.max(
-    Math.abs(result.minX - sourceBounds.minX) / width, Math.abs(result.maxX - sourceBounds.maxX) / width,
-    Math.abs(result.minY - sourceBounds.minY) / height, Math.abs(result.maxY - sourceBounds.maxY) / height,
-  );
+  return outlineBoundsDriftMetrics(sourceBounds, result).direct;
 }
 
 function makeLayer(
