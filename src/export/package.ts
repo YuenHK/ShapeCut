@@ -59,9 +59,9 @@ export async function buildPackage(project: ManufacturingProject): Promise<Manuf
   return { sheets, assemblyPdf, projectJson, zip: await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' }) };
 }
 
-export function writeOutlineSvg(sheet: ManufacturingSheet, metadata: OutlineDocumentMetadata, checkpoint: () => void = () => undefined): string {
+export function writeOutlineSvg(sheet: ManufacturingSheet, metadata: OutlineDocumentMetadata, checkpoint: (label: string) => void = () => undefined): string {
   const layers = new Map(metadata.layers.map((layer) => [layer.id, layer]));
-  return writeSheetSvg(sheet, checkpoint)
+  return writeSheetSvg(sheet, () => checkpoint('svg:polygon-loop'))
     .replace('<svg ', `<svg data-outline-source-hash="${metadata.sourceHash}" data-outline-mode="${metadata.mode}" data-outline-status="${metadata.status}" data-repair-accepted="${metadata.repairAccepted}" data-removed-component-count="${metadata.removedComponentCount}" data-removal-evidence-fingerprint="${metadata.removalEvidenceFingerprint}" data-diagnostics-fingerprint="${metadata.diagnosticsFingerprint}" data-axis-source="${metadata.axisSource}" data-material-independent="true" `)
     .replace(/<polygon id="([^"]+)"/g, (match, id: string) => {
       const layer = layers.get(id);
@@ -70,7 +70,7 @@ export function writeOutlineSvg(sheet: ManufacturingSheet, metadata: OutlineDocu
     });
 }
 
-export function writeOutlineDxf(sheet: ManufacturingSheet, metadata: OutlineDocumentMetadata, checkpoint: () => void = () => undefined): string {
+export function writeOutlineDxf(sheet: ManufacturingSheet, metadata: OutlineDocumentMetadata, checkpoint: (label: string) => void = () => undefined): string {
   const comments = [
     `999\nOUTLINE_SOURCE_HASH:${metadata.sourceHash}\n`,
     `999\nOUTLINE_MODE:${metadata.mode}\n`,
@@ -83,17 +83,17 @@ export function writeOutlineDxf(sheet: ManufacturingSheet, metadata: OutlineDocu
     '999\nMATERIAL_INDEPENDENT:true\n',
     ...metadata.layers.map((layer) => `999\nOUTLINE_LAYER:${layer.id}:${layer.order}:${layer.index}:${layer.zStart}:${layer.zEnd}:${layer.pointCount}:${layer.boundsMm[0]}x${layer.boundsMm[1]}:${layer.removedComponentCount}\n`),
   ].join('');
-  return writeSheetDxf(sheet, checkpoint).replace('0\nEOF\n', `${comments}0\nEOF\n`);
+  return writeSheetDxf(sheet, () => checkpoint('dxf:polygon-loop')).replace('0\nEOF\n', `${comments}0\nEOF\n`);
 }
 
 export async function writeOutlinePreviewPdf(
   metadata: OutlineDocumentMetadata,
   sheets: readonly ManufacturingSheet[],
-  checkpoint: () => void = () => undefined,
+  checkpoint: (label: string) => void = () => undefined,
 ): Promise<Uint8Array> {
   const pointsPerMm = 72 / 25.4;
   const pdf = await PDFDocument.create({ updateMetadata: false });
-  checkpoint();
+  checkpoint('pdf:create:after');
   const fixedDate = new Date('2000-01-01T00:00:00.000Z');
   pdf.setTitle('Universal outline preview');
   pdf.setSubject('Canonical CUT contour preview');
@@ -115,12 +115,12 @@ export async function writeOutlinePreviewPdf(
     ...metadata.layers.map((layer) => `outline-layer:${layer.id}:${layer.order}:${layer.index}:${layer.pointCount}:${layer.boundsMm[0]}x${layer.boundsMm[1]}:${layer.zStart}:${layer.zEnd}:${layer.removedComponentCount}`),
   ]);
   for (const sheet of sheets) {
-    checkpoint();
+    checkpoint('pdf:sheet-loop');
     const page = pdf.addPage([sheet.width * pointsPerMm, sheet.height * pointsPerMm]);
     for (const entity of sheet.entities) {
-      checkpoint();
+      checkpoint('pdf:entity-loop');
       for (let index = 0; index < entity.polygon.points.length; index += 1) {
-        if ((index & 127) === 0) checkpoint();
+        if ((index & 127) === 0) checkpoint('pdf:point-loop');
         const start = entity.polygon.points[index];
         const end = entity.polygon.points[(index + 1) % entity.polygon.points.length];
         page.drawLine({
@@ -133,7 +133,7 @@ export async function writeOutlinePreviewPdf(
     }
   }
   const output = await pdf.save({ useObjectStreams: false });
-  checkpoint();
+  checkpoint('pdf:save:after');
   return output;
 }
 
@@ -143,7 +143,7 @@ export async function writeOutlineZip(files: {
   readonly previewPdf: Uint8Array;
   readonly projectJson: string;
   readonly manifestJson: string;
-}, checkpoint: () => void = () => undefined): Promise<Uint8Array> {
+}, checkpoint: (label: string) => void = () => undefined): Promise<Uint8Array> {
   const zip = new JSZip();
   zip.file('cut.svg', files.cutSvg);
   zip.file('cut.dxf', files.cutDxf);
@@ -151,18 +151,22 @@ export async function writeOutlineZip(files: {
   zip.file('project.json', files.projectJson);
   zip.file('manifest.json', files.manifestJson);
   const output = await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
-  checkpoint();
+  checkpoint('zip:generate:after');
   return output;
 }
 
-export function flattenOutlineSheets(document: ManufacturingDocument): ManufacturingSheet {
+export function flattenOutlineSheets(document: ManufacturingDocument, checkpoint: (label: string) => void = () => undefined): ManufacturingSheet {
   const gap = 5;
   const width = Math.max(...document.sheets.map((sheet) => sheet.width));
   let yOffset = 0;
   const entities = document.sheets.flatMap((sheet) => {
+    checkpoint('flatten:sheet-loop');
     const translated = sheet.entities.map((entity) => ({
       ...entity,
-      polygon: { points: entity.polygon.points.map(([x, y]) => [x, y + yOffset] as const) },
+      polygon: { points: entity.polygon.points.map(([x, y], index) => {
+        if ((index & 63) === 0) checkpoint('flatten:point-loop');
+        return [x, y + yOffset] as const;
+      }) },
     }));
     yOffset += sheet.height + gap;
     return translated;

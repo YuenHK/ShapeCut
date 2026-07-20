@@ -151,3 +151,9 @@ Both real-file UI cases completed in approximately 2.5 seconds, showed `已簡�
 - One absolute packaging deadline now survives unchanged through creation and verification. Checkpoints run after every awaited PDF/ZIP boundary, after each ZIP entry decompression/read, inside document, SVG, DXF, and PDF polygon loops, and immediately before every successful package/verification return.
 - A deterministic injected clock starts below the deadline and crosses it at the 25th verification checkpoint. The verification rejects instead of succeeding, without wall-clock sleeps or timing-sensitive assertions.
 - Production continues to use `Date.now`; the worker still converts every deadline failure into the public typed `TIME_LIMIT` error across Comlink.
+
+## Labeled packaging checkpoints
+
+- The test seam now names every phase instead of depending on a checkpoint count. The async regression remains valid through `verify:zip-entry:cut.svg:before-read`, changes the injected clock only at `verify:zip-entry:cut.svg:after-read`, and proves that this exact post-await checkpoint rejects with the shared-deadline error.
+- Deterministic synchronous regressions expire at `create:document-point-loop`, `verify:metadata-layer-loop`, and `verify:polygon-validation-loop`. The self-intersection validator checkpoints every outer edge and at most every 64 inner comparisons.
+- Creation/document sorting, layer and manifest metadata mapping, flattening, canonical/SVG/DXF parsing, SVG/DXF/PDF generation, ZIP/PDF async operations, polygon validation/intersection, and final returns all receive the same labeled checkpoint closure and absolute deadline. Pure-domain callers retain no-op defaults.

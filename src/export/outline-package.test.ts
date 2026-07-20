@@ -166,13 +166,34 @@ describe('material-independent outline package', () => {
   it('fails a package deterministically when its shared deadline is already exhausted', async () => {
     await expect(createOutlinePackage(result(), 0)).rejects.toThrow(/shared deadline/i);
   });
-  it('fails deterministically when a valid deadline expires mid-verification', async () => {
+  it('fails immediately after an awaited ZIP read crosses a valid shared deadline', async () => {
     const output = await createOutlinePackage(result());
-    let checkpoints = 0;
-    const now = () => (++checkpoints < 25 ? 0 : 6);
+    let time = 0;
+    const labels: string[] = [];
+    const options = {
+      now: () => time,
+      onCheckpoint: (label: string) => {
+        labels.push(label);
+        if (label === 'verify:zip-entry:cut.svg:after-read') time = 6;
+      },
+    };
 
-    await expect(verifyOutlinePackage(output, 5, now)).rejects.toThrow(/shared deadline/i);
-    expect(checkpoints).toBe(25);
+    await expect(verifyOutlinePackage(output, 5, options)).rejects.toThrow(/shared deadline/i);
+    expect(labels).toContain('verify:zip-entry:cut.svg:before-read');
+    expect(labels.at(-1)).toBe('verify:zip-entry:cut.svg:after-read');
+  });
+  it.each([
+    ['create:document-point-loop', 'create'],
+    ['verify:polygon-validation-loop', 'verify'],
+    ['verify:metadata-layer-loop', 'verify'],
+  ])('fails inside the labeled %s heavy loop during %s', async (expiryLabel, phase) => {
+    const output = phase === 'verify' ? await createOutlinePackage(result()) : undefined;
+    let time = 0;
+    const options = { now: () => time, onCheckpoint: (label: string) => { if (label === expiryLabel) time = 6; } };
+    const operation = phase === 'verify'
+      ? verifyOutlinePackage(output!, 5, options)
+      : createOutlinePackage(result(), 5, options);
+    await expect(operation).rejects.toThrow(/shared deadline/i);
   });
   it('requires and reconciles sanitized diagnostics across canonical outputs', async () => {
     const missing = structuredClone(result());

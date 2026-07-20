@@ -65,7 +65,8 @@ function segmentsIntersect(a: Point2, b: Point2, c: Point2, d: Point2, tolerance
     || pointOnSegment(a, c, d, tolerance) || pointOnSegment(b, c, d, tolerance);
 }
 
-export function validatePolygon(polygon: Polygon2): boolean {
+export function validatePolygon(polygon: Polygon2, checkpointOrIndex: (() => void) | number = () => undefined): boolean {
+  const checkpoint = typeof checkpointOrIndex === 'function' ? checkpointOrIndex : () => undefined;
   if (polygon === null || typeof polygon !== 'object' || !Array.isArray(polygon.points)
     || polygon.points.length < 3 || polygon.points.length > MAX_POLYGON_POINTS) return false;
   for (let index = 0; index < polygon.points.length; index += 1) {
@@ -81,8 +82,10 @@ export function validatePolygon(polygon: Polygon2): boolean {
   const scale = geometryScale(polygon);
   if (Math.abs(signedArea(polygon)) <= scale * scale * 128 * Number.EPSILON) return false;
   for (let first = 0; first < polygon.points.length; first += 1) {
+    checkpoint();
     const firstNext = (first + 1) % polygon.points.length;
     for (let second = first + 1; second < polygon.points.length; second += 1) {
+      if ((second & 63) === 0) checkpoint();
       const secondNext = (second + 1) % polygon.points.length;
       if (first === second || firstNext === second || secondNext === first) continue;
       if (segmentsIntersect(polygon.points[first], polygon.points[firstNext], polygon.points[second], polygon.points[secondNext], tolerance)) return false;
@@ -213,11 +216,12 @@ export function polygonsOverlapArea(left: Polygon2, right: Polygon2): boolean {
   return intersectionArea > areaTolerance;
 }
 
-export function polygonsIntersectOrTouch(left: Polygon2, right: Polygon2): boolean {
+export function polygonsIntersectOrTouch(left: Polygon2, right: Polygon2, checkpoint: () => void = () => undefined): boolean {
   if (polygonsOverlapArea(left, right)) return true;
   const tolerance = lengthTolerance([left, right]);
   if (!boundsOverlap(bounds(left), bounds(right), tolerance)) return false;
   for (let leftIndex = 0; leftIndex < left.points.length; leftIndex += 1) for (let rightIndex = 0; rightIndex < right.points.length; rightIndex += 1) {
+    if ((rightIndex & 63) === 0) checkpoint();
     if (segmentsIntersect(left.points[leftIndex], left.points[(leftIndex + 1) % left.points.length], right.points[rightIndex], right.points[(rightIndex + 1) % right.points.length], tolerance)) return true;
   }
   return pointLocation(left, right.points[0]) >= 0 || pointLocation(right, left.points[0]) >= 0;
