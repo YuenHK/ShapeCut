@@ -17,6 +17,32 @@ afterEach(() => {
 });
 
 describe('geometry worker boundary', () => {
+  it('proxies automatic progress monotonically across Comlink and transfers the STL bytes', async () => {
+    const client = createGeometryWorkerClient();
+    clients.push(client);
+    const source = writeBinarySTL(openTetrahedron(), 'safe');
+    const progress: string[] = [];
+
+    const result = await client.convertAutomatically({ bytes: source }, (stage) => progress.push(stage));
+
+    expect(source.byteLength).toBe(0);
+    expect(result).toMatchObject({ mode: 'outline-2.5d', status: 'warning' });
+    expect(result.layers[0].sourceBoundsMm).toEqual(expect.objectContaining({
+      minX: expect.any(Number), minY: expect.any(Number), maxX: expect.any(Number), maxY: expect.any(Number),
+    }));
+    expect(progress).toEqual(['reading', 'analyzing', 'simplifying', 'slicing', 'packaging']);
+  });
+
+  it('preserves typed automatic failure codes across Comlink', async () => {
+    const client = createGeometryWorkerClient();
+    clients.push(client);
+
+    await expect(client.convertAutomatically({ bytes: new ArrayBuffer(1) })).rejects.toMatchObject({
+      name: 'AutomaticOutlineError',
+      code: 'INVALID_STL',
+    });
+  });
+
   it('parses and inspects an STL through Comlink with transferred input ownership', async () => {
     const client = createGeometryWorkerClient();
     clients.push(client);
@@ -115,21 +141,22 @@ describe('geometry worker boundary', () => {
     expect(result.candidates).toEqual([]);
   });
 
-  it('terminates the executing worker on supersede and completes the replacement on a fresh worker', async () => {
+  it('terminates an automatic conversion on supersede and completes the replacement on a fresh worker', async () => {
     const terminate = vi.spyOn(Worker.prototype, 'terminate');
     const postMessage = vi.spyOn(Worker.prototype, 'postMessage');
     const client = createGeometryWorkerClient();
     clients.push(client);
-    const first = client.analyzeAndRepairForImport(writeBinarySTL(disconnectedTriangles(20_000), 'safe'))
+    const first = client.convertAutomatically({ bytes: writeBinarySTL(disconnectedTriangles(20_000), 'safe') })
       .catch((error: unknown) => error);
     await vi.waitFor(() => expect(postMessage.mock.calls.map(([message]) => message)).toContainEqual(
       expect.objectContaining({ type: 'APPLY' }),
     ));
 
-    const replacement = client.analyzeAndRepairForImport(writeBinarySTL(tetrahedron(), 'safe'));
+    const replacement = client.convertAutomatically({ bytes: writeBinarySTL(openTetrahedron(), 'safe') });
 
     await expect(first).resolves.toBeInstanceOf(Error);
-    await expect(replacement).resolves.toMatchObject({ safeRepair: { accepted: true } });
+    await expect(first).resolves.toMatchObject({ name: 'SupersededError', code: 'SUPERSEDED', jobId: 1 });
+    await expect(replacement).resolves.toMatchObject({ mode: 'outline-2.5d', status: 'warning' });
     expect(terminate).toHaveBeenCalled();
   });
 });

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { AutomaticOutlineResult } from '../domain/pipeline/automatic-outline-pipeline';
 import { tetrahedron } from '../test/mesh-builders';
 import type { GeometryApi, ImportRepairAnalysis, MeshAnalysis } from './geometry-api';
 import { makeGeometryClient, SupersededError } from './geometry-client';
@@ -31,6 +32,7 @@ function analysis(sourceHash: string): MeshAnalysis {
 function inspectOnly(inspect: GeometryApi['inspect']): GeometryApi {
   return {
     inspect,
+    convertAutomatically: vi.fn(),
     inspectAndFindAxes: vi.fn(),
     analyzeAndRepairForImport: vi.fn(),
     repairAdvanced: vi.fn(),
@@ -38,6 +40,22 @@ function inspectOnly(inspect: GeometryApi['inspect']): GeometryApi {
     findAxes: vi.fn(),
     decompose: vi.fn(),
     engrave: vi.fn(),
+  };
+}
+
+function automaticResult(sourceHash: string): AutomaticOutlineResult {
+  return {
+    sourceHash,
+    mode: 'exact',
+    status: 'success',
+    axis: {
+      source: 'candidate',
+      axis: { origin: [0, 0, 0], direction: [0, 0, 1], confidence: 1, confirmed: true },
+    },
+    layers: [],
+    warnings: [],
+    originalReport: importRepairAnalysis(sourceHash).originalReport,
+    repairAccepted: true,
   };
 }
 
@@ -104,6 +122,42 @@ function importRepairAnalysis(sourceHash: string): ImportRepairAnalysis {
 }
 
 describe('geometry worker client', () => {
+  it('forwards automatic conversion progress without requiring a Comlink callback in unit mocks', async () => {
+    const onProgress = vi.fn();
+    const api = inspectOnly(vi.fn());
+    api.convertAutomatically = vi.fn(async (_request, progress) => {
+      progress?.('reading');
+      progress?.('packaging');
+      return automaticResult('automatic');
+    });
+    const client = makeGeometryClient(api);
+    const bytes = new ArrayBuffer(4);
+
+    await expect(client.convertAutomatically({ bytes }, onProgress)).resolves.toMatchObject({ sourceHash: 'automatic' });
+
+    expect(api.convertAutomatically).toHaveBeenCalledWith({ bytes }, onProgress);
+    expect(onProgress.mock.calls).toEqual([['reading'], ['packaging']]);
+  });
+
+  it('supersedes an active automatic conversion before starting its replacement', async () => {
+    const firstRemote = deferred<AutomaticOutlineResult>();
+    const api = inspectOnly(vi.fn());
+    api.convertAutomatically = vi.fn()
+      .mockReturnValueOnce(firstRemote.promise)
+      .mockResolvedValueOnce(automaticResult('replacement'));
+    const abortExecution = vi.fn();
+    const client = makeGeometryClient(api, { abortExecution });
+
+    const first = client.convertAutomatically({ bytes: new ArrayBuffer(8) });
+    await Promise.resolve();
+    const second = client.convertAutomatically({ bytes: new ArrayBuffer(8) });
+
+    await expect(first).rejects.toMatchObject({ code: 'SUPERSEDED', jobId: 1 });
+    await expect(second).resolves.toMatchObject({ sourceHash: 'replacement' });
+    expect(abortExecution).toHaveBeenCalledOnce();
+    firstRemote.resolve(automaticResult('ignored'));
+  });
+
   it('drops a stale result as soon as a newer job starts', async () => {
     const firstRemote = deferred<MeshAnalysis>();
     const secondRemote = deferred<MeshAnalysis>();

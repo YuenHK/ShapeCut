@@ -1,9 +1,15 @@
-import { releaseProxy, transfer, wrap, type Remote } from 'comlink';
+import { proxy, releaseProxy, transfer, wrap, type Remote } from 'comlink';
 import type { AxisCandidate } from '../domain/axis/find-axis';
 import type { SpinnerKit } from '../domain/decomposition/types';
 import type { EngravingMap } from '../domain/engraving/height-field';
 import type { MeshRepairResult } from '../domain/mesh/types';
 import type { STLRepairMode } from '../domain/mesh/write-stl';
+import {
+  AutomaticOutlineError,
+  type AutomaticOutlineProgress,
+  type AutomaticOutlineRequest,
+  type AutomaticOutlineResult,
+} from '../domain/pipeline/automatic-outline-pipeline';
 import type {
   DecompositionRequest,
   EngravingRequest,
@@ -30,6 +36,7 @@ type ActiveJob = {
 
 export type GeometryClientOptions = {
   readonly transferInput?: (input: ArrayBuffer) => ArrayBuffer;
+  readonly transferAutomaticRequest?: (request: AutomaticOutlineRequest) => AutomaticOutlineRequest;
   readonly transferMesh?: (mesh: SerializedMesh) => SerializedMesh;
   /** Stops CPU work already executing behind the API boundary. Must be synchronous and idempotent. */
   readonly abortExecution?: () => void;
@@ -39,6 +46,10 @@ export type GeometryClientOptions = {
 export type GeometryClient = {
   readonly latestJobId: number;
   analyze(input: ArrayBuffer): Promise<MeshAnalysis>;
+  convertAutomatically(
+    request: AutomaticOutlineRequest,
+    onProgress?: AutomaticOutlineProgress,
+  ): Promise<AutomaticOutlineResult>;
   analyzeForImport(input: ArrayBuffer): Promise<ImportAnalysis>;
   analyzeAndRepairForImport(input: ArrayBuffer): Promise<ImportRepairAnalysis>;
   repairAdvanced(original: SerializedMesh, safeMesh: SerializedMesh): Promise<MeshRepairResult>;
@@ -93,6 +104,10 @@ export function makeGeometryClient(api: GeometryApi, options: GeometryClientOpti
   return {
     get latestJobId() { return latestJobId; },
     analyze: (input) => run(() => api.inspect(options.transferInput?.(input) ?? input)),
+    convertAutomatically: (request, onProgress) => run(() => api.convertAutomatically(
+      options.transferAutomaticRequest?.(request) ?? request,
+      onProgress,
+    )),
     analyzeForImport: (input) => run(() => api.inspectAndFindAxes(options.transferInput?.(input) ?? input)),
     analyzeAndRepairForImport: (input) => run(() => (
       api.analyzeAndRepairForImport(options.transferInput?.(input) ?? input)
@@ -151,6 +166,7 @@ function createRestartableGeometryClient(initialWorker: Worker, workerFactory: (
   });
   return makeGeometryClient(api, {
     transferInput: (input) => transfer(input, [input]),
+    transferAutomaticRequest: (request) => transfer(request, [request.bytes]),
     transferMesh: (mesh) => transfer(mesh, [mesh.positions.buffer, mesh.indices.buffer]),
     abortExecution: releaseCurrentWorker,
     release: releaseCurrentWorker,
@@ -168,6 +184,16 @@ function createGeometryWorker(): Worker {
 function dynamicApi(getRemote: () => Remote<GeometryApi>): GeometryApi {
   return {
     inspect: (input) => getRemote().inspect(input),
+    convertAutomatically: async (request, onProgress) => {
+      try {
+        return await getRemote().convertAutomatically(request, onProgress ? proxy(onProgress) : undefined);
+      } catch (error) {
+        if (isSerializedAutomaticOutlineError(error)) {
+          throw new AutomaticOutlineError(error.code, error.message);
+        }
+        throw error;
+      }
+    },
     inspectAndFindAxes: (input) => getRemote().inspectAndFindAxes(input),
     analyzeAndRepairForImport: (input) => getRemote().analyzeAndRepairForImport(input),
     repairAdvanced: (original, safeMesh) => getRemote().repairAdvanced(original, safeMesh),
@@ -176,4 +202,13 @@ function dynamicApi(getRemote: () => Remote<GeometryApi>): GeometryApi {
     decompose: (request) => getRemote().decompose(request),
     engrave: (request) => getRemote().engrave(request),
   };
+}
+
+function isSerializedAutomaticOutlineError(
+  error: unknown,
+): error is { readonly name: 'AutomaticOutlineError'; readonly code: AutomaticOutlineError['code']; readonly message: string } {
+  return typeof error === 'object' && error !== null
+    && (error as { readonly name?: unknown }).name === 'AutomaticOutlineError'
+    && typeof (error as { readonly code?: unknown }).code === 'string'
+    && typeof (error as { readonly message?: unknown }).message === 'string';
 }

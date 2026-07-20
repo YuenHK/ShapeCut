@@ -2,6 +2,11 @@ import type { AxisCandidate } from '../domain/axis/find-axis';
 import type { DecompositionOptions, LathedProfile, MaterialInput, SpinnerKit } from '../domain/decomposition/types';
 import type { EngravingLevelCount, EngravingMap, HeightField } from '../domain/engraving/height-field';
 import type { QuantizeOptions } from '../domain/engraving/quantize';
+import type {
+  AutomaticOutlineProgress,
+  AutomaticOutlineRequest,
+  AutomaticOutlineResult,
+} from '../domain/pipeline/automatic-outline-pipeline';
 import type { MeshInspection, TriangleMesh } from '../domain/mesh/types';
 import type { MeshProblemReport, MeshRepairResult } from '../domain/mesh/types';
 import type { STLRepairMode } from '../domain/mesh/write-stl';
@@ -40,6 +45,10 @@ export type EngravingRequest = {
 /** Structured-clone-safe boundary for all CPU-heavy geometry operations. */
 export type GeometryApi = {
   inspect(input: ArrayBuffer): Promise<MeshAnalysis>;
+  convertAutomatically(
+    request: AutomaticOutlineRequest,
+    onProgress?: AutomaticOutlineProgress,
+  ): Promise<AutomaticOutlineResult>;
   inspectAndFindAxes(input: ArrayBuffer): Promise<ImportAnalysis>;
   analyzeAndRepairForImport(input: ArrayBuffer): Promise<ImportRepairAnalysis>;
   repairAdvanced(original: SerializedMesh, safeMesh: SerializedMesh): Promise<MeshRepairResult>;

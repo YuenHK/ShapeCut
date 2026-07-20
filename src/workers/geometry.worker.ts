@@ -7,6 +7,10 @@ import { inspectMesh } from '../domain/mesh/inspect-mesh';
 import { parseSTL } from '../domain/mesh/parse-stl';
 import { analyzeMeshProblems } from '../domain/mesh/problem-report';
 import { repairMeshSafe } from '../domain/mesh/repair-mesh';
+import {
+  AutomaticOutlineError,
+  convertAutomatically,
+} from '../domain/pipeline/automatic-outline-pipeline';
 import type { MeshRepairResult, TriangleMesh } from '../domain/mesh/types';
 import { writeBinarySTL } from '../domain/mesh/write-stl';
 import type { GeometryApi, ImportRepairAnalysis, MeshAnalysis } from './geometry-api';
@@ -41,6 +45,16 @@ function hashBuffer(input: ArrayBuffer): string {
 }
 
 const geometryApi: GeometryApi = {
+  async convertAutomatically(request, onProgress) {
+    try {
+      return convertAutomatically(request, onProgress);
+    } catch (error) {
+      if (error instanceof AutomaticOutlineError) {
+        throw { name: error.name, code: error.code, message: error.message };
+      }
+      throw error;
+    }
+  },
   async inspect(input) {
     const sourceHash = hashBuffer(input);
     const mesh = parseSTL(input);
