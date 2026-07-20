@@ -69,3 +69,9 @@ Both real-file UI cases completed in approximately 2.5 seconds, showed `已簡�
 - Export validates the fingerprint at its public boundary and propagates it through the canonical document, manifest, project JSON, SVG, DXF, PDF, and ZIP regeneration checks.
 - A runtime fixture has distinct per-layer removal counts. A sum-preserving count swap and a full ordered layer identity swap are rejected even though the aggregate is unchanged.
 - This non-secret deterministic fingerprint detects accidental or runtime mutation; it is not presented as authentication against an attacker who can recompute it.
+
+## Exact E2E metadata oracle
+
+- E2E now independently parses complete ordered SVG polygon attributes, DXF `OUTLINE_LAYER` comments, and PDF `outline-layer` keyword records before exact deep comparison with manifest/project evidence.
+- Parsers require exact cardinality and unique layer IDs/indexes; unit mutations prove missing, extra, swapped, duplicate-ID, and duplicate-index records fail, including records whose removal counts are identical.
+- Aggregate removal and evidence-fingerprint metadata must occur exactly once per SVG, DXF, and PDF and equal the canonical values.

@@ -21,6 +21,37 @@ export type DownloadedOutline = {
   readonly sha256: string;
 };
 
+export type RemovalRecord = { readonly id: string; readonly order: number; readonly index: number; readonly zStart: number; readonly zEnd: number; readonly removedComponentCount: number };
+
+function checkedRecords(records: RemovalRecord[], label: string): RemovalRecord[] {
+  if (new Set(records.map(({ id }) => id)).size !== records.length || new Set(records.map(({ index }) => index)).size !== records.length) throw new Error(`${label} contains duplicate layer identity`);
+  return records.sort((a, b) => a.order - b.order);
+}
+
+export function parseSvgRemovalRecords(svg: string): RemovalRecord[] {
+  return checkedRecords([...svg.matchAll(/<polygon id="([^"]+)"[^>]*data-outline-order="(\d+)"[^>]*data-outline-index="(\d+)"[^>]*data-z-start="([^"]+)"[^>]*data-z-end="([^"]+)"[^>]*data-removed-component-count="(\d+)"/g)].map((match) => ({ id: match[1], order: Number(match[2]), index: Number(match[3]), zStart: Number(match[4]), zEnd: Number(match[5]), removedComponentCount: Number(match[6]) })), 'SVG');
+}
+
+export function parseDxfRemovalRecords(dxf: string): RemovalRecord[] {
+  return checkedRecords([...dxf.matchAll(/999\nOUTLINE_LAYER:([^:\n]+):(\d+):(\d+):([^:\n]+):([^:\n]+):\d+:[^:\n]+:(\d+)\n/g)].map((match) => ({ id: match[1], order: Number(match[2]), index: Number(match[3]), zStart: Number(match[4]), zEnd: Number(match[5]), removedComponentCount: Number(match[6]) })), 'DXF');
+}
+
+export function parsePdfRemovalRecords(keywords: string): RemovalRecord[] {
+  return checkedRecords(keywords.split(/\s+/).flatMap((token) => {
+    const match = token.match(/^outline-layer:([^:]+):(\d+):(\d+):\d+:[^:]+:([^:]+):([^:]+):(\d+)$/);
+    return match ? [{ id: match[1], order: Number(match[2]), index: Number(match[3]), zStart: Number(match[4]), zEnd: Number(match[5]), removedComponentCount: Number(match[6]) }] : [];
+  }), 'PDF');
+}
+
+export function assertExactRemovalRecords(actual: readonly RemovalRecord[], expected: readonly RemovalRecord[]): void {
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error('Removal layer records do not exactly match canonical order and identity');
+}
+
+function exactlyOne(text: string, pattern: RegExp, expected: string, label: string): void {
+  const matches = [...text.matchAll(pattern)];
+  if (matches.length !== 1 || matches[0][1] !== expected) throw new Error(`${label} must contain exactly one matching removal provenance record`);
+}
+
 export async function selectModel(page: Page, fixture: string | { name: string; mimeType: string; buffer: Buffer }, beforeSetInput?: () => Promise<void>) {
   await beforeSetInput?.();
   await page.getByLabel('選擇 STL 模型').setInputFiles(fixture);
@@ -73,13 +104,18 @@ async function inspectOutlineDownload(download: Download): Promise<DownloadedOut
   expect(svg).toContain(`data-removal-evidence-fingerprint="${manifest.removalEvidenceFingerprint}"`);
   expect(dxf).toContain(`REMOVAL_EVIDENCE_FINGERPRINT:${manifest.removalEvidenceFingerprint}`);
   expect(pdf.getKeywords()).toContain(`removal-evidence:${manifest.removalEvidenceFingerprint}`);
-  for (const layer of manifest.layers) {
-    const svgRecord = new RegExp(`<polygon id="${layer.id}"[^>]*data-outline-order="${layer.order}"[^>]*data-outline-index="${layer.index}"[^>]*data-z-start="${layer.zStart}"[^>]*data-z-end="${layer.zEnd}"[^>]*data-removed-component-count="${layer.removedComponentCount}"`);
-    expect(svg).toMatch(svgRecord);
-    expect(dxf).toMatch(new RegExp(`OUTLINE_LAYER:${layer.id}:${layer.order}:${layer.index}:${layer.zStart}:${layer.zEnd}:[^\\n]*:${layer.removedComponentCount}\\n`));
-    const pdfRecord = new RegExp(`^outline-layer:${layer.id}:${layer.order}:${layer.index}:.*:${layer.zStart}:${layer.zEnd}:${layer.removedComponentCount}$`);
-    expect(pdf.getKeywords()?.split(/\s+/).some((token) => pdfRecord.test(token))).toBe(true);
-  }
+  const expectedRecords = manifest.layers.map(({ id, order, index, zStart, zEnd, removedComponentCount }) => ({ id, order, index, zStart, zEnd, removedComponentCount }));
+  assertExactRemovalRecords(parseSvgRemovalRecords(svg), expectedRecords);
+  assertExactRemovalRecords(parseDxfRemovalRecords(dxf), expectedRecords);
+  assertExactRemovalRecords(parsePdfRemovalRecords(pdf.getKeywords() ?? ''), expectedRecords);
+  expect(new Set(expectedRecords.map(({ id }) => id)).size).toBe(expectedRecords.length);
+  expect(new Set(expectedRecords.map(({ index }) => index)).size).toBe(expectedRecords.length);
+  exactlyOne(svg, /<svg [^>]*data-removed-component-count="(\d+)"/g, String(manifest.removedComponentCount), 'SVG aggregate');
+  exactlyOne(svg, /<svg [^>]*data-removal-evidence-fingerprint="([0-9a-f]+)"/g, manifest.removalEvidenceFingerprint, 'SVG fingerprint');
+  exactlyOne(dxf, /REMOVED_COMPONENT_COUNT:(\d+)\n/g, String(manifest.removedComponentCount), 'DXF aggregate');
+  exactlyOne(dxf, /REMOVAL_EVIDENCE_FINGERPRINT:([0-9a-f]+)\n/g, manifest.removalEvidenceFingerprint, 'DXF fingerprint');
+  exactlyOne(pdf.getKeywords() ?? '', /(?:^|\s)removed-components:(\d+)(?=\s|$)/g, String(manifest.removedComponentCount), 'PDF aggregate');
+  exactlyOne(pdf.getKeywords() ?? '', /(?:^|\s)removal-evidence:([0-9a-f]+)(?=\s|$)/g, manifest.removalEvidenceFingerprint, 'PDF fingerprint');
   expect(project.document.sheets.flatMap(({ entities }) => entities).map(({ id }) => id)).toEqual(manifest.layers.map(({ id }) => id));
   return { manifest, project, entries, sha256: createHash('sha256').update(bytes).digest('hex') };
 }
