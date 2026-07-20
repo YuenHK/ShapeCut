@@ -101,7 +101,7 @@ function result(overrides: Partial<AutomaticOutlineResult> = {}): AutomaticOutli
     topology: { triangleCount: 1, boundaryEdgeCount: 0, nonManifoldEdgeCount: 0, degenerateTriangleCount: 0, duplicateTriangleCount: 0, inconsistentWindingEdgeCount: 0, selfIntersectionCount: 0, selfIntersectionAnalysisComplete: true },
     repairDecision: value.repairAccepted ? 'accepted' : 'projected-original',
     rasterCellSizeMm: value.mode === 'exact' ? null : 0.05,
-    layers: value.layers.map(({ id, simplificationToleranceMm, boundsDriftRatio, areaDriftRatio }) => ({ id, simplificationToleranceMm, boundsDriftRatio, areaDriftRatio })),
+    layers: value.layers.map(({ id, simplificationToleranceMm, boundsDriftRatio, areaDriftRatio }) => ({ id, simplificationToleranceMm, boundsDriftRatio, areaDriftRatio, areaEvidenceBasis: value.mode === 'exact' ? 'exact-slice-pre-simplification' as const : 'retained-raster-pre-simplification' as const })),
   } });
   return { ...value, removalEvidenceFingerprint: overrides.removalEvidenceFingerprint ?? removalEvidenceFingerprint(value) };
 }
@@ -163,6 +163,9 @@ async function pdfKeywords(bytes: Uint8Array): Promise<string[]> {
 }
 
 describe('material-independent outline package', () => {
+  it('fails a package deterministically when its shared deadline is already exhausted', async () => {
+    await expect(createOutlinePackage(result(), 0)).rejects.toThrow(/shared deadline/i);
+  });
   it('requires and reconciles sanitized diagnostics across canonical outputs', async () => {
     const missing = structuredClone(result());
     delete (missing as unknown as { diagnostics?: AutomaticOutlineResult['diagnostics'] }).diagnostics;

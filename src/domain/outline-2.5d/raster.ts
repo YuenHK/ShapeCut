@@ -17,6 +17,8 @@ export type RasterContour = {
   readonly outer: readonly Point2[];
   readonly occupiedCellCount: number;
   readonly componentCount: number;
+  readonly sourceBoundsMm: Readonly<{ minX: number; minY: number; maxX: number; maxY: number }>;
+  readonly sourceAreaMm2: number;
 };
 
 function checkDeadline(deadline: number): void {
@@ -326,6 +328,67 @@ export function rasterCellSize(projected: ProjectedMesh): number {
   return Math.min(0.5, Math.max(0.05, projected.planarDiameter / 512));
 }
 
+function convexHull(points: readonly Point2[]): Point2[] {
+  const sorted = [...new Map(points.map((point) => [`${point[0]},${point[1]}`, point])).values()]
+    .sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cross = (a: Point2, b: Point2, c: Point2) => (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+  const half = (values: readonly Point2[]) => {
+    const result: Point2[] = [];
+    for (const point of values) {
+      while (result.length >= 2 && cross(result[result.length - 2], result[result.length - 1], point) <= 0) result.pop();
+      result.push(point);
+    }
+    return result;
+  };
+  return [...half(sorted).slice(0, -1), ...half([...sorted].reverse()).slice(0, -1)];
+}
+
+function selectedSourceEvidence(
+  projected: ProjectedMesh, activeTriangles: readonly number[], selected: Uint8Array,
+  width: number, height: number, originX: number, originY: number, cellSize: number,
+): { readonly bounds: RasterContour['sourceBoundsMm']; readonly area: number } {
+  const parent = activeTriangles.map((_, index) => index), vertexOwner = new Map<number, number>();
+  const find = (value: number): number => parent[value] === value ? value : (parent[value] = find(parent[value]));
+  const join = (left: number, right: number) => { const a = find(left), b = find(right); if (a !== b) parent[Math.max(a, b)] = Math.min(a, b); };
+  activeTriangles.forEach((triangleIndex, localIndex) => {
+    for (const vertex of projected.triangles[triangleIndex]) {
+      const owner = vertexOwner.get(vertex);
+      if (owner === undefined) vertexOwner.set(vertex, localIndex); else join(localIndex, owner);
+    }
+  });
+  const groups = new Map<number, Set<number>>();
+  activeTriangles.forEach((triangleIndex, localIndex) => {
+    const vertices = groups.get(find(localIndex)) ?? new Set<number>();
+    for (const vertex of projected.triangles[triangleIndex]) vertices.add(vertex);
+    groups.set(find(localIndex), vertices);
+  });
+  const candidates = [...groups.values()].map((vertices) => {
+    const points = [...vertices].map((vertex): Point2 => {
+      const [x, y] = projected.vertices[vertex];
+      return [x, y];
+    });
+    let score = 0;
+    for (const [x, y] of points) {
+      const cellX = Math.floor((x - originX) / cellSize), cellY = Math.floor((y - originY) / cellSize);
+      let touches = false;
+      for (let dy = -1; dy <= 1 && !touches; dy += 1) for (let dx = -1; dx <= 1; dx += 1) {
+        const nx = cellX + dx, ny = cellY + dy;
+        if (nx >= 0 && nx < width && ny >= 0 && ny < height && selected[ny * width + nx]) { touches = true; break; }
+      }
+      if (touches) score += 1;
+    }
+    const hull = convexHull(points);
+    const area = Math.abs(hull.reduce((sum, point, index) => { const next = hull[(index + 1) % hull.length]; return sum + point[0] * next[1] - next[0] * point[1]; }, 0) / 2);
+    return { points, score, area };
+  }).sort((a, b) => b.score - a.score || b.area - a.area);
+  const sourcePoints = candidates.filter(({ score }) => score > 0).flatMap(({ points }) => points);
+  const hull = convexHull(sourcePoints);
+  const area = Math.abs(hull.reduce((sum, point, index) => { const next = hull[(index + 1) % hull.length]; return sum + point[0] * next[1] - next[0] * point[1]; }, 0) / 2);
+  if (sourcePoints.length === 0 || area <= 0) throw new RangeError('Projected contour cannot identify retained source component');
+  const xs = sourcePoints.map(([x]) => x), ys = sourcePoints.map(([, y]) => y);
+  return { bounds: { minX: Math.min(...xs), minY: Math.min(...ys), maxX: Math.max(...xs), maxY: Math.max(...ys) }, area };
+}
+
 export function rasterProjectLayer(
   projected: ProjectedMesh,
   spec: OutlineLayerSpec,
@@ -342,18 +405,23 @@ export function rasterProjectLayer(
   const height = Math.ceil((projected.maxY - projected.minY) / cellSize) + 3;
   if (width > budgets.maxRasterWidth || height > budgets.maxRasterHeight) throw new RangeError('Projected contour exceeds the raster dimension budget');
   const mask = new Uint8Array(width * height);
+  const activeTriangles: number[] = [];
   for (let index = 0; index < projected.triangles.length; index += 1) {
     if ((index & 255) === 0) checkDeadline(deadline);
     const triangle = projected.triangles[index], vertices = triangle.map((vertex) => projected.vertices[vertex]);
     const minZ = Math.min(...vertices.map(([, , z]) => z)), maxZ = Math.max(...vertices.map(([, , z]) => z));
     if (maxZ < spec.zStart || minZ > spec.zEnd) continue;
+    activeTriangles.push(index);
     rasterizeTriangle(mask, width, height, vertices.map(([x, y]) => [(x - originX) / cellSize, (y - originY) / cellSize] as const), deadline);
   }
   const closed = close3x3(mask, width, height, deadline); fillHoles(closed, width, height, deadline);
   const selected = greatestComponent(closed, width, height, deadline);
+  const source = selectedSourceEvidence(projected, activeTriangles, selected.mask, width, height, originX, originY, cellSize);
   return {
     outer: traceOuter(selected.mask, width, height, originX, originY, cellSize, deadline),
     occupiedCellCount: selected.count,
     componentCount: selected.components,
+    sourceBoundsMm: source.bounds,
+    sourceAreaMm2: source.area,
   };
 }

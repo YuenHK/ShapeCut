@@ -68,7 +68,15 @@ const geometryApi: GeometryApi = {
     }
   },
   async packageOutline(result) {
-    const output = await createOutlinePackage(result);
+    let output: Awaited<ReturnType<typeof createOutlinePackage>>;
+    try {
+      output = await createOutlinePackage(result, Date.now() + 30_000);
+    } catch (error) {
+      if (error instanceof Error && /deadline|runtime|time limit/i.test(error.message)) {
+        throw { name: 'AutomaticOutlineError', code: 'TIME_LIMIT', message: '模型處理超出時間上限' };
+      }
+      throw error;
+    }
     const packaged: OutlinePackageTransfer = {
       zip: output.zip,
       cutSvg: output.cutSvg,

@@ -36,7 +36,7 @@ export type AutomaticOutlineDiagnostics = {
   readonly topology: Readonly<Pick<MeshProblemReport['inspection'], 'triangleCount' | 'boundaryEdgeCount' | 'nonManifoldEdgeCount' | 'degenerateTriangleCount'>> & Readonly<Pick<MeshProblemReport, 'duplicateTriangleCount' | 'inconsistentWindingEdgeCount' | 'selfIntersectionCount' | 'selfIntersectionAnalysisComplete'>>;
   readonly repairDecision: 'accepted' | 'projected-original';
   readonly rasterCellSizeMm: number | null;
-  readonly layers: readonly { readonly id: string; readonly simplificationToleranceMm: number; readonly boundsDriftRatio: number; readonly areaDriftRatio: number }[];
+  readonly layers: readonly { readonly id: string; readonly simplificationToleranceMm: number; readonly boundsDriftRatio: number; readonly areaDriftRatio: number; readonly areaEvidenceBasis: 'exact-slice-pre-simplification' | 'retained-raster-pre-simplification' }[];
 };
 export type AutomaticOutlineRequest = { readonly bytes: ArrayBuffer };
 export type AutomaticOutlineProgress = (stage: AutomaticOutlineProgressStage) => void | Promise<void>;
@@ -94,7 +94,7 @@ function diagnostics(extraction: { readonly layers: readonly OutlineLayer[]; rea
     topology: { triangleCount, boundaryEdgeCount, nonManifoldEdgeCount, degenerateTriangleCount, duplicateTriangleCount, inconsistentWindingEdgeCount, selfIntersectionCount, selfIntersectionAnalysisComplete },
     repairDecision: repairAccepted ? 'accepted' : 'projected-original',
     rasterCellSizeMm: extraction.cellSizeMm ?? null,
-    layers: extraction.layers.map(({ id, simplificationToleranceMm, boundsDriftRatio, areaDriftRatio }) => ({ id, simplificationToleranceMm, boundsDriftRatio, areaDriftRatio })),
+    layers: extraction.layers.map(({ id, simplificationToleranceMm, boundsDriftRatio, areaDriftRatio }) => ({ id, simplificationToleranceMm, boundsDriftRatio, areaDriftRatio, areaEvidenceBasis: extraction.cellSizeMm === undefined ? 'exact-slice-pre-simplification' as const : 'retained-raster-pre-simplification' as const })),
   };
 }
 

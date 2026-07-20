@@ -84,10 +84,11 @@ function makeLayer(
   budgets: OutlineBudgets,
   deadline: number,
   removedComponentCount: number,
+  sourceEvidence?: Readonly<{ bounds: Bounds2; area: number }>,
 ): OutlineLayer {
   checkDeadline(deadline);
-  const sourceAreaMm2 = Math.abs(signedArea(source, deadline));
-  const sourceBoundsMm = contourBounds(source, deadline);
+  const sourceAreaMm2 = sourceEvidence?.area ?? Math.abs(signedArea(source, deadline));
+  const sourceBoundsMm = sourceEvidence?.bounds ?? contourBounds(source, deadline);
   let currentTolerance = tolerance;
   let simplified = simplifyClosedLoop(source, currentTolerance, budgets.maxContourPointsPerLayer, deadline);
   let simplifiedAreaMm2 = Math.abs(signedArea(simplified, deadline));
@@ -99,6 +100,8 @@ function makeLayer(
     simplifiedAreaMm2 = Math.abs(signedArea(simplified, deadline));
   }
   if (!withinDrift(sourceBoundsMm, simplified, deadline)) throw new RangeError('Simplified contour bounds drift exceeds three percent');
+  const finalAreaDrift = Math.abs(simplifiedAreaMm2 - sourceAreaMm2) / sourceAreaMm2;
+  if (finalAreaDrift > 0.03 + 1e-12) throw new RangeError(`Projected component area drift exceeds three percent (${finalAreaDrift})`);
   const layer: OutlineLayer = {
     id: `outline-layer-${spec.index}`,
     index: spec.index,
@@ -110,7 +113,7 @@ function makeLayer(
     sourceBoundsMm,
     simplificationToleranceMm: currentTolerance,
     boundsDriftRatio: boundsDriftRatio(sourceBoundsMm, simplified, deadline),
-    areaDriftRatio: Math.abs(simplifiedAreaMm2 - sourceAreaMm2) / sourceAreaMm2,
+    areaDriftRatio: finalAreaDrift,
     removedComponentCount,
   };
   const validation = validateOutlineLayer(layer, deadline);
@@ -128,10 +131,6 @@ export function extractProjectedContours(
   validateBudgets(budgets);
   const projected = projectMesh(mesh, selection, deadline); validateRequest(projected, specs, budgets, deadline);
   const cellSizeMm = rasterCellSize(projected);
-  const projectedWidth = projected.maxX - projected.minX, projectedHeight = projected.maxY - projected.minY;
-  if (Math.min(projectedWidth, projectedHeight) < cellSizeMm / 0.03) {
-    throw new RangeError('Projected contour resolution would exceed three percent bounds drift');
-  }
   const width = Math.ceil((projected.maxX - projected.minX) / cellSizeMm) + 3;
   const height = Math.ceil((projected.maxY - projected.minY) / cellSizeMm) + 3;
   if (width * height * specs.length > budgets.maxRasterCellsTotal) throw new RangeError('Projected contour exceeds the total raster cell budget');
@@ -143,7 +142,9 @@ export function extractProjectedContours(
     const spec = specs[index];
     const raster = rasterProjectLayer(projected, spec, budgets, deadline);
     removedComponentCount += raster.componentCount - 1;
-    layers.push(makeLayer(spec, raster.outer, tolerance, budgets, deadline, raster.componentCount - 1));
+    layers.push(makeLayer(spec, raster.outer, tolerance, budgets, deadline, raster.componentCount - 1, {
+      bounds: raster.sourceBoundsMm, area: Math.abs(signedArea(raster.outer, deadline)),
+    }));
   }
   return { layers, cellSizeMm, removedComponentCount };
 }

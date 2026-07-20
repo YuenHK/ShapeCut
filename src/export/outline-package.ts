@@ -51,6 +51,9 @@ const PROJECTED_WARNINGS = Object.freeze([
 ]);
 const FALLBACK_AXIS_WARNING = '未找到可信旋轉軸，已使用模型最短包圍盒軸';
 const EXACT_FALLBACK_WARNING = '精確切片失敗，已改用 2.5D 外形模式';
+const checkPackageDeadline = (deadline: number): void => {
+  if (!Number.isFinite(deadline) || Date.now() > deadline) throw new RangeError('Outline package exceeded the shared deadline');
+};
 
 export type OutlineManifestV1 = {
   readonly schemaVersion: 1;
@@ -221,7 +224,7 @@ function sortedLayers(result: AutomaticOutlineResult): MeasuredLayer[] {
     || (result.mode === 'exact' ? diagnostic.rasterCellSizeMm !== null : !(Number.isFinite(diagnostic.rasterCellSizeMm) && diagnostic.rasterCellSizeMm! > 0))
     || JSON.stringify(diagnostic.topology) !== JSON.stringify({ triangleCount: inspection.triangleCount, boundaryEdgeCount: inspection.boundaryEdgeCount, nonManifoldEdgeCount: inspection.nonManifoldEdgeCount, degenerateTriangleCount: inspection.degenerateTriangleCount, duplicateTriangleCount: result.originalReport.duplicateTriangleCount, inconsistentWindingEdgeCount: result.originalReport.inconsistentWindingEdgeCount, selfIntersectionCount: result.originalReport.selfIntersectionCount, selfIntersectionAnalysisComplete: result.originalReport.selfIntersectionAnalysisComplete })
     || diagnostic.layers.length !== result.layers.length
-    || diagnostic.layers.some((item, index) => JSON.stringify(item) !== JSON.stringify({ id: result.layers[index].id, simplificationToleranceMm: result.layers[index].simplificationToleranceMm, boundsDriftRatio: result.layers[index].boundsDriftRatio, areaDriftRatio: result.layers[index].areaDriftRatio }))) {
+    || diagnostic.layers.some((item, index) => JSON.stringify(item) !== JSON.stringify({ id: result.layers[index].id, simplificationToleranceMm: result.layers[index].simplificationToleranceMm, boundsDriftRatio: result.layers[index].boundsDriftRatio, areaDriftRatio: result.layers[index].areaDriftRatio, areaEvidenceBasis: result.mode === 'exact' ? 'exact-slice-pre-simplification' : 'retained-raster-pre-simplification' }))) {
     throw new RangeError('Outline diagnostics are missing or inconsistent');
   }
   const measuredRemoved = result.layers.reduce((sum, layer) => sum + layer.removedComponentCount, 0);
@@ -361,19 +364,23 @@ function manifestFromDocument(document: ManufacturingDocument): OutlineManifestV
   };
 }
 
-export async function createOutlinePackage(result: AutomaticOutlineResult): Promise<OutlinePackage> {
+export async function createOutlinePackage(result: AutomaticOutlineResult, deadline = Date.now() + DEFAULT_OUTLINE_BUDGETS.maxRuntimeMs): Promise<OutlinePackage> {
+  checkPackageDeadline(deadline);
   const document = createOutlineDocument(result);
+  checkPackageDeadline(deadline);
   const manifest = manifestFromDocument(document);
   const metadata = requireMetadata(document);
   const exportSheet = flattenOutlineSheets(document);
   const cutSvg = writeOutlineSvg(exportSheet, metadata);
   const cutDxf = writeOutlineDxf(exportSheet, metadata);
   const previewPdf = await writeOutlinePreviewPdf(metadata, document.sheets);
+  checkPackageDeadline(deadline);
   const projectJson = writeOutlineProjectJson(document);
   const manifestJson = JSON.stringify(manifest, null, 2);
   const zip = await writeOutlineZip({ cutSvg, cutDxf, previewPdf, projectJson, manifestJson });
+  checkPackageDeadline(deadline);
   const output = { document, manifest, cutSvg, cutDxf, previewPdf, projectJson, manifestJson, zip };
-  await verifyOutlinePackage(output);
+  await verifyOutlinePackage(output, deadline);
   return output;
 }
 
@@ -415,6 +422,7 @@ function validateOutlineDocument(document: ManufacturingDocument): void {
     || topologyValues.some((value, index) => index === 7 ? typeof value !== 'boolean' : !Number.isSafeInteger(value) || (value as number) < 0)
     || diagnostic.layers.length !== metadata.layers.length
     || diagnostic.layers.some((item, index) => item.id !== metadata.layers[index].id
+      || item.areaEvidenceBasis !== (metadata.mode === 'exact' ? 'exact-slice-pre-simplification' : 'retained-raster-pre-simplification')
       || ![item.simplificationToleranceMm, item.boundsDriftRatio, item.areaDriftRatio].every(Number.isFinite)
       || item.simplificationToleranceMm <= 0 || item.boundsDriftRatio < 0 || item.boundsDriftRatio > 0.03 + 1e-12
       || item.areaDriftRatio < 0 || item.areaDriftRatio > 0.03 + 1e-12)) {
@@ -566,8 +574,10 @@ function relativeDifference(left: number, right: number): number {
   return Math.abs(left - right) / Math.max(Number.MIN_VALUE, Math.abs(left));
 }
 
-export async function verifyOutlinePackage(output: OutlinePackage): Promise<void> {
+export async function verifyOutlinePackage(output: OutlinePackage, deadline = Date.now() + DEFAULT_OUTLINE_BUDGETS.maxRuntimeMs): Promise<void> {
+  checkPackageDeadline(deadline);
   validateOutlineDocument(output.document);
+  checkPackageDeadline(deadline);
   const expectedManifest = manifestFromDocument(output.document);
   if (exactJson(output.manifest) !== exactJson(expectedManifest)
     || exactJson(JSON.parse(output.manifestJson)) !== exactJson(expectedManifest)) {
@@ -588,6 +598,7 @@ export async function verifyOutlinePackage(output: OutlinePackage): Promise<void
     throw new RangeError('Outline metadata reconciliation mismatch');
   }
   const expectedPdf = await writeOutlinePreviewPdf(metadata, output.document.sheets);
+  checkPackageDeadline(deadline);
   if (expectedPdf.length !== output.previewPdf.length
     || expectedPdf.some((byte, index) => byte !== output.previewPdf[index])) {
     throw new RangeError('Outline PDF content and CUT geometry reconciliation mismatch');
@@ -615,6 +626,7 @@ export async function verifyOutlinePackage(output: OutlinePackage): Promise<void
 
   [output.cutSvg, output.cutDxf, output.projectJson, output.manifestJson].forEach((value) => assertPublicText(value, 'Outline package'));
   const zip = await JSZip.loadAsync(output.zip);
+  checkPackageDeadline(deadline);
   const entries = Object.entries(zip.files).sort(([left], [right]) => left.localeCompare(right));
   for (const [path, entry] of entries) {
     const originalPath = entry.unsafeOriginalName ?? path;

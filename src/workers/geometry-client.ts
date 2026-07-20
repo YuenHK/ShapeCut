@@ -226,7 +226,13 @@ function dynamicApi(
         throw error;
       }
     },
-    packageOutline: (result) => getRemote().packageOutline(result),
+    packageOutline: async (result) => {
+      try { return await getRemote().packageOutline(result); }
+      catch (error) {
+        if (isSerializedAutomaticOutlineError(error)) throw new AutomaticOutlineError(error.code, error.message);
+        throw error;
+      }
+    },
     inspectAndFindAxes: (input) => getRemote().inspectAndFindAxes(input),
     analyzeAndRepairForImport: (input) => getRemote().analyzeAndRepairForImport(input),
     repairAdvanced: (original, safeMesh) => getRemote().repairAdvanced(original, safeMesh),

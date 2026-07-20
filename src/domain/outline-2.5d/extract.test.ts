@@ -71,6 +71,22 @@ describe('extractProjectedContours', () => {
     expect((output.maxY - output.minY) / 20).toBeLessThanOrEqual(1.03);
   });
 
+  test.each([5, 100])('remote geometry at %s mm cannot hide an unresolved retained component', (offset) => {
+    const candidate = combine(box(0, 0, 1, 1, 2, 3), box(offset, offset, 0.1, 0.1, 2, 3));
+    expect(() => extractProjectedContours(candidate, selection, specs, DEFAULT_OUTLINE_BUDGETS))
+      .toThrow(/component.*drift|resolution|three percent/i);
+  });
+
+  test('uses retained-component source evidence while intentionally removing a remote smaller component', () => {
+    const candidate = combine(box(0, 0, 20, 20, 2, 3), box(100, 100, 1, 1, 2, 3));
+    const result = extractProjectedContours(candidate, selection, specs, DEFAULT_OUTLINE_BUDGETS);
+    const source = result.layers[0].sourceBoundsMm;
+    expect(source.maxX - source.minX).toBeCloseTo(20, 8);
+    expect(source.maxY - source.minY).toBeCloseTo(20, 8);
+    expect(result.layers[0].removedComponentCount).toBeGreaterThan(0);
+    expect(result.layers[0].boundsDriftRatio).toBeGreaterThan(0);
+  });
+
   test('keeps the largest component, fills holes, and is deterministic after triangle shuffling', () => {
     const twoComponents = combine(box(0, 0, 20, 12), box(40, 0, 4, 4));
     const first = extractProjectedContours(twoComponents, selection, specs, DEFAULT_OUTLINE_BUDGETS);
