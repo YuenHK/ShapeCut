@@ -406,6 +406,8 @@ describe('material-independent outline package', () => {
     'laserpower=80/',
     'press-fit tolerance 0.2mm/',
     'production ready for acrylic/',
+    'press%2Dfit tolerance/',
+    'ready for production with acrylic/',
     'source.stl/',
   ])('rejects every extra ZIP record and scans directory names: %s', async (entryName) => {
     const output = await createOutlinePackage(result());
@@ -414,6 +416,19 @@ describe('material-independent outline package', () => {
     const mutated = { ...output, zip: await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' }) };
 
     await expect(verifyOutlinePackage(mutated)).rejects.toThrow(/ZIP|entry|private|path|email|process|STL|source/i);
+  });
+
+  it.each([
+    'press%2Dfit tolerance/',
+    'ready for production with acrylic/',
+    'source=%2/',
+  ])('rejects encoded fabrication claims and malformed encoding while scanning ZIP names: %s', async (entryName) => {
+    const output = await createOutlinePackage(result());
+    const zip = await JSZip.loadAsync(output.zip);
+    zip.file(entryName, '', { dir: true });
+    const mutated = { ...output, zip: await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' }) };
+
+    await expect(verifyOutlinePackage(mutated)).rejects.toThrow(/process|setting|percent|encoding/i);
   });
 
   it('rejects an unsafe original ZIP record name that JSZip sanitizes to an allowed key', async () => {
@@ -470,7 +485,12 @@ describe('material-independent outline package', () => {
     String.raw`source@\\server-name\share name\model.obj`,
     'source=//Users/private/model.obj',
     'source;//server/share/model.obj',
+    'source=%2FUsers%2Fprivate%2Fmodel.obj',
+    'source=%252FUsers%252Fprivate%252Fmodel.obj',
+    'source=%252525252FUsers%252525252Fprivate',
+    'source=%2',
     'contact=owner@example.com',
+    'contact=owner%40example.com',
     'laserPower=80',
     'laserpower=80',
     'machinepower=80',
@@ -488,11 +508,15 @@ describe('material-independent outline package', () => {
     'pressfit tolerance 0.2mm',
     'press_fit tolerance 0.2mm',
     'press\u2010fit tolerance 0.2mm',
+    'press%2Dfit tolerance 0.2mm',
+    'press-to-fit tolerance 0.2mm',
     'production ready for acrylic',
     'production-ready for generic material',
     'PRODUCTION_READY plywood',
     'production\u2014ready for PMMA',
     'cardboard is production.ready',
+    'acrylic is ready for production',
+    'ready for production with acrylic',
   ])('rejects embedded privacy or process provenance: %s', async (warning) => {
     await expect(createOutlinePackage(result({ warnings: [...PROJECTED_WARNINGS, warning] })))
       .rejects.toThrow(/private|path|email|process|setting|warning/i);
@@ -503,11 +527,13 @@ describe('material-independent outline package', () => {
     '<svg xmlns="http://www.w3.org/2000/svg"><g><path d="M0 0L1 1"/></g></svg>',
     '<svg><use href="#shape" /></svg>',
     '<svg><use href="/assets/icon.svg" /></svg>',
+    '<svg><use href="/assets/icon%20one.svg" /></svg>',
     '<svg><image href="/assets/icon.svg"></image></svg>',
     '<svg><a><style></style><metadata></metadata><switch><animate></animate></switch></a></svg>',
     String.raw`<svg><style>.icon::before { content: "\\26"; }</style></svg>`,
     'background-image: url(https://example.com/icon.svg)',
     'source=https://example.com/Users/private/model.obj',
+    'source=https://example.com/assets/icon%20one.svg',
     'Preview is ready; choose a material only after a physical test cut.',
     'Pressure-fit preview geometry was removed from this outline.',
   ])('allows ordinary SVG vocabulary without privacy/process false positives: %s', async (warning) => {

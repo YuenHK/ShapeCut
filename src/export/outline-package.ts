@@ -38,9 +38,10 @@ const WINDOWS_PATH_PATTERN = /(?:^|[^\p{L}\p{N}_\\/])(?:[A-Za-z]:[\\/]|\\{2,4}(?
 const FORWARD_UNC_PATH_PATTERN = /(?:^|[^\p{L}\p{N}_\/:])\/{2,}(?!\/)[^\/\s"'<>]+\/(?!\/)[^\/\s"'<>]+/u;
 const SOURCE_FILE_PATTERN = /(?:^|[\\/])[^\\/\s]*\.stl(?:[\\/]|$)/i;
 const FORBIDDEN_PROCESS_PATTERN = /(?:slot|hole|engrave|power|speed|passes)/i;
-const PRESS_FIT_PATTERN = /pressfit/i;
+const PRESS_FIT_PATTERN = /press(?:to)?fit/i;
 const MATERIAL_TERM = '(?:material|acrylic|pmma|plywood|wood|mdf|paper|cardboard|leather|fabric|cork|rubber|foam|plastic|metal|steel|aluminum|aluminium)';
-const PRODUCTION_MATERIAL_CLAIM_PATTERN = new RegExp(`(?:productionready.*${MATERIAL_TERM}|${MATERIAL_TERM}.*productionready)`, 'i');
+const PRODUCTION_READINESS_TERM = '(?:productionready|readyforproduction)';
+const PRODUCTION_MATERIAL_CLAIM_PATTERN = new RegExp(`(?:${PRODUCTION_READINESS_TERM}.*${MATERIAL_TERM}|${MATERIAL_TERM}.*${PRODUCTION_READINESS_TERM})`, 'i');
 const PROJECTED_WARNINGS = Object.freeze([
   '已簡化模型',
   '原始內部細節、孔洞及細小分離零件已被忽略',
@@ -126,15 +127,29 @@ function svgAwarePrivacyScanText(value: string): string {
   });
 }
 
+function decodePublicTextForScan(value: string, label: string): string {
+  let decoded = value;
+  try {
+    for (let pass = 0; pass < 4 && decoded.includes('%'); pass += 1) {
+      decoded = decodeURIComponent(decoded);
+    }
+  } catch {
+    throw new RangeError(`${label} contains malformed percent encoding`);
+  }
+  if (decoded.includes('%')) throw new RangeError(`${label} contains residual percent encoding`);
+  return decoded;
+}
+
 function assertPublicText(value: string, label: string): void {
-  const privacyScanText = svgAwarePrivacyScanText(value);
-  const privateMatch = value.match(EMAIL_PATTERN) ?? value.match(FILE_URI_PATTERN)
-    ?? privacyScanText.match(POSIX_PATH_PATTERN) ?? value.match(WINDOWS_PATH_PATTERN)
-    ?? value.match(FORWARD_UNC_PATH_PATTERN) ?? value.match(SOURCE_FILE_PATTERN);
+  const decodedValue = decodePublicTextForScan(value, label);
+  const privacyScanText = svgAwarePrivacyScanText(decodedValue);
+  const privateMatch = decodedValue.match(EMAIL_PATTERN) ?? decodedValue.match(FILE_URI_PATTERN)
+    ?? privacyScanText.match(POSIX_PATH_PATTERN) ?? decodedValue.match(WINDOWS_PATH_PATTERN)
+    ?? decodedValue.match(FORWARD_UNC_PATH_PATTERN) ?? decodedValue.match(SOURCE_FILE_PATTERN);
   if (privateMatch) {
     throw new RangeError(`${label} must not contain a private path or email address`);
   }
-  const normalizedProcessText = value.normalize('NFKC').replace(/[^A-Za-z0-9]+/g, '');
+  const normalizedProcessText = decodedValue.normalize('NFKC').replace(/[^A-Za-z0-9]+/g, '');
   if (FORBIDDEN_PROCESS_PATTERN.test(normalizedProcessText) || PRESS_FIT_PATTERN.test(normalizedProcessText)
     || PRODUCTION_MATERIAL_CLAIM_PATTERN.test(normalizedProcessText)) {
     throw new RangeError(`${label} must not contain slots, holes, engraving, press fits, production material claims, or process settings`);
