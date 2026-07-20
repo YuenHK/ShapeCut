@@ -113,6 +113,10 @@ export function extractProjectedContours(
   validateBudgets(budgets);
   const projected = projectMesh(mesh, selection, deadline); validateRequest(projected, specs, budgets, deadline);
   const cellSizeMm = rasterCellSize(projected);
+  const projectedWidth = projected.maxX - projected.minX, projectedHeight = projected.maxY - projected.minY;
+  if (Math.min(projectedWidth, projectedHeight) < cellSizeMm / 0.03) {
+    throw new RangeError('Projected contour resolution would exceed three percent bounds drift');
+  }
   const width = Math.ceil((projected.maxX - projected.minX) / cellSizeMm) + 3;
   const height = Math.ceil((projected.maxY - projected.minY) / cellSizeMm) + 3;
   if (width * height * specs.length > budgets.maxRasterCellsTotal) throw new RangeError('Projected contour exceeds the total raster cell budget');

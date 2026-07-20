@@ -59,6 +59,18 @@ function bounds(points: readonly (readonly [number, number])[]) {
 }
 
 describe('extractProjectedContours', () => {
+  test.each([0.1, 0.2, 1])('fails closed when a %s mm projected dimension cannot stay within three percent', (size) => {
+    expect(() => extractProjectedContours(box(0, 0, size, size, 2, 3), selection, specs, DEFAULT_OUTLINE_BUDGETS))
+      .toThrow(/projected.*drift|three percent|resolution/i);
+  });
+
+  test('preserves a resolvable 20 mm projected component within three percent', () => {
+    const result = extractProjectedContours(box(0, 0, 20, 20, 2, 3), selection, specs, DEFAULT_OUTLINE_BUDGETS);
+    const output = result.layers[0].sourceBoundsMm;
+    expect((output.maxX - output.minX) / 20).toBeLessThanOrEqual(1.03);
+    expect((output.maxY - output.minY) / 20).toBeLessThanOrEqual(1.03);
+  });
+
   test('keeps the largest component, fills holes, and is deterministic after triangle shuffling', () => {
     const twoComponents = combine(box(0, 0, 20, 12), box(40, 0, 4, 4));
     const first = extractProjectedContours(twoComponents, selection, specs, DEFAULT_OUTLINE_BUDGETS);

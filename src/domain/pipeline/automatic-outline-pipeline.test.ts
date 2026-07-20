@@ -104,9 +104,9 @@ describe('automatic outline pipeline', () => {
   });
 
   it.each([
-    ['open', openTetrahedron()],
-    ['non-manifold', nonManifoldTetrahedron()],
-    ['self-intersecting', interpenetratingTetrahedra()],
+    ['open', scaled(openTetrahedron(), 20, 20, 20)],
+    ['non-manifold', scaled(nonManifoldTetrahedron(), 20, 20, 20)],
+    ['self-intersecting', scaled(interpenetratingTetrahedra(), 20, 20, 20)],
   ])('returns a warning 2.5D outline for a parseable %s mesh', async (_label, mesh) => {
     const result = await convertAutomatically({ bytes: writeBinarySTL(mesh, 'safe') });
 
@@ -139,8 +139,9 @@ describe('automatic outline pipeline', () => {
   });
 
   it('uses a deterministic shortest-bounds axis with a warning when no candidate is trusted', async () => {
-    const first = await convertAutomatically({ bytes: writeBinarySTL(openTetrahedron(), 'safe') });
-    const second = await convertAutomatically({ bytes: writeBinarySTL(openTetrahedron(), 'safe') });
+    const input = writeBinarySTL(scaled(openTetrahedron(), 20, 20, 20), 'safe');
+    const first = await convertAutomatically({ bytes: input });
+    const second = await convertAutomatically({ bytes: input.slice(0) });
 
     expect(first.axis).toEqual(second.axis);
     expect(first.axis.source).toBe('shortest-bounds');
@@ -229,7 +230,7 @@ describe('automatic outline pipeline', () => {
     const stages: AutomaticOutlineProgressStage[] = [];
     const onProgress = vi.fn((stage: AutomaticOutlineProgressStage) => { stages.push(stage); });
 
-    await convertAutomatically({ bytes: writeBinarySTL(openTetrahedron(), 'safe') }, onProgress);
+    await convertAutomatically({ bytes: writeBinarySTL(scaled(openTetrahedron(), 20, 20, 20), 'safe') }, onProgress);
 
     expect(stages).toEqual(['reading', 'analyzing', 'simplifying', 'slicing', 'packaging']);
     expect(new Set(stages).size).toBe(stages.length);

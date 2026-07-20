@@ -101,3 +101,9 @@ Both real-file UI cases completed in approximately 2.5 seconds, showed `已簡�
 - A safe disconnected closed-solid regression proved exact slicing previously found multiple closed loops and silently selected the largest. The extraction boundary now throws the typed `ExactContourAmbiguityError` whenever any layer contains more than one valid closed loop; single-loop exact behavior remains unchanged.
 - The automatic pipeline catches that topology ambiguity and falls back to projected 2.5D output with warning status, the explicit exact-to-projected warning, and authentic per-layer component-removal counts whose sum is the positive aggregate.
 - Runtime, export, and browser E2E regressions use two separated closed cylinders. They recompute the removal-evidence fingerprint and reconcile warning, counts, identity, fingerprint, geometry, and all ZIP outputs rather than constructing positive evidence by hand.
+
+## Projected resolution fidelity
+
+- Projected extraction now fails closed before rasterization when the selected planar dimensions cannot absorb one raster cell within the approved three-percent bounds-drift limit. It never enlarges, clips, or rescales the model silently.
+- Reviewer repro sizes 0.1 mm, 0.2 mm, and 1 mm are rejected deterministically; a 20 mm broken box remains within three percent. The existing remote-small-component regression remains valid and Knight Fortress integration is unchanged.
+- The pipeline maps unresolved projected resolution to typed `NO_OUTLINE` instead of returning an invalid manufacturing outline.
