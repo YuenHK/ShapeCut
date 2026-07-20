@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assertExactRemovalRecords, exactlyOneProvenance, parseDxfRemovalRecords, parsePdfRemovalRecords, parseSvgRemovalRecords, type RemovalRecord } from '../../e2e/helpers';
+import { assertExactRemovalRecords, exactlyOneProvenance, exactlyOneSvgRootAttribute, parseDxfRemovalRecords, parsePdfRemovalRecords, parseSvgRemovalRecords, type RemovalRecord } from '../../e2e/helpers';
 
 const records: RemovalRecord[] = [
   { id: 'a', order: 1, index: 4, zStart: 0, zEnd: 1, removedComponentCount: 2 },
@@ -42,5 +42,24 @@ describe('exact E2E removal record parsers', () => {
     expect(() => exactlyOneProvenance('REMOVED_COMPONENT_COUNT:bad\n', /REMOVED_COMPONENT_COUNT:/g, /REMOVED_COMPONENT_COUNT:(\d+)\n/g, '2', 'DXF')).toThrow();
     expect(() => exactlyOneProvenance('removed-components:2 removed-components:2', /removed-components:/g, /(?:^|\s)removed-components:(\d+)(?=\s|$)/g, '2', 'PDF')).toThrow();
     expect(() => exactlyOneProvenance('<svg data-removal-evidence-fingerprint="bad">', /<svg [^>]*data-removal-evidence-fingerprint=/g, /<svg [^>]*data-removal-evidence-fingerprint="([0-9a-f]+)"/g, 'abcd', 'SVG')).toThrow();
+  });
+
+  it('enumerates every SVG polygon and rejects missing, corrupt, or duplicate identifying attributes', () => {
+    expect(() => parseSvgRemovalRecords(`${svg}<polygon id="extra"/>`)).toThrow(/exactly one data-outline-order/i);
+    for (const name of ['id', 'data-outline-order', 'data-outline-index', 'data-z-start', 'data-z-end', 'data-removed-component-count']) {
+      const missing = svg.replace(new RegExp(`\\s${name}="[^"]*"`), '');
+      expect(() => parseSvgRemovalRecords(missing)).toThrow();
+      const corruptValue = name === 'id' ? 'bad identity' : 'bad';
+      const corrupt = svg.replace(new RegExp(`${name}="[^"]*"`), `${name}="${corruptValue}"`);
+      expect(() => parseSvgRemovalRecords(corrupt)).toThrow();
+      const duplicate = svg.replace(new RegExp(`${name}="([^"]*)"`), `${name}="$1" ${name}="$1"`);
+      expect(() => parseSvgRemovalRecords(duplicate)).toThrow(/exactly one|malformed/i);
+    }
+  });
+
+  it('lexically rejects malformed or duplicate SVG root provenance with whitespace around equals', () => {
+    expect(() => exactlyOneSvgRootAttribute('<svg data-removed-component-count = "2">', 'data-removed-component-count', '2')).not.toThrow();
+    expect(() => exactlyOneSvgRootAttribute('<svg data-removed-component-count = bad>', 'data-removed-component-count', '2')).toThrow();
+    expect(() => exactlyOneSvgRootAttribute('<svg data-removal-evidence-fingerprint="abcd" data-removal-evidence-fingerprint = "abcd">', 'data-removal-evidence-fingerprint', 'abcd')).toThrow();
   });
 });

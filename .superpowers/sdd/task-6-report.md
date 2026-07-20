@@ -82,3 +82,10 @@ Both real-file UI cases completed in approximately 2.5 seconds, showed `已簡�
 - Every SVG polygon metadata marker, DXF `OUTLINE_LAYER` marker, and PDF `outline-layer` marker must parse exactly. A marker that is malformed cannot disappear from the parsed result.
 - Raw-artifact mutation tests cover missing, extra valid, extra malformed, swapped-order, duplicate-ID, and duplicate-index records for SVG, DXF, and PDF, including equal removal counts.
 - Aggregate and fingerprint checks separately enumerate all markers before parsing values, so malformed or duplicated provenance markers are rejected.
+
+## SVG carrier lexical follow-up
+
+- The acceptance parser enumerates every SVG `polygon` element as a canonical metadata carrier. An extra or unrelated polygon therefore fails closed instead of disappearing from the oracle.
+- Every polygon must contain exactly one complete valid set of `id`, `data-outline-index`, `data-outline-order`, `data-z-start`, `data-z-end`, and `data-removed-component-count`; missing, malformed, and duplicate attributes are rejected before canonical comparison.
+- SVG root aggregate and evidence-fingerprint attributes are counted lexically, independent of whitespace around `=`, and must occur exactly once with the exact canonical value.
+- Raw mutation tests cover an extra polygon, every required polygon attribute missing/malformed/duplicated (including an invalid layer ID), and root attributes with whitespace, malformed unquoted values, and duplicates.

@@ -24,16 +24,44 @@ export type DownloadedOutline = {
 export type RemovalRecord = { readonly id: string; readonly order: number; readonly index: number; readonly zStart: number; readonly zEnd: number; readonly removedComponentCount: number };
 
 function checkedRecords(records: RemovalRecord[], label: string): RemovalRecord[] {
+  if (records.some(({ id }) => !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(id))) throw new Error(`${label} contains malformed layer identity`);
   if (records.some(({ order, index, zStart, zEnd, removedComponentCount }) => !Number.isSafeInteger(order) || !Number.isSafeInteger(index) || !Number.isFinite(zStart) || !Number.isFinite(zEnd) || !Number.isSafeInteger(removedComponentCount))) throw new Error(`${label} contains malformed layer metadata`);
   if (new Set(records.map(({ id }) => id)).size !== records.length || new Set(records.map(({ index }) => index)).size !== records.length || new Set(records.map(({ order }) => order)).size !== records.length) throw new Error(`${label} contains duplicate layer identity`);
   return records;
 }
 
 export function parseSvgRemovalRecords(svg: string): RemovalRecord[] {
-  const markers = [...svg.matchAll(/<polygon\b[^>]*\bdata-outline-order=/g)];
-  const records = [...svg.matchAll(/<polygon id="([^"]+)"[^>]*data-outline-order="(\d+)"[^>]*data-outline-index="(\d+)"[^>]*data-z-start="([^"]+)"[^>]*data-z-end="([^"]+)"[^>]*data-removed-component-count="(\d+)"/g)].map((match) => ({ id: match[1], order: Number(match[2]), index: Number(match[3]), zStart: Number(match[4]), zEnd: Number(match[5]), removedComponentCount: Number(match[6]) }));
-  if (markers.length !== records.length) throw new Error('SVG contains malformed layer metadata marker');
+  // cut.svg reserves every polygon as a canonical layer carrier; unrelated polygons fail closed.
+  const carriers = [...svg.matchAll(/<polygon\b[^>]*>/g)].map((match) => match[0]);
+  const attribute = (tag: string, name: string): string => {
+    const matches = [...tag.matchAll(new RegExp(`(?:\\s)${name}\\s*=\\s*"([^"]*)"`, 'g'))];
+    if (matches.length !== 1) throw new Error(`SVG polygon must contain exactly one ${name} attribute`);
+    return matches[0][1];
+  };
+  const integerAttribute = (tag: string, name: string): number => {
+    const value = attribute(tag, name);
+    if (!/^(?:0|[1-9]\d*)$/.test(value)) throw new Error(`SVG polygon has invalid ${name}`);
+    return Number(value);
+  };
+  const numberAttribute = (tag: string, name: string): number => {
+    const value = attribute(tag, name);
+    if (value.trim() === '' || !Number.isFinite(Number(value))) throw new Error(`SVG polygon has invalid ${name}`);
+    return Number(value);
+  };
+  const records = carriers.map((tag) => ({
+    id: attribute(tag, 'id'), order: integerAttribute(tag, 'data-outline-order'),
+    index: integerAttribute(tag, 'data-outline-index'), zStart: numberAttribute(tag, 'data-z-start'),
+    zEnd: numberAttribute(tag, 'data-z-end'), removedComponentCount: integerAttribute(tag, 'data-removed-component-count'),
+  }));
   return checkedRecords(records, 'SVG');
+}
+
+export function exactlyOneSvgRootAttribute(svg: string, name: string, expected: string): void {
+  const roots = [...svg.matchAll(/<svg\b[^>]*>/g)];
+  if (roots.length !== 1) throw new Error('SVG must contain exactly one root element');
+  const lexical = [...roots[0][0].matchAll(new RegExp(`(?:\\s)${name}\\s*=`, 'g'))];
+  const parsed = [...roots[0][0].matchAll(new RegExp(`(?:\\s)${name}\\s*=\\s*"([^"]*)"`, 'g'))];
+  if (lexical.length !== 1 || parsed.length !== 1 || parsed[0][1] !== expected) throw new Error(`SVG root must contain exactly one valid ${name} attribute`);
 }
 
 export function parseDxfRemovalRecords(dxf: string): RemovalRecord[] {
@@ -121,8 +149,8 @@ async function inspectOutlineDownload(download: Download): Promise<DownloadedOut
   assertExactRemovalRecords(parsePdfRemovalRecords(pdf.getKeywords() ?? ''), expectedRecords);
   expect(new Set(expectedRecords.map(({ id }) => id)).size).toBe(expectedRecords.length);
   expect(new Set(expectedRecords.map(({ index }) => index)).size).toBe(expectedRecords.length);
-  exactlyOneProvenance(svg, /<svg [^>]*data-removed-component-count=/g, /<svg [^>]*data-removed-component-count="(\d+)"/g, String(manifest.removedComponentCount), 'SVG aggregate');
-  exactlyOneProvenance(svg, /<svg [^>]*data-removal-evidence-fingerprint=/g, /<svg [^>]*data-removal-evidence-fingerprint="([0-9a-f]+)"/g, manifest.removalEvidenceFingerprint, 'SVG fingerprint');
+  exactlyOneSvgRootAttribute(svg, 'data-removed-component-count', String(manifest.removedComponentCount));
+  exactlyOneSvgRootAttribute(svg, 'data-removal-evidence-fingerprint', manifest.removalEvidenceFingerprint);
   exactlyOneProvenance(dxf, /REMOVED_COMPONENT_COUNT:/g, /REMOVED_COMPONENT_COUNT:(\d+)\n/g, String(manifest.removedComponentCount), 'DXF aggregate');
   exactlyOneProvenance(dxf, /REMOVAL_EVIDENCE_FINGERPRINT:/g, /REMOVAL_EVIDENCE_FINGERPRINT:([0-9a-f]+)\n/g, manifest.removalEvidenceFingerprint, 'DXF fingerprint');
   exactlyOneProvenance(pdf.getKeywords() ?? '', /removed-components:/g, /(?:^|\s)removed-components:(\d+)(?=\s|$)/g, String(manifest.removedComponentCount), 'PDF aggregate');
