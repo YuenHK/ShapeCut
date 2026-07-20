@@ -19,6 +19,20 @@ function boxMesh(sizeX: number, sizeY: number, sizeZ: number): TriangleMesh {
   };
 }
 
+function boxMeshWithAxialRange(zStart: number, zEnd: number): TriangleMesh {
+  return {
+    positions: new Float64Array([
+      -1, -1, zStart, 1, -1, zStart, 1, 1, zStart, -1, 1, zStart,
+      -1, -1, zEnd, 1, -1, zEnd, 1, 1, zEnd, -1, 1, zEnd,
+    ]),
+    indices: new Uint32Array([
+      0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7,
+      0, 1, 5, 0, 5, 4, 1, 2, 6, 1, 6, 5,
+      2, 3, 7, 2, 7, 6, 3, 0, 4, 3, 4, 7,
+    ]),
+  };
+}
+
 const zAxis: Axis = {
   origin: [0, 0, 0],
   direction: [0, 0, 1],
@@ -61,6 +75,27 @@ describe('scheduleOutlineLayers', () => {
 
     expect(scheduleOutlineLayers(reverseTriangleOrder(mesh), zAxis, DEFAULT_OUTLINE_BUDGETS))
       .toEqual(scheduleOutlineLayers(mesh, zAxis, DEFAULT_OUTLINE_BUDGETS));
+  });
+
+  it('keeps finite extreme axial coordinates finite while preserving exact extents', () => {
+    const zStart = Number.MAX_VALUE / 2;
+    const zEnd = Number.MAX_VALUE;
+    const layers = scheduleOutlineLayers(
+      boxMeshWithAxialRange(zStart, zEnd),
+      zAxis,
+      DEFAULT_OUTLINE_BUDGETS,
+    );
+
+    expect(layers.every((layer) => Number.isFinite(layer.zStart)
+      && Number.isFinite(layer.zEnd)
+      && Number.isFinite(layer.zMid))).toBe(true);
+    expect(layers).toHaveLength(12);
+    expect(layers[0].zStart).toBe(zStart);
+    expect(layers.at(-1)?.zEnd).toBe(zEnd);
+    for (let index = 0; index < layers.length; index += 1) {
+      expect(layers[index].zMid).toBe(layers[index].zStart / 2 + layers[index].zEnd / 2);
+      if (index > 0) expect(layers[index].zStart).toBe(layers[index - 1].zEnd);
+    }
   });
 
   it('rejects invalid bounds and triangle-layer work above the budget', () => {

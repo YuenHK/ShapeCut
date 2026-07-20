@@ -68,7 +68,7 @@ export function scheduleOutlineLayers(
 
   const [planarWidth, planarHeight, axialHeight] = extents;
   const planarDiameter = Math.hypot(planarWidth, planarHeight);
-  const requestedLayers = Math.ceil(12 * axialHeight / Math.max(planarDiameter, axialHeight));
+  const requestedLayers = Math.ceil(12 * (axialHeight / Math.max(planarDiameter, axialHeight)));
   const layerCount = Math.min(budgets.maxLayers, Math.max(budgets.minLayers, requestedLayers));
   if (mesh.indices.length / 3 * layerCount > budgets.maxTriangleLayerTests) {
     throw new RangeError('Outline layer schedule exceeds the triangle-layer test budget');
@@ -79,8 +79,12 @@ export function scheduleOutlineLayers(
     const zStart = index === 0 ? minima[2] : layers[index - 1].zEnd;
     const zEnd = index === layerCount - 1
       ? maxima[2]
-      : minima[2] + axialHeight * (index + 1) / layerCount;
-    layers.push({ index, zStart, zEnd, zMid: (zStart + zEnd) / 2 });
+      : minima[2] + axialHeight * ((index + 1) / layerCount);
+    const zMid = zStart / 2 + zEnd / 2;
+    if (![zStart, zEnd, zMid].every(Number.isFinite)) {
+      throw new RangeError('Outline layers require finite scheduled axial coordinates');
+    }
+    layers.push({ index, zStart, zEnd, zMid });
   }
   return layers;
 }
