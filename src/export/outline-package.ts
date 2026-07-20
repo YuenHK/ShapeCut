@@ -1,8 +1,10 @@
 import JSZip from 'jszip';
 import { PDFDocument } from 'pdf-lib';
+import { AUTOMATIC_AXIS_CONFIDENCE_THRESHOLD } from '../domain/axis/find-axis';
+import { polygonMassProperties, polygonsIntersectOrTouch, validatePolygon } from '../domain/engraving/geometry';
 import type { OutlineLayer } from '../domain/outline-2.5d/extract';
-import { contourBounds } from '../domain/outline-2.5d/simplify';
-import type { OutlineMode, OutlineResultStatus } from '../domain/outline-2.5d/types';
+import { contourBounds, signedArea } from '../domain/outline-2.5d/simplify';
+import { DEFAULT_OUTLINE_BUDGETS, type OutlineMode, type OutlineResultStatus } from '../domain/outline-2.5d/types';
 import { validateOutlineLayer } from '../domain/outline-2.5d/validate';
 import type { AutomaticOutlineResult } from '../domain/pipeline/automatic-outline-pipeline';
 import type {
@@ -28,8 +30,19 @@ const MAX_SHEET_HEIGHT_MM = 1000;
 const HASH_PATTERN = /^[0-9a-f]{32}$/i;
 const SAFE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$/;
 const EMAIL_PATTERN = /\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b/;
-const ABSOLUTE_PATH_PATTERN = /(?:^|[\s"'(])(?:\/[\p{L}\p{N}._~-]+(?:\/[\p{L}\p{N}._~-]+)*|[A-Za-z]:\\[^\s]+)(?=$|[\s"',;)])/u;
-const FORBIDDEN_PROCESS_PATTERN = /\b(?:slot|hole|engrave|power|speed|passes)\b/i;
+const FILE_URI_PATTERN = /\bfile:\/\/(?:\/|[\p{L}\p{N}._~-]+\/)[^\s"'<>]+/iu;
+const POSIX_PATH_PATTERN = /(?:^|[\s=:'"(])\/(?![\/< >])[\p{L}\p{N}._~-]+(?:\/[\p{L}\p{N}._~-]+)*(?=$|[\s"',;)]|\.[A-Za-z0-9]+$)/u;
+const WINDOWS_PATH_PATTERN = /(?:^|[\s=:'"(])(?:[A-Za-z]:[\\/][^\s"'<>]+|\\\\[^\\\s"'<>]+\\[^\s"'<>]+)(?=$|[\s"',;)])/u;
+const FORBIDDEN_PROCESS_PATTERN = /\b(?:slot|hole|engrave|engraving|power|speed|passes?)\b/i;
+const PROJECTED_WARNINGS = Object.freeze([
+  '已簡化模型',
+  '原始內部細節、孔洞及細小分離零件已被忽略',
+  '不同材料厚度會改變堆疊後高度',
+  '輸出不包含雷射功率或速度',
+  '正式製作前應先試切少量零件',
+]);
+const FALLBACK_AXIS_WARNING = '未找到可信旋轉軸，已使用模型最短包圍盒軸';
+const EXACT_FALLBACK_WARNING = '精確切片失敗，已改用 2.5D 外形模式';
 
 export type OutlineManifestV1 = {
   readonly schemaVersion: 1;
@@ -37,6 +50,8 @@ export type OutlineManifestV1 = {
   readonly sourceHash: string;
   readonly status: OutlineResultStatus;
   readonly warnings: readonly string[];
+  readonly repairAccepted: boolean;
+  readonly axisSource: 'candidate' | 'shortest-bounds';
   readonly layers: readonly {
     readonly id: string;
     readonly order: number;
@@ -67,12 +82,44 @@ type MeasuredLayer = {
 };
 
 function assertPublicText(value: string, label: string): void {
-  const privateMatch = value.match(EMAIL_PATTERN) ?? value.match(ABSOLUTE_PATH_PATTERN);
+  const privateMatch = value.match(EMAIL_PATTERN) ?? value.match(FILE_URI_PATTERN)
+    ?? value.match(POSIX_PATH_PATTERN) ?? value.match(WINDOWS_PATH_PATTERN);
   if (privateMatch) {
     throw new RangeError(`${label} must not contain a private path or email address`);
   }
-  if (FORBIDDEN_PROCESS_PATTERN.test(value)) {
+  const separatedProcessText = value.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[\W_]+/g, ' ');
+  if (FORBIDDEN_PROCESS_PATTERN.test(separatedProcessText)) {
     throw new RangeError(`${label} must not contain slots, holes, engraving, or process settings`);
+  }
+}
+
+function assertSafetyProvenance(value: Pick<AutomaticOutlineResult, 'mode' | 'status' | 'warnings' | 'repairAccepted'> & {
+  readonly axisSource: AutomaticOutlineResult['axis']['source'];
+}): void {
+  if (!Array.isArray(value.warnings) || value.warnings.some((warning) => typeof warning !== 'string' || warning.trim() === '')
+    || new Set(value.warnings).size !== value.warnings.length) {
+    throw new RangeError('Outline safety warning provenance is empty or invalid');
+  }
+  const warnings = new Set(value.warnings);
+  if (value.mode === 'outline-2.5d') {
+    if (value.status !== 'warning' || PROJECTED_WARNINGS.some((warning) => !warnings.has(warning))) {
+      throw new RangeError('2.5D outline provenance requires warning status and all simplification warnings');
+    }
+    if ((value.axisSource === 'shortest-bounds') !== warnings.has(FALLBACK_AXIS_WARNING)) {
+      throw new RangeError('2.5D outline axis warning provenance is inconsistent');
+    }
+    if (value.repairAccepted !== warnings.has(EXACT_FALLBACK_WARNING)) {
+      throw new RangeError('2.5D repair fallback warning provenance is inconsistent');
+    }
+    return;
+  }
+  if (value.mode !== 'exact' || value.repairAccepted !== true) {
+    throw new RangeError('Exact outline provenance requires accepted repair');
+  }
+  const fallbackAxis = value.axisSource === 'shortest-bounds';
+  if ((!fallbackAxis && (value.status !== 'success' || value.warnings.length !== 0))
+    || (fallbackAxis && (value.status !== 'warning' || value.warnings.length !== 1 || !warnings.has(FALLBACK_AXIS_WARNING)))) {
+    throw new RangeError('Exact outline status and warning provenance is inconsistent');
   }
 }
 
@@ -94,6 +141,30 @@ function sortedLayers(result: AutomaticOutlineResult): MeasuredLayer[] {
   if (!['exact', 'outline-2.5d'].includes(result.mode)) throw new RangeError('Outline mode provenance is invalid');
   if (!['success', 'warning', 'failure'].includes(result.status)) throw new RangeError('Outline status provenance is invalid');
   if (result.status === 'failure' || result.layers.length === 0) throw new RangeError('Cannot package a failed or empty outline result');
+  if (result.layers.length > DEFAULT_OUTLINE_BUDGETS.maxLayers) throw new RangeError('Outline result exceeds the 24-layer pipeline budget');
+  const axis = result.axis?.axis;
+  const origin = axis?.origin, direction = axis?.direction;
+  const directionLength = Array.isArray(direction) && direction.length === 3 ? Math.hypot(...direction) : Number.NaN;
+  const shortestDirection = Array.isArray(direction) && direction.length === 3
+    && direction.filter((component) => Math.abs(component) > 1e-12).length === 1
+    && direction.some((component) => Math.abs(Math.abs(component) - 1) <= 1e-12);
+  if (!['candidate', 'shortest-bounds'].includes(result.axis?.source)
+    || axis?.confirmed !== true || !Array.isArray(origin) || origin.length !== 3
+    || !Array.isArray(direction) || direction.length !== 3
+    || ![...origin, ...direction, axis.confidence].every(Number.isFinite)
+    || Math.abs(directionLength - 1) > 1e-12
+    || (result.axis.source === 'candidate'
+      ? axis.confidence < AUTOMATIC_AXIS_CONFIDENCE_THRESHOLD || axis.confidence > 1
+      : axis.confidence !== 0 || !shortestDirection)) {
+    throw new RangeError('Outline axis provenance is invalid or empty');
+  }
+  assertSafetyProvenance({
+    mode: result.mode,
+    status: result.status,
+    warnings: result.warnings,
+    repairAccepted: result.repairAccepted,
+    axisSource: result.axis.source,
+  });
   for (const warning of result.warnings) assertPublicText(warning, 'Outline warning');
   const ids = new Set<string>();
   const indices = new Set<number>();
@@ -159,6 +230,8 @@ export function createOutlineDocument(result: AutomaticOutlineResult): Manufactu
     sourceHash: result.sourceHash,
     status: result.status,
     warnings: [...result.warnings],
+    repairAccepted: result.repairAccepted,
+    axisSource: result.axis.source,
     layers: metadataLayers,
     materialIndependent: true,
   };
@@ -181,6 +254,8 @@ function manifestFromDocument(document: ManufacturingDocument): OutlineManifestV
     sourceHash: metadata.sourceHash,
     status: metadata.status,
     warnings: [...metadata.warnings],
+    repairAccepted: metadata.repairAccepted,
+    axisSource: metadata.axisSource,
     layers: metadata.layers.map(({ id, order, zStart, zEnd, boundsMm }) => ({ id, order, zStart, zEnd, boundsMm })),
     materialIndependent: true,
   };
@@ -193,7 +268,7 @@ export async function createOutlinePackage(result: AutomaticOutlineResult): Prom
   const exportSheet = flattenOutlineSheets(document);
   const cutSvg = writeOutlineSvg(exportSheet, metadata);
   const cutDxf = writeOutlineDxf(exportSheet, metadata);
-  const previewPdf = await writeOutlinePreviewPdf(metadata);
+  const previewPdf = await writeOutlinePreviewPdf(metadata, document.sheets);
   const projectJson = writeOutlineProjectJson(document);
   const manifestJson = JSON.stringify(manifest, null, 2);
   const zip = await writeOutlineZip({ cutSvg, cutDxf, previewPdf, projectJson, manifestJson });
@@ -209,28 +284,117 @@ function requireMetadata(document: ManufacturingDocument): OutlineDocumentMetada
 
 function validateOutlineDocument(document: ManufacturingDocument): void {
   const metadata = requireMetadata(document);
-  if (document.unit !== 'mm' || document.sheets.length === 0 || !HASH_PATTERN.test(metadata.sourceHash)
+  if (!Array.isArray(metadata.layers) || metadata.layers.length === 0
+    || metadata.layers.length > DEFAULT_OUTLINE_BUDGETS.maxLayers) {
+    throw new RangeError('Outline document must contain between 1 and 24 layers within the pipeline budget');
+  }
+  if (document.unit !== 'mm' || !Array.isArray(document.sheets) || document.sheets.length === 0
+    || !Array.isArray(document.manifest) || !Array.isArray(metadata.warnings)
+    || !HASH_PATTERN.test(metadata.sourceHash)
     || !['exact', 'outline-2.5d'].includes(metadata.mode) || !['success', 'warning'].includes(metadata.status)
+    || !['candidate', 'shortest-bounds'].includes(metadata.axisSource)
     || document.provenance.inputFingerprint !== metadata.sourceHash || metadata.materialIndependent !== true) {
     throw new RangeError('Outline document provenance is invalid');
   }
+  assertSafetyProvenance({
+    mode: metadata.mode,
+    status: metadata.status,
+    warnings: metadata.warnings,
+    repairAccepted: metadata.repairAccepted,
+    axisSource: metadata.axisSource,
+  });
+  for (const warning of metadata.warnings) assertPublicText(warning, 'Outline warning');
   if (metadata.layers.length !== document.manifest.length) throw new RangeError('Outline document layer manifest mismatch');
-  const entities = document.sheets.flatMap(({ entities: sheetEntities }) => sheetEntities);
-  if (entities.length !== metadata.layers.length) throw new RangeError('Outline document entity count mismatch');
-  metadata.layers.forEach((layer, index) => {
-    const part = document.manifest[index], entity = entities[index];
-    if (layer.order !== index + 1 || part.partId !== layer.id || part.quantity !== 1 || part.assemblyOrder !== layer.order
+  const ids = new Set<string>();
+  for (const [index, layer] of metadata.layers.entries()) {
+    const source = layer.sourceBoundsMm;
+    if (!SAFE_ID_PATTERN.test(layer.id) || ids.has(layer.id) || layer.order !== index + 1
+      || !Number.isSafeInteger(layer.pointCount) || layer.pointCount < 3 || layer.pointCount > 4096
+      || !Number.isSafeInteger(layer.sheetIndex) || layer.sheetIndex < 0
+      || !Array.isArray(layer.boundsMm) || layer.boundsMm.length !== 2
+      || ![layer.zStart, layer.zEnd, ...layer.boundsMm].every(Number.isFinite) || layer.zEnd <= layer.zStart
+      || layer.boundsMm[0] <= 0 || layer.boundsMm[1] <= 0 || layer.boundsMm[0] > MAX_PART_MM || layer.boundsMm[1] > MAX_PART_MM
+      || !source || ![source.minX, source.minY, source.maxX, source.maxY].every(Number.isFinite)
+      || source.maxX <= source.minX || source.maxY <= source.minY
+      || relativeDifference(source.maxX - source.minX, layer.boundsMm[0]) > 0.06 + 1e-12
+      || relativeDifference(source.maxY - source.minY, layer.boundsMm[1]) > 0.06 + 1e-12) {
+      throw new RangeError('Outline document identity, bounds, or sourceBounds provenance is invalid');
+    }
+    if (index > 0) {
+      const prior = metadata.layers[index - 1];
+      if (layer.zStart < prior.zStart || (layer.zStart === prior.zStart && layer.zEnd < prior.zEnd)) {
+        throw new RangeError('Outline document layer order is not deterministic');
+      }
+    }
+    assertPublicText(layer.id, 'Outline layer ID');
+    ids.add(layer.id);
+  }
+
+  const canvasWidth = Math.min(1000, Math.max(300, Math.ceil(Math.max(...metadata.layers.map(({ boundsMm }) => boundsMm[0])) + 10)));
+  let sheetIndex = 0, entityIndex = 0;
+  let cursorX = MARGIN_MM, cursorY = MARGIN_MM, rowHeight = 0, maxY = MARGIN_MM;
+  let sheetPolygons: LayerEntity['polygon'][] = [];
+  const finishExpectedSheet = (): void => {
+    const sheet = document.sheets[sheetIndex];
+    if (!sheet || entityIndex === 0 || sheet.entities.length !== entityIndex
+      || sheet.width !== canvasWidth || sheet.height !== Math.ceil(maxY + MARGIN_MM)
+      || sheet.height > MAX_SHEET_HEIGHT_MM) {
+      throw new RangeError('Outline document sheet bounds or deterministic placement is invalid');
+    }
+  };
+
+  for (const [index, layer] of metadata.layers.entries()) {
+    const [width, height] = layer.boundsMm;
+    if (cursorX + width > canvasWidth - MARGIN_MM && entityIndex > 0) {
+      cursorX = MARGIN_MM;
+      cursorY += rowHeight + SPACING_MM;
+      rowHeight = 0;
+    }
+    if (cursorY + height > MAX_SHEET_HEIGHT_MM - MARGIN_MM && entityIndex > 0) {
+      finishExpectedSheet();
+      sheetIndex += 1; entityIndex = 0;
+      cursorX = MARGIN_MM; cursorY = MARGIN_MM; rowHeight = 0; maxY = MARGIN_MM;
+      sheetPolygons = [];
+    }
+    const sheet = document.sheets[sheetIndex];
+    const part = document.manifest[index], entity = sheet?.entities[entityIndex];
+    if (!sheet || !entity || layer.sheetIndex !== sheetIndex
+      || part?.partId !== layer.id || part.quantity !== 1 || part.assemblyOrder !== layer.order
       || entity.id !== layer.id || entity.partId !== layer.id || entity.instance !== 0
-      || entity.layer !== 'CUT' || entity.contour !== 'outline' || entity.polygon.points.length !== layer.pointCount
-      || layer.sheetIndex < 0 || document.sheets[layer.sheetIndex]?.entities.includes(entity) !== true) {
+      || entity.layer !== 'CUT' || entity.contour !== 'outline'
+      || !entity.polygon || !Array.isArray(entity.polygon.points) || entity.polygon.points.length !== layer.pointCount) {
       throw new RangeError('Outline document identity, order, or CUT geometry mismatch');
     }
-    const bounds = contourBounds(entity.polygon.points);
-    const actual = [bounds.maxX - bounds.minX, bounds.maxY - bounds.minY];
-    if (!nearlyEqual(actual[0], layer.boundsMm[0]) || !nearlyEqual(actual[1], layer.boundsMm[1])) {
-      throw new RangeError('Outline document bounds mismatch');
+    if (!validatePolygon(entity.polygon)) {
+      throw new RangeError('Outline document polygon must be finite, simple, unique, non-zero, and clockwise');
     }
-  });
+    const uniquePoints = new Set(entity.polygon.points.map((point: readonly [number, number]) => `${point[0]}:${point[1]}`));
+    const area = polygonMassProperties(entity.polygon).area;
+    if (uniquePoints.size !== entity.polygon.points.length || !Number.isFinite(area) || area <= 0
+      || signedArea(entity.polygon.points) >= 0) {
+      throw new RangeError('Outline document polygon must be finite, simple, unique, non-zero, and clockwise');
+    }
+    const bounds = contourBounds(entity.polygon.points);
+    const actualWidth = bounds.maxX - bounds.minX, actualHeight = bounds.maxY - bounds.minY;
+    if (!nearlyEqual(bounds.minX, cursorX) || !nearlyEqual(bounds.minY, cursorY)
+      || !nearlyEqual(actualWidth, width) || !nearlyEqual(actualHeight, height)
+      || (bounds.minX < MARGIN_MM && !nearlyEqual(bounds.minX, MARGIN_MM))
+      || (bounds.minY < MARGIN_MM && !nearlyEqual(bounds.minY, MARGIN_MM))
+      || (bounds.maxX > sheet.width - MARGIN_MM && !nearlyEqual(bounds.maxX, sheet.width - MARGIN_MM))
+      || (bounds.maxY > sheet.height - MARGIN_MM && !nearlyEqual(bounds.maxY, sheet.height - MARGIN_MM))) {
+      throw new RangeError('Outline document geometry violates bounds, 5 mm margins, deterministic placement, or no-rescaling');
+    }
+    if (sheetPolygons.some((polygon) => polygonsIntersectOrTouch(polygon, entity.polygon))) {
+      throw new RangeError('Outline document parts overlap or touch');
+    }
+    sheetPolygons.push(entity.polygon);
+    entityIndex += 1;
+    cursorX += width + SPACING_MM;
+    rowHeight = Math.max(rowHeight, height);
+    maxY = Math.max(maxY, cursorY + height);
+  }
+  finishExpectedSheet();
+  if (sheetIndex !== document.sheets.length - 1) throw new RangeError('Outline document contains unexpected or empty sheets');
 }
 
 function canonicalEntities(sheet: ManufacturingSheet): unknown[] {
@@ -270,6 +434,10 @@ function nearlyEqual(left: number, right: number): boolean {
   return Math.abs(left - right) <= tolerance;
 }
 
+function relativeDifference(left: number, right: number): number {
+  return Math.abs(left - right) / Math.max(Number.MIN_VALUE, Math.abs(left));
+}
+
 export async function verifyOutlinePackage(output: OutlinePackage): Promise<void> {
   validateOutlineDocument(output.document);
   const expectedManifest = manifestFromDocument(output.document);
@@ -291,12 +459,19 @@ export async function verifyOutlinePackage(output: OutlinePackage): Promise<void
   if (output.cutSvg !== writeOutlineSvg(exportSheet, metadata) || output.cutDxf !== writeOutlineDxf(exportSheet, metadata)) {
     throw new RangeError('Outline metadata reconciliation mismatch');
   }
+  const expectedPdf = await writeOutlinePreviewPdf(metadata, output.document.sheets);
+  if (expectedPdf.length !== output.previewPdf.length
+    || expectedPdf.some((byte, index) => byte !== output.previewPdf[index])) {
+    throw new RangeError('Outline PDF content and CUT geometry reconciliation mismatch');
+  }
   const pdf = await PDFDocument.load(output.previewPdf);
   const keywords = pdf.getKeywords() ?? '';
   const requiredKeywords = [
     `outline-source:${metadata.sourceHash}`,
     `outline-mode:${metadata.mode}`,
     `outline-status:${metadata.status}`,
+    `repair-accepted:${metadata.repairAccepted}`,
+    `axis-source:${metadata.axisSource}`,
     'material-independent:true',
     ...metadata.layers.map((layer) => `outline-layer:${layer.id}:${layer.order}:${layer.pointCount}:${layer.boundsMm[0]}x${layer.boundsMm[1]}:${layer.zStart}:${layer.zEnd}`),
   ];

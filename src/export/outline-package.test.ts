@@ -1,15 +1,32 @@
 import JSZip from 'jszip';
-import { PDFDocument } from 'pdf-lib';
+import { PDFDocument, StandardFonts } from 'pdf-lib';
 import { describe, expect, it } from 'vitest';
 import type { OutlineLayer } from '../domain/outline-2.5d/extract';
 import type { AutomaticOutlineResult } from '../domain/pipeline/automatic-outline-pipeline';
 import {
   createOutlineDocument,
   createOutlinePackage,
+  type OutlinePackage,
   verifyOutlinePackage,
 } from './outline-package';
+import {
+  flattenOutlineSheets,
+  writeOutlineDxf,
+  writeOutlinePreviewPdf,
+  writeOutlineSvg,
+  writeOutlineZip,
+} from './package';
+import { writeOutlineProjectJson } from './project-json';
 
 const SOURCE_HASH = '0123456789abcdef'.repeat(2);
+const PROJECTED_WARNINGS = [
+  '已簡化模型',
+  '原始內部細節、孔洞及細小分離零件已被忽略',
+  '不同材料厚度會改變堆疊後高度',
+  '輸出不包含雷射功率或速度',
+  '正式製作前應先試切少量零件',
+  '未找到可信旋轉軸，已使用模型最短包圍盒軸',
+] as const;
 
 function layer(
   id: string,
@@ -52,7 +69,7 @@ function result(overrides: Partial<AutomaticOutlineResult> = {}): AutomaticOutli
       layer('small-rectangle', 2, 0, 2, [[-5, -3], [-5, 7], [13, 7], [13, -3]]),
       layer('wide-rectangle', 5, 2, 4, [[2, 1], [2, 13], [32, 13], [32, 1]]),
     ],
-    warnings: ['已簡化模型'],
+    warnings: PROJECTED_WARNINGS,
     originalReport: {
       inspection: {
         triangleCount: 1, boundaryEdgeCount: 0, nonManifoldEdgeCount: 0,
@@ -72,6 +89,29 @@ function result(overrides: Partial<AutomaticOutlineResult> = {}): AutomaticOutli
     repairAccepted: false,
     ...overrides,
   };
+}
+
+async function synchronizedOutput(output: OutlinePackage, document: OutlinePackage['document']): Promise<OutlinePackage> {
+  const metadata = document.outline!;
+  const manifest = {
+    schemaVersion: 1 as const,
+    mode: metadata.mode,
+    sourceHash: metadata.sourceHash,
+    status: metadata.status,
+    warnings: [...metadata.warnings],
+    repairAccepted: metadata.repairAccepted,
+    axisSource: metadata.axisSource,
+    layers: metadata.layers.map(({ id, order, zStart, zEnd, boundsMm }) => ({ id, order, zStart, zEnd, boundsMm })),
+    materialIndependent: true as const,
+  };
+  const exportSheet = flattenOutlineSheets(document);
+  const cutSvg = writeOutlineSvg(exportSheet, metadata);
+  const cutDxf = writeOutlineDxf(exportSheet, metadata);
+  const previewPdf = await writeOutlinePreviewPdf(metadata, document.sheets);
+  const projectJson = writeOutlineProjectJson(document);
+  const manifestJson = JSON.stringify(manifest, null, 2);
+  const zip = await writeOutlineZip({ cutSvg, cutDxf, previewPdf, projectJson, manifestJson });
+  return { ...output, document, manifest, cutSvg, cutDxf, previewPdf, projectJson, manifestJson, zip };
 }
 
 function polygonRecords(svg: string) {
@@ -171,6 +211,93 @@ describe('material-independent outline package', () => {
       .rejects.toThrow(/status|provenance|outline/i);
   });
 
+  it('enforces the pipeline safety relationships for exact and projected results', async () => {
+    expect(() => createOutlineDocument(result({ status: 'success' }))).toThrow(/status|warning|2\.5D|provenance/i);
+    expect(() => createOutlineDocument(result({ warnings: [] }))).toThrow(/warning|simplif|provenance/i);
+    expect(() => createOutlineDocument(result({ repairAccepted: true }))).toThrow(/repair|fallback|warning|provenance/i);
+    expect(() => createOutlineDocument(result({ mode: 'exact', status: 'success', warnings: [], repairAccepted: false })))
+      .toThrow(/repair|exact|provenance/i);
+    expect(() => createOutlineDocument(result({
+      mode: 'exact',
+      status: 'warning',
+      warnings: ['forged warning'],
+      repairAccepted: true,
+      axis: { axis: { ...result().axis.axis, confidence: 1 }, source: 'candidate' },
+    }))).toThrow(/status|warning|exact|provenance/i);
+    expect(() => createOutlineDocument(result({
+      mode: 'exact',
+      status: 'success',
+      warnings: [],
+      repairAccepted: true,
+      axis: { axis: { ...result().axis.axis, confidence: 1 }, source: 'candidate' },
+    }))).not.toThrow();
+  });
+
+  it('rejects empty or internally mismatched axis provenance', () => {
+    expect(() => createOutlineDocument(result({ axis: undefined as unknown as AutomaticOutlineResult['axis'] })))
+      .toThrow(/axis|provenance/i);
+    expect(() => createOutlineDocument(result({
+      mode: 'exact', status: 'success', warnings: [], repairAccepted: true,
+      axis: { axis: { ...result().axis.axis, confidence: 0 }, source: 'candidate' },
+    }))).toThrow(/axis|confidence|provenance/i);
+    expect(() => createOutlineDocument(result({
+      axis: { axis: { ...result().axis.axis, confidence: 1, direction: [0, 0, 2] }, source: 'shortest-bounds' },
+    }))).toThrow(/axis|confidence|direction|provenance/i);
+  });
+
+  it('rejects synchronized empty safety provenance in the canonical document and every output', async () => {
+    const output = await createOutlinePackage(result());
+    const document = structuredClone(output.document) as any;
+    document.outline.warnings = [];
+    const mutated = await synchronizedOutput(output, document);
+
+    await expect(verifyOutlinePackage(mutated)).rejects.toThrow(/warning|simplif|provenance/i);
+  });
+
+  it('rejects a synchronized forged canonical axis source', async () => {
+    const exact = result({
+      mode: 'exact', status: 'success', warnings: [], repairAccepted: true,
+      axis: { axis: { ...result().axis.axis, confidence: 1 }, source: 'candidate' },
+    });
+    const output = await createOutlinePackage(exact);
+    const document = structuredClone(output.document) as any;
+    document.outline.axisSource = 'forged';
+    const mutated = await synchronizedOutput(output, document);
+
+    await expect(verifyOutlinePackage(mutated)).rejects.toThrow(/axis|provenance/i);
+  });
+
+  it('rejects extra bounds tuple values even when every output is synchronized', async () => {
+    const output = await createOutlinePackage(result());
+    const document = structuredClone(output.document) as any;
+    document.outline.layers[0].boundsMm = [18, 10, 999];
+    const mutated = await synchronizedOutput(output, document);
+
+    await expect(verifyOutlinePackage(mutated)).rejects.toThrow(/bounds|tuple|provenance/i);
+  });
+
+  it('enforces the 24-layer pipeline budget at input and canonical document boundaries', async () => {
+    const layers = Array.from({ length: 25 }, (_, index) => layer(
+      `budget-${index}`, index, index, index + 1,
+      [[0, 0], [0, 1], [1, 1], [1, 0]],
+    ));
+    expect(() => createOutlineDocument(result({ layers }))).toThrow(/24|layer|budget|limit/i);
+
+    const output = await createOutlinePackage(result({ layers: layers.slice(0, 24) }));
+    const document = structuredClone(output.document) as any;
+    document.outline.layers.push({
+      id: 'budget-24', order: 25, zStart: 24, zEnd: 25, boundsMm: [1, 1],
+      sourceBoundsMm: { minX: 0, minY: 0, maxX: 1, maxY: 1 }, pointCount: 4, sheetIndex: 0,
+    });
+    document.manifest.push({ partId: 'budget-24', quantity: 1, assemblyOrder: 25 });
+    document.sheets[0].entities.push({
+      id: 'budget-24', partId: 'budget-24', instance: 0, contour: 'outline', layer: 'CUT',
+      polygon: { points: [[149, 5], [149, 6], [150, 6], [150, 5]] },
+    });
+    const mutated = await synchronizedOutput(output, document);
+    await expect(verifyOutlinePackage(mutated)).rejects.toThrow(/24|layer|budget|limit/i);
+  });
+
   it('starts another bounded sheet when the next shelf cannot keep 5 mm margins', async () => {
     const first = layer('full-sheet-a', 0, 0, 1, [[0, 0], [0, 990], [990, 990], [990, 0]]);
     const second = layer('full-sheet-b', 1, 1, 2, [[0, 0], [0, 990], [990, 990], [990, 0]]);
@@ -179,9 +306,13 @@ describe('material-independent outline package', () => {
     expect(document.sheets).toHaveLength(2);
     expect(document.sheets.map(({ width, height }) => [width, height])).toEqual([[1000, 1000], [1000, 1000]]);
     expect(document.sheets.map(({ entities }) => entities.map(({ id }) => id))).toEqual([['full-sheet-a'], ['full-sheet-b']]);
-    await expect(createOutlinePackage(result({ layers: [first, second] }))).resolves.toMatchObject({
+    const output = await createOutlinePackage(result({ layers: [first, second] }));
+    expect(output).toMatchObject({
       manifest: { layers: [{ id: 'full-sheet-a' }, { id: 'full-sheet-b' }] },
     });
+    const pdf = await PDFDocument.load(output.previewPdf);
+    expect(pdf.getPageCount()).toBe(2);
+    expect(pdf.getPages().every((page) => page.getWidth() <= 1000 * 72 / 25.4 && page.getHeight() <= 1000 * 72 / 25.4)).toBe(true);
   });
 
   it('keeps valid fractional-millimetre bounds through layout translation', () => {
@@ -199,6 +330,33 @@ describe('material-independent outline package', () => {
     expect(mutated.cutSvg).not.toBe(output.cutSvg);
 
     await expect(verifyOutlinePackage(mutated)).rejects.toThrow(/mismatch|reconcil|geometry|package/i);
+  });
+
+  it('rejects an exact bow-tie mutation even when document, SVG, DXF, PDF, JSON, manifest, and ZIP agree', async () => {
+    const output = await createOutlinePackage(result());
+    const document = structuredClone(output.document) as any;
+    document.sheets[0].entities[0].polygon.points = [[5, 5], [23, 15], [5, 15], [23, 5]];
+    const mutated = await synchronizedOutput(output, document);
+
+    await expect(verifyOutlinePackage(mutated)).rejects.toThrow(/polygon|self-intersect|geometry|canonical/i);
+  });
+
+  it('validates canonical winding, duplicate points, 5 mm margins, source bounds, overlap, and deterministic placement', async () => {
+    const output = await createOutlinePackage(result());
+    const mutations: ((document: any) => void)[] = [
+      (document) => { document.sheets[0].entities[0].polygon.points.reverse(); },
+      (document) => { document.sheets[0].entities[0].polygon.points = [[5, 5], [5, 15], [5, 15], [23, 5]]; },
+      (document) => { document.sheets[0].entities[0].polygon.points = document.sheets[0].entities[0].polygon.points.map(([x, y]: number[]) => [x - 1, y]); },
+      (document) => { document.outline.layers[0].sourceBoundsMm.maxX += 5; },
+      (document) => { document.sheets[0].entities[1].polygon.points = document.sheets[0].entities[1].polygon.points.map(([x, y]: number[]) => [x - 23, y]); },
+      (document) => { document.sheets[0].width += 1; },
+    ];
+    for (const mutate of mutations) {
+      const document = structuredClone(output.document) as any;
+      mutate(document);
+      const synchronized = await synchronizedOutput(output, document);
+      await expect(verifyOutlinePackage(synchronized)).rejects.toThrow(/geometry|polygon|margin|bounds|overlap|placement|sheet|canonical/i);
+    }
   });
 
   it('rejects a provenance mutation instead of trusting a forged manifest fingerprint', async () => {
@@ -226,5 +384,38 @@ describe('material-independent outline package', () => {
     };
 
     await expect(verifyOutlinePackage(mutated)).rejects.toThrow(/PDF|metadata|private|email|process|reconcil/i);
+  });
+
+  it('rejects private or process text injected into a PDF page even when metadata and ZIP agree', async () => {
+    const output = await createOutlinePackage(result());
+    const pdf = await PDFDocument.load(output.previewPdf);
+    const font = await pdf.embedFont(StandardFonts.Helvetica);
+    pdf.getPages()[0].drawText('source=/Users/private/model.stl laserPower=100 cut_speed=20 passes:2', { x: 10, y: 10, font });
+    const previewPdf = await pdf.save();
+    const zip = await JSZip.loadAsync(output.zip);
+    zip.file('preview.pdf', previewPdf);
+    const mutated = { ...output, previewPdf, zip: await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' }) };
+
+    await expect(verifyOutlinePackage(mutated)).rejects.toThrow(/PDF|content|private|process|reconcil/i);
+  });
+
+  it.each([
+    'source=/Users/private/model.stl',
+    'source: file:///Users/private/model.stl',
+    String.raw`source=\\server\share\model.stl`,
+    String.raw`source=C:\Users\private\model.stl`,
+    'contact=owner@example.com',
+    'laserPower=80',
+    'cut_speed=20',
+    'passes:2',
+  ])('rejects embedded privacy or process provenance: %s', async (warning) => {
+    await expect(createOutlinePackage(result({ warnings: [...PROJECTED_WARNINGS, warning] })))
+      .rejects.toThrow(/private|path|email|process|setting|warning/i);
+  });
+
+  it('allows ordinary SVG vocabulary without privacy/process false positives', async () => {
+    await expect(createOutlinePackage(result({
+      warnings: [...PROJECTED_WARNINGS, 'outline path uses fill="none" and stroke="#000"; source=outline.svg'],
+    }))).resolves.toBeDefined();
   });
 });

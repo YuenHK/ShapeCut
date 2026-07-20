@@ -1,4 +1,5 @@
 import JSZip from 'jszip';
+import { PDFDocument, rgb } from 'pdf-lib';
 import { classifyMaterialReadiness } from '../domain/materials/schema';
 import { writeSheetDxf } from './dxf';
 import {
@@ -61,7 +62,7 @@ export async function buildPackage(project: ManufacturingProject): Promise<Manuf
 export function writeOutlineSvg(sheet: ManufacturingSheet, metadata: OutlineDocumentMetadata): string {
   const layers = new Map(metadata.layers.map((layer) => [layer.id, layer]));
   return writeSheetSvg(sheet)
-    .replace('<svg ', `<svg data-outline-source-hash="${metadata.sourceHash}" data-material-independent="true" `)
+    .replace('<svg ', `<svg data-outline-source-hash="${metadata.sourceHash}" data-outline-mode="${metadata.mode}" data-outline-status="${metadata.status}" data-repair-accepted="${metadata.repairAccepted}" data-axis-source="${metadata.axisSource}" data-material-independent="true" `)
     .replace(/<polygon id="([^"]+)"/g, (match, id: string) => {
       const layer = layers.get(id);
       if (!layer) throw new RangeError(`SVG entity ${id} is missing outline metadata`);
@@ -72,24 +73,55 @@ export function writeOutlineSvg(sheet: ManufacturingSheet, metadata: OutlineDocu
 export function writeOutlineDxf(sheet: ManufacturingSheet, metadata: OutlineDocumentMetadata): string {
   const comments = [
     `999\nOUTLINE_SOURCE_HASH:${metadata.sourceHash}\n`,
+    `999\nOUTLINE_MODE:${metadata.mode}\n`,
+    `999\nOUTLINE_STATUS:${metadata.status}\n`,
+    `999\nREPAIR_ACCEPTED:${metadata.repairAccepted}\n`,
+    `999\nAXIS_SOURCE:${metadata.axisSource}\n`,
     '999\nMATERIAL_INDEPENDENT:true\n',
     ...metadata.layers.map((layer) => `999\nOUTLINE_LAYER:${layer.id}:${layer.order}:${layer.zStart}:${layer.zEnd}:${layer.pointCount}:${layer.boundsMm[0]}x${layer.boundsMm[1]}\n`),
   ].join('');
   return writeSheetDxf(sheet).replace('0\nEOF\n', `${comments}0\nEOF\n`);
 }
 
-export async function writeOutlinePreviewPdf(metadata: OutlineDocumentMetadata): Promise<Uint8Array> {
-  return writeTextPdf(
-    'Universal outline preview',
-    metadata.layers.map((layer) => `${layer.order}. ${layer.id} (${layer.pointCount} points, ${layer.boundsMm[0]} x ${layer.boundsMm[1]} mm)`),
-    [
-      `outline-source:${metadata.sourceHash}`,
-      `outline-mode:${metadata.mode}`,
-      `outline-status:${metadata.status}`,
-      'material-independent:true',
-      ...metadata.layers.map((layer) => `outline-layer:${layer.id}:${layer.order}:${layer.pointCount}:${layer.boundsMm[0]}x${layer.boundsMm[1]}:${layer.zStart}:${layer.zEnd}`),
-    ],
-  );
+export async function writeOutlinePreviewPdf(
+  metadata: OutlineDocumentMetadata,
+  sheets: readonly ManufacturingSheet[],
+): Promise<Uint8Array> {
+  const pointsPerMm = 72 / 25.4;
+  const pdf = await PDFDocument.create({ updateMetadata: false });
+  const fixedDate = new Date('2000-01-01T00:00:00.000Z');
+  pdf.setTitle('Universal outline preview');
+  pdf.setSubject('Canonical CUT contour preview');
+  pdf.setAuthor('spinner-laser-kit');
+  pdf.setCreator('spinner-laser-kit');
+  pdf.setProducer('spinner-laser-kit');
+  pdf.setCreationDate(fixedDate);
+  pdf.setModificationDate(fixedDate);
+  pdf.setKeywords([
+    `outline-source:${metadata.sourceHash}`,
+    `outline-mode:${metadata.mode}`,
+    `outline-status:${metadata.status}`,
+    `repair-accepted:${metadata.repairAccepted}`,
+    `axis-source:${metadata.axisSource}`,
+    'material-independent:true',
+    ...metadata.layers.map((layer) => `outline-layer:${layer.id}:${layer.order}:${layer.pointCount}:${layer.boundsMm[0]}x${layer.boundsMm[1]}:${layer.zStart}:${layer.zEnd}`),
+  ]);
+  for (const sheet of sheets) {
+    const page = pdf.addPage([sheet.width * pointsPerMm, sheet.height * pointsPerMm]);
+    for (const entity of sheet.entities) {
+      for (let index = 0; index < entity.polygon.points.length; index += 1) {
+        const start = entity.polygon.points[index];
+        const end = entity.polygon.points[(index + 1) % entity.polygon.points.length];
+        page.drawLine({
+          start: { x: start[0] * pointsPerMm, y: (sheet.height - start[1]) * pointsPerMm },
+          end: { x: end[0] * pointsPerMm, y: (sheet.height - end[1]) * pointsPerMm },
+          thickness: 0.25,
+          color: rgb(0, 0, 0),
+        });
+      }
+    }
+  }
+  return pdf.save({ useObjectStreams: false });
 }
 
 export async function writeOutlineZip(files: {
