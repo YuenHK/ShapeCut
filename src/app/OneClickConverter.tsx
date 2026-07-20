@@ -1,0 +1,225 @@
+import { useCallback, useEffect, useRef, useState, type ChangeEvent, type DragEvent } from 'react';
+import {
+  AutomaticOutlineError,
+  type AutomaticOutlineProgressStage,
+  type AutomaticOutlineResult,
+} from '../domain/pipeline/automatic-outline-pipeline';
+import { SupersededError } from '../workers/geometry-client';
+
+export type DownloadFile = { readonly href: string; readonly fileName: string };
+export type OutlineDownloads = {
+  readonly zip: DownloadFile;
+  readonly svg: DownloadFile;
+  readonly dxf: DownloadFile;
+  readonly pdf: DownloadFile;
+  readonly json: DownloadFile;
+};
+
+export type OneClickViewState =
+  | { readonly kind: 'upload' }
+  | { readonly kind: 'processing'; readonly fileName: string; readonly stage: AutomaticOutlineProgressStage }
+  | { readonly kind: 'result'; readonly fileName: string; readonly result: AutomaticOutlineResult; readonly downloads: OutlineDownloads }
+  | { readonly kind: 'failure'; readonly fileName?: string; readonly message: string };
+
+export type OneClickConverterServices = {
+  readonly convert: (
+    bytes: ArrayBuffer,
+    onProgress?: (stage: AutomaticOutlineProgressStage) => void | Promise<void>,
+  ) => Promise<AutomaticOutlineResult>;
+  readonly package: (result: AutomaticOutlineResult, fileName?: string) => Promise<OutlineDownloads>;
+  readonly cancel: () => void;
+};
+
+const STAGES: readonly AutomaticOutlineProgressStage[] = ['reading', 'analyzing', 'simplifying', 'slicing', 'packaging'];
+const STAGE_LABELS: Record<AutomaticOutlineProgressStage, string> = {
+  reading: '模型已讀取',
+  analyzing: '正在分析模型',
+  simplifying: '正在簡化',
+  slicing: '正在產生切片',
+  packaging: '正在準備下載',
+};
+
+function failureMessage(error: unknown): string {
+  if (error instanceof AutomaticOutlineError) {
+    return {
+      INVALID_STL: '這個檔案不是可讀取的 STL，請選擇另一個模型。',
+      NO_OUTLINE: '找不到足夠的有效外形，請嘗試另一個模型。',
+      RESOURCE_LIMIT: '模型太複雜，超出這次可處理的上限。請先簡化模型再試。',
+      TIME_LIMIT: '處理時間過長，已安全停止。請先簡化模型再試。',
+    }[error.code];
+  }
+  return '轉換未能完成，請選擇另一個 STL 再試。';
+}
+
+function revokeDownloads(downloads: OutlineDownloads | undefined): void {
+  if (!downloads) return;
+  if (typeof URL.revokeObjectURL !== 'function') return;
+  for (const item of Object.values(downloads)) URL.revokeObjectURL(item.href);
+}
+
+function readFile(file: File): Promise<ArrayBuffer> {
+  if (typeof file.arrayBuffer === 'function') return file.arrayBuffer();
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error('Unable to read file'));
+    reader.onload = () => resolve(reader.result as ArrayBuffer);
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+function ModelInput({ compact = false, onFile }: { readonly compact?: boolean; readonly onFile: (file: File) => void }) {
+  const input = useRef<HTMLInputElement>(null);
+  const select = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) onFile(file);
+    event.target.value = '';
+  };
+  if (compact) return (
+    <label className="change-file-button">
+      更換模型
+      <input ref={input} className="visually-hidden" type="file" accept=".stl,model/stl" aria-label="選擇 STL 模型" onChange={select} />
+    </label>
+  );
+  const drop = (event: DragEvent<HTMLLabelElement>) => {
+    event.preventDefault();
+    const file = event.dataTransfer.files[0];
+    if (file) onFile(file);
+  };
+  return (
+    <label className="upload-zone" onDragOver={(event) => event.preventDefault()} onDrop={drop}>
+      <span className="upload-icon" aria-hidden="true">↑</span>
+      <strong>拖放 STL 到這裏</strong>
+      <span>或</span>
+      <span className="select-file-button">選擇模型</span>
+      <input ref={input} className="visually-hidden" type="file" accept=".stl,model/stl" aria-label="選擇 STL 模型" onChange={select} />
+      <small>檔案只在你的瀏覽器內處理，不會上載到伺服器。</small>
+    </label>
+  );
+}
+
+export function OneClickConverter({ services }: { readonly services: OneClickConverterServices }) {
+  const [view, setView] = useState<OneClickViewState>({ kind: 'upload' });
+  const requestId = useRef(0);
+  const downloadsRef = useRef<OutlineDownloads | undefined>(undefined);
+
+  const releaseCurrentDownloads = useCallback(() => {
+    revokeDownloads(downloadsRef.current);
+    downloadsRef.current = undefined;
+  }, []);
+
+  useEffect(() => () => {
+    requestId.current += 1;
+    services.cancel();
+    releaseCurrentDownloads();
+  }, [releaseCurrentDownloads, services]);
+
+  const processFile = useCallback(async (file: File) => {
+    const current = ++requestId.current;
+    services.cancel();
+    releaseCurrentDownloads();
+    setView({ kind: 'processing', fileName: file.name, stage: 'reading' });
+    let lastProgressIndex = 0;
+    try {
+      const bytes = await readFile(file);
+      if (current !== requestId.current) return;
+      const result = await services.convert(bytes, (stage) => {
+        const nextProgressIndex = STAGES.indexOf(stage);
+        if (current !== requestId.current || nextProgressIndex < lastProgressIndex) return;
+        lastProgressIndex = nextProgressIndex;
+        setView({ kind: 'processing', fileName: file.name, stage });
+      });
+      if (current !== requestId.current) return;
+      const downloads = await services.package(result, file.name);
+      if (current !== requestId.current) {
+        revokeDownloads(downloads);
+        return;
+      }
+      downloadsRef.current = downloads;
+      setView({ kind: 'result', fileName: file.name, result, downloads });
+    } catch (error) {
+      if (current !== requestId.current || error instanceof SupersededError) return;
+      setView({ kind: 'failure', fileName: file.name, message: failureMessage(error) });
+    }
+  }, [releaseCurrentDownloads, services]);
+
+  const reset = () => {
+    requestId.current += 1;
+    services.cancel();
+    releaseCurrentDownloads();
+    setView({ kind: 'upload' });
+  };
+
+  if (view.kind === 'upload') return (
+    <section className="converter-card upload-card" aria-labelledby="converter-title">
+      <div className="hero-copy">
+        <p className="eyebrow">一鍵轉換工具</p>
+        <h1 id="converter-title">把 3D 模型變成 Laser Cut 切片</h1>
+        <p>放入 STL，ShapeCut 會自動分析、簡化和切片，然後準備好通用外形檔案。</p>
+      </div>
+      <ModelInput onFile={(file) => void processFile(file)} />
+      <ul className="feature-list" aria-label="處理特點">
+        <li>自動保留主要外形</li><li>適合多種材料堆疊</li><li>一次下載所有格式</li>
+      </ul>
+    </section>
+  );
+
+  if (view.kind === 'processing') {
+    const active = STAGES.indexOf(view.stage);
+    return (
+      <section className="converter-card processing-card" aria-labelledby="processing-title">
+        <div className="spinner" aria-hidden="true" />
+        <h1 id="processing-title">正在處理你的模型</h1>
+        <p className="file-name">{view.fileName}</p>
+        <div role="status" aria-live="polite" className="progress-status">
+          <strong>{STAGE_LABELS[view.stage]}</strong>
+          <progress value={active + 1} max={STAGES.length} aria-label="轉換進度" />
+          <ol className="stage-list">
+            {STAGES.slice(0, 4).map((stage, index) => <li key={stage} className={index <= active ? 'complete' : ''}>{STAGE_LABELS[stage]}</li>)}
+          </ol>
+        </div>
+        <ModelInput compact onFile={(file) => void processFile(file)} />
+      </section>
+    );
+  }
+
+  if (view.kind === 'failure') return (
+    <section className="converter-card failure-card" aria-labelledby="failure-title">
+      <div className="result-symbol failure" aria-hidden="true">!</div>
+      <div role="alert">
+        <p className="result-badge failure">失敗</p>
+        <h1 id="failure-title">這次未能完成</h1>
+        <p>{view.message}</p>
+      </div>
+      <button className="primary-button" type="button" onClick={reset}>選擇另一個模型</button>
+    </section>
+  );
+
+  const { result, downloads } = view;
+  const warning = result.status === 'warning';
+  return (
+    <section className="converter-card result-card" aria-labelledby="result-title">
+      <div className="result-heading">
+        <div className={`result-symbol ${warning ? 'warning' : 'success'}`} aria-hidden="true">{warning ? '!' : '✓'}</div>
+        <div role="status" aria-live="polite">
+          <p className={`result-badge ${warning ? 'warning' : 'success'}`}>{warning ? '需注意' : '成功'}</p>
+          <h1 id="result-title">轉換完成</h1>
+          <p className="file-name">{view.fileName}</p>
+        </div>
+      </div>
+      {warning && <div className="warning-panel"><strong>已簡化模型</strong><p>內部細節、孔洞及細小分離零件已被忽略。正式製作前請先試切。</p></div>}
+      <div className="result-grid">
+        <div className="outline-preview" aria-label="外形切片預覽"><span aria-hidden="true" /></div>
+        <dl className="result-summary">
+          <div><dt>處理方式</dt><dd>{result.mode === 'exact' ? '精確切片' : '2.5D 外形'}</dd></div>
+          <div><dt>切片數量</dt><dd>{result.layers.length} 層</dd></div>
+          <div><dt>輸出內容</dt><dd>通用切割外形</dd></div>
+        </dl>
+      </div>
+      <a className="primary-button download-primary" href={downloads.zip.href} download={downloads.zip.fileName}>下載 ZIP 製作套件</a>
+      <nav className="secondary-downloads" aria-label="其他下載格式">
+        {(['svg', 'dxf', 'pdf', 'json'] as const).map((kind) => <a key={kind} href={downloads[kind].href} download={downloads[kind].fileName}>下載 {kind.toUpperCase()}</a>)}
+      </nav>
+      <ModelInput compact onFile={(file) => void processFile(file)} />
+    </section>
+  );
+}
