@@ -232,6 +232,16 @@ describe('geometry worker boundary', () => {
     expect(terminate).toHaveBeenCalled();
   });
 
+  it('returns a typed TIME_LIMIT when the shared packaging deadline is exhausted', async () => {
+    const client = createGeometryWorkerClient();
+    clients.push(client);
+    const runtime = await client.convertAutomatically({ bytes: writeBinarySTL(scaledOpenTetrahedron(), 'safe') });
+
+    await expect(client.packageOutline(runtime, 0)).rejects.toMatchObject({
+      name: 'AutomaticOutlineError', code: 'TIME_LIMIT', message: '模型處理超出時間上限',
+    });
+  });
+
   it('still terminates and recreates when progress finalization throws during cancel', async () => {
     const terminate = vi.spyOn(Worker.prototype, 'terminate');
     const postMessage = vi.spyOn(Worker.prototype, 'postMessage');

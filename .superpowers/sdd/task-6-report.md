@@ -125,3 +125,23 @@ Both real-file UI cases completed in approximately 2.5 seconds, showed `已簡�
 - Automatic results now carry a typed, path-free diagnostic record: original topology counters, accepted-versus-projected-original repair decision, projected raster cell size (explicitly `null` for exact mode), and per-layer applied simplification tolerance plus bounds/area drift ratios.
 - Runtime packaging rejects missing or mismatched diagnostics against the original report and measured layers. Canonical validation rejects invalid mode-specific fields, non-finite values, drift above three percent, layer identity mismatch, and a forged diagnostic fingerprint.
 - Full diagnostics are reconciled in manifest and project JSON. SVG, DXF, and PDF independently carry the deterministic diagnostic fingerprint, and ZIP verification regenerates and compares every representation. Technical details show a useful safe subset without file names, paths, materials, or machine settings.
+
+## Component-local projected fidelity follow-up
+
+- Projected source bounds are now measured from the pre-grid contributors that touch the retained raster component; a distant discarded component can no longer inflate the evidence and allow an undersized retained outline through validation.
+- Reviewer regressions reject a 1 mm retained component with a remote 0.1 mm component at both 5 mm and 100 mm offsets. A 20 mm retained component plus a remote 1 mm component passes with an exact 20 mm pre-grid source bound and positive, bounded raster drift.
+- Projected area evidence is explicitly labelled `retained-raster-pre-simplification`; it verifies simplification drift without claiming to be the original projected triangle union. Exact mode remains `exact-slice-pre-simplification`.
+
+## Universal icon and shared package deadline
+
+- The install icon is a mint-and-white ShapeCut layered-outline mark. The PWA build regression inspects the referenced built SVG and rejects the former spinner/material palette and vocabulary.
+- Package creation and verification use one absolute deadline. An already exhausted deadline fails deterministically before package work, while the worker maps the failure through Comlink to a typed `AutomaticOutlineError` with code `TIME_LIMIT` and the UI-safe Chinese message.
+- Chromium proves the typed `TIME_LIMIT` boundary with an injected exhausted deadline. The existing worst-case packaging test still proves worker termination and replacement recovery in approximately 0.7 seconds.
+
+## Final review verification (2026-07-20)
+
+- Unit: 34 files, 902/902 passed before the final deadline seam; focused deadline/export tests then passed 398/398.
+- Chromium: final worker suite 15/15 passed; full pre-seam browser matrix 28/28 passed.
+- Full E2E using both external absolute-path environment variables: 12/12 passed, zero skips. Knight Fortress completed with warning/download in 2.5 seconds; Knight Fortress Group completed with warning/download in 3.0 seconds.
+- Fixtures: 10/10 passed. Performance: 2/2 passed. Typecheck and production build passed.
+- The two user STL files remain external and untracked; their absolute paths are supplied only as process environment values and do not appear in tracked source or artifacts.

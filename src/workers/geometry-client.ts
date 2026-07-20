@@ -51,7 +51,7 @@ export type GeometryClient = {
     request: AutomaticOutlineRequest,
     onProgress?: AutomaticOutlineProgress,
   ): Promise<AutomaticOutlineResult>;
-  packageOutline(result: AutomaticOutlineResult): Promise<OutlinePackageTransfer>;
+  packageOutline(result: AutomaticOutlineResult, deadline?: number): Promise<OutlinePackageTransfer>;
   analyzeForImport(input: ArrayBuffer): Promise<ImportAnalysis>;
   analyzeAndRepairForImport(input: ArrayBuffer): Promise<ImportRepairAnalysis>;
   repairAdvanced(original: SerializedMesh, safeMesh: SerializedMesh): Promise<MeshRepairResult>;
@@ -121,7 +121,7 @@ export function makeGeometryClient(api: GeometryApi, options: GeometryClientOpti
         gatedProgress,
       );
     }),
-    packageOutline: (result) => run(() => api.packageOutline(result)),
+    packageOutline: (result, deadline) => run(() => api.packageOutline(result, deadline)),
     analyzeForImport: (input) => run(() => api.inspectAndFindAxes(options.transferInput?.(input) ?? input)),
     analyzeAndRepairForImport: (input) => run(() => (
       api.analyzeAndRepairForImport(options.transferInput?.(input) ?? input)
@@ -226,8 +226,8 @@ function dynamicApi(
         throw error;
       }
     },
-    packageOutline: async (result) => {
-      try { return await getRemote().packageOutline(result); }
+    packageOutline: async (result, deadline) => {
+      try { return await getRemote().packageOutline(result, deadline); }
       catch (error) {
         if (isSerializedAutomaticOutlineError(error)) throw new AutomaticOutlineError(error.code, error.message);
         throw error;

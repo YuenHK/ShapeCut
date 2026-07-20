@@ -67,10 +67,10 @@ const geometryApi: GeometryApi = {
       progressProxy?.[releaseProxy]();
     }
   },
-  async packageOutline(result) {
+  async packageOutline(result, deadline = Date.now() + 30_000) {
     let output: Awaited<ReturnType<typeof createOutlinePackage>>;
     try {
-      output = await createOutlinePackage(result, Date.now() + 30_000);
+      output = await createOutlinePackage(result, deadline);
     } catch (error) {
       if (error instanceof Error && /deadline|runtime|time limit/i.test(error.message)) {
         throw { name: 'AutomaticOutlineError', code: 'TIME_LIMIT', message: '模型處理超出時間上限' };

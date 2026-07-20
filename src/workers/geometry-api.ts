@@ -57,7 +57,7 @@ export type GeometryApi = {
     request: AutomaticOutlineRequest,
     onProgress?: AutomaticOutlineProgressTransport,
   ): Promise<AutomaticOutlineResult>;
-  packageOutline(result: AutomaticOutlineResult): Promise<OutlinePackageTransfer>;
+  packageOutline(result: AutomaticOutlineResult, deadline?: number): Promise<OutlinePackageTransfer>;
   inspectAndFindAxes(input: ArrayBuffer): Promise<ImportAnalysis>;
   analyzeAndRepairForImport(input: ArrayBuffer): Promise<ImportRepairAnalysis>;
   repairAdvanced(original: SerializedMesh, safeMesh: SerializedMesh): Promise<MeshRepairResult>;
