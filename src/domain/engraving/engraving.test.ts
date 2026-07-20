@@ -5,7 +5,7 @@ import { cloneEngravingMap, levelAt, type EngravingMap, type HeightField } from 
 import { quantizeHeightField } from './quantize';
 import { applyProtectedZones } from './protected-zones';
 import { symmetrizeEngraving } from './symmetrize';
-import { polygonIntersectionArea } from './geometry';
+import { polygonIntersectionArea, polygonsOverlapArea } from './geometry';
 
 function rectangle(minX: number, minY: number, maxX: number, maxY: number): Polygon2 {
   return { points: [[minX, minY], [maxX, minY], [maxX, maxY], [minX, maxY]] };
@@ -255,4 +255,22 @@ test('polygon overlap exposes the exact triangulation checkpoint', () => {
   )).toThrow('deadline');
   expect(labels.at(-1)).toBe('triangulate:inner-loop');
   expect(labels).not.toContain('intersection:triangle-pair-loop');
+});
+
+test.each([
+  ['overlap:length-tolerance:coordinate-scan', 'overlap', 'triangulate:outer-loop'],
+  ['overlap:left-canonical:signature:scan', 'overlap', 'overlap:intersection:triangle-pair-loop'],
+  ['triangulate:signature:scan', 'intersection', 'triangulate:inner-loop'],
+  ['triangulate:signed-area:scan', 'intersection', 'triangulate:inner-loop'],
+  ['triangulate:geometry-scale:bounds:scan', 'intersection', 'triangulate:inner-loop'],
+] as const)('expires exactly in polygon preparation phase %s', (expiryLabel, operation, forbiddenLabel) => {
+  const labels: string[] = [];
+  const left = regularPolygon(0, 0, 10, 130), right = regularPolygon(1, 0, 10, 131);
+  const checkpoint = (label: string) => { labels.push(label); if (label === expiryLabel) throw new RangeError('deadline'); };
+  const invoke = () => operation === 'overlap'
+    ? polygonsOverlapArea(left, right, checkpoint)
+    : polygonIntersectionArea(left, right, checkpoint);
+  expect(invoke).toThrow('deadline');
+  expect(labels.at(-1)).toBe(expiryLabel);
+  expect(labels).not.toContain(forbiddenLabel);
 });

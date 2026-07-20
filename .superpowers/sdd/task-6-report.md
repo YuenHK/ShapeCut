@@ -164,3 +164,9 @@ Both real-file UI cases completed in approximately 2.5 seconds, showed `已簡�
 - A domain regression expires exactly at `triangulate:inner-loop`, proves that `intersection:triangle-pair-loop` was never reached, and therefore identifies the true interrupted phase rather than merely observing a later package failure.
 - Initial package creation passes the shared checkpoint through `validateOutlineLayer`, self-intersection scanning, signed-area/bounds scans, and the subsequent contour-bounds measurement. `create:outline-validation-loop` expiry fails before document construction proceeds.
 - Exported creation and verification accept both the labeled options object and the earlier third-argument `now()` function; legacy function-call tests prove that an expired clock is not silently ignored.
+
+## Polygon preparation scan audit
+
+- The overlap/intersection call graph now checkpoints every preparatory linear scan: signatures, bounds, scale/tolerance discovery, signed area, canonical encoding/least rotation/reordering/reversal, triangulation copy/index preparation, mass properties, and point-location edges. Explicit loops replace unchecked `map`, spread, and reverse scans on these paths.
+- Every scan checkpoints at its first element and at most every 64 elements. Existing deep O(n²) triangulation, candidate, triangle-pair, self-intersection, and segment-pair loops retain the same bounded cadence.
+- Exact regressions expire at `overlap:length-tolerance:coordinate-scan`, `overlap:left-canonical:signature:scan`, `triangulate:signature:scan`, `triangulate:signed-area:scan`, and `triangulate:geometry-scale:bounds:scan`; each asserts that its later inner-loop or triangle-pair label was never reached.

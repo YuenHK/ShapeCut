@@ -7,43 +7,61 @@ type Bounds = { readonly minX: number; readonly minY: number; readonly maxX: num
 type GeometryCache<T> = { readonly signature: string; readonly value: T };
 const triangulationCache = new WeakMap<object, GeometryCache<Point2[][]>>();
 const canonicalKeyCache = new WeakMap<object, GeometryCache<string>>();
+type GeometryCheckpoint = (label: string) => void;
+const noCheckpoint: GeometryCheckpoint = () => undefined;
+const scanCheckpoint = (checkpoint: GeometryCheckpoint, label: string, index: number): void => {
+  if ((index & 63) === 0) checkpoint(label);
+};
 
 /** Runtime callers can mutate nominally readonly input, so cache entries carry an exact coordinate signature. */
-function polygonSignature(polygon: Polygon2): string {
-  return polygon.points.map(([x, y]) => `${x},${y}`).join(';');
+function polygonSignature(polygon: Polygon2, checkpoint: GeometryCheckpoint = noCheckpoint): string {
+  const encoded = new Array<string>(polygon.points.length);
+  for (let index = 0; index < polygon.points.length; index += 1) {
+    scanCheckpoint(checkpoint, 'signature:scan', index);
+    const [x, y] = polygon.points[index]; encoded[index] = `${x},${y}`;
+  }
+  return encoded.join(';');
 }
 
 function cross(a: Point2, b: Point2, c: Point2): number {
   return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
 }
 
-function bounds(polygon: Polygon2): Bounds {
+function bounds(polygon: Polygon2, checkpoint: GeometryCheckpoint = noCheckpoint): Bounds {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const [x, y] of polygon.points) {
+  for (let index = 0; index < polygon.points.length; index += 1) {
+    scanCheckpoint(checkpoint, 'bounds:scan', index);
+    const [x, y] = polygon.points[index];
     minX = Math.min(minX, x); minY = Math.min(minY, y);
     maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
   }
   return { minX, minY, maxX, maxY };
 }
 
-function geometryScale(polygon: Polygon2): number {
-  const box = bounds(polygon);
+function geometryScale(polygon: Polygon2, checkpoint: GeometryCheckpoint = noCheckpoint): number {
+  const box = bounds(polygon, checkpoint);
   return Math.max(Number.MIN_VALUE, box.maxX - box.minX, box.maxY - box.minY);
 }
 
-function lengthTolerance(polygons: readonly Polygon2[]): number {
+function lengthTolerance(polygons: readonly Polygon2[], checkpoint: GeometryCheckpoint = noCheckpoint): number {
   let scale = Number.MIN_VALUE, coordinate = 1;
-  for (const polygon of polygons) {
-    scale = Math.max(scale, geometryScale(polygon));
-    for (const [x, y] of polygon.points) coordinate = Math.max(coordinate, Math.abs(x), Math.abs(y));
+  for (let polygonIndex = 0; polygonIndex < polygons.length; polygonIndex += 1) {
+    checkpoint('length-tolerance:polygon');
+    const polygon = polygons[polygonIndex];
+    scale = Math.max(scale, geometryScale(polygon, checkpoint));
+    for (let index = 0; index < polygon.points.length; index += 1) {
+      scanCheckpoint(checkpoint, 'length-tolerance:coordinate-scan', index);
+      const [x, y] = polygon.points[index]; coordinate = Math.max(coordinate, Math.abs(x), Math.abs(y));
+    }
   }
   return Math.max(Number.MIN_VALUE, scale * 128 * Number.EPSILON, coordinate * 32 * Number.EPSILON);
 }
 
-function signedArea(polygon: Polygon2): number {
+function signedArea(polygon: Polygon2, checkpoint: GeometryCheckpoint = noCheckpoint): number {
   const reference = polygon.points[0];
   let twiceArea = 0;
   for (let index = 1; index + 1 < polygon.points.length; index += 1) {
+    scanCheckpoint(checkpoint, 'signed-area:scan', index - 1);
     twiceArea += cross(reference, polygon.points[index], polygon.points[index + 1]);
   }
   return twiceArea / 2;
@@ -70,17 +88,19 @@ export function validatePolygon(polygon: Polygon2, checkpointOrIndex: (() => voi
   if (polygon === null || typeof polygon !== 'object' || !Array.isArray(polygon.points)
     || polygon.points.length < 3 || polygon.points.length > MAX_POLYGON_POINTS) return false;
   for (let index = 0; index < polygon.points.length; index += 1) {
+    if ((index & 63) === 0) checkpoint();
     if (!(index in polygon.points)) return false;
     const point = polygon.points[index];
     if (!Array.isArray(point) || point.length !== 2 || !(0 in point) || !(1 in point) || !Number.isFinite(point[0]) || !Number.isFinite(point[1])) return false;
   }
-  const tolerance = lengthTolerance([polygon]);
+  const tolerance = lengthTolerance([polygon], () => checkpoint());
   for (let index = 0; index < polygon.points.length; index += 1) {
+    if ((index & 63) === 0) checkpoint();
     const point = polygon.points[index], next = polygon.points[(index + 1) % polygon.points.length];
     if (Math.hypot(next[0] - point[0], next[1] - point[1]) <= tolerance) return false;
   }
-  const scale = geometryScale(polygon);
-  if (Math.abs(signedArea(polygon)) <= scale * scale * 128 * Number.EPSILON) return false;
+  const scale = geometryScale(polygon, () => checkpoint());
+  if (Math.abs(signedArea(polygon, () => checkpoint())) <= scale * scale * 128 * Number.EPSILON) return false;
   for (let first = 0; first < polygon.points.length; first += 1) {
     checkpoint();
     const firstNext = (first + 1) % polygon.points.length;
@@ -99,10 +119,11 @@ export function clonePolygon(polygon: Polygon2): Polygon2 {
 }
 
 /** Returns -1 outside, 0 on the boundary, and 1 inside. */
-export function pointLocation(polygon: Polygon2, point: Point2): -1 | 0 | 1 {
-  const tolerance = lengthTolerance([polygon]);
+export function pointLocation(polygon: Polygon2, point: Point2, checkpoint: GeometryCheckpoint = noCheckpoint): -1 | 0 | 1 {
+  const tolerance = lengthTolerance([polygon], (label) => checkpoint(`point-location:${label}`));
   let inside = false;
   for (let index = 0, previous = polygon.points.length - 1; index < polygon.points.length; previous = index++) {
+    scanCheckpoint(checkpoint, 'point-location:edge-scan', index);
     const a = polygon.points[previous], b = polygon.points[index];
     if (pointOnSegment(point, a, b, tolerance)) return 0;
     if ((a[1] > point[1]) !== (b[1] > point[1])) {
@@ -119,12 +140,17 @@ function pointInTriangle(point: Point2, a: Point2, b: Point2, c: Point2, toleran
 }
 
 function triangulate(polygon: Polygon2, checkpoint: (label: string) => void = () => undefined): Point2[][] {
-  const signature = polygonSignature(polygon);
+  const signature = polygonSignature(polygon, (label) => checkpoint(`triangulate:${label}`));
   const cached = triangulationCache.get(polygon);
   if (cached?.signature === signature) return cached.value;
-  const points = signedArea(polygon) > 0 ? [...polygon.points] : [...polygon.points].reverse();
-  const indices = points.map((_, index) => index), triangles: Point2[][] = [];
-  const scale = geometryScale(polygon), areaTolerance = scale * scale * 128 * Number.EPSILON;
+  const forward = signedArea(polygon, (label) => checkpoint(`triangulate:${label}`)) > 0;
+  const points = new Array<Point2>(polygon.points.length), indices = new Array<number>(polygon.points.length);
+  for (let index = 0; index < polygon.points.length; index += 1) {
+    scanCheckpoint(checkpoint, 'triangulate:preparation-scan', index);
+    points[index] = polygon.points[forward ? index : polygon.points.length - index - 1]; indices[index] = index;
+  }
+  const triangles: Point2[][] = [];
+  const scale = geometryScale(polygon, (label) => checkpoint(`triangulate:geometry-scale:${label}`)), areaTolerance = scale * scale * 128 * Number.EPSILON;
   let guard = 0;
   while (indices.length > 3 && guard++ < points.length * points.length) {
     checkpoint('triangulate:outer-loop');
@@ -191,11 +217,14 @@ function boundsOverlap(left: Bounds, right: Bounds, tolerance: number): boolean 
 }
 
 export function polygonIntersectionArea(left: Polygon2, right: Polygon2, checkpoint: (label: string) => void = () => undefined): number {
-  const tolerance = lengthTolerance([left, right]);
-  if (!boundsOverlap(bounds(left), bounds(right), tolerance)) return 0;
+  const tolerance = lengthTolerance([left, right], (label) => checkpoint(`intersection:${label}`));
+  if (!boundsOverlap(bounds(left, (label) => checkpoint(`intersection:left-${label}`)), bounds(right, (label) => checkpoint(`intersection:right-${label}`)), tolerance)) return 0;
   const leftTriangles = triangulate(left, checkpoint), rightTriangles = triangulate(right, checkpoint);
   if (leftTriangles.length === 0 || rightTriangles.length === 0) return Number.NaN;
-  const scale = Math.min(geometryScale(left), geometryScale(right));
+  const scale = Math.min(
+    geometryScale(left, (label) => checkpoint(`intersection:left-scale:${label}`)),
+    geometryScale(right, (label) => checkpoint(`intersection:right-scale:${label}`)),
+  );
   const areaTolerance = scale * scale * 512 * Number.EPSILON;
   let sum = 0, correction = 0;
   let comparisons = 0;
@@ -210,12 +239,15 @@ export function polygonIntersectionArea(left: Polygon2, right: Polygon2, checkpo
 }
 
 export function polygonsOverlapArea(left: Polygon2, right: Polygon2, checkpoint: (label: string) => void = () => undefined): boolean {
-  const tolerance = lengthTolerance([left, right]);
-  if (!boundsOverlap(bounds(left), bounds(right), tolerance)) return false;
-  if (canonicalPolygonKey(left) === canonicalPolygonKey(right)) return true;
-  const intersectionArea = polygonIntersectionArea(left, right, checkpoint);
+  const tolerance = lengthTolerance([left, right], (label) => checkpoint(`overlap:${label}`));
+  if (!boundsOverlap(bounds(left, (label) => checkpoint(`overlap:left-${label}`)), bounds(right, (label) => checkpoint(`overlap:right-${label}`)), tolerance)) return false;
+  if (canonicalPolygonKey(left, (label) => checkpoint(`overlap:left-${label}`)) === canonicalPolygonKey(right, (label) => checkpoint(`overlap:right-${label}`))) return true;
+  const intersectionArea = polygonIntersectionArea(left, right, (label) => checkpoint(`overlap:${label}`));
   if (!Number.isFinite(intersectionArea)) return true;
-  const smallerArea = Math.min(polygonMassProperties(left).area, polygonMassProperties(right).area);
+  const smallerArea = Math.min(
+    polygonMassProperties(left, (label) => checkpoint(`overlap:left-${label}`)).area,
+    polygonMassProperties(right, (label) => checkpoint(`overlap:right-${label}`)).area,
+  );
   // Uncertainty is bounded relative to an accepted polygon's own area. A
   // scale-squared floor can exceed an ultra-thin polygon's entire valid area.
   const areaTolerance = Math.max(Number.MIN_VALUE, smallerArea * 4096 * Number.EPSILON);
@@ -224,13 +256,14 @@ export function polygonsOverlapArea(left: Polygon2, right: Polygon2, checkpoint:
 
 export function polygonsIntersectOrTouch(left: Polygon2, right: Polygon2, checkpoint: (label?: string) => void = () => undefined): boolean {
   if (polygonsOverlapArea(left, right, (label) => checkpoint(label))) return true;
-  const tolerance = lengthTolerance([left, right]);
-  if (!boundsOverlap(bounds(left), bounds(right), tolerance)) return false;
+  const tolerance = lengthTolerance([left, right], (label) => checkpoint(`touch:${label}`));
+  if (!boundsOverlap(bounds(left, (label) => checkpoint(`touch:left-${label}`)), bounds(right, (label) => checkpoint(`touch:right-${label}`)), tolerance)) return false;
   for (let leftIndex = 0; leftIndex < left.points.length; leftIndex += 1) for (let rightIndex = 0; rightIndex < right.points.length; rightIndex += 1) {
     if ((rightIndex & 63) === 0) checkpoint();
     if (segmentsIntersect(left.points[leftIndex], left.points[(leftIndex + 1) % left.points.length], right.points[rightIndex], right.points[(rightIndex + 1) % right.points.length], tolerance)) return true;
   }
-  return pointLocation(left, right.points[0]) >= 0 || pointLocation(right, left.points[0]) >= 0;
+  return pointLocation(left, right.points[0], (label) => checkpoint(`touch:left-${label}`)) >= 0
+    || pointLocation(right, left.points[0], (label) => checkpoint(`touch:right-${label}`)) >= 0;
 }
 
 export function rotatePolygon(polygon: Polygon2, angle: number, center: Point2): Polygon2 {
@@ -242,16 +275,21 @@ export function rotatePolygon(polygon: Polygon2, angle: number, center: Point2):
   }) };
 }
 
-export function canonicalPolygonKey(polygon: Polygon2): string {
-  const signature = polygonSignature(polygon);
+export function canonicalPolygonKey(polygon: Polygon2, checkpoint: GeometryCheckpoint = noCheckpoint): string {
+  const signature = polygonSignature(polygon, (label) => checkpoint(`canonical:${label}`));
   const cached = canonicalKeyCache.get(polygon);
   if (cached?.signature === signature) return cached.value;
-  const scale = geometryScale(polygon), tolerance = Math.max(Number.MIN_VALUE, scale * 1024 * Number.EPSILON);
-  const encoded = polygon.points.map(([x, y]) => `${Math.round(x / tolerance)},${Math.round(y / tolerance)}`);
+  const scale = geometryScale(polygon, (label) => checkpoint(`canonical:geometry-scale:${label}`)), tolerance = Math.max(Number.MIN_VALUE, scale * 1024 * Number.EPSILON);
+  const encoded = new Array<string>(polygon.points.length);
+  for (let index = 0; index < polygon.points.length; index += 1) {
+    scanCheckpoint(checkpoint, 'canonical:encoding-scan', index);
+    const [x, y] = polygon.points[index]; encoded[index] = `${Math.round(x / tolerance)},${Math.round(y / tolerance)}`;
+  }
   const leastRotation = (values: readonly string[]): number => {
     const count = values.length;
     let left = 0, right = 1, offset = 0;
     while (left < count && right < count && offset < count) {
+      scanCheckpoint(checkpoint, 'canonical:least-rotation-scan', offset);
       const first = values[(left + offset) % count], second = values[(right + offset) % count];
       if (first === second) { offset += 1; continue; }
       if (first > second) { left += offset + 1; if (left === right) left += 1; }
@@ -262,20 +300,29 @@ export function canonicalPolygonKey(polygon: Polygon2): string {
   };
   const keyAtLeastRotation = (values: readonly string[]): string => {
     const start = leastRotation(values), ordered = new Array<string>(values.length);
-    for (let index = 0; index < values.length; index += 1) ordered[index] = values[(start + index) % values.length];
+    for (let index = 0; index < values.length; index += 1) {
+      scanCheckpoint(checkpoint, 'canonical:reorder-scan', index);
+      ordered[index] = values[(start + index) % values.length];
+    }
     return ordered.join(';');
   };
-  const forward = keyAtLeastRotation(encoded), backward = keyAtLeastRotation([...encoded].reverse());
+  const reversed = new Array<string>(encoded.length);
+  for (let index = 0; index < encoded.length; index += 1) {
+    scanCheckpoint(checkpoint, 'canonical:reverse-scan', index);
+    reversed[index] = encoded[encoded.length - index - 1];
+  }
+  const forward = keyAtLeastRotation(encoded), backward = keyAtLeastRotation(reversed);
   const key = forward < backward ? forward : backward;
   canonicalKeyCache.set(polygon, { signature, value: key });
   return key;
 }
 
-export function polygonMassProperties(polygon: Polygon2): { readonly area: number; readonly centroid: Point2 } {
+export function polygonMassProperties(polygon: Polygon2, checkpoint: GeometryCheckpoint = noCheckpoint): { readonly area: number; readonly centroid: Point2 } {
   const reference = polygon.points[0];
-  const scale = geometryScale(polygon);
+  const scale = geometryScale(polygon, (label) => checkpoint(`mass-properties:geometry-scale:${label}`));
   let normalizedTwiceArea = 0, normalizedCentroidX = 0, normalizedCentroidY = 0;
   for (let index = 1; index + 1 < polygon.points.length; index += 1) {
+    scanCheckpoint(checkpoint, 'mass-properties:scan', index - 1);
     const b = polygon.points[index], c = polygon.points[index + 1];
     const bx = (b[0] - reference[0]) / scale, by = (b[1] - reference[1]) / scale;
     const cx = (c[0] - reference[0]) / scale, cy = (c[1] - reference[1]) / scale;
