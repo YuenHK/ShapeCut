@@ -59,6 +59,7 @@ export type OutlineManifestV1 = {
   readonly status: OutlineResultStatus;
   readonly warnings: readonly string[];
   readonly repairAccepted: boolean;
+  readonly removedComponentCount: number;
   readonly axisSource: 'candidate' | 'shortest-bounds';
   readonly layers: readonly {
     readonly id: string;
@@ -201,6 +202,9 @@ function measured(layer: OutlineLayer): MeasuredLayer {
 
 function sortedLayers(result: AutomaticOutlineResult): MeasuredLayer[] {
   if (!HASH_PATTERN.test(result.sourceHash)) throw new RangeError('Outline source hash must contain 32 hexadecimal characters');
+  if (!Number.isSafeInteger(result.removedComponentCount) || result.removedComponentCount < 0) {
+    throw new RangeError('Outline removed-component count must be a non-negative safe integer');
+  }
   if (!['exact', 'outline-2.5d'].includes(result.mode)) throw new RangeError('Outline mode provenance is invalid');
   if (!['success', 'warning', 'failure'].includes(result.status)) throw new RangeError('Outline status provenance is invalid');
   if (result.status === 'failure' || result.layers.length === 0) throw new RangeError('Cannot package a failed or empty outline result');
@@ -294,6 +298,7 @@ export function createOutlineDocument(result: AutomaticOutlineResult): Manufactu
     status: result.status,
     warnings: [...result.warnings],
     repairAccepted: result.repairAccepted,
+    removedComponentCount: result.removedComponentCount,
     axisSource: result.axis.source,
     layers: metadataLayers,
     materialIndependent: true,
@@ -318,6 +323,7 @@ function manifestFromDocument(document: ManufacturingDocument): OutlineManifestV
     status: metadata.status,
     warnings: [...metadata.warnings],
     repairAccepted: metadata.repairAccepted,
+    removedComponentCount: metadata.removedComponentCount,
     axisSource: metadata.axisSource,
     layers: metadata.layers.map(({ id, order, zStart, zEnd, boundsMm }) => ({ id, order, zStart, zEnd, boundsMm })),
     materialIndependent: true,
@@ -353,6 +359,7 @@ function validateOutlineDocument(document: ManufacturingDocument): void {
   }
   if (document.unit !== 'mm' || !Array.isArray(document.sheets) || document.sheets.length === 0
     || !Array.isArray(document.manifest) || !Array.isArray(metadata.warnings)
+    || !Number.isSafeInteger(metadata.removedComponentCount) || metadata.removedComponentCount < 0
     || !HASH_PATTERN.test(metadata.sourceHash)
     || !['exact', 'outline-2.5d'].includes(metadata.mode) || !['success', 'warning'].includes(metadata.status)
     || !['candidate', 'shortest-bounds'].includes(metadata.axisSource)

@@ -1,20 +1,74 @@
-import { expect, type Page } from '@playwright/test';
+import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import JSZip from 'jszip';
+import { expect, type Download, type Page } from '@playwright/test';
 
-export async function importAndReachDecomposition(page: Page, fixture: string) {
-  await page.getByLabel('STL 模型檔案').setInputFiles(fixture);
-  await page.getByRole('button', { name: '分析模型' }).click();
-  await expect(page.getByRole('heading', { name: '軸心', exact: true })).toBeVisible();
-  const automaticConfirmation = page.getByRole('button', { name: '確認軸心' });
-  if (await automaticConfirmation.isEnabled()) {
-    await automaticConfirmation.click();
-  } else {
-    await page.getByLabel('手動原點 X').fill('0');
-    await page.getByLabel('手動原點 Y').fill('0');
-    await page.getByLabel('手動原點 Z').fill('0');
-    await page.getByLabel('手動方向 X').fill('0');
-    await page.getByLabel('手動方向 Y').fill('0');
-    await page.getByLabel('手動方向 Z').fill('1');
-    await page.getByRole('button', { name: '確認手動軸心' }).click();
+export type DownloadedOutline = {
+  readonly manifest: {
+    readonly mode: 'exact' | 'outline-2.5d';
+    readonly status: 'success' | 'warning';
+    readonly sourceHash: string;
+    readonly removedComponentCount: number;
+    readonly layers: readonly { readonly id: string; readonly order: number; readonly zStart: number; readonly zEnd: number }[];
+  };
+  readonly project: { readonly document: {
+    readonly outline: { readonly removedComponentCount: number; readonly layers: readonly { readonly id: string; readonly pointCount: number }[] };
+    readonly sheets: readonly { readonly entities: readonly { readonly id: string; readonly polygon: { readonly points: readonly (readonly [number, number])[] } }[] }[];
+  } };
+  readonly entries: readonly string[];
+  readonly sha256: string;
+};
+
+export async function selectModel(page: Page, fixture: string | { name: string; mimeType: string; buffer: Buffer }) {
+  await page.getByLabel('選擇 STL 模型').setInputFiles(fixture);
+}
+
+export async function expectNoEngineeringControls(page: Page) {
+  for (const name of [/修復/, /軸心/, /下一步/, /材料/, /拆件/, /輸出確認/]) {
+    await expect(page.getByRole('button', { name })).toHaveCount(0);
   }
-  await page.getByRole('button', { name: '下一步' }).click();
+}
+
+export async function expectResult(page: Page, status: '成功' | '需注意', mode: '精確切片' | '2.5D 外形') {
+  await expect(page.getByRole('heading', { name: '轉換完成' })).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByText(status, { exact: true })).toBeVisible();
+  await expect(page.getByText(mode, { exact: true })).toBeVisible();
+  await expectNoEngineeringControls(page);
+}
+
+export async function downloadAndInspectOutline(page: Page): Promise<DownloadedOutline> {
+  const event = page.waitForEvent('download');
+  await page.getByRole('link', { name: '下載 ZIP 製作套件' }).click();
+  const download = await event;
+  expect(download.suggestedFilename()).toBe('shapecut-outline.zip');
+  return inspectOutlineDownload(download);
+}
+
+async function inspectOutlineDownload(download: Download): Promise<DownloadedOutline> {
+  const path = await download.path();
+  expect(path).not.toBeNull();
+  const bytes = await readFile(path!);
+  const zip = await JSZip.loadAsync(bytes);
+  const entries = Object.keys(zip.files).sort();
+  expect(entries).toEqual(['cut.dxf', 'cut.svg', 'manifest.json', 'preview.pdf', 'project.json']);
+  const manifest = JSON.parse(await zip.file('manifest.json')!.async('string')) as DownloadedOutline['manifest'];
+  const project = JSON.parse(await zip.file('project.json')!.async('string')) as DownloadedOutline['project'];
+  const svg = await zip.file('cut.svg')!.async('string');
+  const dxf = await zip.file('cut.dxf')!.async('string');
+  expect(svg).toContain(manifest.sourceHash);
+  expect(dxf).toContain(manifest.sourceHash);
+  expect(project.document.outline.layers.map(({ id }) => id)).toEqual(manifest.layers.map(({ id }) => id));
+  expect(project.document.outline.removedComponentCount).toBe(manifest.removedComponentCount);
+  expect(project.document.sheets.flatMap(({ entities }) => entities).map(({ id }) => id)).toEqual(manifest.layers.map(({ id }) => id));
+  return { manifest, project, entries, sha256: createHash('sha256').update(bytes).digest('hex') };
+}
+
+export function expectFiniteClosedSingleContours(output: DownloadedOutline) {
+  const entities = output.project.document.sheets.flatMap(({ entities }) => entities);
+  expect(entities).toHaveLength(output.manifest.layers.length);
+  for (const entity of entities) {
+    expect(entity.polygon.points.length).toBeGreaterThanOrEqual(3);
+    expect(entity.polygon.points.every((point) => point.length === 2 && point.every(Number.isFinite))).toBe(true);
+    expect(new Set(entity.polygon.points.map((point) => point.join(','))).size).toBe(entity.polygon.points.length);
+  }
 }

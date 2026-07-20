@@ -1,9 +1,9 @@
-import { test, expect } from '@playwright/test';
+import { expect, test } from '@playwright/test';
+import { expectNoEngineeringControls, selectModel } from './helpers';
 
-test('blocks an open STL before axis selection', async ({ page }) => {
+test('an open triangle fails closed without exposing repair controls', async ({ page }) => {
   await page.goto('/');
-  await page.getByLabel('STL 模型檔案').setInputFiles('fixtures/stl/open-triangle.stl');
-  await page.getByRole('button', { name: '分析模型' }).click();
-  await expect(page.getByRole('alert')).toContainText('開放邊界');
-  await expect(page.getByRole('heading', { name: '匯入與修復' })).toBeVisible();
+  await selectModel(page, 'fixtures/stl/open-triangle.stl');
+  await expect(page.getByRole('alert')).toContainText('找不到足夠的有效外形');
+  await expectNoEngineeringControls(page);
 });

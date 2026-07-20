@@ -28,6 +28,7 @@ export type AutomaticOutlineResult = {
   readonly warnings: readonly string[];
   readonly originalReport: MeshProblemReport;
   readonly repairAccepted: boolean;
+  readonly removedComponentCount: number;
 };
 export type AutomaticOutlineRequest = { readonly bytes: ArrayBuffer };
 export type AutomaticOutlineProgress = (stage: AutomaticOutlineProgressStage) => void | Promise<void>;
@@ -157,6 +158,7 @@ export async function convertAutomatically(
         warnings: [...PROJECTED_WARNINGS, ...axisWarnings, '精確切片失敗，已改用 2.5D 外形模式'],
         originalReport,
         repairAccepted: true,
+        removedComponentCount: projectedExtraction.removedComponentCount,
       };
     }
     await emit('packaging');
@@ -169,6 +171,7 @@ export async function convertAutomatically(
       warnings: axisWarnings,
       originalReport,
       repairAccepted: true,
+      removedComponentCount: 0,
     };
   }
 
@@ -188,5 +191,6 @@ export async function convertAutomatically(
     warnings: [...PROJECTED_WARNINGS, ...axisWarnings],
     originalReport,
     repairAccepted: false,
+    removedComponentCount: projectedExtraction.removedComponentCount,
   };
 }

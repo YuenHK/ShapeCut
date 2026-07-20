@@ -33,6 +33,7 @@ export type OutlineDocumentMetadata = {
   readonly status: OutlineResultStatus;
   readonly warnings: readonly string[];
   readonly repairAccepted: boolean;
+  readonly removedComponentCount: number;
   readonly axisSource: 'candidate' | 'shortest-bounds';
   readonly layers: readonly OutlineDocumentLayer[];
   readonly materialIndependent: true;

@@ -23,6 +23,7 @@ const result: AutomaticOutlineResult = {
   warnings: [],
   originalReport: {} as AutomaticOutlineResult['originalReport'],
   repairAccepted: true,
+  removedComponentCount: 0,
 };
 
 const downloads: OutlineDownloads = {

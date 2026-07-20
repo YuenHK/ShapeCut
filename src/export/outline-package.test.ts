@@ -87,6 +87,7 @@ function result(overrides: Partial<AutomaticOutlineResult> = {}): AutomaticOutli
       },
     },
     repairAccepted: false,
+    removedComponentCount: 7,
     ...overrides,
   };
 }
@@ -100,6 +101,7 @@ async function synchronizedOutput(output: OutlinePackage, document: OutlinePacka
     status: metadata.status,
     warnings: [...metadata.warnings],
     repairAccepted: metadata.repairAccepted,
+    removedComponentCount: metadata.removedComponentCount,
     axisSource: metadata.axisSource,
     layers: metadata.layers.map(({ id, order, zStart, zEnd, boundsMm }) => ({ id, order, zStart, zEnd, boundsMm })),
     materialIndependent: true as const,
@@ -123,6 +125,13 @@ function polygonRecords(svg: string) {
 }
 
 describe('material-independent outline package', () => {
+  it('preserves the measured removed-component count in reconciled metadata', async () => {
+    const output = await createOutlinePackage(result({ removedComponentCount: 7 }));
+    expect(output.document.outline?.removedComponentCount).toBe(7);
+    expect(output.manifest.removedComponentCount).toBe(7);
+    expect(JSON.parse(output.manifestJson).removedComponentCount).toBe(7);
+    expect(JSON.parse(output.projectJson).document.outline.removedComponentCount).toBe(7);
+  });
   it('lays out one CUT part per layer in increasing Z order with tight deterministic bounds', () => {
     const document = createOutlineDocument(result());
 

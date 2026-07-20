@@ -61,6 +61,7 @@ function automaticResult(sourceHash: string): AutomaticOutlineResult {
     warnings: [],
     originalReport: importRepairAnalysis(sourceHash).originalReport,
     repairAccepted: true,
+    removedComponentCount: 0,
   };
 }
 

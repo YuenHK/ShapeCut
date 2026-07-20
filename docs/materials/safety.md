@@ -1,5 +1,11 @@
 # Material and laser safety
 
+## ShapeCut 2.5D 外形的意義
+
+ShapeCut 的 `outline-2.5d` 結果是近似外形工作流程，不代表原 STL 已被修復為安全的封閉 3D 實體。每層只輸出最大封閉外輪廓；孔洞、內部細節及較小的分離元件會被移除。製作者必須在預覽和 JSON manifest 核對結果是否符合所需外形。
+
+輸出不依賴材料厚度；因此實際堆疊高度會隨板材厚度改變，不會自動重建原始 3D 高度。套件不包含特定機器的功率、速度或 passes。這些設定必須在 ShapeCut 之外，依照確定的機器、材料、批次和實測厚度設定，並先做少量、低風險試切。
+
 Material profiles and process recipes in this application are starting points only. They are not certifications, universal machine settings, or permission to process a sheet. Use a profile only for the exact laser machine, identified material and batch, and measured thickness recorded in it.
 
 Before any laser operation:
