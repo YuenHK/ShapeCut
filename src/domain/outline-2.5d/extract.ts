@@ -21,6 +21,9 @@ export type OutlineExtraction = {
   readonly removedComponentCount: number;
 };
 
+/** Exact slice topology is ambiguous, so projected extraction may be attempted. */
+export class ExactContourAmbiguityError extends RangeError {}
+
 function checkDeadline(deadline: number): void {
   if (Date.now() > deadline) throw new RangeError('Contour extraction exceeded the runtime budget');
 }
@@ -102,9 +105,9 @@ export function extractProjectedContours(
   selection: OutlineAxisSelection,
   specs: readonly OutlineLayerSpec[],
   budgets: OutlineBudgets,
+  deadline = Date.now() + budgets.maxRuntimeMs,
 ): OutlineExtraction {
   validateBudgets(budgets);
-  const deadline = Date.now() + budgets.maxRuntimeMs;
   const projected = projectMesh(mesh, selection, deadline); validateRequest(projected, specs, budgets, deadline);
   const cellSizeMm = rasterCellSize(projected);
   const width = Math.ceil((projected.maxX - projected.minX) / cellSizeMm) + 3;
@@ -141,7 +144,7 @@ function sliceSegments(projected: ProjectedMesh, z: number, deadline: number): r
     const distances = vertices.map((vertex) => vertex[2] - z);
     if (distances.every((value) => value > epsilon) || distances.every((value) => value < -epsilon)) continue;
     const onPlane = distances.map((distance, index) => Math.abs(distance) <= epsilon ? index : -1).filter((index) => index >= 0);
-    if (onPlane.length === 3) throw new RangeError('Exact contour intersects a coplanar triangle');
+    if (onPlane.length === 3) throw new ExactContourAmbiguityError('Exact contour intersects a coplanar triangle');
     if (onPlane.length === 2) {
       const offPlane = [0, 1, 2].find((index) => !onPlane.includes(index))!;
       const segment: Segment = [
@@ -174,7 +177,7 @@ function sliceSegments(projected: ProjectedMesh, z: number, deadline: number): r
     }
     if (intersections.length !== 2
       || Math.hypot(intersections[0][0] - intersections[1][0], intersections[0][1] - intersections[1][1]) <= epsilon) {
-      throw new RangeError('Exact contour triangle intersection is ambiguous');
+      throw new ExactContourAmbiguityError('Exact contour triangle intersection is ambiguous');
     }
     segments.push([intersections[0], intersections[1]]);
   }
@@ -182,7 +185,7 @@ function sliceSegments(projected: ProjectedMesh, z: number, deadline: number): r
   for (const values of planeEdges.values()) {
     if ((edgeGroupIndex++ & 255) === 0) checkDeadline(deadline);
     if (values.length !== 2 || values[0].side === values[1].side) {
-      throw new RangeError('Exact contour shared plane edge is ambiguous');
+      throw new ExactContourAmbiguityError('Exact contour shared plane edge is ambiguous');
     }
     segments.push(values[0].segment);
   }
@@ -191,7 +194,7 @@ function sliceSegments(projected: ProjectedMesh, z: number, deadline: number): r
 
 function exactLoops(segments: readonly Segment[], diameter: number, deadline: number): readonly (readonly Point2[])[] {
   checkDeadline(deadline);
-  if (segments.length === 0) throw new RangeError('Exact contour has an empty segment graph');
+  if (segments.length === 0) throw new ExactContourAmbiguityError('Exact contour has an empty segment graph');
   const quantum = Math.max(1e-9, diameter * 1e-9);
   const key = ([x, y]: Point2) => `${Math.round(x / quantum)},${Math.round(y / quantum)}`;
   const points = new Map<string, Point2>(), adjacency = new Map<string, string[]>();
@@ -208,17 +211,19 @@ function exactLoops(segments: readonly Segment[], diameter: number, deadline: nu
     const ka = key(a), kb = key(b);
     if (ka === kb) continue;
     const edgeKey = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
-    if (uniqueEdges.has(edgeKey)) throw new RangeError('Exact contour segment graph overlaps');
+    if (uniqueEdges.has(edgeKey)) throw new ExactContourAmbiguityError('Exact contour segment graph overlaps');
     uniqueEdges.add(edgeKey);
     retainCanonicalPoint(ka, a); retainCanonicalPoint(kb, b);
     const aNeighbors = adjacency.get(ka), bNeighbors = adjacency.get(kb);
     if (aNeighbors) aNeighbors.push(kb); else adjacency.set(ka, [kb]);
     if (bNeighbors) bNeighbors.push(ka); else adjacency.set(kb, [ka]);
   }
-  if (adjacency.size === 0) throw new RangeError('Exact contour segment graph is open or non-manifold');
+  if (adjacency.size === 0) throw new ExactContourAmbiguityError('Exact contour segment graph is open or non-manifold');
   for (const neighbors of adjacency.values()) {
     checkDeadline(deadline);
-    if (neighbors.length !== 2 || neighbors[0] === neighbors[1]) throw new RangeError('Exact contour segment graph is open or non-manifold');
+    if (neighbors.length !== 2 || neighbors[0] === neighbors[1]) {
+      throw new ExactContourAmbiguityError('Exact contour segment graph is open or non-manifold');
+    }
     neighbors.sort((left, right) => { checkDeadline(deadline); return left.localeCompare(right); });
   }
   const visited = new Set<string>(), loops: Point2[][] = [];
@@ -231,14 +236,18 @@ function exactLoops(segments: readonly Segment[], diameter: number, deadline: nu
     const loop: Point2[] = []; let previous: string | undefined, current = start;
     for (let guard = 0; guard <= adjacency.size; guard += 1) {
       if ((guard & 255) === 0) checkDeadline(deadline);
-      if (visited.has(current) && current !== start) throw new RangeError('Exact contour segment graph overlaps');
+      if (visited.has(current) && current !== start) {
+        throw new ExactContourAmbiguityError('Exact contour segment graph overlaps');
+      }
       if (current === start && loop.length > 0) break;
       visited.add(current); loop.push(points.get(current)!);
       const neighbors = adjacency.get(current)!;
       const next = neighbors[0] === previous ? neighbors[1] : neighbors[0];
       previous = current; current = next;
     }
-    if (current !== start || loop.length < 3) throw new RangeError('Exact contour segment graph is open');
+    if (current !== start || loop.length < 3) {
+      throw new ExactContourAmbiguityError('Exact contour segment graph is open');
+    }
     loops.push(loop);
   }
   return loops;
@@ -258,9 +267,10 @@ export function extractExactContours(
   selection: OutlineAxisSelection,
   specs: readonly OutlineLayerSpec[],
   budgets: OutlineBudgets,
+  deadline = Date.now() + budgets.maxRuntimeMs,
 ): OutlineExtraction {
   validateBudgets(budgets);
-  const deadline = Date.now() + budgets.maxRuntimeMs, projected = projectMesh(mesh, selection, deadline);
+  const projected = projectMesh(mesh, selection, deadline);
   validateRequest(projected, specs, budgets, deadline);
   let removedComponentCount = 0;
   const tolerance = Math.max(rasterCellSize(projected) * 1.5, projected.planarDiameter * 0.001);

@@ -1,4 +1,4 @@
-import { proxy, releaseProxy, transfer, wrap, type Remote } from 'comlink';
+import { expose, finalizer, proxy, releaseProxy, transfer, wrap, type Remote } from 'comlink';
 import type { AxisCandidate } from '../domain/axis/find-axis';
 import type { SpinnerKit } from '../domain/decomposition/types';
 import type { EngravingMap } from '../domain/engraving/height-field';
@@ -74,7 +74,7 @@ export function makeGeometryClient(api: GeometryApi, options: GeometryClientOpti
     options.abortExecution?.();
   };
 
-  const run = <T>(operation: () => Promise<T>): Promise<T> => {
+  const run = <T>(operation: (job: ActiveJob) => Promise<T>): Promise<T> => {
     if (disposed) return Promise.reject(new Error('Geometry client is disposed'));
     cancelActive();
     const id = ++latestJobId;
@@ -84,7 +84,7 @@ export function makeGeometryClient(api: GeometryApi, options: GeometryClientOpti
       Promise.resolve()
         .then(() => {
           if (active !== job || disposed) throw new SupersededError(job.id);
-          return operation();
+          return operation(job);
         })
         .then(
           (value) => {
@@ -104,10 +104,21 @@ export function makeGeometryClient(api: GeometryApi, options: GeometryClientOpti
   return {
     get latestJobId() { return latestJobId; },
     analyze: (input) => run(() => api.inspect(options.transferInput?.(input) ?? input)),
-    convertAutomatically: (request, onProgress) => run(() => api.convertAutomatically(
-      options.transferAutomaticRequest?.(request) ?? request,
-      onProgress,
-    )),
+    convertAutomatically: (request, onProgress) => run((job) => {
+      let gatedProgress: AutomaticOutlineProgress | undefined;
+      if (onProgress) {
+        gatedProgress = async (stage) => {
+          if (active !== job || disposed) return;
+          await onProgress(stage);
+        };
+        const onFinalize = (onProgress as AutomaticOutlineProgress & { [finalizer]?: () => void })[finalizer];
+        if (onFinalize) Object.assign(gatedProgress, { [finalizer]: onFinalize });
+      }
+      return api.convertAutomatically(
+        options.transferAutomaticRequest?.(request) ?? request,
+        gatedProgress,
+      );
+    }),
     analyzeForImport: (input) => run(() => api.inspectAndFindAxes(options.transferInput?.(input) ?? input)),
     analyzeAndRepairForImport: (input) => run(() => (
       api.analyzeAndRepairForImport(options.transferInput?.(input) ?? input)
@@ -148,14 +159,21 @@ export function createGeometryClient(worker: Worker): GeometryClient {
 function createRestartableGeometryClient(initialWorker: Worker, workerFactory: () => Worker): GeometryClient {
   let worker: Worker | undefined = initialWorker;
   let remote: Remote<GeometryApi> | undefined = wrap<GeometryApi>(initialWorker);
+  const progressCleanups = new Set<() => void>();
 
   const releaseCurrentWorker = (): void => {
     const currentRemote = remote;
     const currentWorker = worker;
     remote = undefined;
     worker = undefined;
-    currentRemote?.[releaseProxy]();
-    currentWorker?.terminate();
+    for (const cleanup of [...progressCleanups]) {
+      try { cleanup(); } catch { /* Cleanup observers cannot block worker termination. */ }
+    }
+    try {
+      currentRemote?.[releaseProxy]();
+    } finally {
+      currentWorker?.terminate();
+    }
   };
   const api = dynamicApi(() => {
     if (!worker || !remote) {
@@ -163,7 +181,7 @@ function createRestartableGeometryClient(initialWorker: Worker, workerFactory: (
       remote = wrap<GeometryApi>(worker);
     }
     return remote;
-  });
+  }, progressCleanups);
   return makeGeometryClient(api, {
     transferInput: (input) => transfer(input, [input]),
     transferAutomaticRequest: (request) => transfer(request, [request.bytes]),
@@ -181,13 +199,24 @@ function createGeometryWorker(): Worker {
   return new Worker(new URL('./geometry.worker.ts', import.meta.url), { type: 'module' });
 }
 
-function dynamicApi(getRemote: () => Remote<GeometryApi>): GeometryApi {
+function dynamicApi(
+  getRemote: () => Remote<GeometryApi>,
+  progressCleanups: Set<() => void>,
+): GeometryApi {
   return {
     inspect: (input) => getRemote().inspect(input),
     convertAutomatically: async (request, onProgress) => {
+      let progressBridge: ReturnType<typeof createProgressBridge> | undefined;
       try {
-        return await getRemote().convertAutomatically(request, onProgress ? proxy(onProgress) : undefined);
+        if (onProgress) {
+          if (typeof onProgress !== 'function') throw new TypeError('Automatic progress must be a callback');
+          progressBridge = createProgressBridge(onProgress, progressCleanups);
+        }
+        const conversion = getRemote().convertAutomatically(request, progressBridge?.workerPort);
+        if (progressBridge) progressBridge.submitted = true;
+        return await conversion;
       } catch (error) {
+        if (progressBridge && !progressBridge.submitted) progressBridge.cleanup();
         if (isSerializedAutomaticOutlineError(error)) {
           throw new AutomaticOutlineError(error.code, error.message);
         }
@@ -204,11 +233,40 @@ function dynamicApi(getRemote: () => Remote<GeometryApi>): GeometryApi {
   };
 }
 
-function isSerializedAutomaticOutlineError(
+function createProgressBridge(
+  onProgress: AutomaticOutlineProgress,
+  progressCleanups: Set<() => void>,
+): { readonly workerPort: MessagePort; readonly cleanup: () => void; submitted: boolean } {
+  const { port1, port2 } = new MessageChannel();
+  const onFinalize = (onProgress as AutomaticOutlineProgress & { [finalizer]?: () => void })[finalizer];
+  let cleaned = false;
+  const cleanup = (): void => {
+    if (cleaned) return;
+    cleaned = true;
+    progressCleanups.delete(cleanup);
+    port1.close();
+    try { onFinalize?.(); } catch { /* Finalizers are observers; endpoint cleanup is already complete. */ }
+  };
+  const exposedProgress = Object.assign(proxy(onProgress), { [finalizer]: cleanup });
+  progressCleanups.add(cleanup);
+  expose(exposedProgress, port1);
+  const workerPort = transfer(port2, [port2]);
+  return { workerPort, cleanup, submitted: false };
+}
+
+const AUTOMATIC_OUTLINE_ERROR_CODES: ReadonlySet<string> = new Set([
+  'INVALID_STL',
+  'NO_OUTLINE',
+  'RESOURCE_LIMIT',
+  'TIME_LIMIT',
+]);
+
+export function isSerializedAutomaticOutlineError(
   error: unknown,
 ): error is { readonly name: 'AutomaticOutlineError'; readonly code: AutomaticOutlineError['code']; readonly message: string } {
   return typeof error === 'object' && error !== null
     && (error as { readonly name?: unknown }).name === 'AutomaticOutlineError'
     && typeof (error as { readonly code?: unknown }).code === 'string'
+    && AUTOMATIC_OUTLINE_ERROR_CODES.has((error as { readonly code: string }).code)
     && typeof (error as { readonly message?: unknown }).message === 'string';
 }

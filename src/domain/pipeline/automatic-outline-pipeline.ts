@@ -5,6 +5,7 @@ import { repairMeshSafe } from '../mesh/repair-mesh';
 import type { MeshProblemReport, TriangleMesh } from '../mesh/types';
 import { selectOutlineAxis } from '../outline-2.5d/axis';
 import {
+  ExactContourAmbiguityError,
   extractExactContours,
   extractProjectedContours,
   type OutlineLayer,
@@ -29,7 +30,7 @@ export type AutomaticOutlineResult = {
   readonly repairAccepted: boolean;
 };
 export type AutomaticOutlineRequest = { readonly bytes: ArrayBuffer };
-export type AutomaticOutlineProgress = (stage: AutomaticOutlineProgressStage) => void;
+export type AutomaticOutlineProgress = (stage: AutomaticOutlineProgressStage) => void | Promise<void>;
 export type AutomaticOutlineErrorCode = 'INVALID_STL' | 'NO_OUTLINE' | 'RESOURCE_LIMIT' | 'TIME_LIMIT';
 
 export class AutomaticOutlineError extends Error {
@@ -83,20 +84,21 @@ function asAutomaticOutlineError(error: unknown, fallbackCode: AutomaticOutlineE
   return new AutomaticOutlineError(fallbackCode, userMessage, { cause: error });
 }
 
-export function convertAutomatically(
+export async function convertAutomatically(
   request: AutomaticOutlineRequest,
   onProgress?: AutomaticOutlineProgress,
-): AutomaticOutlineResult {
+): Promise<AutomaticOutlineResult> {
+  const deadline = Date.now() + DEFAULT_OUTLINE_BUDGETS.maxRuntimeMs;
   let lastStage = -1;
   const stages: readonly AutomaticOutlineProgressStage[] = ['reading', 'analyzing', 'simplifying', 'slicing', 'packaging'];
-  const emit = (stage: AutomaticOutlineProgressStage): void => {
+  const emit = async (stage: AutomaticOutlineProgressStage): Promise<void> => {
     const index = stages.indexOf(stage);
     if (index <= lastStage) return;
     lastStage = index;
-    onProgress?.(stage);
+    await onProgress?.(stage);
   };
 
-  emit('reading');
+  await emit('reading');
   const hash = sourceHash(request.bytes);
   let originalMesh: TriangleMesh;
   try {
@@ -105,7 +107,7 @@ export function convertAutomatically(
     throw asAutomaticOutlineError(error, 'INVALID_STL');
   }
 
-  emit('analyzing');
+  await emit('analyzing');
   let originalReport: MeshProblemReport;
   let safeRepair: ReturnType<typeof repairMeshSafe>;
   try {
@@ -115,7 +117,7 @@ export function convertAutomatically(
     throw asAutomaticOutlineError(error, 'NO_OUTLINE');
   }
 
-  emit('simplifying');
+  await emit('simplifying');
   const extractionMesh = safeRepair.accepted ? safeRepair.mesh : originalMesh;
   let axis: OutlineAxisSelection;
   let specs: ReturnType<typeof scheduleOutlineLayers>;
@@ -127,55 +129,64 @@ export function convertAutomatically(
   }
   const axisWarnings = axis.source === 'shortest-bounds' ? [FALLBACK_AXIS_WARNING] : [];
 
-  emit('slicing');
+  await emit('slicing');
   if (safeRepair.accepted) {
+    let exactExtraction: ReturnType<typeof extractExactContours>;
     try {
-      const extraction = extractExactContours(extractionMesh, axis, specs, DEFAULT_OUTLINE_BUDGETS);
-      emit('packaging');
-      return {
-        sourceHash: hash,
-        mode: 'exact',
-        status: axisWarnings.length === 0 ? 'success' : 'warning',
-        axis,
-        layers: extraction.layers,
-        warnings: axisWarnings,
-        originalReport,
-        repairAccepted: true,
-      };
-    } catch {
+      exactExtraction = extractExactContours(extractionMesh, axis, specs, DEFAULT_OUTLINE_BUDGETS, deadline);
+    } catch (exactError) {
+      const mappedExactError = asAutomaticOutlineError(exactError, 'NO_OUTLINE');
+      if (mappedExactError.code !== 'NO_OUTLINE' || !(exactError instanceof ExactContourAmbiguityError)) {
+        throw mappedExactError;
+      }
+      let projectedExtraction: ReturnType<typeof extractProjectedContours>;
       try {
-        const extraction = extractProjectedContours(extractionMesh, axis, specs, DEFAULT_OUTLINE_BUDGETS);
-        emit('packaging');
-        return {
-          sourceHash: hash,
-          mode: 'outline-2.5d',
-          status: 'warning',
-          axis,
-          layers: extraction.layers,
-          warnings: [...PROJECTED_WARNINGS, ...axisWarnings, '精確切片失敗，已改用 2.5D 外形模式'],
-          originalReport,
-          repairAccepted: true,
-        };
+        projectedExtraction = extractProjectedContours(
+          extractionMesh, axis, specs, DEFAULT_OUTLINE_BUDGETS, deadline,
+        );
       } catch (projectedError) {
         throw asAutomaticOutlineError(projectedError, 'NO_OUTLINE');
       }
+      await emit('packaging');
+      return {
+        sourceHash: hash,
+        mode: 'outline-2.5d',
+        status: 'warning',
+        axis,
+        layers: projectedExtraction.layers,
+        warnings: [...PROJECTED_WARNINGS, ...axisWarnings, '精確切片失敗，已改用 2.5D 外形模式'],
+        originalReport,
+        repairAccepted: true,
+      };
     }
-  }
-
-  try {
-    const extraction = extractProjectedContours(originalMesh, axis, specs, DEFAULT_OUTLINE_BUDGETS);
-    emit('packaging');
+    await emit('packaging');
     return {
       sourceHash: hash,
-      mode: 'outline-2.5d',
-      status: 'warning',
+      mode: 'exact',
+      status: axisWarnings.length === 0 ? 'success' : 'warning',
       axis,
-      layers: extraction.layers,
-      warnings: [...PROJECTED_WARNINGS, ...axisWarnings],
+      layers: exactExtraction.layers,
+      warnings: axisWarnings,
       originalReport,
-      repairAccepted: false,
+      repairAccepted: true,
     };
+  }
+
+  let projectedExtraction: ReturnType<typeof extractProjectedContours>;
+  try {
+    projectedExtraction = extractProjectedContours(originalMesh, axis, specs, DEFAULT_OUTLINE_BUDGETS, deadline);
   } catch (error) {
     throw asAutomaticOutlineError(error, 'NO_OUTLINE');
   }
+  await emit('packaging');
+  return {
+    sourceHash: hash,
+    mode: 'outline-2.5d',
+    status: 'warning',
+    axis,
+    layers: projectedExtraction.layers,
+    warnings: [...PROJECTED_WARNINGS, ...axisWarnings],
+    originalReport,
+    repairAccepted: false,
+  };
 }

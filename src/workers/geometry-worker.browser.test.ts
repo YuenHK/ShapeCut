@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { finalizer } from 'comlink';
 import { writeBinarySTL } from '../domain/mesh/write-stl';
 import type { TriangleMesh } from '../domain/mesh/types';
 import {
@@ -22,8 +23,13 @@ describe('geometry worker boundary', () => {
     clients.push(client);
     const source = writeBinarySTL(openTetrahedron(), 'safe');
     const progress: string[] = [];
+    const released = vi.fn();
+    const onProgress = Object.assign(
+      (stage: string) => { progress.push(stage); },
+      { [finalizer]: released },
+    );
 
-    const result = await client.convertAutomatically({ bytes: source }, (stage) => progress.push(stage));
+    const result = await client.convertAutomatically({ bytes: source }, onProgress);
 
     expect(source.byteLength).toBe(0);
     expect(result).toMatchObject({ mode: 'outline-2.5d', status: 'warning' });
@@ -31,6 +37,21 @@ describe('geometry worker boundary', () => {
       minX: expect.any(Number), minY: expect.any(Number), maxX: expect.any(Number), maxY: expect.any(Number),
     }));
     expect(progress).toEqual(['reading', 'analyzing', 'simplifying', 'slicing', 'packaging']);
+    await vi.waitFor(() => expect(released).toHaveBeenCalledOnce());
+  });
+
+  it('observes progress callback rejection and releases its Comlink proxy', async () => {
+    const client = createGeometryWorkerClient();
+    clients.push(client);
+    const released = vi.fn();
+    const onProgress = Object.assign(
+      async (stage: string) => { if (stage === 'packaging') throw new Error('progress receiver closed'); },
+      { [finalizer]: released },
+    );
+
+    await expect(client.convertAutomatically({ bytes: writeBinarySTL(tetrahedron(), 'safe') }, onProgress))
+      .rejects.toThrow('progress receiver closed');
+    await vi.waitFor(() => expect(released).toHaveBeenCalledOnce());
   });
 
   it('preserves typed automatic failure codes across Comlink', async () => {
@@ -146,7 +167,15 @@ describe('geometry worker boundary', () => {
     const postMessage = vi.spyOn(Worker.prototype, 'postMessage');
     const client = createGeometryWorkerClient();
     clients.push(client);
-    const first = client.convertAutomatically({ bytes: writeBinarySTL(disconnectedTriangles(20_000), 'safe') })
+    const released = vi.fn();
+    const onProgress = Object.assign(
+      () => undefined,
+      { [finalizer]: released },
+    );
+    const first = client.convertAutomatically(
+      { bytes: writeBinarySTL(disconnectedTriangles(20_000), 'safe') },
+      onProgress,
+    )
       .catch((error: unknown) => error);
     await vi.waitFor(() => expect(postMessage.mock.calls.map(([message]) => message)).toContainEqual(
       expect.objectContaining({ type: 'APPLY' }),
@@ -158,6 +187,79 @@ describe('geometry worker boundary', () => {
     await expect(first).resolves.toMatchObject({ name: 'SupersededError', code: 'SUPERSEDED', jobId: 1 });
     await expect(replacement).resolves.toMatchObject({ mode: 'outline-2.5d', status: 'warning' });
     expect(terminate).toHaveBeenCalled();
+    await vi.waitFor(() => expect(released).toHaveBeenCalledOnce());
+  });
+
+  it('still terminates and recreates when progress finalization throws during cancel', async () => {
+    const terminate = vi.spyOn(Worker.prototype, 'terminate');
+    const postMessage = vi.spyOn(Worker.prototype, 'postMessage');
+    const client = createGeometryWorkerClient();
+    clients.push(client);
+    const released = vi.fn(() => { throw new Error('cleanup observer failed'); });
+    const first = client.convertAutomatically(
+      { bytes: writeBinarySTL(disconnectedTriangles(20_000), 'safe') },
+      Object.assign(() => undefined, { [finalizer]: released }),
+    ).catch((error: unknown) => error);
+    await vi.waitFor(() => expect(postMessage.mock.calls.map(([message]) => message)).toContainEqual(
+      expect.objectContaining({ type: 'APPLY' }),
+    ));
+
+    let replacement!: ReturnType<GeometryClient['convertAutomatically']>;
+    expect(() => {
+      replacement = client.convertAutomatically({ bytes: writeBinarySTL(openTetrahedron(), 'safe') });
+    }).not.toThrow();
+
+    await expect(first).resolves.toMatchObject({ name: 'SupersededError', code: 'SUPERSEDED' });
+    await expect(replacement).resolves.toMatchObject({ mode: 'outline-2.5d', status: 'warning' });
+    expect(released).toHaveBeenCalledOnce();
+    expect(terminate).toHaveBeenCalled();
+  });
+
+  it('does not publish queued progress from an old worker after its replacement starts', async () => {
+    const client = createGeometryWorkerClient();
+    clients.push(client);
+    const observed: string[] = [];
+    const queuedMessages: Array<() => void> = [];
+    const originalAddEventListener = MessagePort.prototype.addEventListener;
+    let interceptNextMessageListener = true;
+    const addEventListener = vi.spyOn(MessagePort.prototype, 'addEventListener').mockImplementation(function (
+      this: MessagePort,
+      type: string,
+      listener: EventListenerOrEventListenerObject,
+      options?: boolean | AddEventListenerOptions,
+    ) {
+      if (type !== 'message' || !interceptNextMessageListener) {
+        return originalAddEventListener.call(this, type, listener, options);
+      }
+      interceptNextMessageListener = false;
+      return originalAddEventListener.call(this, type, (event) => {
+        queuedMessages.push(() => {
+          if (typeof listener === 'function') listener.call(this, event);
+          else listener.handleEvent(event);
+        });
+      }, options);
+    } as typeof MessagePort.prototype.addEventListener);
+    const first = client.convertAutomatically(
+      { bytes: writeBinarySTL(openTetrahedron(), 'safe') },
+      (stage) => { observed.push(`old:${stage}`); },
+    ).catch((error: unknown) => error);
+    await vi.waitFor(() => expect(queuedMessages.length).toBeGreaterThan(0));
+    const replacement = client.convertAutomatically(
+      { bytes: writeBinarySTL(openTetrahedron(), 'safe') },
+      (stage) => { observed.push(`new:${stage}`); },
+    );
+    addEventListener.mockRestore();
+    for (const deliver of queuedMessages) deliver();
+
+    await first;
+    await expect(replacement).resolves.toMatchObject({ mode: 'outline-2.5d', status: 'warning' });
+    expect(observed).toEqual([
+      'new:reading',
+      'new:analyzing',
+      'new:simplifying',
+      'new:slicing',
+      'new:packaging',
+    ]);
   });
 });
 

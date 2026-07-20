@@ -11,6 +11,7 @@ import {
   convertAutomatically,
   type AutomaticOutlineProgressStage,
 } from './automatic-outline-pipeline';
+import * as extraction from '../outline-2.5d/extract';
 
 function cylinder(segments = 32): TriangleMesh {
   const positions: number[] = [0, 0, -1, 0, 0, 1];
@@ -77,12 +78,12 @@ function scaled(mesh: TriangleMesh, x: number, y: number, z: number): TriangleMe
 }
 
 describe('automatic outline pipeline', () => {
-  it('returns exact success for a safe symmetric mesh and preserves complete layer metadata', () => {
+  it('returns exact success for a safe symmetric mesh and preserves complete layer metadata', async () => {
     const progress: AutomaticOutlineProgressStage[] = [];
 
-    const result = convertAutomatically(
+    const result = await convertAutomatically(
       { bytes: writeBinarySTL(cylinder(), 'safe') },
-      (stage) => progress.push(stage),
+      (stage) => { progress.push(stage); },
     );
 
     expect(result).toMatchObject({
@@ -102,8 +103,8 @@ describe('automatic outline pipeline', () => {
     ['open', openTetrahedron()],
     ['non-manifold', nonManifoldTetrahedron()],
     ['self-intersecting', interpenetratingTetrahedra()],
-  ])('returns a warning 2.5D outline for a parseable %s mesh', (_label, mesh) => {
-    const result = convertAutomatically({ bytes: writeBinarySTL(mesh, 'safe') });
+  ])('returns a warning 2.5D outline for a parseable %s mesh', async (_label, mesh) => {
+    const result = await convertAutomatically({ bytes: writeBinarySTL(mesh, 'safe') });
 
     expect(result.mode).toBe('outline-2.5d');
     expect(result.status).toBe('warning');
@@ -113,62 +114,106 @@ describe('automatic outline pipeline', () => {
     expect(result.layers.every((layer) => layer.sourceBoundsMm !== undefined)).toBe(true);
   });
 
-  it('falls back to projection when a safe mesh has an ambiguous exact slice', () => {
-    const result = convertAutomatically({ bytes: writeBinarySTL(steppedCylinder(), 'safe') });
+  it('falls back to projection when a safe mesh has an ambiguous exact slice', async () => {
+    const result = await convertAutomatically({ bytes: writeBinarySTL(steppedCylinder(), 'safe') });
 
     expect(result).toMatchObject({ mode: 'outline-2.5d', status: 'warning', repairAccepted: true });
     expect(result.warnings).toContain('精確切片失敗，已改用 2.5D 外形模式');
     expect(result.layers.every((layer) => layer.sourceBoundsMm !== undefined)).toBe(true);
   });
 
-  it('uses a deterministic shortest-bounds axis with a warning when no candidate is trusted', () => {
-    const first = convertAutomatically({ bytes: writeBinarySTL(openTetrahedron(), 'safe') });
-    const second = convertAutomatically({ bytes: writeBinarySTL(openTetrahedron(), 'safe') });
+  it('uses a deterministic shortest-bounds axis with a warning when no candidate is trusted', async () => {
+    const first = await convertAutomatically({ bytes: writeBinarySTL(openTetrahedron(), 'safe') });
+    const second = await convertAutomatically({ bytes: writeBinarySTL(openTetrahedron(), 'safe') });
 
     expect(first.axis).toEqual(second.axis);
     expect(first.axis.source).toBe('shortest-bounds');
     expect(first.warnings).toContain('未找到可信旋轉軸，已使用模型最短包圍盒軸');
   });
 
-  it('fails closed with a typed error when no valid projected outline exists', () => {
+  it('fails closed with a typed error when no valid projected outline exists', async () => {
     const emptyProjection: TriangleMesh = {
       positions: new Float64Array([0, 0, 0, 1, 0, 1, 2, 0, 2]),
       indices: new Uint32Array([0, 1, 2]),
     };
 
-    expect(() => convertAutomatically({ bytes: writeBinarySTL(emptyProjection, 'safe') }))
-      .toThrow(expect.objectContaining<Partial<AutomaticOutlineError>>({ code: 'NO_OUTLINE' }));
+    await expect(convertAutomatically({ bytes: writeBinarySTL(emptyProjection, 'safe') }))
+      .rejects.toMatchObject({ code: 'NO_OUTLINE' } satisfies Partial<AutomaticOutlineError>);
   });
 
-  it('maps unreadable bytes to a typed invalid STL error', () => {
-    expect(() => convertAutomatically({ bytes: new ArrayBuffer(1) }))
-      .toThrow(expect.objectContaining<Partial<AutomaticOutlineError>>({ code: 'INVALID_STL' }));
+  it('maps unreadable bytes to a typed invalid STL error', async () => {
+    await expect(convertAutomatically({ bytes: new ArrayBuffer(1) }))
+      .rejects.toMatchObject({ code: 'INVALID_STL' } satisfies Partial<AutomaticOutlineError>);
   });
 
-  it('maps raster budget exhaustion to a typed resource limit error', () => {
+  it('maps raster budget exhaustion to a typed resource limit error', async () => {
     const oversized = scaled(openTetrahedron(), 2_000, 40, 2);
 
-    expect(() => convertAutomatically({ bytes: writeBinarySTL(oversized, 'safe') }))
-      .toThrow(expect.objectContaining<Partial<AutomaticOutlineError>>({ code: 'RESOURCE_LIMIT' }));
+    await expect(convertAutomatically({ bytes: writeBinarySTL(oversized, 'safe') }))
+      .rejects.toMatchObject({ code: 'RESOURCE_LIMIT' } satisfies Partial<AutomaticOutlineError>);
   });
 
-  it('maps extraction deadline exhaustion to a typed time limit error', () => {
+  it('does not reset the overall deadline when exact extraction times out', async () => {
     const originalNow = Date.now;
-    let now = 0;
-    Date.now = () => { now += 10_001; return now; };
+    let calls = 0;
+    Date.now = () => calls++ === 0 ? 0 : 30_001;
     try {
-      expect(() => convertAutomatically({ bytes: writeBinarySTL(cylinder(), 'safe') }))
-        .toThrow(expect.objectContaining<Partial<AutomaticOutlineError>>({ code: 'TIME_LIMIT' }));
+      await expect(convertAutomatically({ bytes: writeBinarySTL(cylinder(), 'safe') }))
+        .rejects.toMatchObject({ code: 'TIME_LIMIT' } satisfies Partial<AutomaticOutlineError>);
     } finally {
       Date.now = originalNow;
     }
   });
 
-  it('emits each progress stage at most once even when exact slicing falls back', () => {
-    const stages: AutomaticOutlineProgressStage[] = [];
-    const onProgress = vi.fn((stage: AutomaticOutlineProgressStage) => stages.push(stage));
+  it('does not project after exact extraction exhausts a resource limit', async () => {
+    const exact = vi.spyOn(extraction, 'extractExactContours')
+      .mockImplementationOnce(() => { throw new RangeError('Exact contour exceeds the triangle-layer test budget'); });
+    const projected = vi.spyOn(extraction, 'extractProjectedContours');
+    try {
+      await expect(convertAutomatically({ bytes: writeBinarySTL(cylinder(), 'safe') }))
+        .rejects.toMatchObject({ code: 'RESOURCE_LIMIT' } satisfies Partial<AutomaticOutlineError>);
+      expect(projected).not.toHaveBeenCalled();
+    } finally {
+      exact.mockRestore();
+      projected.mockRestore();
+    }
+  });
 
-    convertAutomatically({ bytes: writeBinarySTL(openTetrahedron(), 'safe') }, onProgress);
+  it('awaits packaging progress before resolving', async () => {
+    let releasePackaging!: () => void;
+    let markPackagingStarted!: () => void;
+    const packagingDelivered = new Promise<void>((resolve) => { releasePackaging = resolve; });
+    const packagingStarted = new Promise<void>((resolve) => { markPackagingStarted = resolve; });
+    let settled = false;
+    const conversion = convertAutomatically({ bytes: writeBinarySTL(cylinder(), 'safe') }, async (stage) => {
+      if (stage === 'packaging') {
+        markPackagingStarted();
+        await packagingDelivered;
+      }
+    });
+    const completion = Promise.resolve(conversion);
+    void completion.finally(() => { settled = true; });
+
+    await packagingStarted;
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    releasePackaging();
+    await expect(completion).resolves.toMatchObject({ mode: 'exact' });
+  });
+
+  it('fails closed when progress delivery rejects', async () => {
+    const callbackError = new Error('progress receiver closed');
+
+    await expect(convertAutomatically({ bytes: writeBinarySTL(cylinder(), 'safe') }, async (stage) => {
+      if (stage === 'packaging') throw callbackError;
+    })).rejects.toBe(callbackError);
+  });
+
+  it('emits each progress stage at most once even when exact slicing falls back', async () => {
+    const stages: AutomaticOutlineProgressStage[] = [];
+    const onProgress = vi.fn((stage: AutomaticOutlineProgressStage) => { stages.push(stage); });
+
+    await convertAutomatically({ bytes: writeBinarySTL(openTetrahedron(), 'safe') }, onProgress);
 
     expect(stages).toEqual(['reading', 'analyzing', 'simplifying', 'slicing', 'packaging']);
     expect(new Set(stages).size).toBe(stages.length);

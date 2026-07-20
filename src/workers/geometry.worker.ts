@@ -1,4 +1,4 @@
-import { expose, transfer } from 'comlink';
+import { expose, releaseProxy, transfer, wrap, type Remote } from 'comlink';
 import { findAxisCandidates } from '../domain/axis/find-axis';
 import { generateParts } from '../domain/decomposition/generate-parts';
 import { quantizeHeightField } from '../domain/engraving/quantize';
@@ -10,6 +10,7 @@ import { repairMeshSafe } from '../domain/mesh/repair-mesh';
 import {
   AutomaticOutlineError,
   convertAutomatically,
+  type AutomaticOutlineProgress,
 } from '../domain/pipeline/automatic-outline-pipeline';
 import type { MeshRepairResult, TriangleMesh } from '../domain/mesh/types';
 import { writeBinarySTL } from '../domain/mesh/write-stl';
@@ -46,13 +47,23 @@ function hashBuffer(input: ArrayBuffer): string {
 
 const geometryApi: GeometryApi = {
   async convertAutomatically(request, onProgress) {
+    let progressProxy: Remote<AutomaticOutlineProgress> | undefined;
+    let progress: AutomaticOutlineProgress | undefined;
+    if (onProgress instanceof MessagePort) {
+      progressProxy = wrap<AutomaticOutlineProgress>(onProgress);
+      progress = progressProxy;
+    } else {
+      progress = onProgress;
+    }
     try {
-      return convertAutomatically(request, onProgress);
+      return await convertAutomatically(request, progress);
     } catch (error) {
       if (error instanceof AutomaticOutlineError) {
         throw { name: error.name, code: error.code, message: error.message };
       }
       throw error;
+    } finally {
+      progressProxy?.[releaseProxy]();
     }
   },
   async inspect(input) {

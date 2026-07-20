@@ -12,6 +12,7 @@ import type { MeshProblemReport, MeshRepairResult } from '../domain/mesh/types';
 import type { STLRepairMode } from '../domain/mesh/write-stl';
 
 export type SerializedMesh = TriangleMesh;
+export type AutomaticOutlineProgressTransport = AutomaticOutlineProgress | MessagePort;
 
 export type MeshAnalysis = {
   readonly sourceHash: string;
@@ -47,7 +48,7 @@ export type GeometryApi = {
   inspect(input: ArrayBuffer): Promise<MeshAnalysis>;
   convertAutomatically(
     request: AutomaticOutlineRequest,
-    onProgress?: AutomaticOutlineProgress,
+    onProgress?: AutomaticOutlineProgressTransport,
   ): Promise<AutomaticOutlineResult>;
   inspectAndFindAxes(input: ArrayBuffer): Promise<ImportAnalysis>;
   analyzeAndRepairForImport(input: ArrayBuffer): Promise<ImportRepairAnalysis>;

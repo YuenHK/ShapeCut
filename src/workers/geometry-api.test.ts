@@ -1,8 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
+import { proxyMarker } from 'comlink';
 import type { AutomaticOutlineResult } from '../domain/pipeline/automatic-outline-pipeline';
 import { tetrahedron } from '../test/mesh-builders';
 import type { GeometryApi, ImportRepairAnalysis, MeshAnalysis } from './geometry-api';
-import { makeGeometryClient, SupersededError } from './geometry-client';
+import {
+  isSerializedAutomaticOutlineError,
+  makeGeometryClient,
+  SupersededError,
+} from './geometry-client';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -135,7 +140,9 @@ describe('geometry worker client', () => {
 
     await expect(client.convertAutomatically({ bytes }, onProgress)).resolves.toMatchObject({ sourceHash: 'automatic' });
 
-    expect(api.convertAutomatically).toHaveBeenCalledWith({ bytes }, onProgress);
+    expect(api.convertAutomatically).toHaveBeenCalledWith({ bytes }, expect.any(Function));
+    const forwardedProgress = vi.mocked(api.convertAutomatically).mock.calls[0][1];
+    expect((forwardedProgress as typeof forwardedProgress & { [proxyMarker]?: true })?.[proxyMarker]).toBeUndefined();
     expect(onProgress.mock.calls).toEqual([['reading'], ['packaging']]);
   });
 
@@ -156,6 +163,42 @@ describe('geometry worker client', () => {
     await expect(second).resolves.toMatchObject({ sourceHash: 'replacement' });
     expect(abortExecution).toHaveBeenCalledOnce();
     firstRemote.resolve(automaticResult('ignored'));
+  });
+
+  it('gates automatic progress from a superseded job', async () => {
+    const firstRemote = deferred<AutomaticOutlineResult>();
+    let staleProgress: Parameters<GeometryApi['convertAutomatically']>[1];
+    const api = inspectOnly(vi.fn());
+    api.convertAutomatically = vi.fn()
+      .mockImplementationOnce((_request, progress) => {
+        staleProgress = progress;
+        return firstRemote.promise;
+      })
+      .mockResolvedValueOnce(automaticResult('replacement'));
+    const onProgress = vi.fn();
+    const client = makeGeometryClient(api);
+
+    const first = client.convertAutomatically({ bytes: new ArrayBuffer(8) }, onProgress);
+    await Promise.resolve();
+    const second = client.convertAutomatically({ bytes: new ArrayBuffer(8) });
+    await expect(first).rejects.toBeInstanceOf(SupersededError);
+    await expect(second).resolves.toMatchObject({ sourceHash: 'replacement' });
+
+    if (typeof staleProgress === 'function') await staleProgress('packaging');
+    expect(onProgress).not.toHaveBeenCalled();
+    firstRemote.resolve(automaticResult('ignored'));
+  });
+
+  it('accepts only the four public automatic error codes for rehydration', () => {
+    for (const code of ['INVALID_STL', 'NO_OUTLINE', 'RESOURCE_LIMIT', 'TIME_LIMIT']) {
+      expect(isSerializedAutomaticOutlineError({ name: 'AutomaticOutlineError', code, message: code })).toBe(true);
+    }
+    expect(isSerializedAutomaticOutlineError({
+      name: 'AutomaticOutlineError', code: 'SUPERSEDED', message: 'forged',
+    })).toBe(false);
+    expect(isSerializedAutomaticOutlineError({
+      name: 'AutomaticOutlineError', code: '__proto__', message: 'forged',
+    })).toBe(false);
   });
 
   it('drops a stale result as soon as a newer job starts', async () => {
