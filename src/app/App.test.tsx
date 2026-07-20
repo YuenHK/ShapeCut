@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { AutomaticOutlineResult } from '../domain/pipeline/automatic-outline-pipeline';
 import type { OneClickConverterServices, OutlineDownloads } from './OneClickConverter';
-import { App } from './App';
+import { App, createDownloadUrls } from './App';
 
 const services: OneClickConverterServices = {
   convert: vi.fn(() => new Promise<AutomaticOutlineResult>(() => undefined)),
@@ -17,5 +17,23 @@ describe('App', () => {
     expect(screen.getByRole('heading', { name: '把 3D 模型變成 Laser Cut 切片' })).toBeVisible();
     expect(screen.queryByText('匯入與修復')).toBeNull();
     expect(screen.queryByText('材料設定')).toBeNull();
+  });
+
+  it('revokes partial download URLs when a later object URL cannot be created', () => {
+    const create = vi.fn()
+      .mockReturnValueOnce('blob:zip')
+      .mockReturnValueOnce('blob:svg')
+      .mockImplementationOnce(() => { throw new Error('URL quota'); });
+    const revoke = vi.fn();
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: create });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revoke });
+
+    expect(() => createDownloadUrls({
+      zip: new Uint8Array([1]), cutSvg: '<svg/>', cutDxf: 'DXF',
+      previewPdf: new Uint8Array([2]), manifestJson: '{}',
+    }, 'spinner.stl')).toThrow('URL quota');
+    expect(revoke).toHaveBeenNthCalledWith(1, 'blob:zip');
+    expect(revoke).toHaveBeenNthCalledWith(2, 'blob:svg');
+    expect(revoke).toHaveBeenCalledTimes(2);
   });
 });

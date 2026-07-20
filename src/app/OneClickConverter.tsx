@@ -67,6 +67,52 @@ function readFile(file: File): Promise<ArrayBuffer> {
   });
 }
 
+type OutlinePresentation = {
+  readonly viewBox: string;
+  readonly width: string;
+  readonly height: string;
+  readonly totalZ: string;
+  readonly paths: readonly string[];
+};
+
+function finiteDisplay(value: number): string | undefined {
+  if (!Number.isFinite(value) || value < 0) return undefined;
+  return Number(value.toFixed(2)).toString();
+}
+
+function outlinePresentation(result: AutomaticOutlineResult): OutlinePresentation | undefined {
+  if (result.layers.length === 0) return undefined;
+  if (result.layers.some((layer) => !layer?.sourceBoundsMm || !Array.isArray(layer.contour?.outer))) return undefined;
+  const values = result.layers.flatMap((layer) => [
+    layer.sourceBoundsMm.minX, layer.sourceBoundsMm.minY,
+    layer.sourceBoundsMm.maxX, layer.sourceBoundsMm.maxY,
+    layer.zStart, layer.zEnd,
+    ...layer.contour.outer.flat(),
+  ]);
+  if (!values.every(Number.isFinite)) return undefined;
+  const minX = Math.min(...result.layers.map((layer) => layer.sourceBoundsMm.minX));
+  const minY = Math.min(...result.layers.map((layer) => layer.sourceBoundsMm.minY));
+  const maxX = Math.max(...result.layers.map((layer) => layer.sourceBoundsMm.maxX));
+  const maxY = Math.max(...result.layers.map((layer) => layer.sourceBoundsMm.maxY));
+  const minZ = Math.min(...result.layers.map((layer) => layer.zStart));
+  const maxZ = Math.max(...result.layers.map((layer) => layer.zEnd));
+  const width = finiteDisplay(maxX - minX);
+  const height = finiteDisplay(maxY - minY);
+  const totalZ = finiteDisplay(maxZ - minZ);
+  if (!width || !height || !totalZ || Number(width) <= 0 || Number(height) <= 0) return undefined;
+  const paths: string[] = [];
+  for (const layer of result.layers) {
+    const commands: string[] = [];
+    for (const [index, [x, y]] of layer.contour.outer.entries()) {
+      const previewX = finiteDisplay(x - minX), previewY = finiteDisplay(maxY - y);
+      if (previewX === undefined || previewY === undefined) return undefined;
+      commands.push(`${index === 0 ? 'M' : 'L'} ${previewX} ${previewY}`);
+    }
+    paths.push(`${commands.join(' ')} Z`);
+  }
+  return { viewBox: `0 0 ${width} ${height}`, width, height, totalZ, paths };
+}
+
 function ModelInput({ compact = false, onFile }: { readonly compact?: boolean; readonly onFile: (file: File) => void }) {
   const input = useRef<HTMLInputElement>(null);
   const select = (event: ChangeEvent<HTMLInputElement>) => {
@@ -174,7 +220,7 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
           <strong>{STAGE_LABELS[view.stage]}</strong>
           <progress value={active + 1} max={STAGES.length} aria-label="轉換進度" />
           <ol className="stage-list">
-            {STAGES.slice(0, 4).map((stage, index) => <li key={stage} className={index <= active ? 'complete' : ''}>{STAGE_LABELS[stage]}</li>)}
+            {STAGES.map((stage, index) => <li key={stage} className={index <= active ? 'complete' : ''}>{STAGE_LABELS[stage]}</li>)}
           </ol>
         </div>
         <ModelInput compact onFile={(file) => void processFile(file)} />
@@ -196,6 +242,7 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
 
   const { result, downloads } = view;
   const warning = result.status === 'warning';
+  const presentation = outlinePresentation(result);
   return (
     <section className="converter-card result-card" aria-labelledby="result-title">
       <div className="result-heading">
@@ -208,10 +255,17 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
       </div>
       {warning && <div className="warning-panel"><strong>已簡化模型</strong><p>內部細節、孔洞及細小分離零件已被忽略。正式製作前請先試切。</p></div>}
       <div className="result-grid">
-        <div className="outline-preview" aria-label="外形切片預覽"><span aria-hidden="true" /></div>
+        <div className="outline-preview">
+          {presentation ? <svg role="img" aria-label="實際外形切片預覽" viewBox={presentation.viewBox} preserveAspectRatio="xMidYMid meet">
+            <title>每層已驗證外形的疊加預覽</title>
+            {presentation.paths.map((path, index) => <path key={result.layers[index].id} d={path} vectorEffect="non-scaling-stroke" />)}
+          </svg> : <p>無法顯示有限尺寸預覽</p>}
+        </div>
         <dl className="result-summary">
           <div><dt>處理方式</dt><dd>{result.mode === 'exact' ? '精確切片' : '2.5D 外形'}</dd></div>
           <div><dt>切片數量</dt><dd>{result.layers.length} 層</dd></div>
+          <div><dt>平面尺寸 X × Y</dt><dd>{presentation ? `${presentation.width} × ${presentation.height} mm` : '不可用'}</dd></div>
+          <div><dt>原始 Z 範圍</dt><dd>{presentation ? `總高度 ${presentation.totalZ} mm` : '不可用'}</dd></div>
           <div><dt>輸出內容</dt><dd>通用切割外形</dd></div>
         </dl>
       </div>

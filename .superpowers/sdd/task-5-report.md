@@ -30,3 +30,12 @@
 - Verified the production UI uses only the automatic geometry worker and outline package boundary.
 - Preserved legacy wizard/repository code without rendering it.
 - Did not touch E2E files, documentation, fixture/STL files, or Task 6 scope.
+
+## Review-finding follow-up
+
+- RED added four regressions: truthful X × Y and total Z summaries, actual contour-driven SVG paths that change with geometry, the packaging checklist stage, and cleanup after partial object-URL creation.
+- Replaced the decorative preview with a `preserveAspectRatio` SVG made from every validated layer contour, using the union of `sourceBoundsMm` and finite fail-safe formatting.
+- Result metadata now states the layer count, X × Y planar extent, and original total Z extent without rescaling.
+- The visual checklist now contains all five approved stages, including `正在準備下載`.
+- Download URL creation is transactional: if any later URL creation fails, all earlier URLs are revoked before the original error is rethrown.
+- Follow-up verification: focused UI 10/10, Chromium 1/1, full unit suite 33 files and 870/870 tests, typecheck and diff-check passed.

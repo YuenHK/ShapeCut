@@ -69,18 +69,21 @@ describe('OneClickConverter', () => {
     const conversion = deferred<AutomaticOutlineResult>();
     let report: ((stage: 'reading' | 'analyzing' | 'simplifying' | 'slicing' | 'packaging') => void) | undefined;
     const api = services({ convert: vi.fn((_bytes, onProgress) => { report = onProgress; return conversion.promise; }) });
-    render(<OneClickConverter services={api} />);
+    const { container } = render(<OneClickConverter services={api} />);
 
     await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'busy.stl'));
-    expect(screen.getByRole('status')).toHaveTextContent('模型已讀取');
+    expect(container.querySelector('.progress-status > strong')).toHaveTextContent('模型已讀取');
     report?.('simplifying');
-    await vi.waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('正在簡化'));
+    await vi.waitFor(() => expect(container.querySelector('.progress-status > strong')).toHaveTextContent('正在簡化'));
     report?.('reading');
-    await vi.waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('正在簡化'));
+    await vi.waitFor(() => expect(container.querySelector('.progress-status > strong')).toHaveTextContent('正在簡化'));
     report?.('slicing');
-    await vi.waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('正在產生切片'));
+    await vi.waitFor(() => expect(container.querySelector('.progress-status > strong')).toHaveTextContent('正在產生切片'));
     report?.('packaging');
-    await vi.waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('正在準備下載'));
+    await vi.waitFor(() => expect(container.querySelector('.progress-status > strong')).toHaveTextContent('正在準備下載'));
+    const checklist = container.querySelectorAll('.stage-list li');
+    expect(checklist).toHaveLength(5);
+    expect(checklist.item(4)).toHaveTextContent('正在準備下載');
   });
 
   it('cancels an old selection and never publishes its late result', async () => {
@@ -119,10 +122,43 @@ describe('OneClickConverter', () => {
     render(<OneClickConverter services={services({ convert: vi.fn().mockResolvedValue(warning) })} />);
     await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'broken.stl'));
 
-    expect(await screen.findByRole('status')).toHaveTextContent('需注意');
+    await screen.findByRole('heading', { name: '轉換完成' });
+    expect(screen.getByRole('status')).toHaveTextContent('需注意');
     expect(screen.getByText('已簡化模型')).toBeVisible();
     expect(screen.getByRole('link', { name: '下載 ZIP 製作套件' })).toHaveAttribute('href', 'blob:zip');
     for (const name of ['SVG', 'DXF', 'PDF', 'JSON']) expect(screen.getByRole('link', { name: `下載 ${name}` })).toBeVisible();
+    expect(screen.getByText('10 × 5 mm')).toBeVisible();
+    expect(screen.getByText('總高度 1 mm')).toBeVisible();
+    expect(screen.getByRole('img', { name: '實際外形切片預覽' })).toHaveAttribute('viewBox', '0 0 10 5');
+  });
+
+  it('renders an SVG path from the actual contour instead of a fixed decorative shape', async () => {
+    const user = userEvent.setup();
+    const firstServices = services();
+    const firstRender = render(<OneClickConverter services={firstServices} />);
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'wide.stl'));
+    await screen.findByRole('heading', { name: '轉換完成' });
+    const firstPath = firstRender.container.querySelector('svg path')?.getAttribute('d');
+    firstRender.unmount();
+
+    const changed = {
+      ...result,
+      layers: [{
+        ...result.layers[0],
+        contour: { outer: [[0, 0], [4, 0], [2, 8]], holes: [] as const },
+        sourceAreaMm2: 16,
+        simplifiedAreaMm2: 16,
+        sourceBoundsMm: { minX: 0, minY: 0, maxX: 4, maxY: 8 },
+      }],
+    };
+    render(<OneClickConverter services={services({ convert: vi.fn().mockResolvedValue(changed) })} />);
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'tall.stl'));
+    await screen.findByRole('heading', { name: '轉換完成' });
+    const secondPath = document.querySelector('svg path')?.getAttribute('d');
+
+    expect(firstPath).toBe('M 0 5 L 10 5 L 10 0 L 0 0 Z');
+    expect(secondPath).toBe('M 0 8 L 4 8 L 2 0 Z');
+    expect(secondPath).not.toBe(firstPath);
   });
 
   it('maps typed failures to plain Traditional Chinese and retry returns to upload', async () => {
