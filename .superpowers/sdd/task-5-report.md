@@ -49,3 +49,9 @@
 - Browser downloads now use generic `shapecut-*` names, independent of the selected source filename.
 - Strengthened the Chromium fixture to include a structurally valid layer and verified real SVG preview plus Enter-key disclosure behavior.
 - Final verification: focused UI 13/13, Chromium 1/1, full unit suite 33 files and 873/873 tests, typecheck and diff-check passed.
+
+## Contract-valid browser fixture follow-up
+
+- RED removed the double assertion and directly typed the fixture as `AutomaticOutlineResult`; TypeScript correctly rejected missing `axis`, `originalReport`, and `repairAccepted` fields.
+- Added a complete candidate axis, full nested zero-issue mesh report, and accepted-repair provenance. The browser fixture now compiles directly against the production contract with no cast.
+- Verification: focused UI 13/13, Chromium 1/1, full unit suite 33 files and 873/873 tests, typecheck and diff-check passed.

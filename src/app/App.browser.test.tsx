@@ -8,14 +8,46 @@ import type { OneClickConverterServices } from './OneClickConverter';
 describe('App real browser one-click flow', () => {
   it('starts from one keyboard-accessible selection and renders the result downloads', async () => {
     const user = userEvent.setup();
-    const result = {
+    const result: AutomaticOutlineResult = {
       sourceHash: 'c'.repeat(32), mode: 'exact', status: 'success', warnings: [], layers: [{
         id: 'layer-0', index: 0, zStart: 0, zEnd: 1,
         contour: { outer: [[0, 0], [10, 0], [10, 5], [0, 5]], holes: [] },
         sourceAreaMm2: 50, simplifiedAreaMm2: 50,
         sourceBoundsMm: { minX: 0, minY: 0, maxX: 10, maxY: 5 },
       }],
-    } as unknown as AutomaticOutlineResult;
+      axis: {
+        source: 'candidate',
+        axis: { origin: [0, 0, 0], direction: [0, 0, 1], confidence: 0.9, confirmed: true },
+      },
+      originalReport: {
+        inspection: {
+          triangleCount: 12,
+          boundaryEdgeCount: 0,
+          nonManifoldEdgeCount: 0,
+          degenerateTriangleCount: 0,
+          invertedVolume: false,
+        },
+        duplicateTriangleCount: 0,
+        inconsistentWindingEdgeCount: 0,
+        selfIntersectionCount: 0,
+        selfIntersectionAnalysisComplete: true,
+        boundaryEdges: [],
+        nonManifoldEdges: [],
+        degenerateTriangles: [],
+        duplicateTriangles: [],
+        inconsistentWindingEdges: [],
+        selfIntersections: [],
+        markersTruncated: {
+          boundaryEdges: false,
+          nonManifoldEdges: false,
+          degenerateTriangles: false,
+          duplicateTriangles: false,
+          inconsistentWindingEdges: false,
+          selfIntersections: false,
+        },
+      },
+      repairAccepted: true,
+    };
     const services: OneClickConverterServices = {
       cancel: vi.fn(),
       convert: vi.fn().mockResolvedValue(result),
