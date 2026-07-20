@@ -13,6 +13,7 @@ function layer(outer: readonly Point2[], overrides: Partial<OutlineLayer> = {}):
     sourceAreaMm2: 1,
     simplifiedAreaMm2: 1,
     sourceBoundsMm: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
+    simplificationToleranceMm: 0.01, boundsDriftRatio: 0, areaDriftRatio: 0,
     removedComponentCount: 0,
     ...overrides,
   };

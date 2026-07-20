@@ -64,6 +64,7 @@ function automaticResult(sourceHash: string): AutomaticOutlineResult {
     repairAccepted: true,
     removedComponentCount: 0,
     removalEvidenceFingerprint: '0'.repeat(32),
+    diagnostics: { topology: { triangleCount: 4, boundaryEdgeCount: 0, nonManifoldEdgeCount: 0, degenerateTriangleCount: 0, duplicateTriangleCount: 0, inconsistentWindingEdgeCount: 0, selfIntersectionCount: 0, selfIntersectionAnalysisComplete: true }, repairDecision: 'accepted', rasterCellSizeMm: null, layers: [] },
   };
 }
 

@@ -6,7 +6,7 @@ import type { OutlineLayer } from '../domain/outline-2.5d/extract';
 import { contourBounds, signedArea } from '../domain/outline-2.5d/simplify';
 import { DEFAULT_OUTLINE_BUDGETS, type OutlineMode, type OutlineResultStatus } from '../domain/outline-2.5d/types';
 import { validateOutlineLayer } from '../domain/outline-2.5d/validate';
-import { removalEvidenceFingerprint, type AutomaticOutlineResult } from '../domain/pipeline/automatic-outline-pipeline';
+import { diagnosticsFingerprint, removalEvidenceFingerprint, type AutomaticOutlineResult } from '../domain/pipeline/automatic-outline-pipeline';
 import type {
   LayerEntity,
   ManufacturingDocument,
@@ -62,6 +62,8 @@ export type OutlineManifestV1 = {
   readonly removedComponentCount: number;
   readonly removalEvidenceFingerprint: string;
   readonly axisSource: 'candidate' | 'shortest-bounds';
+  readonly diagnostics: AutomaticOutlineResult['diagnostics'];
+  readonly diagnosticsFingerprint: string;
   readonly layers: readonly {
     readonly id: string;
     readonly order: number;
@@ -213,6 +215,15 @@ function sortedLayers(result: AutomaticOutlineResult): MeasuredLayer[] {
     throw new RangeError('Outline removal evidence fingerprint is missing or inconsistent');
   }
   if (!['exact', 'outline-2.5d'].includes(result.mode)) throw new RangeError('Outline mode provenance is invalid');
+  const diagnostic = result.diagnostics;
+  const inspection = result.originalReport.inspection;
+  if (!diagnostic || diagnostic.repairDecision !== (result.repairAccepted ? 'accepted' : 'projected-original')
+    || (result.mode === 'exact' ? diagnostic.rasterCellSizeMm !== null : !(Number.isFinite(diagnostic.rasterCellSizeMm) && diagnostic.rasterCellSizeMm! > 0))
+    || JSON.stringify(diagnostic.topology) !== JSON.stringify({ triangleCount: inspection.triangleCount, boundaryEdgeCount: inspection.boundaryEdgeCount, nonManifoldEdgeCount: inspection.nonManifoldEdgeCount, degenerateTriangleCount: inspection.degenerateTriangleCount, duplicateTriangleCount: result.originalReport.duplicateTriangleCount, inconsistentWindingEdgeCount: result.originalReport.inconsistentWindingEdgeCount, selfIntersectionCount: result.originalReport.selfIntersectionCount, selfIntersectionAnalysisComplete: result.originalReport.selfIntersectionAnalysisComplete })
+    || diagnostic.layers.length !== result.layers.length
+    || diagnostic.layers.some((item, index) => JSON.stringify(item) !== JSON.stringify({ id: result.layers[index].id, simplificationToleranceMm: result.layers[index].simplificationToleranceMm, boundsDriftRatio: result.layers[index].boundsDriftRatio, areaDriftRatio: result.layers[index].areaDriftRatio }))) {
+    throw new RangeError('Outline diagnostics are missing or inconsistent');
+  }
   const measuredRemoved = result.layers.reduce((sum, layer) => sum + layer.removedComponentCount, 0);
   if (!Number.isSafeInteger(measuredRemoved) || measuredRemoved !== result.removedComponentCount
     || (result.mode === 'exact' && measuredRemoved !== 0)) {
@@ -315,6 +326,8 @@ export function createOutlineDocument(result: AutomaticOutlineResult): Manufactu
     removedComponentCount: result.removedComponentCount,
     removalEvidenceFingerprint: result.removalEvidenceFingerprint,
     axisSource: result.axis.source,
+    diagnostics: structuredClone(result.diagnostics),
+    diagnosticsFingerprint: diagnosticsFingerprint(result.diagnostics),
     layers: metadataLayers,
     materialIndependent: true,
   };
@@ -341,6 +354,8 @@ function manifestFromDocument(document: ManufacturingDocument): OutlineManifestV
     removedComponentCount: metadata.removedComponentCount,
     removalEvidenceFingerprint: metadata.removalEvidenceFingerprint,
     axisSource: metadata.axisSource,
+    diagnostics: structuredClone(metadata.diagnostics),
+    diagnosticsFingerprint: metadata.diagnosticsFingerprint,
     layers: metadata.layers.map(({ id, order, index, zStart, zEnd, boundsMm, removedComponentCount }) => ({ id, order, index, zStart, zEnd, boundsMm, removedComponentCount })),
     materialIndependent: true,
   };
@@ -377,6 +392,8 @@ function validateOutlineDocument(document: ManufacturingDocument): void {
     || !Array.isArray(document.manifest) || !Array.isArray(metadata.warnings)
     || !Number.isSafeInteger(metadata.removedComponentCount) || metadata.removedComponentCount < 0
     || !/^[0-9a-f]{32}$/.test(metadata.removalEvidenceFingerprint)
+    || !/^[0-9a-f]{32}$/.test(metadata.diagnosticsFingerprint)
+    || metadata.diagnosticsFingerprint !== diagnosticsFingerprint(metadata.diagnostics)
     || !HASH_PATTERN.test(metadata.sourceHash)
     || !['exact', 'outline-2.5d'].includes(metadata.mode) || !['success', 'warning'].includes(metadata.status)
     || !['candidate', 'shortest-bounds'].includes(metadata.axisSource)
@@ -390,6 +407,19 @@ function validateOutlineDocument(document: ManufacturingDocument): void {
     repairAccepted: metadata.repairAccepted,
     axisSource: metadata.axisSource,
   });
+  const diagnostic = metadata.diagnostics;
+  const topologyValues = diagnostic ? Object.values(diagnostic.topology) : [];
+  if (!diagnostic || diagnostic.repairDecision !== (metadata.repairAccepted ? 'accepted' : 'projected-original')
+    || (metadata.mode === 'exact' ? diagnostic.rasterCellSizeMm !== null : !(Number.isFinite(diagnostic.rasterCellSizeMm) && diagnostic.rasterCellSizeMm! > 0))
+    || topologyValues.length !== 8
+    || topologyValues.some((value, index) => index === 7 ? typeof value !== 'boolean' : !Number.isSafeInteger(value) || (value as number) < 0)
+    || diagnostic.layers.length !== metadata.layers.length
+    || diagnostic.layers.some((item, index) => item.id !== metadata.layers[index].id
+      || ![item.simplificationToleranceMm, item.boundsDriftRatio, item.areaDriftRatio].every(Number.isFinite)
+      || item.simplificationToleranceMm <= 0 || item.boundsDriftRatio < 0 || item.boundsDriftRatio > 0.03 + 1e-12
+      || item.areaDriftRatio < 0 || item.areaDriftRatio > 0.03 + 1e-12)) {
+    throw new RangeError('Outline diagnostic provenance is invalid');
+  }
   for (const warning of metadata.warnings) assertPublicText(warning, 'Outline warning');
   if (metadata.layers.length !== document.manifest.length) throw new RangeError('Outline document layer manifest mismatch');
   const ids = new Set<string>();
@@ -571,6 +601,7 @@ export async function verifyOutlinePackage(output: OutlinePackage): Promise<void
     `repair-accepted:${metadata.repairAccepted}`,
     `removed-components:${metadata.removedComponentCount}`,
     `removal-evidence:${metadata.removalEvidenceFingerprint}`,
+    `diagnostics-evidence:${metadata.diagnosticsFingerprint}`,
     `axis-source:${metadata.axisSource}`,
     'material-independent:true',
     ...metadata.layers.map((layer) => `outline-layer:${layer.id}:${layer.order}:${layer.index}:${layer.pointCount}:${layer.boundsMm[0]}x${layer.boundsMm[1]}:${layer.zStart}:${layer.zEnd}:${layer.removedComponentCount}`),

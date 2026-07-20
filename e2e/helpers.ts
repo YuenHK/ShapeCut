@@ -12,10 +12,12 @@ export type DownloadedOutline = {
     readonly sourceHash: string;
     readonly removedComponentCount: number;
     readonly removalEvidenceFingerprint: string;
+    readonly diagnosticsFingerprint: string;
+    readonly diagnostics: unknown;
     readonly layers: readonly { readonly id: string; readonly order: number; readonly index: number; readonly zStart: number; readonly zEnd: number; readonly removedComponentCount: number }[];
   };
   readonly project: { readonly document: {
-    readonly outline: { readonly removedComponentCount: number; readonly removalEvidenceFingerprint: string; readonly layers: readonly { readonly id: string; readonly order: number; readonly index: number; readonly zStart: number; readonly zEnd: number; readonly pointCount: number; readonly removedComponentCount: number }[] };
+    readonly outline: { readonly removedComponentCount: number; readonly removalEvidenceFingerprint: string; readonly diagnosticsFingerprint: string; readonly diagnostics: unknown; readonly layers: readonly { readonly id: string; readonly order: number; readonly index: number; readonly zStart: number; readonly zEnd: number; readonly pointCount: number; readonly removedComponentCount: number }[] };
     readonly sheets: readonly { readonly entities: readonly { readonly id: string; readonly polygon: { readonly points: readonly (readonly [number, number])[] } }[] }[];
   } };
   readonly entries: readonly string[];
@@ -140,6 +142,8 @@ async function inspectOutlineDownload(download: Download): Promise<DownloadedOut
   expect(project.document.outline.layers.map(({ id, order, index, zStart, zEnd, removedComponentCount }) => ({ id, order, index, zStart, zEnd, removedComponentCount })))
     .toEqual(manifest.layers.map(({ id, order, index, zStart, zEnd, removedComponentCount }) => ({ id, order, index, zStart, zEnd, removedComponentCount })));
   expect(project.document.outline.removedComponentCount).toBe(manifest.removedComponentCount);
+  expect(project.document.outline.diagnostics).toEqual(manifest.diagnostics);
+  expect(project.document.outline.diagnosticsFingerprint).toBe(manifest.diagnosticsFingerprint);
   expect(project.document.outline.removalEvidenceFingerprint).toBe(manifest.removalEvidenceFingerprint);
   expect(manifest.layers.reduce((sum, layer) => sum + layer.removedComponentCount, 0)).toBe(manifest.removedComponentCount);
   expect(svg).toContain(`data-removed-component-count="${manifest.removedComponentCount}"`);
@@ -156,10 +160,13 @@ async function inspectOutlineDownload(download: Download): Promise<DownloadedOut
   expect(new Set(expectedRecords.map(({ index }) => index)).size).toBe(expectedRecords.length);
   exactlyOneSvgRootAttribute(svg, 'data-removed-component-count', String(manifest.removedComponentCount));
   exactlyOneSvgRootAttribute(svg, 'data-removal-evidence-fingerprint', manifest.removalEvidenceFingerprint);
+  exactlyOneSvgRootAttribute(svg, 'data-diagnostics-fingerprint', manifest.diagnosticsFingerprint);
   exactlyOneProvenance(dxf, /REMOVED_COMPONENT_COUNT:/g, /REMOVED_COMPONENT_COUNT:(\d+)\n/g, String(manifest.removedComponentCount), 'DXF aggregate');
   exactlyOneProvenance(dxf, /REMOVAL_EVIDENCE_FINGERPRINT:/g, /REMOVAL_EVIDENCE_FINGERPRINT:([0-9a-f]+)\n/g, manifest.removalEvidenceFingerprint, 'DXF fingerprint');
+  exactlyOneProvenance(dxf, /DIAGNOSTICS_FINGERPRINT:/g, /DIAGNOSTICS_FINGERPRINT:([0-9a-f]+)\n/g, manifest.diagnosticsFingerprint, 'DXF diagnostics');
   exactlyOneProvenance(pdf.getKeywords() ?? '', /removed-components:/g, /(?:^|\s)removed-components:(\d+)(?=\s|$)/g, String(manifest.removedComponentCount), 'PDF aggregate');
   exactlyOneProvenance(pdf.getKeywords() ?? '', /removal-evidence:/g, /(?:^|\s)removal-evidence:([0-9a-f]+)(?=\s|$)/g, manifest.removalEvidenceFingerprint, 'PDF fingerprint');
+  exactlyOneProvenance(pdf.getKeywords() ?? '', /diagnostics-evidence:/g, /(?:^|\s)diagnostics-evidence:([0-9a-f]+)(?=\s|$)/g, manifest.diagnosticsFingerprint, 'PDF diagnostics');
   expect(project.document.sheets.flatMap(({ entities }) => entities).map(({ id }) => id)).toEqual(manifest.layers.map(({ id }) => id));
   return { manifest, project, entries, sha256: createHash('sha256').update(bytes).digest('hex') };
 }

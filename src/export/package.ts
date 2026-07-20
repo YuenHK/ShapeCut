@@ -62,7 +62,7 @@ export async function buildPackage(project: ManufacturingProject): Promise<Manuf
 export function writeOutlineSvg(sheet: ManufacturingSheet, metadata: OutlineDocumentMetadata): string {
   const layers = new Map(metadata.layers.map((layer) => [layer.id, layer]));
   return writeSheetSvg(sheet)
-    .replace('<svg ', `<svg data-outline-source-hash="${metadata.sourceHash}" data-outline-mode="${metadata.mode}" data-outline-status="${metadata.status}" data-repair-accepted="${metadata.repairAccepted}" data-removed-component-count="${metadata.removedComponentCount}" data-removal-evidence-fingerprint="${metadata.removalEvidenceFingerprint}" data-axis-source="${metadata.axisSource}" data-material-independent="true" `)
+    .replace('<svg ', `<svg data-outline-source-hash="${metadata.sourceHash}" data-outline-mode="${metadata.mode}" data-outline-status="${metadata.status}" data-repair-accepted="${metadata.repairAccepted}" data-removed-component-count="${metadata.removedComponentCount}" data-removal-evidence-fingerprint="${metadata.removalEvidenceFingerprint}" data-diagnostics-fingerprint="${metadata.diagnosticsFingerprint}" data-axis-source="${metadata.axisSource}" data-material-independent="true" `)
     .replace(/<polygon id="([^"]+)"/g, (match, id: string) => {
       const layer = layers.get(id);
       if (!layer) throw new RangeError(`SVG entity ${id} is missing outline metadata`);
@@ -78,6 +78,7 @@ export function writeOutlineDxf(sheet: ManufacturingSheet, metadata: OutlineDocu
     `999\nREPAIR_ACCEPTED:${metadata.repairAccepted}\n`,
     `999\nREMOVED_COMPONENT_COUNT:${metadata.removedComponentCount}\n`,
     `999\nREMOVAL_EVIDENCE_FINGERPRINT:${metadata.removalEvidenceFingerprint}\n`,
+    `999\nDIAGNOSTICS_FINGERPRINT:${metadata.diagnosticsFingerprint}\n`,
     `999\nAXIS_SOURCE:${metadata.axisSource}\n`,
     '999\nMATERIAL_INDEPENDENT:true\n',
     ...metadata.layers.map((layer) => `999\nOUTLINE_LAYER:${layer.id}:${layer.order}:${layer.index}:${layer.zStart}:${layer.zEnd}:${layer.pointCount}:${layer.boundsMm[0]}x${layer.boundsMm[1]}:${layer.removedComponentCount}\n`),
@@ -106,6 +107,7 @@ export async function writeOutlinePreviewPdf(
     `repair-accepted:${metadata.repairAccepted}`,
     `removed-components:${metadata.removedComponentCount}`,
     `removal-evidence:${metadata.removalEvidenceFingerprint}`,
+    `diagnostics-evidence:${metadata.diagnosticsFingerprint}`,
     `axis-source:${metadata.axisSource}`,
     'material-independent:true',
     ...metadata.layers.map((layer) => `outline-layer:${layer.id}:${layer.order}:${layer.index}:${layer.pointCount}:${layer.boundsMm[0]}x${layer.boundsMm[1]}:${layer.zStart}:${layer.zEnd}:${layer.removedComponentCount}`),

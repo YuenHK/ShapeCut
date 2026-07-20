@@ -287,6 +287,10 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
           <div><dt>狀態</dt><dd>{result.status}</dd></div>
           <div><dt>來源 fingerprint</dt><dd><code>{result.sourceHash}</code></dd></div>
           <div><dt>切片數量</dt><dd>{result.layers.length}</dd></div>
+          <div><dt>原始三角形</dt><dd>{result.diagnostics.topology.triangleCount}</dd></div>
+          <div><dt>修復決定</dt><dd>{result.diagnostics.repairDecision === 'accepted' ? '已接受安全修復' : '使用原始模型投影'}</dd></div>
+          <div><dt>Raster cell</dt><dd>{result.diagnostics.rasterCellSizeMm === null ? '精確模式不適用' : `${result.diagnostics.rasterCellSizeMm} mm`}</dd></div>
+          <div><dt>最大外形偏差</dt><dd>{`${(Math.max(...result.diagnostics.layers.map((item) => Math.max(item.boundsDriftRatio, item.areaDriftRatio))) * 100).toFixed(2)}%`}</dd></div>
         </dl>
         <h2>處理提示</h2>
         {result.warnings.length > 0 ? <ul>{result.warnings.map((item) => <li key={item}>{item}</li>)}</ul> : <p>沒有額外提示。</p>}

@@ -119,3 +119,9 @@ Both real-file UI cases completed in approximately 2.5 seconds, showed `已簡�
 - HTML and Web App Manifest metadata now use ShapeCut's universal, material-independent one-click description, mint `#14b8a6` theme, and white background; legacy spinner and multi-material product wording is rejected by the build regression.
 - README now distinguishes an exact-mode axis warning from a projected 2.5D simplification warning.
 - The 100k performance acceptance no longer accepts an arbitrary alert or result: it requires the exact bounded resource-limit user classification while retaining the elapsed-time and main-thread long-task limits.
+
+## Sanitized diagnostic evidence
+
+- Automatic results now carry a typed, path-free diagnostic record: original topology counters, accepted-versus-projected-original repair decision, projected raster cell size (explicitly `null` for exact mode), and per-layer applied simplification tolerance plus bounds/area drift ratios.
+- Runtime packaging rejects missing or mismatched diagnostics against the original report and measured layers. Canonical validation rejects invalid mode-specific fields, non-finite values, drift above three percent, layer identity mismatch, and a forged diagnostic fingerprint.
+- Full diagnostics are reconciled in manifest and project JSON. SVG, DXF, and PDF independently carry the deterministic diagnostic fingerprint, and ZIP verification regenerates and compares every representation. Technical details show a useful safe subset without file names, paths, materials, or machine settings.

@@ -19,6 +19,7 @@ const result: AutomaticOutlineResult = {
     contour: { outer: [[0, 0], [10, 0], [10, 5], [0, 5]], holes: [] },
     sourceAreaMm2: 50, simplifiedAreaMm2: 50,
     sourceBoundsMm: { minX: 0, minY: 0, maxX: 10, maxY: 5 },
+    simplificationToleranceMm: 0.01, boundsDriftRatio: 0, areaDriftRatio: 0,
     removedComponentCount: 0,
   }],
   warnings: [],
@@ -26,6 +27,7 @@ const result: AutomaticOutlineResult = {
   repairAccepted: true,
   removedComponentCount: 0,
   removalEvidenceFingerprint: '0'.repeat(32),
+  diagnostics: { topology: { triangleCount: 0, boundaryEdgeCount: 0, nonManifoldEdgeCount: 0, degenerateTriangleCount: 0, duplicateTriangleCount: 0, inconsistentWindingEdgeCount: 0, selfIntersectionCount: 0, selfIntersectionAnalysisComplete: true }, repairDecision: 'accepted', rasterCellSizeMm: null, layers: [{ id: 'layer-0', simplificationToleranceMm: 0.01, boundsDriftRatio: 0, areaDriftRatio: 0 }] },
 };
 
 const downloads: OutlineDownloads = {

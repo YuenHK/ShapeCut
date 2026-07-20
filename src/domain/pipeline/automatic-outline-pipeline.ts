@@ -30,6 +30,13 @@ export type AutomaticOutlineResult = {
   readonly repairAccepted: boolean;
   readonly removedComponentCount: number;
   readonly removalEvidenceFingerprint: string;
+  readonly diagnostics: AutomaticOutlineDiagnostics;
+};
+export type AutomaticOutlineDiagnostics = {
+  readonly topology: Readonly<Pick<MeshProblemReport['inspection'], 'triangleCount' | 'boundaryEdgeCount' | 'nonManifoldEdgeCount' | 'degenerateTriangleCount'>> & Readonly<Pick<MeshProblemReport, 'duplicateTriangleCount' | 'inconsistentWindingEdgeCount' | 'selfIntersectionCount' | 'selfIntersectionAnalysisComplete'>>;
+  readonly repairDecision: 'accepted' | 'projected-original';
+  readonly rasterCellSizeMm: number | null;
+  readonly layers: readonly { readonly id: string; readonly simplificationToleranceMm: number; readonly boundsDriftRatio: number; readonly areaDriftRatio: number }[];
 };
 export type AutomaticOutlineRequest = { readonly bytes: ArrayBuffer };
 export type AutomaticOutlineProgress = (stage: AutomaticOutlineProgressStage) => void | Promise<void>;
@@ -70,8 +77,25 @@ export function removalEvidenceFingerprint(result: Pick<AutomaticOutlineResult, 
   return lanes.map((item) => item.toString(16).padStart(8, '0')).join('');
 }
 
+export function diagnosticsFingerprint(value: AutomaticOutlineDiagnostics): string {
+  const serialized = JSON.stringify(value), lanes = [2166136261, 2246822519, 3266489917, 668265263];
+  for (let lane = 0; lane < lanes.length; lane += 1) for (const char of serialized) lanes[lane] = Math.imul(lanes[lane] ^ (char.charCodeAt(0) + lane * 131), 16777619 + lane * 2) >>> 0;
+  return lanes.map((item) => item.toString(16).padStart(8, '0')).join('');
+}
+
 function withRemovalFingerprint(result: Omit<AutomaticOutlineResult, 'removalEvidenceFingerprint'>): AutomaticOutlineResult {
   return { ...result, removalEvidenceFingerprint: removalEvidenceFingerprint(result) };
+}
+
+function diagnostics(extraction: { readonly layers: readonly OutlineLayer[]; readonly cellSizeMm?: number }, report: MeshProblemReport, repairAccepted: boolean): AutomaticOutlineDiagnostics {
+  const { triangleCount, boundaryEdgeCount, nonManifoldEdgeCount, degenerateTriangleCount } = report.inspection;
+  const { duplicateTriangleCount, inconsistentWindingEdgeCount, selfIntersectionCount, selfIntersectionAnalysisComplete } = report;
+  return {
+    topology: { triangleCount, boundaryEdgeCount, nonManifoldEdgeCount, degenerateTriangleCount, duplicateTriangleCount, inconsistentWindingEdgeCount, selfIntersectionCount, selfIntersectionAnalysisComplete },
+    repairDecision: repairAccepted ? 'accepted' : 'projected-original',
+    rasterCellSizeMm: extraction.cellSizeMm ?? null,
+    layers: extraction.layers.map(({ id, simplificationToleranceMm, boundsDriftRatio, areaDriftRatio }) => ({ id, simplificationToleranceMm, boundsDriftRatio, areaDriftRatio })),
+  };
 }
 
 function automaticAxis(mesh: TriangleMesh): OutlineAxisSelection {
@@ -171,6 +195,7 @@ export async function convertAutomatically(
         originalReport,
         repairAccepted: true,
         removedComponentCount: projectedExtraction.removedComponentCount,
+        diagnostics: diagnostics(projectedExtraction, originalReport, true),
       });
     }
     await emit('packaging');
@@ -184,6 +209,7 @@ export async function convertAutomatically(
       originalReport,
       repairAccepted: true,
       removedComponentCount: 0,
+      diagnostics: diagnostics(exactExtraction, originalReport, true),
     });
   }
 
@@ -204,5 +230,6 @@ export async function convertAutomatically(
     originalReport,
     repairAccepted: false,
     removedComponentCount: projectedExtraction.removedComponentCount,
+    diagnostics: diagnostics(projectedExtraction, originalReport, false),
   });
 }

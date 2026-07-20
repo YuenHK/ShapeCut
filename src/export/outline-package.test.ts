@@ -57,6 +57,7 @@ function layer(
       minX: Math.min(...xs), minY: Math.min(...ys),
       maxX: Math.max(...xs), maxY: Math.max(...ys),
     },
+    simplificationToleranceMm: 0.01, boundsDriftRatio: 0, areaDriftRatio: 0,
     removedComponentCount,
   };
 }
@@ -96,6 +97,12 @@ function result(overrides: Partial<AutomaticOutlineResult> = {}): AutomaticOutli
     removedComponentCount: 0,
     ...overrides,
   } as Omit<AutomaticOutlineResult, 'removalEvidenceFingerprint'>;
+  if (!overrides.diagnostics) Object.assign(value, { diagnostics: {
+    topology: { triangleCount: 1, boundaryEdgeCount: 0, nonManifoldEdgeCount: 0, degenerateTriangleCount: 0, duplicateTriangleCount: 0, inconsistentWindingEdgeCount: 0, selfIntersectionCount: 0, selfIntersectionAnalysisComplete: true },
+    repairDecision: value.repairAccepted ? 'accepted' : 'projected-original',
+    rasterCellSizeMm: value.mode === 'exact' ? null : 0.05,
+    layers: value.layers.map(({ id, simplificationToleranceMm, boundsDriftRatio, areaDriftRatio }) => ({ id, simplificationToleranceMm, boundsDriftRatio, areaDriftRatio })),
+  } });
   return { ...value, removalEvidenceFingerprint: overrides.removalEvidenceFingerprint ?? removalEvidenceFingerprint(value) };
 }
 
@@ -128,6 +135,8 @@ async function synchronizedOutput(output: OutlinePackage, document: OutlinePacka
     removedComponentCount: metadata.removedComponentCount,
     removalEvidenceFingerprint: metadata.removalEvidenceFingerprint,
     axisSource: metadata.axisSource,
+    diagnostics: structuredClone(metadata.diagnostics),
+    diagnosticsFingerprint: metadata.diagnosticsFingerprint,
     layers: metadata.layers.map(({ id, order, index, zStart, zEnd, boundsMm, removedComponentCount }) => ({ id, order, index, zStart, zEnd, boundsMm, removedComponentCount })),
     materialIndependent: true as const,
   };
@@ -154,6 +163,25 @@ async function pdfKeywords(bytes: Uint8Array): Promise<string[]> {
 }
 
 describe('material-independent outline package', () => {
+  it('requires and reconciles sanitized diagnostics across canonical outputs', async () => {
+    const missing = structuredClone(result());
+    delete (missing as unknown as { diagnostics?: AutomaticOutlineResult['diagnostics'] }).diagnostics;
+    await expect(createOutlinePackage(missing)).rejects.toThrow(/diagnostic/i);
+    const mismatched = structuredClone(result());
+    Object.assign(mismatched.diagnostics.layers[0], { boundsDriftRatio: 0.02 });
+    await expect(createOutlinePackage(mismatched)).rejects.toThrow(/diagnostic/i);
+
+    const output = await createOutlinePackage(result());
+    expect(output.manifest.diagnostics).toEqual(output.document.outline!.diagnostics);
+    expect(output.projectJson).toContain('simplificationToleranceMm');
+    expect(output.cutSvg).toContain(`data-diagnostics-fingerprint="${output.manifest.diagnosticsFingerprint}"`);
+    expect(output.cutDxf).toContain(`DIAGNOSTICS_FINGERPRINT:${output.manifest.diagnosticsFingerprint}`);
+    await expect(pdfKeywords(output.previewPdf)).resolves.toContain(`diagnostics-evidence:${output.manifest.diagnosticsFingerprint}`);
+    const forged = structuredClone(output);
+    Object.assign(forged.document.outline!.diagnostics.layers[0], { areaDriftRatio: 0.04 });
+    await expect(verifyOutlinePackage(forged)).rejects.toThrow(/diagnostic|provenance/i);
+  });
+
   it('reconciles exact-to-projected fallback evidence from disconnected closed slices', async () => {
     const runtime = await convertAutomatically({ bytes: writeBinarySTL(separatedClosedCylinders(), 'safe') });
     expect(runtime).toMatchObject({ mode: 'outline-2.5d', status: 'warning', repairAccepted: true });

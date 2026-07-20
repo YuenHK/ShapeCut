@@ -100,6 +100,8 @@ describe('automatic outline pipeline', () => {
     expect(result.layers.every((layer) => layer.removedComponentCount === 0)).toBe(true);
     expect(result.layers.every((layer) => layer.sourceBoundsMm !== undefined)).toBe(true);
     expect(result.sourceHash).toMatch(/^[0-9a-f]{32}$/);
+    expect(result.diagnostics).toMatchObject({ repairDecision: 'accepted', rasterCellSizeMm: null, topology: { triangleCount: 128 } });
+    expect(result.diagnostics.layers).toHaveLength(result.layers.length);
     expect(progress).toEqual(['reading', 'analyzing', 'simplifying', 'slicing', 'packaging']);
   });
 
@@ -136,6 +138,8 @@ describe('automatic outline pipeline', () => {
     expect(result.removedComponentCount).toBeGreaterThan(0);
     expect(result.layers.reduce((sum, layer) => sum + layer.removedComponentCount, 0)).toBe(result.removedComponentCount);
     expect(result.removalEvidenceFingerprint).toBe(removalEvidenceFingerprint(result));
+    expect(result.diagnostics.rasterCellSizeMm).toBeGreaterThan(0);
+    expect(result.diagnostics.layers.every((item) => item.boundsDriftRatio <= 0.03 && item.areaDriftRatio <= 0.03)).toBe(true);
   });
 
   it('uses a deterministic shortest-bounds axis with a warning when no candidate is trusted', async () => {

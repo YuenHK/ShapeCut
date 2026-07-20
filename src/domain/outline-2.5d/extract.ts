@@ -14,6 +14,9 @@ export type OutlineLayer = {
   readonly sourceAreaMm2: number;
   readonly simplifiedAreaMm2: number;
   readonly sourceBoundsMm: Bounds2;
+  readonly simplificationToleranceMm: number;
+  readonly boundsDriftRatio: number;
+  readonly areaDriftRatio: number;
   readonly removedComponentCount: number;
 };
 export type OutlineExtraction = {
@@ -65,6 +68,15 @@ function withinDrift(sourceBounds: Bounds2, simplified: readonly Point2[], deadl
   return ratios.every((ratio) => ratio <= 0.03 + 1e-12);
 }
 
+function boundsDriftRatio(sourceBounds: Bounds2, simplified: readonly Point2[], deadline: number): number {
+  const result = contourBounds(simplified, deadline);
+  const width = sourceBounds.maxX - sourceBounds.minX, height = sourceBounds.maxY - sourceBounds.minY;
+  return Math.max(
+    Math.abs(result.minX - sourceBounds.minX) / width, Math.abs(result.maxX - sourceBounds.maxX) / width,
+    Math.abs(result.minY - sourceBounds.minY) / height, Math.abs(result.maxY - sourceBounds.maxY) / height,
+  );
+}
+
 function makeLayer(
   spec: OutlineLayerSpec,
   source: readonly Point2[],
@@ -96,6 +108,9 @@ function makeLayer(
     sourceAreaMm2,
     simplifiedAreaMm2,
     sourceBoundsMm,
+    simplificationToleranceMm: currentTolerance,
+    boundsDriftRatio: boundsDriftRatio(sourceBoundsMm, simplified, deadline),
+    areaDriftRatio: Math.abs(simplifiedAreaMm2 - sourceAreaMm2) / sourceAreaMm2,
     removedComponentCount,
   };
   const validation = validateOutlineLayer(layer, deadline);
