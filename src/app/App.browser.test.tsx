@@ -49,6 +49,7 @@ describe('App real browser one-click flow', () => {
       },
       repairAccepted: true,
       removedComponentCount: 0,
+      removalEvidenceFingerprint: '0'.repeat(32),
     };
     const services: OneClickConverterServices = {
       cancel: vi.fn(),

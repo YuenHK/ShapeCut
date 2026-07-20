@@ -6,7 +6,7 @@ import type { OutlineLayer } from '../domain/outline-2.5d/extract';
 import { contourBounds, signedArea } from '../domain/outline-2.5d/simplify';
 import { DEFAULT_OUTLINE_BUDGETS, type OutlineMode, type OutlineResultStatus } from '../domain/outline-2.5d/types';
 import { validateOutlineLayer } from '../domain/outline-2.5d/validate';
-import type { AutomaticOutlineResult } from '../domain/pipeline/automatic-outline-pipeline';
+import { removalEvidenceFingerprint, type AutomaticOutlineResult } from '../domain/pipeline/automatic-outline-pipeline';
 import type {
   LayerEntity,
   ManufacturingDocument,
@@ -60,10 +60,12 @@ export type OutlineManifestV1 = {
   readonly warnings: readonly string[];
   readonly repairAccepted: boolean;
   readonly removedComponentCount: number;
+  readonly removalEvidenceFingerprint: string;
   readonly axisSource: 'candidate' | 'shortest-bounds';
   readonly layers: readonly {
     readonly id: string;
     readonly order: number;
+    readonly index: number;
     readonly zStart: number;
     readonly zEnd: number;
     readonly boundsMm: readonly [number, number];
@@ -206,6 +208,10 @@ function sortedLayers(result: AutomaticOutlineResult): MeasuredLayer[] {
   if (!Number.isSafeInteger(result.removedComponentCount) || result.removedComponentCount < 0) {
     throw new RangeError('Outline removed-component count must be a non-negative safe integer');
   }
+  if (!/^[0-9a-f]{32}$/.test(result.removalEvidenceFingerprint)
+    || result.removalEvidenceFingerprint !== removalEvidenceFingerprint(result)) {
+    throw new RangeError('Outline removal evidence fingerprint is missing or inconsistent');
+  }
   if (!['exact', 'outline-2.5d'].includes(result.mode)) throw new RangeError('Outline mode provenance is invalid');
   const measuredRemoved = result.layers.reduce((sum, layer) => sum + layer.removedComponentCount, 0);
   if (!Number.isSafeInteger(measuredRemoved) || measuredRemoved !== result.removedComponentCount
@@ -285,6 +291,7 @@ export function createOutlineDocument(result: AutomaticOutlineResult): Manufactu
     metadataLayers.push({
       id: item.layer.id,
       order: index + 1,
+      index: item.layer.index,
       zStart: item.layer.zStart,
       zEnd: item.layer.zEnd,
       boundsMm: [item.width, item.height],
@@ -306,6 +313,7 @@ export function createOutlineDocument(result: AutomaticOutlineResult): Manufactu
     warnings: [...result.warnings],
     repairAccepted: result.repairAccepted,
     removedComponentCount: result.removedComponentCount,
+    removalEvidenceFingerprint: result.removalEvidenceFingerprint,
     axisSource: result.axis.source,
     layers: metadataLayers,
     materialIndependent: true,
@@ -331,8 +339,9 @@ function manifestFromDocument(document: ManufacturingDocument): OutlineManifestV
     warnings: [...metadata.warnings],
     repairAccepted: metadata.repairAccepted,
     removedComponentCount: metadata.removedComponentCount,
+    removalEvidenceFingerprint: metadata.removalEvidenceFingerprint,
     axisSource: metadata.axisSource,
-    layers: metadata.layers.map(({ id, order, zStart, zEnd, boundsMm, removedComponentCount }) => ({ id, order, zStart, zEnd, boundsMm, removedComponentCount })),
+    layers: metadata.layers.map(({ id, order, index, zStart, zEnd, boundsMm, removedComponentCount }) => ({ id, order, index, zStart, zEnd, boundsMm, removedComponentCount })),
     materialIndependent: true,
   };
 }
@@ -367,6 +376,7 @@ function validateOutlineDocument(document: ManufacturingDocument): void {
   if (document.unit !== 'mm' || !Array.isArray(document.sheets) || document.sheets.length === 0
     || !Array.isArray(document.manifest) || !Array.isArray(metadata.warnings)
     || !Number.isSafeInteger(metadata.removedComponentCount) || metadata.removedComponentCount < 0
+    || !/^[0-9a-f]{32}$/.test(metadata.removalEvidenceFingerprint)
     || !HASH_PATTERN.test(metadata.sourceHash)
     || !['exact', 'outline-2.5d'].includes(metadata.mode) || !['success', 'warning'].includes(metadata.status)
     || !['candidate', 'shortest-bounds'].includes(metadata.axisSource)
@@ -412,6 +422,11 @@ function validateOutlineDocument(document: ManufacturingDocument): void {
     || (metadata.mode === 'exact' && removedComponentCount !== 0)) {
     throw new RangeError('Outline removed-component evidence is inconsistent');
   }
+  const expectedRemovalFingerprint = removalEvidenceFingerprint({
+    sourceHash: metadata.sourceHash, mode: metadata.mode,
+    layers: metadata.layers.map(({ id, index, zStart, zEnd, removedComponentCount }) => ({ id, index, zStart, zEnd, removedComponentCount } as OutlineLayer)),
+  });
+  if (metadata.removalEvidenceFingerprint !== expectedRemovalFingerprint) throw new RangeError('Outline removal evidence fingerprint is inconsistent');
 
   const canvasWidth = Math.min(1000, Math.max(300, Math.ceil(Math.max(...metadata.layers.map(({ boundsMm }) => boundsMm[0])) + 10)));
   let sheetIndex = 0, entityIndex = 0;
@@ -555,9 +570,10 @@ export async function verifyOutlinePackage(output: OutlinePackage): Promise<void
     `outline-status:${metadata.status}`,
     `repair-accepted:${metadata.repairAccepted}`,
     `removed-components:${metadata.removedComponentCount}`,
+    `removal-evidence:${metadata.removalEvidenceFingerprint}`,
     `axis-source:${metadata.axisSource}`,
     'material-independent:true',
-    ...metadata.layers.map((layer) => `outline-layer:${layer.id}:${layer.order}:${layer.pointCount}:${layer.boundsMm[0]}x${layer.boundsMm[1]}:${layer.zStart}:${layer.zEnd}:${layer.removedComponentCount}`),
+    ...metadata.layers.map((layer) => `outline-layer:${layer.id}:${layer.order}:${layer.index}:${layer.pointCount}:${layer.boundsMm[0]}x${layer.boundsMm[1]}:${layer.zStart}:${layer.zEnd}:${layer.removedComponentCount}`),
   ];
   const actualKeywords = keywords === '' ? [] : keywords.split(/\s+/);
   if (exactJson(actualKeywords) !== exactJson(requiredKeywords)) throw new RangeError('Outline PDF metadata reconciliation mismatch');

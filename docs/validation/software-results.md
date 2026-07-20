@@ -22,4 +22,6 @@ ShapeCut now exposes one workflow: selecting one STL immediately runs analysis, 
 
 All formats are regenerated from the same canonical CUT contours and provenance. Per-layer removal metadata binds layer ID, order, Z interval, and count; the aggregate must equal the layer sum. Exact output requires every removal count to be zero. ZIP records are exactly `cut.svg`, `cut.dxf`, `preview.pdf`, `project.json`, and `manifest.json`.
 
+A deterministic, non-secret removal-evidence fingerprint additionally binds the source hash, mode, and ordered layer ID/index/Z/count records. It detects accidental or runtime mutation, including sum-preserving count swaps; it is not cryptographic authentication against a party able to recompute the fingerprint.
+
 2.5D output remains an approximate outer-profile result, not a repaired 3D solid. Holes, internal details, and smaller disconnected components are removed. Output remains material-independent and supplies no laser power, speed, or passes.

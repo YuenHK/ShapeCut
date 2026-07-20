@@ -25,6 +25,7 @@ const result: AutomaticOutlineResult = {
   originalReport: {} as AutomaticOutlineResult['originalReport'],
   repairAccepted: true,
   removedComponentCount: 0,
+  removalEvidenceFingerprint: '0'.repeat(32),
 };
 
 const downloads: OutlineDownloads = {

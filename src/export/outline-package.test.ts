@@ -3,7 +3,7 @@ import { PDFDocument, StandardFonts } from 'pdf-lib';
 import { describe, expect, it } from 'vitest';
 import type { OutlineLayer } from '../domain/outline-2.5d/extract';
 import type { AutomaticOutlineResult } from '../domain/pipeline/automatic-outline-pipeline';
-import { convertAutomatically } from '../domain/pipeline/automatic-outline-pipeline';
+import { convertAutomatically, removalEvidenceFingerprint } from '../domain/pipeline/automatic-outline-pipeline';
 import { writeBinarySTL } from '../domain/mesh/write-stl';
 import { openTetrahedron } from '../test/mesh-builders';
 import type { TriangleMesh } from '../domain/mesh/types';
@@ -62,7 +62,7 @@ function layer(
 }
 
 function result(overrides: Partial<AutomaticOutlineResult> = {}): AutomaticOutlineResult {
-  return {
+  const value = {
     sourceHash: SOURCE_HASH,
     mode: 'outline-2.5d',
     status: 'warning',
@@ -71,9 +71,9 @@ function result(overrides: Partial<AutomaticOutlineResult> = {}): AutomaticOutli
       source: 'shortest-bounds',
     },
     layers: [
-      layer('curved-top', 8, 4, 6, [[0, 0], [0, 20], [12, 24], [24, 20], [24, 0]]),
       layer('small-rectangle', 2, 0, 2, [[-5, -3], [-5, 7], [13, 7], [13, -3]]),
       layer('wide-rectangle', 5, 2, 4, [[2, 1], [2, 13], [32, 13], [32, 1]]),
+      layer('curved-top', 8, 4, 6, [[0, 0], [0, 20], [12, 24], [24, 20], [24, 0]]),
     ],
     warnings: PROJECTED_WARNINGS,
     originalReport: {
@@ -95,17 +95,24 @@ function result(overrides: Partial<AutomaticOutlineResult> = {}): AutomaticOutli
     repairAccepted: false,
     removedComponentCount: 0,
     ...overrides,
-  };
+  } as Omit<AutomaticOutlineResult, 'removalEvidenceFingerprint'>;
+  return { ...value, removalEvidenceFingerprint: overrides.removalEvidenceFingerprint ?? removalEvidenceFingerprint(value) };
 }
 
 function separatedOpenComponents(): TriangleMesh {
   const first = openTetrahedron();
+  const transformed = (xOffset: number, zOffset: number, zScale: number, xyScale: number) => Array.from(first.positions, (value, index) => {
+    if (index % 3 === 0) return value * xyScale + xOffset;
+    if (index % 3 === 1) return value * xyScale;
+    return value * zScale + zOffset;
+  });
   return {
     positions: new Float64Array([
-      ...first.positions,
-      ...Array.from(first.positions, (value, index) => value + (index % 3 === 0 ? 10 : 0)),
+      ...transformed(0, 0, 12, 30),
+      ...transformed(40, 1, 2, 2),
+      ...transformed(50, 8, 2, 2),
     ]),
-    indices: new Uint32Array([...first.indices, ...Array.from(first.indices, (index) => index + 4)]),
+    indices: new Uint32Array([...first.indices, ...Array.from(first.indices, (index) => index + 4), ...Array.from(first.indices, (index) => index + 8)]),
   };
 }
 
@@ -119,8 +126,9 @@ async function synchronizedOutput(output: OutlinePackage, document: OutlinePacka
     warnings: [...metadata.warnings],
     repairAccepted: metadata.repairAccepted,
     removedComponentCount: metadata.removedComponentCount,
+    removalEvidenceFingerprint: metadata.removalEvidenceFingerprint,
     axisSource: metadata.axisSource,
-    layers: metadata.layers.map(({ id, order, zStart, zEnd, boundsMm, removedComponentCount }) => ({ id, order, zStart, zEnd, boundsMm, removedComponentCount })),
+    layers: metadata.layers.map(({ id, order, index, zStart, zEnd, boundsMm, removedComponentCount }) => ({ id, order, index, zStart, zEnd, boundsMm, removedComponentCount })),
     materialIndependent: true as const,
   };
   const exportSheet = flattenOutlineSheets(document);
@@ -152,6 +160,7 @@ describe('material-independent outline package', () => {
     }));
     expect(runtime.mode).toBe('outline-2.5d');
     expect(runtime.removedComponentCount).toBeGreaterThan(0);
+    expect(new Set(runtime.layers.map((item) => item.removedComponentCount)).size).toBeGreaterThan(1);
     expect(runtime.layers.reduce((sum, item) => sum + item.removedComponentCount, 0)).toBe(runtime.removedComponentCount);
 
     const output = await createOutlinePackage(runtime);
@@ -164,15 +173,15 @@ describe('material-independent outline package', () => {
       .toEqual(runtime.layers.map((item) => item.removedComponentCount));
     expect(project.document.outline.removedComponentCount).toBe(runtime.removedComponentCount);
     const layerEvidence = runtime.layers.map((item, index) => ({
-      id: item.id, order: index + 1, zStart: item.zStart, zEnd: item.zEnd,
+      id: item.id, order: index + 1, index: item.index, zStart: item.zStart, zEnd: item.zEnd,
       removedComponentCount: item.removedComponentCount,
     }));
-    expect(project.document.outline.layers.map(({ id, order, zStart, zEnd, removedComponentCount }: typeof layerEvidence[number]) => ({ id, order, zStart, zEnd, removedComponentCount })))
+    expect(project.document.outline.layers.map(({ id, order, index, zStart, zEnd, removedComponentCount }: typeof layerEvidence[number]) => ({ id, order, index, zStart, zEnd, removedComponentCount })))
       .toEqual(layerEvidence);
     for (const layer of layerEvidence) {
-      expect(output.cutSvg).toMatch(new RegExp(`<polygon id="${layer.id}"[^>]*data-outline-order="${layer.order}"[^>]*data-z-start="${layer.zStart}"[^>]*data-z-end="${layer.zEnd}"[^>]*data-removed-component-count="${layer.removedComponentCount}"`));
-      expect(output.cutDxf).toMatch(new RegExp(`OUTLINE_LAYER:${layer.id}:${layer.order}:${layer.zStart}:${layer.zEnd}:[^\\n]*:${layer.removedComponentCount}\\n`));
-      await expect(pdfKeywords(output.previewPdf)).resolves.toContain(`outline-layer:${layer.id}:${layer.order}:${runtime.layers[layer.order - 1].contour.outer.length}:${output.manifest.layers[layer.order - 1].boundsMm[0]}x${output.manifest.layers[layer.order - 1].boundsMm[1]}:${layer.zStart}:${layer.zEnd}:${layer.removedComponentCount}`);
+      expect(output.cutSvg).toMatch(new RegExp(`<polygon id="${layer.id}"[^>]*data-outline-order="${layer.order}"[^>]*data-outline-index="${layer.index}"[^>]*data-z-start="${layer.zStart}"[^>]*data-z-end="${layer.zEnd}"[^>]*data-removed-component-count="${layer.removedComponentCount}"`));
+      expect(output.cutDxf).toMatch(new RegExp(`OUTLINE_LAYER:${layer.id}:${layer.order}:${layer.index}:${layer.zStart}:${layer.zEnd}:[^\\n]*:${layer.removedComponentCount}\\n`));
+      await expect(pdfKeywords(output.previewPdf)).resolves.toContain(`outline-layer:${layer.id}:${layer.order}:${layer.index}:${runtime.layers[layer.order - 1].contour.outer.length}:${output.manifest.layers[layer.order - 1].boundsMm[0]}x${output.manifest.layers[layer.order - 1].boundsMm[1]}:${layer.zStart}:${layer.zEnd}:${layer.removedComponentCount}`);
     }
     expect(output.cutSvg).toContain(`data-removed-component-count="${runtime.removedComponentCount}"`);
     expect(output.cutDxf).toContain(`REMOVED_COMPONENT_COUNT:${runtime.removedComponentCount}`);
@@ -189,10 +198,19 @@ describe('material-independent outline package', () => {
     const forgedAggregate = structuredClone(runtime); Object.assign(forgedAggregate, { removedComponentCount: runtime.removedComponentCount + 1 });
     const forgedLayer = structuredClone(runtime); Object.assign(forgedLayer.layers[0], { removedComponentCount: forgedLayer.layers[0].removedComponentCount + 1 });
     const mismatch = structuredClone(runtime); Object.assign(mismatch.layers.at(-1)!, { removedComponentCount: mismatch.layers.at(-1)!.removedComponentCount + 2 });
+    const sumPreservingSwap = structuredClone(runtime);
+    const distinct = sumPreservingSwap.layers.findIndex((item) => item.removedComponentCount !== sumPreservingSwap.layers[0].removedComponentCount);
+    const firstCount = sumPreservingSwap.layers[0].removedComponentCount;
+    Object.assign(sumPreservingSwap.layers[0], { removedComponentCount: sumPreservingSwap.layers[distinct].removedComponentCount });
+    Object.assign(sumPreservingSwap.layers[distinct], { removedComponentCount: firstCount });
+    const identitySwap = structuredClone(runtime);
+    const swappedLayers = [...identitySwap.layers];
+    [swappedLayers[0], swappedLayers[distinct]] = [swappedLayers[distinct], swappedLayers[0]];
+    Object.assign(identitySwap, { layers: swappedLayers });
     const forgedExact = structuredClone(runtime);
     Object.assign(forgedExact, { mode: 'exact', status: 'success', warnings: [], repairAccepted: true });
     Object.assign(forgedExact.axis, { source: 'candidate' }); Object.assign(forgedExact.axis.axis, { confidence: 1 });
-    for (const forged of [forgedAggregate, forgedLayer, mismatch, forgedExact]) {
+    for (const forged of [forgedAggregate, forgedLayer, mismatch, sumPreservingSwap, identitySwap, forgedExact]) {
       await expect(createOutlinePackage(forged)).rejects.toThrow();
     }
   });
@@ -256,7 +274,7 @@ describe('material-independent outline package', () => {
     }
     const preview = await PDFDocument.load(output.previewPdf);
     expect(preview.getKeywords()).toContain(`outline-source:${SOURCE_HASH}`);
-    expect(preview.getKeywords()).toContain('outline-layer:small-rectangle:1:4:18x10');
+    expect(preview.getKeywords()).toContain('outline-layer:small-rectangle:1:2:4:18x10:0:2:0');
 
     const zip = await JSZip.loadAsync(output.zip);
     const paths = Object.keys(zip.files).filter((path) => !zip.files[path].dir).sort();

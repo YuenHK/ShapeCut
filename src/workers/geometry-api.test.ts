@@ -62,6 +62,7 @@ function automaticResult(sourceHash: string): AutomaticOutlineResult {
     originalReport: importRepairAnalysis(sourceHash).originalReport,
     repairAccepted: true,
     removedComponentCount: 0,
+    removalEvidenceFingerprint: '0'.repeat(32),
   };
 }
 

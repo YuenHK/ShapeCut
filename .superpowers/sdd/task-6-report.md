@@ -62,3 +62,10 @@ Both real-file UI cases completed in approximately 2.5 seconds, showed `已簡�
 - ZIP acceptance parses and checks every record independently rather than relying only on byte equality with pre-ZIP values.
 - Performance elapsed time excludes Node-side fixture construction and writing. The browser Long Tasks timestamp is captured inside the selection helper immediately before `setInputFiles`, preserving coverage of input change and browser file reading.
 - `docs/validation/software-results.md` now describes the current one-click workflow, fail-closed thresholds, current timing evidence, and removal-metadata contract; wizard-era claims were removed.
+
+## Removal identity fingerprint
+
+- The automatic pipeline now generates a deterministic 32-hex `removalEvidenceFingerprint` over source hash, mode, and ordered layer `{id,index,zStart,zEnd,removedComponentCount}` records.
+- Export validates the fingerprint at its public boundary and propagates it through the canonical document, manifest, project JSON, SVG, DXF, PDF, and ZIP regeneration checks.
+- A runtime fixture has distinct per-layer removal counts. A sum-preserving count swap and a full ordered layer identity swap are rejected even though the aggregate is unchanged.
+- This non-secret deterministic fingerprint detects accidental or runtime mutation; it is not presented as authentication against an attacker who can recompute it.

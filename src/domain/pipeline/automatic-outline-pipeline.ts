@@ -29,6 +29,7 @@ export type AutomaticOutlineResult = {
   readonly originalReport: MeshProblemReport;
   readonly repairAccepted: boolean;
   readonly removedComponentCount: number;
+  readonly removalEvidenceFingerprint: string;
 };
 export type AutomaticOutlineRequest = { readonly bytes: ArrayBuffer };
 export type AutomaticOutlineProgress = (stage: AutomaticOutlineProgressStage) => void | Promise<void>;
@@ -60,6 +61,17 @@ function sourceHash(input: ArrayBuffer): string {
     lanes[lane] = hash;
   }
   return lanes.map((lane) => lane.toString(16).padStart(8, '0')).join('');
+}
+
+export function removalEvidenceFingerprint(result: Pick<AutomaticOutlineResult, 'sourceHash' | 'mode' | 'layers'>): string {
+  const value = JSON.stringify({ sourceHash: result.sourceHash, mode: result.mode, layers: result.layers.map(({ id, index, zStart, zEnd, removedComponentCount }) => ({ id, index, zStart, zEnd, removedComponentCount })) });
+  const lanes = [2166136261, 2246822519, 3266489917, 668265263];
+  for (let lane = 0; lane < lanes.length; lane += 1) for (const char of value) lanes[lane] = Math.imul(lanes[lane] ^ (char.charCodeAt(0) + lane * 131), 16777619 + lane * 2) >>> 0;
+  return lanes.map((item) => item.toString(16).padStart(8, '0')).join('');
+}
+
+function withRemovalFingerprint(result: Omit<AutomaticOutlineResult, 'removalEvidenceFingerprint'>): AutomaticOutlineResult {
+  return { ...result, removalEvidenceFingerprint: removalEvidenceFingerprint(result) };
 }
 
 function automaticAxis(mesh: TriangleMesh): OutlineAxisSelection {
@@ -149,7 +161,7 @@ export async function convertAutomatically(
         throw asAutomaticOutlineError(projectedError, 'NO_OUTLINE');
       }
       await emit('packaging');
-      return {
+      return withRemovalFingerprint({
         sourceHash: hash,
         mode: 'outline-2.5d',
         status: 'warning',
@@ -159,10 +171,10 @@ export async function convertAutomatically(
         originalReport,
         repairAccepted: true,
         removedComponentCount: projectedExtraction.removedComponentCount,
-      };
+      });
     }
     await emit('packaging');
-    return {
+    return withRemovalFingerprint({
       sourceHash: hash,
       mode: 'exact',
       status: axisWarnings.length === 0 ? 'success' : 'warning',
@@ -172,7 +184,7 @@ export async function convertAutomatically(
       originalReport,
       repairAccepted: true,
       removedComponentCount: 0,
-    };
+    });
   }
 
   let projectedExtraction: ReturnType<typeof extractProjectedContours>;
@@ -182,7 +194,7 @@ export async function convertAutomatically(
     throw asAutomaticOutlineError(error, 'NO_OUTLINE');
   }
   await emit('packaging');
-  return {
+  return withRemovalFingerprint({
     sourceHash: hash,
     mode: 'outline-2.5d',
     status: 'warning',
@@ -192,5 +204,5 @@ export async function convertAutomatically(
     originalReport,
     repairAccepted: false,
     removedComponentCount: projectedExtraction.removedComponentCount,
-  };
+  });
 }

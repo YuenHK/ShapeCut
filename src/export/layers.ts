@@ -20,6 +20,7 @@ export type ArtifactReference = { readonly inputFingerprint: string };
 export type OutlineDocumentLayer = {
   readonly id: string;
   readonly order: number;
+  readonly index: number;
   readonly zStart: number;
   readonly zEnd: number;
   readonly boundsMm: readonly [number, number];
@@ -35,6 +36,7 @@ export type OutlineDocumentMetadata = {
   readonly warnings: readonly string[];
   readonly repairAccepted: boolean;
   readonly removedComponentCount: number;
+  readonly removalEvidenceFingerprint: string;
   readonly axisSource: 'candidate' | 'shortest-bounds';
   readonly layers: readonly OutlineDocumentLayer[];
   readonly materialIndependent: true;
