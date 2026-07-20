@@ -404,6 +404,8 @@ describe('material-independent outline package', () => {
     'owner@example.com/',
     '/Users/private+alias/model/',
     'laserpower=80/',
+    'press-fit tolerance 0.2mm/',
+    'production ready for acrylic/',
     'source.stl/',
   ])('rejects every extra ZIP record and scans directory names: %s', async (entryName) => {
     const output = await createOutlinePackage(result());
@@ -466,6 +468,8 @@ describe('material-independent outline package', () => {
     String.raw`source|D:\private alias\model.obj`,
     String.raw`source;\\server\share\model.obj`,
     String.raw`source@\\server-name\share name\model.obj`,
+    'source=//Users/private/model.obj',
+    'source;//server/share/model.obj',
     'contact=owner@example.com',
     'laserPower=80',
     'laserpower=80',
@@ -480,6 +484,15 @@ describe('material-independent outline package', () => {
     'machinepasses=2',
     'machine-pass-es=2',
     'passes:2',
+    'press-fit tolerance 0.2mm',
+    'pressfit tolerance 0.2mm',
+    'press_fit tolerance 0.2mm',
+    'press\u2010fit tolerance 0.2mm',
+    'production ready for acrylic',
+    'production-ready for generic material',
+    'PRODUCTION_READY plywood',
+    'production\u2014ready for PMMA',
+    'cardboard is production.ready',
   ])('rejects embedded privacy or process provenance: %s', async (warning) => {
     await expect(createOutlinePackage(result({ warnings: [...PROJECTED_WARNINGS, warning] })))
       .rejects.toThrow(/private|path|email|process|setting|warning/i);
@@ -494,6 +507,9 @@ describe('material-independent outline package', () => {
     '<svg><a><style></style><metadata></metadata><switch><animate></animate></switch></a></svg>',
     String.raw`<svg><style>.icon::before { content: "\\26"; }</style></svg>`,
     'background-image: url(https://example.com/icon.svg)',
+    'source=https://example.com/Users/private/model.obj',
+    'Preview is ready; choose a material only after a physical test cut.',
+    'Pressure-fit preview geometry was removed from this outline.',
   ])('allows ordinary SVG vocabulary without privacy/process false positives: %s', async (warning) => {
     await expect(createOutlinePackage(result({
       warnings: [...PROJECTED_WARNINGS, warning],

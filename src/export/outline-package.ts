@@ -35,8 +35,12 @@ const SVG_TAG_PATTERN = /<[^>]*>/g;
 const SVG_ROOT_RELATIVE_URL_ATTRIBUTE_PATTERN = /\b(?:href|src)\s*=\s*\\?(["'])(\/(?!\/)[^\\"'<>]*)\\?\1/gi;
 const POSIX_PATH_PATTERN = /(?:^|[^\p{L}\p{N}_\/])\/(?![/>])/u;
 const WINDOWS_PATH_PATTERN = /(?:^|[^\p{L}\p{N}_\\/])(?:[A-Za-z]:[\\/]|\\{2,4}(?!\\)[^\\\s"'<>]+\\{1,2}(?!\\)[^\\\s"'<>]+)/u;
+const FORWARD_UNC_PATH_PATTERN = /(?:^|[^\p{L}\p{N}_\/:])\/{2,}(?!\/)[^\/\s"'<>]+\/(?!\/)[^\/\s"'<>]+/u;
 const SOURCE_FILE_PATTERN = /(?:^|[\\/])[^\\/\s]*\.stl(?:[\\/]|$)/i;
 const FORBIDDEN_PROCESS_PATTERN = /(?:slot|hole|engrave|power|speed|passes)/i;
+const PRESS_FIT_PATTERN = /pressfit/i;
+const MATERIAL_TERM = '(?:material|acrylic|pmma|plywood|wood|mdf|paper|cardboard|leather|fabric|cork|rubber|foam|plastic|metal|steel|aluminum|aluminium)';
+const PRODUCTION_MATERIAL_CLAIM_PATTERN = new RegExp(`(?:productionready.*${MATERIAL_TERM}|${MATERIAL_TERM}.*productionready)`, 'i');
 const PROJECTED_WARNINGS = Object.freeze([
   '已簡化模型',
   '原始內部細節、孔洞及細小分離零件已被忽略',
@@ -125,13 +129,15 @@ function svgAwarePrivacyScanText(value: string): string {
 function assertPublicText(value: string, label: string): void {
   const privacyScanText = svgAwarePrivacyScanText(value);
   const privateMatch = value.match(EMAIL_PATTERN) ?? value.match(FILE_URI_PATTERN)
-    ?? privacyScanText.match(POSIX_PATH_PATTERN) ?? value.match(WINDOWS_PATH_PATTERN) ?? value.match(SOURCE_FILE_PATTERN);
+    ?? privacyScanText.match(POSIX_PATH_PATTERN) ?? value.match(WINDOWS_PATH_PATTERN)
+    ?? value.match(FORWARD_UNC_PATH_PATTERN) ?? value.match(SOURCE_FILE_PATTERN);
   if (privateMatch) {
     throw new RangeError(`${label} must not contain a private path or email address`);
   }
   const normalizedProcessText = value.normalize('NFKC').replace(/[^A-Za-z0-9]+/g, '');
-  if (FORBIDDEN_PROCESS_PATTERN.test(normalizedProcessText)) {
-    throw new RangeError(`${label} must not contain slots, holes, engraving, or process settings`);
+  if (FORBIDDEN_PROCESS_PATTERN.test(normalizedProcessText) || PRESS_FIT_PATTERN.test(normalizedProcessText)
+    || PRODUCTION_MATERIAL_CLAIM_PATTERN.test(normalizedProcessText)) {
+    throw new RangeError(`${label} must not contain slots, holes, engraving, press fits, production material claims, or process settings`);
   }
 }
 
