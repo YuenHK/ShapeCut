@@ -4,7 +4,8 @@ export const MAX_ENGRAVING_REGIONS = 4096;
 export const MAX_POLYGON_POINTS = 4096;
 
 type Bounds = { readonly minX: number; readonly minY: number; readonly maxX: number; readonly maxY: number };
-type GeometryCache<T> = { readonly signature: string; readonly value: T };
+type PolygonSignature = { readonly hash: number; readonly points: readonly Point2[] };
+type GeometryCache<T> = { readonly signature: PolygonSignature; readonly value: T };
 const triangulationCache = new WeakMap<object, GeometryCache<Point2[][]>>();
 const canonicalKeyCache = new WeakMap<object, GeometryCache<string>>();
 type GeometryCheckpoint = (label: string) => void;
@@ -14,13 +15,24 @@ const scanCheckpoint = (checkpoint: GeometryCheckpoint, label: string, index: nu
 };
 
 /** Runtime callers can mutate nominally readonly input, so cache entries carry an exact coordinate signature. */
-function polygonSignature(polygon: Polygon2, checkpoint: GeometryCheckpoint = noCheckpoint): string {
-  const encoded = new Array<string>(polygon.points.length);
+function polygonSignature(polygon: Polygon2, checkpoint: GeometryCheckpoint = noCheckpoint, forcedHash?: number): PolygonSignature {
+  const points = new Array<Point2>(polygon.points.length);
+  let hash = 2166136261;
   for (let index = 0; index < polygon.points.length; index += 1) {
     scanCheckpoint(checkpoint, 'signature:scan', index);
-    const [x, y] = polygon.points[index]; encoded[index] = `${x},${y}`;
+    const [x, y] = polygon.points[index]; points[index] = [x, y];
+    for (const value of [x, y]) for (const character of String(value)) hash = Math.imul(hash ^ character.charCodeAt(0), 16777619) >>> 0;
   }
-  return encoded.join(';');
+  return { hash: forcedHash ?? hash, points };
+}
+
+function sameSignature(left: PolygonSignature, right: PolygonSignature, checkpoint: GeometryCheckpoint): boolean {
+  if (left.hash !== right.hash || left.points.length !== right.points.length) return false;
+  for (let index = 0; index < left.points.length; index += 1) {
+    scanCheckpoint(checkpoint, 'cache-exact-compare', index);
+    if (left.points[index][0] !== right.points[index][0] || left.points[index][1] !== right.points[index][1]) return false;
+  }
+  return true;
 }
 
 function cross(a: Point2, b: Point2, c: Point2): number {
@@ -142,7 +154,7 @@ function pointInTriangle(point: Point2, a: Point2, b: Point2, c: Point2, toleran
 function triangulate(polygon: Polygon2, checkpoint: (label: string) => void = () => undefined): Point2[][] {
   const signature = polygonSignature(polygon, (label) => checkpoint(`triangulate:${label}`));
   const cached = triangulationCache.get(polygon);
-  if (cached?.signature === signature) return cached.value;
+  if (cached && sameSignature(cached.signature, signature, (label) => checkpoint(`triangulate:${label}`))) return cached.value;
   const forward = signedArea(polygon, (label) => checkpoint(`triangulate:${label}`)) > 0;
   const points = new Array<Point2>(polygon.points.length), indices = new Array<number>(polygon.points.length);
   for (let index = 0; index < polygon.points.length; index += 1) {
@@ -169,13 +181,17 @@ function triangulate(polygon: Polygon2, checkpoint: (label: string) => void = ()
       }
       if (contains) continue;
       triangles.push([a, b, c]);
-      indices.splice(offset, 1);
+      for (let shift = offset; shift + 1 < indices.length; shift += 1) {
+        scanCheckpoint(checkpoint, 'triangulate:index-shift', shift - offset);
+        indices[shift] = indices[shift + 1];
+      }
+      indices.length -= 1;
       clipped = true;
       break;
     }
     if (!clipped) return [];
   }
-  if (indices.length === 3) triangles.push(indices.map((index) => points[index]));
+  if (indices.length === 3) triangles.push([points[indices[0]], points[indices[1]], points[indices[2]]]);
   triangulationCache.set(polygon, { signature, value: triangles });
   return triangles;
 }
@@ -275,10 +291,10 @@ export function rotatePolygon(polygon: Polygon2, angle: number, center: Point2):
   }) };
 }
 
-export function canonicalPolygonKey(polygon: Polygon2, checkpoint: GeometryCheckpoint = noCheckpoint): string {
-  const signature = polygonSignature(polygon, (label) => checkpoint(`canonical:${label}`));
+export function canonicalPolygonKey(polygon: Polygon2, checkpoint: GeometryCheckpoint = noCheckpoint, forcedHash?: number): string {
+  const signature = polygonSignature(polygon, (label) => checkpoint(`canonical:${label}`), forcedHash);
   const cached = canonicalKeyCache.get(polygon);
-  if (cached?.signature === signature) return cached.value;
+  if (cached && sameSignature(cached.signature, signature, (label) => checkpoint(`canonical:${label}`))) return cached.value;
   const scale = geometryScale(polygon, (label) => checkpoint(`canonical:geometry-scale:${label}`)), tolerance = Math.max(Number.MIN_VALUE, scale * 1024 * Number.EPSILON);
   const encoded = new Array<string>(polygon.points.length);
   for (let index = 0; index < polygon.points.length; index += 1) {
@@ -298,21 +314,26 @@ export function canonicalPolygonKey(polygon: Polygon2, checkpoint: GeometryCheck
     }
     return Math.min(left, right);
   };
-  const keyAtLeastRotation = (values: readonly string[]): string => {
-    const start = leastRotation(values), ordered = new Array<string>(values.length);
-    for (let index = 0; index < values.length; index += 1) {
-      scanCheckpoint(checkpoint, 'canonical:reorder-scan', index);
-      ordered[index] = values[(start + index) % values.length];
-    }
-    return ordered.join(';');
-  };
+  const forwardStart = leastRotation(encoded);
   const reversed = new Array<string>(encoded.length);
   for (let index = 0; index < encoded.length; index += 1) {
     scanCheckpoint(checkpoint, 'canonical:reverse-scan', index);
     reversed[index] = encoded[encoded.length - index - 1];
   }
-  const forward = keyAtLeastRotation(encoded), backward = keyAtLeastRotation(reversed);
-  const key = forward < backward ? forward : backward;
+  const backwardStart = leastRotation(reversed);
+  let chooseForward = true;
+  for (let index = 0; index < encoded.length; index += 1) {
+    scanCheckpoint(checkpoint, 'canonical:forward-backward-compare', index);
+    const forward = encoded[(forwardStart + index) % encoded.length], backward = reversed[(backwardStart + index) % reversed.length];
+    if (forward === backward) continue;
+    chooseForward = forward < backward; break;
+  }
+  const selected = chooseForward ? encoded : reversed, start = chooseForward ? forwardStart : backwardStart;
+  let key = '';
+  for (let index = 0; index < selected.length; index += 1) {
+    scanCheckpoint(checkpoint, 'canonical:key-assembly', index);
+    key += `${index === 0 ? '' : ';'}${selected[(start + index) % selected.length]}`;
+  }
   canonicalKeyCache.set(polygon, { signature, value: key });
   return key;
 }

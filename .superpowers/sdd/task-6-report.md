@@ -170,3 +170,9 @@ Both real-file UI cases completed in approximately 2.5 seconds, showed `已簡�
 - The overlap/intersection call graph now checkpoints every preparatory linear scan: signatures, bounds, scale/tolerance discovery, signed area, canonical encoding/least rotation/reordering/reversal, triangulation copy/index preparation, mass properties, and point-location edges. Explicit loops replace unchecked `map`, spread, and reverse scans on these paths.
 - Every scan checkpoints at its first element and at most every 64 elements. Existing deep O(n²) triangulation, candidate, triangle-pair, self-intersection, and segment-pair loops retain the same bounded cadence.
 - Exact regressions expire at `overlap:length-tolerance:coordinate-scan`, `overlap:left-canonical:signature:scan`, `triangulate:signature:scan`, `triangulate:signed-area:scan`, and `triangulate:geometry-scale:bounds:scan`; each asserts that its later inner-loop or triangle-pair label was never reached.
+
+## Interruptible canonical identity and ear removal
+
+- Polygon cache identity uses an incrementally computed bounded fingerprint plus a coordinate-token snapshot. A matching fingerprint and length must still pass checkpointed exact coordinate comparison before reuse; a forced-collision mutation regression proves that collision never returns stale canonical data.
+- Canonical forward-versus-backward selection compares tokens at `canonical:forward-backward-compare`; selected-key production checks `canonical:key-assembly`. Large token joins and whole canonical-string comparisons are absent from the deadline path.
+- Ear clipping no longer calls native `splice`. It shifts indices explicitly with `triangulate:index-shift` at the first and every 64 shifted elements. A 130-point regression expires during an early-ear shift and proves triangle-pair processing was never reached.

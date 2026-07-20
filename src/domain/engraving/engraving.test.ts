@@ -1,11 +1,11 @@
 import { describe, expect, test } from 'vitest';
-import type { Polygon2 } from '../decomposition/types';
+import type { Point2, Polygon2 } from '../decomposition/types';
 import { estimateBalance } from '../decomposition/balance';
 import { cloneEngravingMap, levelAt, type EngravingMap, type HeightField } from './height-field';
 import { quantizeHeightField } from './quantize';
 import { applyProtectedZones } from './protected-zones';
 import { symmetrizeEngraving } from './symmetrize';
-import { polygonIntersectionArea, polygonsOverlapArea } from './geometry';
+import { canonicalPolygonKey, polygonIntersectionArea, polygonsOverlapArea } from './geometry';
 
 function rectangle(minX: number, minY: number, maxX: number, maxY: number): Polygon2 {
   return { points: [[minX, minY], [maxX, minY], [maxX, maxY], [minX, maxY]] };
@@ -273,4 +273,35 @@ test.each([
   expect(invoke).toThrow('deadline');
   expect(labels.at(-1)).toBe(expiryLabel);
   expect(labels).not.toContain(forbiddenLabel);
+});
+
+test.each(['canonical:forward-backward-compare', 'canonical:key-assembly'])(
+  'canonical key expires exactly at %s', (expiryLabel) => {
+    const labels: string[] = [];
+    const polygon = regularPolygon(0, 0, 10, 130);
+    expect(() => canonicalPolygonKey(polygon, (label) => {
+      labels.push(label); if (label === expiryLabel) throw new RangeError('deadline');
+    })).toThrow('deadline');
+    expect(labels.at(-1)).toBe(expiryLabel);
+  },
+);
+
+test('canonical cache verifies exact coordinates even under a forced hash collision', () => {
+  const polygon = regularPolygon(0, 0, 10, 8);
+  const first = canonicalPolygonKey(polygon, () => undefined, 7);
+  (polygon.points as Point2[])[0] = [11, 0];
+  const labels: string[] = [];
+  const second = canonicalPolygonKey(polygon, (label) => labels.push(label), 7);
+  expect(labels).toContain('canonical:cache-exact-compare');
+  expect(second).not.toBe(first);
+});
+
+test('triangulation index removal is interruptible during its manual shift', () => {
+  const labels: string[] = [];
+  const left = regularPolygon(0, 0, 10, 130), right = regularPolygon(1, 0, 10, 131);
+  expect(() => polygonIntersectionArea(left, right, (label) => {
+    labels.push(label); if (label === 'triangulate:index-shift') throw new RangeError('deadline');
+  })).toThrow('deadline');
+  expect(labels.at(-1)).toBe('triangulate:index-shift');
+  expect(labels).not.toContain('intersection:triangle-pair-loop');
 });
