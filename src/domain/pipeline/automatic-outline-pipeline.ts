@@ -120,7 +120,7 @@ function withResultEvidence(
   result: Omit<AutomaticOutlineResult, 'coloredLayers' | 'featureWarnings' | 'featureEvidenceFingerprint' | 'preview' | 'removalEvidenceFingerprint'>,
   previewMesh: TriangleMesh,
   deadline: number,
-  extraction: Pick<OutlineExtraction, 'holeSelections' | 'featureWarnings'>,
+  extraction: Pick<OutlineExtraction, 'holeSelections' | 'depthFeatures' | 'featureWarnings'>,
 ): AutomaticOutlineResult {
   let coloredLayers: readonly ColoredOutlineLayer[];
   let previewMeshCopy: OutlinePreviewPayload['mesh'];
@@ -131,6 +131,7 @@ function withResultEvidence(
       deadline,
       () => undefined,
       extraction.holeSelections,
+      extraction.depthFeatures,
     );
     previewMeshCopy = copyPreviewMesh(previewMesh, deadline);
   } catch (error) {

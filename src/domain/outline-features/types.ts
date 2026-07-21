@@ -4,6 +4,8 @@ import type { Bounds2 } from '../outline-2.5d/simplify';
 import { DEFAULT_OUTLINE_BUDGETS, type OutlineMode } from '../outline-2.5d/types';
 import { validateOutlineLayer } from '../outline-2.5d/validate';
 import { isStrictlyContainedLoop } from './hole';
+import type { DepthFeatureOmissionCode } from './depth-field';
+import { validateDepthFeatureContours } from './validate';
 
 export type FeatureRole = 'CUT_BLACK' | 'DEEP_RED' | 'LIGHT_BLUE';
 export type FeatureContour = {
@@ -22,6 +24,7 @@ export type LayerFeatureDiagnostics = {
     readonly contrastMm: number;
     readonly redThresholdMm: number;
     readonly blueThresholdMm: number;
+    readonly omissionCode?: DepthFeatureOmissionCode;
   };
 };
 export type ColoredOutlineLayer = {
@@ -58,6 +61,14 @@ type ValidationBudget = {
 };
 
 const FEATURE_ROLES = new Set<FeatureRole>(['CUT_BLACK', 'DEEP_RED', 'LIGHT_BLUE']);
+const DEPTH_OMISSION_CODES = new Set<DepthFeatureOmissionCode>([
+  'INSUFFICIENT_CONTRAST', 'INSUFFICIENT_DEPTH_DATA', 'UNRELIABLE_DEPTH_GEOMETRY',
+]);
+const DEPTH_OMISSION_WARNINGS: Readonly<Record<DepthFeatureOmissionCode, string>> = Object.freeze({
+  INSUFFICIENT_CONTRAST: '表面深度差不足，已省略雕刻特徵',
+  INSUFFICIENT_DEPTH_DATA: '表面深度資料不足，已省略雕刻特徵',
+  UNRELIABLE_DEPTH_GEOMETRY: '雕刻特徵不可靠，已局部省略',
+});
 const LAYER_KEYS = new Set([
   'id', 'index', 'zStart', 'zEnd', 'exterior', 'centralHole', 'deepFeature', 'lightFeature',
   'removedComponentCount', 'diagnostics',
@@ -250,7 +261,7 @@ function diagnosticsReasons(value: unknown): string[] {
     reasons.push('Depth diagnostics must be present');
   } else {
     reasons.push(...unexpectedKeys(value.depth, new Set([
-      'cellSizeMm', 'contrastMm', 'redThresholdMm', 'blueThresholdMm',
+      'cellSizeMm', 'contrastMm', 'redThresholdMm', 'blueThresholdMm', 'omissionCode',
     ]), 'Depth diagnostics'));
     const depth = value.depth;
     if (![depth.cellSizeMm, depth.contrastMm, depth.redThresholdMm, depth.blueThresholdMm].every(Number.isFinite)
@@ -258,6 +269,9 @@ function diagnosticsReasons(value: unknown): string[] {
       || (depth.redThresholdMm as number) < 0 || (depth.blueThresholdMm as number) < 0
       || (depth.redThresholdMm as number) < (depth.blueThresholdMm as number)) {
       reasons.push('Depth diagnostics must be finite, non-negative, and ordered red over blue');
+    }
+    if (depth.omissionCode !== undefined && !DEPTH_OMISSION_CODES.has(depth.omissionCode as DepthFeatureOmissionCode)) {
+      reasons.push('Depth diagnostics omission code is invalid');
     }
   }
   return reasons;
@@ -282,13 +296,15 @@ function validateColoredLayerWithBudget(value: unknown, budget: ValidationBudget
     ['Light feature', value.lightFeature, 'LIGHT_BLUE'],
   ] as const;
   const ids = new Set<string>();
-  let exteriorValid = false, centralHoleValid = false;
+  let exteriorValid = false, centralHoleValid = false, deepFeatureValid = false, lightFeatureValid = false;
   for (const [label, feature, role] of roles) {
     if (feature === undefined && label !== 'Exterior') continue;
     const featureReasons = contourReasons(feature, role, label, budget);
     reasons.push(...featureReasons);
     if (label === 'Exterior') exteriorValid = featureReasons.length === 0;
     if (label === 'Central hole') centralHoleValid = featureReasons.length === 0;
+    if (label === 'Deep feature') deepFeatureValid = featureReasons.length === 0;
+    if (label === 'Light feature') lightFeatureValid = featureReasons.length === 0;
     if (isRecord(feature) && typeof feature.id === 'string') {
       if (ids.has(feature.id)) reasons.push(`Duplicate feature ID ${feature.id}`);
       ids.add(feature.id);
@@ -323,6 +339,41 @@ function validateColoredLayerWithBudget(value: unknown, budget: ValidationBudget
         return { ok: false, reasons: [...reasons, RUNTIME_REASON] };
       }
       reasons.push('Central hole containment could not be validated');
+    }
+  }
+  if (exteriorValid && diagnosticReasons.length === 0
+    && (value.deepFeature !== undefined || value.lightFeature !== undefined)
+    && (value.deepFeature === undefined || deepFeatureValid)
+    && (value.lightFeature === undefined || lightFeatureValid)
+    && (value.centralHole === undefined || centralHoleValid)
+    && isRecord(value.exterior) && Array.isArray(value.exterior.outer)
+    && isRecord(value.diagnostics) && isRecord(value.diagnostics.depth)) {
+    const exteriorBounds = value.exterior.boundsMm;
+    if (isRecord(exteriorBounds)) {
+      const planarDiameterMm = Math.hypot(
+        (exteriorBounds.maxX as number) - (exteriorBounds.minX as number),
+        (exteriorBounds.maxY as number) - (exteriorBounds.minY as number),
+      );
+      const clearanceMm = Math.max(value.diagnostics.depth.cellSizeMm as number, planarDiameterMm * 0.001);
+      try {
+        const validation = validateDepthFeatureContours({
+          exterior: value.exterior.outer as readonly Point2[],
+          centralHole: isRecord(value.centralHole) && Array.isArray(value.centralHole.outer)
+            ? value.centralHole.outer as readonly Point2[]
+            : undefined,
+          red: value.deepFeature as FeatureContour | undefined,
+          blue: value.lightFeature as FeatureContour | undefined,
+          clearanceMm,
+          deadline: budget.deadline,
+          checkpoint: budget.checkpoint,
+        });
+        reasons.push(...validation.reasons);
+      } catch (error) {
+        if (error instanceof RangeError && /runtime budget/i.test(error.message)) {
+          return { ok: false, reasons: [...reasons, RUNTIME_REASON] };
+        }
+        reasons.push('Depth feature relationships could not be validated');
+      }
     }
   }
   return { ok: reasons.length === 0, reasons };
@@ -398,6 +449,7 @@ function orderedLayerRecords(
           contrastMm: layer.diagnostics.depth.contrastMm,
           redThresholdMm: layer.diagnostics.depth.redThresholdMm,
           blueThresholdMm: layer.diagnostics.depth.blueThresholdMm,
+          omissionCode: layer.diagnostics.depth.omissionCode,
         },
       },
     });
@@ -619,14 +671,34 @@ export function validateAutomaticColoredResult(
       previous = candidate as ColoredOutlineLayer;
     }
   }
+  const featureWarningSet = new Set<string>();
   if (!Array.isArray(value.featureWarnings) || value.featureWarnings.some((warning) => typeof warning !== 'string')) {
     reasons.push('Feature warnings must be an array of strings');
+  } else {
+    for (const warning of value.featureWarnings as readonly string[]) {
+      checkRuntimeBudget(deadline, checkpoint);
+      if (warning.length === 0 || warning.length > 200 || /[\\/@\r\n\0]/.test(warning)
+        || /[\w.+-]+@[\w.-]+/.test(warning)) {
+        reasons.push('Each sanitized feature warning must exclude paths and contact details');
+      }
+      if (featureWarningSet.has(warning)) reasons.push('Feature warnings must not contain duplicates');
+      featureWarningSet.add(warning);
+    }
   }
   const coloredLayers = Array.isArray(value.coloredLayers)
     ? value.coloredLayers as readonly ColoredOutlineLayer[]
     : [];
   const coloredLayersValid = validLayerCount(coloredLayers.length)
     && coloredLayers.every((layer) => validateLayer(layer).ok);
+  for (const layer of coloredLayers) {
+    checkRuntimeBudget(deadline, checkpoint);
+    if (!isRecord(layer) || !isRecord(layer.diagnostics) || !isRecord(layer.diagnostics.depth)) continue;
+    const omissionCode = layer.diagnostics.depth.omissionCode as DepthFeatureOmissionCode | undefined;
+    if (omissionCode && DEPTH_OMISSION_CODES.has(omissionCode)
+      && !featureWarningSet.has(DEPTH_OMISSION_WARNINGS[omissionCode])) {
+      reasons.push(`Depth omission ${omissionCode} requires its sanitized feature warning`);
+    }
+  }
 
   if (legacyLayers) {
     if (!validLayerCount(legacyLayers.length)) {

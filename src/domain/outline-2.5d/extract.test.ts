@@ -179,7 +179,10 @@ describe('extractProjectedContours', () => {
       omissionReason: 'NO_RELIABLE_CENTRAL_HOLE',
       warning: expect.stringMatching(/reliable central axle hole/i),
     }));
-    expect(result.featureWarnings).toEqual(['No reliable central axle hole was found; the hole was omitted.']);
+    expect(result.featureWarnings).toEqual([
+      'No reliable central axle hole was found; the hole was omitted.',
+      '表面深度資料不足，已省略雕刻特徵',
+    ]);
   });
 
   test.each([

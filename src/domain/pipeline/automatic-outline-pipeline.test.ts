@@ -100,11 +100,37 @@ function scaled(mesh: TriangleMesh, x: number, y: number, z: number): TriangleMe
 }
 
 describe('automatic outline pipeline', () => {
+  it('publishes adaptive deeper red from source triangles without reversing depth by area', async () => {
+    const result = await convertAutomatically({ bytes: writeBinarySTL(steppedCylinder(), 'safe') });
+    const featured = result.coloredLayers.filter((layer) => layer.deepFeature);
+
+    expect(featured.length).toBeGreaterThan(0);
+    expect(featured.every((layer) => layer.deepFeature?.role === 'DEEP_RED')).toBe(true);
+    expect(featured.every((layer) => (
+      layer.diagnostics.depth.redThresholdMm > layer.diagnostics.depth.blueThresholdMm
+    ))).toBe(true);
+    expect(result.coloredLayers.every((layer) => (
+      !layer.lightFeature || layer.lightFeature.role === 'LIGHT_BLUE'
+    ))).toBe(true);
+    expect(result.featureEvidenceFingerprint).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  it('locally omits flat depth bands with a sanitized contrast warning and fingerprinted omission code', async () => {
+    const result = await convertAutomatically({ bytes: writeBinarySTL(cylinder(), 'safe') });
+
+    expect(result.coloredLayers.every((layer) => !layer.deepFeature && !layer.lightFeature)).toBe(true);
+    expect(result.coloredLayers.every((layer) => (
+      layer.diagnostics.depth.omissionCode === 'INSUFFICIENT_CONTRAST'
+    ))).toBe(true);
+    expect(result.featureWarnings).toContain('表面深度差不足，已省略雕刻特徵');
+    expect(result.featureWarnings.join('\n')).not.toMatch(/[\\/@]|[\w.+-]+@[\w.-]+/);
+  });
+
   it('publishes a retained exact hole through colored layers, preview, diagnostics, and fingerprint evidence', async () => {
     const result = await convertAutomatically({ bytes: writeBinarySTL(squareTube(), 'safe') });
 
     expect(result.mode).toBe('exact');
-    expect(result.featureWarnings).toEqual([]);
+    expect(result.featureWarnings).toEqual(['表面深度差不足，已省略雕刻特徵']);
     expect(result.coloredLayers).toHaveLength(result.layers.length);
     expect(result.coloredLayers.every((layer) => layer.centralHole?.role === 'CUT_BLACK')).toBe(true);
     expect(result.coloredLayers.every((layer) => layer.diagnostics.hole.status === 'retained')).toBe(true);
@@ -117,7 +143,10 @@ describe('automatic outline pipeline', () => {
 
     expect(result.status).toBe('warning');
     expect(result.coloredLayers.every((layer) => layer.centralHole === undefined)).toBe(true);
-    expect(result.featureWarnings).toEqual(['No reliable central axle hole was found; the hole was omitted.']);
+    expect(result.featureWarnings).toEqual([
+      'No reliable central axle hole was found; the hole was omitted.',
+      '表面深度差不足，已省略雕刻特徵',
+    ]);
     expect(result.featureWarnings[0]).not.toMatch(/[\\/@]|[\w.+-]+@[\w.-]+/);
   });
 

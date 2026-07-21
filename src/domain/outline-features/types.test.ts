@@ -42,9 +42,10 @@ function circle(radius: number, id = 'layer-0-hole', role: FeatureRole = 'CUT_BL
 }
 
 function rectangle(width: number, height: number, id = 'layer-0-deep', role: FeatureRole = 'DEEP_RED'): FeatureContour {
+  const left = -8;
   return contour(id, role, [
-    [-width / 2, -height / 2], [-width / 2, height / 2],
-    [width / 2, height / 2], [width / 2, -height / 2],
+    [left, -height / 2], [left, height / 2],
+    [left + width, height / 2], [left + width, -height / 2],
   ]);
 }
 
@@ -411,6 +412,54 @@ describe('colored outline contracts', () => {
     expect(() => validateAutomaticColoredResult({
       ...automaticResult(), featureEvidenceFingerprint: '0'.repeat(32),
     })).toThrow(/feature.*fingerprint/i);
+  });
+
+  it('rejects fingerprint-consistent omission evidence without its sanitized warning', () => {
+    const source = structuredClone(automaticResult());
+    const omittedLayer = {
+      ...source.coloredLayers[0],
+      deepFeature: undefined,
+      diagnostics: {
+        ...source.coloredLayers[0].diagnostics,
+        depth: {
+          cellSizeMm: 0.1,
+          contrastMm: 0,
+          redThresholdMm: 2,
+          blueThresholdMm: 2,
+          omissionCode: 'INSUFFICIENT_CONTRAST' as const,
+        },
+      },
+    };
+    const forgedWithoutFingerprint = {
+      ...source,
+      coloredLayers: [omittedLayer, ...source.coloredLayers.slice(1)],
+      preview: { ...source.preview, layers: [omittedLayer, ...source.preview.layers.slice(1)] },
+      featureWarnings: [],
+    };
+    const forged = {
+      ...forgedWithoutFingerprint,
+      featureEvidenceFingerprint: featureEvidenceFingerprint(forgedWithoutFingerprint),
+    };
+
+    expect(() => validateAutomaticColoredResult(forged)).toThrow(/omission.*warning|warning.*omission/i);
+  });
+
+  it('rejects unsanitized feature warnings even when role fingerprints remain valid', () => {
+    const source = automaticResult();
+
+    expect(() => validateAutomaticColoredResult({
+      ...source,
+      featureWarnings: ['/Users/example/private-source.stl', 'operator@example.test'],
+    })).toThrow(/sanitized feature warning/i);
+  });
+
+  it('fails closed with a domain RangeError for a malformed colored layer carrying no diagnostics', () => {
+    const source = automaticResult();
+
+    expect(() => validateAutomaticColoredResult({
+      ...source,
+      coloredLayers: [null, ...source.coloredLayers.slice(1)],
+    })).toThrow(RangeError);
   });
 
   it('uses the supplied absolute deadline for fingerprint generation and validation', () => {

@@ -6,6 +6,10 @@ import {
   selectCentralHole,
   type CentralHoleSelection,
 } from '../outline-features/hole';
+import {
+  extractAdaptiveDepthFeatures,
+  type DepthFeatureResult,
+} from '../outline-features/depth-field';
 import { projectMesh, rasterCellSize, rasterProjectLayer, type ProjectedMesh } from './raster';
 import { contourBounds, signedArea, simplifyClosedLoop, type Bounds2 } from './simplify';
 import type { OutlineAxisSelection, OutlineBudgets, OutlineLayerSpec } from './types';
@@ -28,6 +32,7 @@ export type OutlineLayer = {
 export type OutlineExtraction = {
   readonly layers: readonly OutlineLayer[];
   readonly holeSelections: readonly CentralHoleSelection[];
+  readonly depthFeatures: readonly DepthFeatureResult[];
   readonly featureWarnings: readonly string[];
   readonly cellSizeMm?: number;
   readonly removedComponentCount: number;
@@ -39,6 +44,7 @@ export function colorizeExteriorLayers(
   deadline = Date.now() + 30_000,
   checkpoint: () => void = () => undefined,
   holeSelections: readonly CentralHoleSelection[] = [],
+  depthFeatures: readonly DepthFeatureResult[] = [],
 ): readonly ColoredOutlineLayer[] {
   const checkColorizationDeadline = (): void => {
     checkpoint();
@@ -50,6 +56,9 @@ export function colorizeExteriorLayers(
   }
   if (holeSelections.length !== 0 && holeSelections.length !== layers.length) {
     throw new RangeError('Colored outline layers require one ordered hole selection per layer');
+  }
+  if (depthFeatures.length !== 0 && depthFeatures.length !== layers.length) {
+    throw new RangeError('Colored outline layers require one ordered depth result per layer');
   }
   const coloredLayers: ColoredOutlineLayer[] = [];
   for (const layer of layers) {
@@ -69,6 +78,7 @@ export function colorizeExteriorLayers(
       boundsMm: holeSelection.hole.boundsMm,
       areaMm2: holeSelection.hole.areaMm2,
     };
+    const depthFeature = depthFeatures[coloredLayers.length];
     checkColorizationDeadline();
     coloredLayers.push({
       id: layer.id,
@@ -77,6 +87,8 @@ export function colorizeExteriorLayers(
       zEnd: layer.zEnd,
       exterior,
       centralHole,
+      deepFeature: depthFeature?.red,
+      lightFeature: depthFeature?.blue,
       removedComponentCount: layer.removedComponentCount,
       diagnostics: {
         hole: holeSelection?.hole
@@ -86,7 +98,7 @@ export function colorizeExteriorLayers(
             axisDistanceMm: holeSelection.hole.axisDistanceMm,
           }
           : { status: 'omitted' },
-        depth: {
+        depth: depthFeature?.diagnostics ?? {
           cellSizeMm,
           contrastMm: 0,
           redThresholdMm: 0,
@@ -210,6 +222,7 @@ export function extractProjectedContours(
   let removedComponentCount = 0;
   const tolerance = Math.max(cellSizeMm * 1.5, projected.planarDiameter * 0.001);
   const layers: OutlineLayer[] = [], holeSelections: CentralHoleSelection[] = [];
+  const depthFeatures: DepthFeatureResult[] = [];
   for (let index = 0; index < specs.length; index += 1) {
     checkDeadline(deadline);
     const spec = specs[index];
@@ -220,7 +233,7 @@ export function extractProjectedContours(
     });
     layers.push(layer);
     const layerWidthMm = layer.sourceBoundsMm.maxX - layer.sourceBoundsMm.minX;
-    holeSelections.push(selectCentralHole({
+    const holeSelection = selectCentralHole({
       candidates: raster.enclosedVoids,
       exterior: layer.contour.outer,
       axisPoint: [0, 0],
@@ -228,12 +241,29 @@ export function extractProjectedContours(
       planarDiameterMm: projected.planarDiameter,
       cellSizeMm,
       deadline,
+    });
+    holeSelections.push(holeSelection);
+    depthFeatures.push(extractAdaptiveDepthFeatures(projected, {
+      layerId: layer.id,
+      layer: spec,
+      exterior: layer.contour.outer,
+      centralHole: holeSelection.hole?.outer,
+      exteriorAreaMm2: layer.simplifiedAreaMm2,
+      cellSizeMm,
+      planarDiameterMm: projected.planarDiameter,
+      budgets,
+      totalLayerCount: specs.length,
+      deadline,
     }));
   }
+  const featureWarnings = new Set<string>();
+  if (holeSelections.some((selection) => !selection.hole)) featureWarnings.add(CENTRAL_HOLE_OMISSION_WARNING);
+  for (const feature of depthFeatures) if (feature.warning) featureWarnings.add(feature.warning);
   return {
     layers,
     holeSelections,
-    featureWarnings: holeSelections.some((selection) => !selection.hole) ? [CENTRAL_HOLE_OMISSION_WARNING] : [],
+    depthFeatures,
+    featureWarnings: [...featureWarnings],
     cellSizeMm,
     removedComponentCount,
   };
@@ -499,7 +529,8 @@ export function extractExactContours(
   const projected = projectMesh(mesh, selection, deadline);
   validateRequest(projected, specs, budgets, deadline);
   const tolerance = Math.max(rasterCellSize(projected) * 1.5, projected.planarDiameter * 0.001);
-  const layers: OutlineLayer[] = [], holeSelections: CentralHoleSelection[] = [];
+  const layers: OutlineLayer[] = [], holeSelections: CentralHoleSelection[] = [], depthFeatures: DepthFeatureResult[] = [];
+  const cellSizeMm = rasterCellSize(projected);
   for (let index = 0; index < specs.length; index += 1) {
     checkDeadline(deadline);
     const spec = specs[index];
@@ -507,20 +538,37 @@ export function extractExactContours(
     const classified = classifyExactNestedLoops(loops, projected.planarDiameter, deadline);
     const layer = makeLayer(spec, clockwise(classified.exterior, deadline), tolerance, budgets, deadline, 0);
     layers.push(layer);
-    holeSelections.push(selectCentralHole({
+    const holeSelection = selectCentralHole({
       candidates: classified.holes.map((outer) => ({ outer })),
       exterior: layer.contour.outer,
       axisPoint: [0, 0],
       layerWidthMm: layer.sourceBoundsMm.maxX - layer.sourceBoundsMm.minX,
       planarDiameterMm: projected.planarDiameter,
-      cellSizeMm: rasterCellSize(projected),
+      cellSizeMm,
+      deadline,
+    });
+    holeSelections.push(holeSelection);
+    depthFeatures.push(extractAdaptiveDepthFeatures(projected, {
+      layerId: layer.id,
+      layer: spec,
+      exterior: layer.contour.outer,
+      centralHole: holeSelection.hole?.outer,
+      exteriorAreaMm2: layer.simplifiedAreaMm2,
+      cellSizeMm,
+      planarDiameterMm: projected.planarDiameter,
+      budgets,
+      totalLayerCount: specs.length,
       deadline,
     }));
   }
+  const featureWarnings = new Set<string>();
+  if (holeSelections.some((selection) => !selection.hole)) featureWarnings.add(CENTRAL_HOLE_OMISSION_WARNING);
+  for (const feature of depthFeatures) if (feature.warning) featureWarnings.add(feature.warning);
   return {
     layers,
     holeSelections,
-    featureWarnings: holeSelections.some((selection) => !selection.hole) ? [CENTRAL_HOLE_OMISSION_WARNING] : [],
+    depthFeatures,
+    featureWarnings: [...featureWarnings],
     removedComponentCount: 0,
   };
 }
