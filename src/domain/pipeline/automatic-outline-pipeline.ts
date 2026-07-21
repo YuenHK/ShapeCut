@@ -120,9 +120,14 @@ function withResultEvidence(
   previewMesh: TriangleMesh,
   deadline: number,
 ): AutomaticOutlineResult {
-  const coloredLayers = colorizeExteriorLayers(result.layers, result.diagnostics.rasterCellSizeMm ?? 0);
+  let coloredLayers: readonly ColoredOutlineLayer[];
   let previewMeshCopy: OutlinePreviewPayload['mesh'];
   try {
+    coloredLayers = colorizeExteriorLayers(
+      result.layers,
+      result.diagnostics.rasterCellSizeMm ?? 0,
+      deadline,
+    );
     previewMeshCopy = copyPreviewMesh(previewMesh, deadline);
   } catch (error) {
     throw asAutomaticOutlineError(error, 'NO_OUTLINE');

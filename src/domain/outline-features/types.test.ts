@@ -305,6 +305,79 @@ describe('colored outline contracts', () => {
     expect(() => validateAutomaticColoredResult(genericRoleArray)).toThrow(/unexpected.*features/i);
   });
 
+  it('stops preview verification immediately when position or index deadlines expire', () => {
+    const originalNow = Date.now;
+    try {
+      let now = 0;
+      Date.now = () => now;
+      const positionSource = structuredClone(automaticResult());
+      const positionMesh = { ...positionSource.preview.mesh };
+      Object.defineProperty(positionMesh, 'positions', {
+        enumerable: true,
+        get: () => {
+          now = 2;
+          return positionSource.preview.mesh.positions;
+        },
+      });
+      Object.defineProperty(positionMesh, 'indices', {
+        enumerable: true,
+        get: () => { throw new Error('indices traversal started after expiry'); },
+      });
+      expect(() => validateAutomaticColoredResult({
+        ...positionSource,
+        preview: { ...positionSource.preview, mesh: positionMesh },
+      }, 1)).toThrow(/runtime budget/i);
+
+      now = 0;
+      const indexSource = structuredClone(automaticResult());
+      const indexMesh = { ...indexSource.preview.mesh };
+      Object.defineProperty(indexMesh, 'indices', {
+        enumerable: true,
+        get: () => {
+          now = 2;
+          return indexSource.preview.mesh.indices;
+        },
+      });
+      const indexPreview = { ...indexSource.preview, mesh: indexMesh };
+      Object.defineProperty(indexPreview, 'axis', {
+        enumerable: true,
+        get: () => { throw new Error('axis verification started after expiry'); },
+      });
+      expect(() => validateAutomaticColoredResult({ ...indexSource, preview: indexPreview }, 1))
+        .toThrow(/runtime budget/i);
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
+  it('stops result validation immediately after an earlier layer detects expiry', () => {
+    const originalNow = Date.now;
+    let now = 0;
+    Date.now = () => now;
+    try {
+      const source = structuredClone(automaticResult());
+      const exterior = { ...source.coloredLayers[0].exterior };
+      Object.defineProperty(exterior, 'outer', {
+        enumerable: true,
+        get: () => {
+          now = 2;
+          return source.coloredLayers[0].exterior.outer;
+        },
+      });
+      const coloredLayers = [...source.coloredLayers];
+      coloredLayers[0] = { ...coloredLayers[0], exterior };
+      Object.defineProperty(coloredLayers, 1, {
+        enumerable: true,
+        get: () => { throw new Error('later layer validation started after expiry'); },
+      });
+
+      expect(() => validateAutomaticColoredResult({ ...source, coloredLayers }, 1))
+        .toThrow(/runtime budget/i);
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
   it('rejects missing, empty, or inconsistent feature evidence fingerprints', () => {
     const { featureEvidenceFingerprint: _fingerprint, ...missing } = structuredClone(automaticResult());
     expect(() => validateAutomaticColoredResult(missing)).toThrow(/feature.*fingerprint/i);

@@ -14,6 +14,7 @@ import {
   type AutomaticOutlineProgressStage,
 } from './automatic-outline-pipeline';
 import * as extraction from '../outline-2.5d/extract';
+import * as simplification from '../outline-2.5d/simplify';
 import { MAX_STL_BYTES } from '../mesh/parse-stl';
 
 function cylinder(segments = 32): TriangleMesh {
@@ -197,18 +198,25 @@ describe('automatic outline pipeline', () => {
 
   it('rejects when the shared deadline expires before preview preparation', async () => {
     const originalNow = Date.now;
-    const previewCopy = vi.spyOn(Float32Array, 'from');
+    const contourBounds = vi.spyOn(simplification, 'contourBounds');
     let now = 0;
+    let callsAtPackaging = -1;
     Date.now = () => now;
     try {
       await expect(convertAutomatically(
         { bytes: writeBinarySTL(cylinder(), 'safe') },
-        (stage) => { if (stage === 'packaging') now = 30_001; },
+        (stage) => {
+          if (stage === 'packaging') {
+            callsAtPackaging = contourBounds.mock.calls.length;
+            now = 30_001;
+          }
+        },
       )).rejects.toMatchObject({ code: 'TIME_LIMIT' } satisfies Partial<AutomaticOutlineError>);
-      expect(previewCopy).not.toHaveBeenCalled();
+      expect(callsAtPackaging).toBeGreaterThanOrEqual(0);
+      expect(contourBounds).toHaveBeenCalledTimes(callsAtPackaging);
     } finally {
       Date.now = originalNow;
-      previewCopy.mockRestore();
+      contourBounds.mockRestore();
     }
   });
 

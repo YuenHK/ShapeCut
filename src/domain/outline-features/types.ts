@@ -408,26 +408,44 @@ function previewReasons(
   validateLayer: (value: unknown) => ColoredLayerValidation,
   budget: ValidationBudget,
 ): string[] {
+  checkRuntimeBudget(budget.deadline, budget.checkpoint);
   if (!isRecord(value)) return ['Preview must be present'];
   const reasons = unexpectedKeys(value, new Set(['mesh', 'axis', 'layers']), 'Preview');
   if (!isRecord(value.mesh)) {
     reasons.push('Preview mesh must be present');
   } else {
     reasons.push(...unexpectedKeys(value.mesh, new Set(['positions', 'indices']), 'Preview mesh'));
-    const positions = value.mesh.positions, indices = value.mesh.indices;
+    checkRuntimeBudget(budget.deadline, budget.checkpoint);
+    const positions = value.mesh.positions;
+    checkRuntimeBudget(budget.deadline, budget.checkpoint);
     if (!isFloat32Array(positions)) {
       reasons.push('Preview mesh positions must be a Float32Array');
-    } else if (positions.length < 9 || positions.length % 3 !== 0 || !positions.every(Number.isFinite)) {
-      reasons.push('Preview mesh requires finite preview positions in XYZ triples');
+    } else {
+      let positionsValid = positions.length >= 9 && positions.length % 3 === 0;
+      for (let index = 0; index < positions.length && positionsValid; index += 1) {
+        if ((index & 4095) === 0) checkRuntimeBudget(budget.deadline, budget.checkpoint);
+        if (!Number.isFinite(positions[index])) positionsValid = false;
+      }
+      checkRuntimeBudget(budget.deadline, budget.checkpoint);
+      if (!positionsValid) reasons.push('Preview mesh requires finite preview positions in XYZ triples');
     }
+    checkRuntimeBudget(budget.deadline, budget.checkpoint);
+    const indices = value.mesh.indices;
+    checkRuntimeBudget(budget.deadline, budget.checkpoint);
     if (!isUint32Array(indices)) {
       reasons.push('Preview mesh indices must be a Uint32Array');
-    } else if (indices.length < 3 || indices.length % 3 !== 0
-      || !isFloat32Array(positions)
-      || indices.some((index) => index >= positions.length / 3)) {
-      reasons.push('Preview mesh requires complete, in-range triangle indices');
+    } else {
+      let indicesValid = indices.length >= 3 && indices.length % 3 === 0 && isFloat32Array(positions);
+      const vertexCount = isFloat32Array(positions) ? positions.length / 3 : 0;
+      for (let index = 0; index < indices.length && indicesValid; index += 1) {
+        if ((index & 4095) === 0) checkRuntimeBudget(budget.deadline, budget.checkpoint);
+        if (indices[index] >= vertexCount) indicesValid = false;
+      }
+      checkRuntimeBudget(budget.deadline, budget.checkpoint);
+      if (!indicesValid) reasons.push('Preview mesh requires complete, in-range triangle indices');
     }
   }
+  checkRuntimeBudget(budget.deadline, budget.checkpoint);
   if (!isRecord(value.axis)) {
     reasons.push('Preview axis must be present');
   } else {
@@ -484,6 +502,7 @@ export function validateAutomaticColoredResult(
   deadline = Date.now() + DEFAULT_VALIDATION_RUNTIME_MS,
   checkpoint: () => void = () => undefined,
 ): void {
+  checkRuntimeBudget(deadline, checkpoint);
   const reasons: string[] = [];
   if (!isRecord(value)) throw new RangeError('Invalid automatic colored result: result must be an object');
   const budget: ValidationBudget = {
@@ -492,10 +511,16 @@ export function validateAutomaticColoredResult(
   };
   const validationCache = new WeakMap<object, ColoredLayerValidation>();
   const validateLayer = (candidate: unknown): ColoredLayerValidation => {
-    if (!isRecord(candidate)) return validateColoredLayerWithBudget(candidate, budget);
+    checkRuntimeBudget(deadline, checkpoint);
+    if (!isRecord(candidate)) {
+      const validation = validateColoredLayerWithBudget(candidate, budget);
+      if (validation.reasons.includes(RUNTIME_REASON)) throw new RangeError(RUNTIME_REASON);
+      return validation;
+    }
     const cached = validationCache.get(candidate);
     if (cached) return cached;
     const validation = validateColoredLayerWithBudget(candidate, budget);
+    if (validation.reasons.includes(RUNTIME_REASON)) throw new RangeError(RUNTIME_REASON);
     validationCache.set(candidate, validation);
     return validation;
   };

@@ -29,19 +29,29 @@ export type OutlineExtraction = {
 export function colorizeExteriorLayers(
   layers: readonly OutlineLayer[],
   cellSizeMm = 0,
+  deadline = Date.now() + 30_000,
+  checkpoint: () => void = () => undefined,
 ): readonly ColoredOutlineLayer[] {
+  const checkColorizationDeadline = (): void => {
+    checkpoint();
+    checkDeadline(deadline);
+  };
+  checkColorizationDeadline();
   if (!Number.isFinite(cellSizeMm) || cellSizeMm < 0) {
     throw new RangeError('Colored outline layers require a finite non-negative cell size');
   }
-  return layers.map((layer) => {
+  const coloredLayers: ColoredOutlineLayer[] = [];
+  for (const layer of layers) {
+    checkColorizationDeadline();
     const exterior: FeatureContour = {
       id: `${layer.id}-exterior`,
       role: 'CUT_BLACK',
       outer: layer.contour.outer,
-      boundsMm: contourBounds(layer.contour.outer),
+      boundsMm: contourBounds(layer.contour.outer, deadline, checkpoint),
       areaMm2: layer.simplifiedAreaMm2,
     };
-    return {
+    checkColorizationDeadline();
+    coloredLayers.push({
       id: layer.id,
       index: layer.index,
       zStart: layer.zStart,
@@ -57,8 +67,10 @@ export function colorizeExteriorLayers(
           blueThresholdMm: 0,
         },
       },
-    };
-  });
+    });
+  }
+  checkColorizationDeadline();
+  return coloredLayers;
 }
 
 /** Exact slice topology is ambiguous, so projected extraction may be attempted. */
