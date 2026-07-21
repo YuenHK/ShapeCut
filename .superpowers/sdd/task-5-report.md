@@ -1,57 +1,44 @@
-# Task 5 report — one-click ShapeCut interface
+# Task 5 report — real rotating and exploded process viewport
 
-## RED
+## Status
 
-- Added `OneClickConverter.test.tsx` and replaced the App unit/browser expectations before production implementation.
-- Command: `npx vitest run src/app/OneClickConverter.test.tsx src/app/App.test.tsx`
-- Expected failures observed: `OneClickConverter` did not exist and `App` still rendered the five-step wizard instead of the ShapeCut upload view.
+Complete. Added the standalone process viewport and scene controller without integrating the Task 6 application flow.
 
-## GREEN
+## RED evidence
 
-- Implemented the upload, processing, result, and failure state machine.
-- A file selection calls cancellation first, reads locally, starts automatic conversion, packages the validated result, and publishes only the latest request.
-- Superseded requests are silent; stale package URLs are revoked; current URLs are revoked on replacement and unmount.
-- Added Traditional Chinese typed-error messages, monotonic stage announcements, warning copy including `已簡化模型`, ZIP primary download, and SVG/DXF/PDF/JSON secondary downloads.
-- Replaced the rendered wizard with production services using `GeometryClient.convertAutomatically` and `createOutlinePackage`; no database or material repository is opened by the main flow.
-- Replaced the minimal stylesheet with the approved responsive mint/white UI, visible focus, 44 px minimum controls, and reduced-motion handling.
+- Added the viewport, scene-controller, and Chromium tests before production code.
+- Focused unit command failed in 2 suites because `OutlineProcessViewport` and `outline-process-scene` did not exist.
+- Chromium command failed in 1 suite for the same missing production module, confirming the intended feature gap.
+- During self-review, a new visibility regression first failed because one RAF was scheduled before `IntersectionObserver` confirmed the host was visible; the controller was then changed to wait for a positive intersection.
+
+## Implementation
+
+- `OutlineProcessScene` consumes the transferred `Float32Array` positions and `Uint32Array` indices directly in one source `BufferGeometry`, then renders a transparent mint `WireframeGeometry`.
+- Maps the selected manufacturing-axis direction to display Y with a quaternion; the containing scene rotates only around display Y.
+- Builds actual per-layer exterior, central-hole, deep-red, and light-blue line geometry using canonical `#000000`, `#E5484D`, and `#3A78D4` colors.
+- Adds a translucent mint scan plane, visible center axis, stage-aware scan position, and symmetric layer explosion around `(layerCount - 1) / 2`.
+- Supports pointer drag, Left/Right keyboard rotation, `+`/`-` zoom, Home/R reset, and labelled on-screen controls.
+- Uses RAF only after intersection visibility is confirmed, while the document is visible, and when reduced motion is off. Reduced motion applies stable rotation and the final stage explosion immediately.
+- Falls back on absent WebGL or renderer construction failure to actual exterior/hole/red/blue SVG paths from the payload.
+- Replacement and unmount cleanup covers source/wireframe/layer/plane/axis geometries, shared materials, renderer/context, canvas, RAF, ResizeObserver, IntersectionObserver, document visibility listener, resize fallback, React pointer handlers, and reduced-motion media listener.
 
 ## Verification
 
-- Focused UI: 8/8 passed.
-- Real Chromium App test: 1/1 passed.
-- Full unit suite: 33 files, 868/868 passed.
-- `npm run typecheck`: passed with no diagnostics.
+- Focused unit: 2 files, 7/7 tests passed.
+- Real Chromium: 1 file, 1/1 test passed.
+- TypeScript: `npm run typecheck` passed with no diagnostics.
+- Full unit suite: 42 files, 1041/1041 tests passed.
 - `git diff --check`: passed.
 
 ## Self-review and scope
 
-- Verified there are no rendered repair, axis, next-step, material, decomposition, or export-confirmation controls.
-- Verified selecting a second file invokes cancellation, prevents the old result from publishing, and releases prior object URLs.
-- Verified the production UI uses only the automatic geometry worker and outline package boundary.
-- Preserved legacy wizard/repository code without rendering it.
-- Did not touch E2E files, documentation, fixture/STL files, or Task 6 scope.
+- Verified mesh attributes retain the exact transferred typed-array objects rather than decorative/sample geometry.
+- Verified all layer offsets are deterministic and symmetric along display Y, the mapped manufacturing axis.
+- Verified canonical line colors and actual fallback path commands.
+- Verified replacement disposes the old payload resources before retaining the replacement and dispose is idempotent.
+- Verified the initial unknown intersection state cannot start continuous animation.
+- No App, OneClickConverter, worker flow, E2E, documentation, package export, external STL, or Task 6 integration files were changed.
 
-## Review-finding follow-up
+## Concerns
 
-- RED added four regressions: truthful X × Y and total Z summaries, actual contour-driven SVG paths that change with geometry, the packaging checklist stage, and cleanup after partial object-URL creation.
-- Replaced the decorative preview with a `preserveAspectRatio` SVG made from every validated layer contour, using the union of `sourceBoundsMm` and finite fail-safe formatting.
-- Result metadata now states the layer count, X × Y planar extent, and original total Z extent without rescaling.
-- The visual checklist now contains all five approved stages, including `正在準備下載`.
-- Download URL creation is transactional: if any later URL creation fails, all earlier URLs are revoked before the original error is rethrown.
-- Follow-up verification: focused UI 10/10, Chromium 1/1, full unit suite 33 files and 870/870 tests, typecheck and diff-check passed.
-
-## Warning-accuracy follow-up
-
-- RED proved that exact-mode warnings were incorrectly labelled as simplified, the 2.5D card omitted the material-thickness effect, diagnostics had no accessible disclosure, and filenames retained the source basename.
-- Simplification claims now render only for `outline-2.5d`; exact-mode warnings surface their actual warning text without hole/internal-detail claims.
-- The 2.5D warning explicitly explains that material thickness changes final stack height.
-- Added keyboard-operable `技術資料` details containing the real mode, status, source fingerprint, layer count, warning list, and a pointer to the JSON manifest. It contains no source filename or local path.
-- Browser downloads now use generic `shapecut-*` names, independent of the selected source filename.
-- Strengthened the Chromium fixture to include a structurally valid layer and verified real SVG preview plus Enter-key disclosure behavior.
-- Final verification: focused UI 13/13, Chromium 1/1, full unit suite 33 files and 873/873 tests, typecheck and diff-check passed.
-
-## Contract-valid browser fixture follow-up
-
-- RED removed the double assertion and directly typed the fixture as `AutomaticOutlineResult`; TypeScript correctly rejected missing `axis`, `originalReport`, and `repairAccepted` fields.
-- Added a complete candidate axis, full nested zero-issue mesh report, and accepted-repair provenance. The browser fixture now compiles directly against the production contract with no cast.
-- Verification: focused UI 13/13, Chromium 1/1, full unit suite 33 files and 873/873 tests, typecheck and diff-check passed.
+- None blocking. Task 6 still needs to pass the live preview payload/stage into this standalone viewport.

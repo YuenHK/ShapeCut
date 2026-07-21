@@ -1,0 +1,140 @@
+import { fireEvent, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { describe, expect, it, vi } from 'vitest';
+import type { ColoredOutlineLayer, FeatureContour, OutlinePreviewPayload } from '../domain/outline-features/types';
+import { OutlineProcessViewport } from './OutlineProcessViewport';
+import type { OutlineProcessScene } from './outline-process-scene';
+
+function contour(id: string, role: FeatureContour['role'], outer: FeatureContour['outer']): FeatureContour {
+  const xs = outer.map(([x]) => x), ys = outer.map(([, y]) => y);
+  return {
+    id, role, outer,
+    boundsMm: { minX: Math.min(...xs), minY: Math.min(...ys), maxX: Math.max(...xs), maxY: Math.max(...ys) },
+    areaMm2: 1,
+  };
+}
+
+function payload(suffix = '', count = 6): OutlinePreviewPayload {
+  const layers: ColoredOutlineLayer[] = Array.from({ length: count }, (_, index) => ({
+    id: `layer-${index}${suffix}`, index, zStart: index, zEnd: index + 1,
+    exterior: contour(`exterior-${index}${suffix}`, 'CUT_BLACK', [[0, 0], [20, 0], [20, 10], [0, 10]]),
+    centralHole: index === 0
+      ? contour(`hole-${index}${suffix}`, 'CUT_BLACK', [[8, 4], [12, 4], [12, 6], [8, 6]])
+      : undefined,
+    deepFeature: index === 1
+      ? contour(`red-${index}${suffix}`, 'DEEP_RED', [[1, 1], [5, 1], [5, 4], [1, 4]])
+      : undefined,
+    lightFeature: index === 2
+      ? contour(`blue-${index}${suffix}`, 'LIGHT_BLUE', [[14, 6], [19, 6], [19, 9], [14, 9]])
+      : undefined,
+    removedComponentCount: 0,
+    diagnostics: {
+      hole: index === 0
+        ? { status: 'retained' as const, equivalentDiameterMm: 4, axisDistanceMm: 0 }
+        : { status: 'omitted' as const },
+      depth: { cellSizeMm: 0.2, contrastMm: 1, redThresholdMm: 0.8, blueThresholdMm: 0.4 },
+    },
+  }));
+  return {
+    mesh: {
+      positions: Float32Array.from([0, 0, 0, 20, 0, 0, 0, 10, 0]),
+      indices: Uint32Array.from([0, 1, 2]),
+    },
+    axis: { origin: [10, 5, 0], direction: [0, 0, 1] },
+    layers,
+  };
+}
+
+function fakeScene(): OutlineProcessScene {
+  return {
+    setPayload: vi.fn(), setStage: vi.fn(), setReducedMotion: vi.fn(), setVisible: vi.fn(),
+    rotateBy: vi.fn(), zoomBy: vi.fn(), resetView: vi.fn(), dispose: vi.fn(),
+  } as unknown as OutlineProcessScene;
+}
+
+function pointerEvent(type: string, pointerId: number, clientX: number): Event {
+  const event = new Event(type, { bubbles: true });
+  Object.defineProperties(event, {
+    pointerId: { value: pointerId },
+    clientX: { value: clientX },
+  });
+  return event;
+}
+
+describe('OutlineProcessViewport', () => {
+  it('hydrates, controls, replaces, and disposes the scene through an accessible boundary', async () => {
+    const user = userEvent.setup();
+    const scene = fakeScene();
+    const createScene = vi.fn(() => scene);
+    const first = payload();
+    const view = render(
+      <OutlineProcessViewport payload={first} stage="slicing" reducedMotion createScene={createScene} />,
+    );
+    const viewport = screen.getByRole('img', { name: /模型分層預覽/ });
+
+    expect(viewport).toHaveAttribute('data-layer-count', '6');
+    expect(scene.setPayload).toHaveBeenCalledWith(first);
+    expect(scene.setStage).toHaveBeenCalledWith('slicing');
+    expect(scene.setReducedMotion).toHaveBeenCalledWith(true);
+
+    await user.click(screen.getByRole('button', { name: '向左旋轉' }));
+    await user.click(screen.getByRole('button', { name: '向右旋轉' }));
+    await user.click(screen.getByRole('button', { name: '放大模型' }));
+    await user.click(screen.getByRole('button', { name: '縮小模型' }));
+    await user.click(screen.getByRole('button', { name: '重設視角' }));
+    expect(scene.rotateBy).toHaveBeenNthCalledWith(1, -Math.PI / 12);
+    expect(scene.rotateBy).toHaveBeenNthCalledWith(2, Math.PI / 12);
+    expect(scene.zoomBy).toHaveBeenNthCalledWith(1, 0.2);
+    expect(scene.zoomBy).toHaveBeenNthCalledWith(2, -0.2);
+    expect(scene.resetView).toHaveBeenCalledOnce();
+
+    fireEvent.keyDown(viewport, { key: 'ArrowLeft' });
+    fireEvent.keyDown(viewport, { key: '+' });
+    fireEvent.keyDown(viewport, { key: 'Home' });
+    expect(scene.rotateBy).toHaveBeenLastCalledWith(-Math.PI / 24);
+    expect(scene.zoomBy).toHaveBeenLastCalledWith(0.1);
+    expect(scene.resetView).toHaveBeenCalledTimes(2);
+
+    fireEvent(viewport, pointerEvent('pointerdown', 1, 20));
+    fireEvent(viewport, pointerEvent('pointermove', 1, 42));
+    fireEvent(viewport, pointerEvent('pointerup', 1, 42));
+    expect(scene.rotateBy).toHaveBeenLastCalledWith(0.22);
+
+    const replacement = payload('-new', 7);
+    view.rerender(
+      <OutlineProcessViewport payload={replacement} stage="packaging" reducedMotion createScene={createScene} />,
+    );
+    expect(screen.getByRole('img', { name: /模型分層預覽/ })).toHaveAttribute('data-layer-count', '7');
+    expect(scene.setPayload).toHaveBeenLastCalledWith(replacement);
+    expect(scene.setStage).toHaveBeenLastCalledWith('packaging');
+
+    view.unmount();
+    expect(scene.dispose).toHaveBeenCalledOnce();
+  });
+
+  it('renders exterior, hole, red, and blue actual geometry when WebGL is unavailable', () => {
+    render(<OutlineProcessViewport payload={payload()} stage="slicing" reducedMotion />);
+
+    const fallback = screen.getByRole('img', { name: /模型分層預覽.*SVG/ });
+    expect(fallback).toHaveAttribute('data-layer-count', '6');
+    expect(fallback.querySelector('[data-feature-id="exterior-0"]')).toHaveAttribute('stroke', '#000000');
+    expect(fallback.querySelector('[data-feature-id="hole-0"]')).toHaveAttribute('stroke', '#000000');
+    expect(fallback.querySelector('[data-feature-id="red-1"]')).toHaveAttribute('stroke', '#E5484D');
+    expect(fallback.querySelector('[data-feature-id="blue-2"]')).toHaveAttribute('stroke', '#3A78D4');
+    expect(fallback.querySelector('[data-feature-id="exterior-0"]')).toHaveAttribute('d', 'M 0 0 L 20 0 L 20 10 L 0 10 Z');
+    expect(screen.getByText(/WebGL.*SVG/)).toBeVisible();
+  });
+
+  it('falls back without leaking a partially constructed scene when construction fails', () => {
+    const dispose = vi.fn();
+    const createScene = vi.fn(() => {
+      const error = new Error('renderer construction failed') as Error & { partialScene?: { dispose(): void } };
+      error.partialScene = { dispose };
+      throw error;
+    });
+    render(<OutlineProcessViewport payload={payload()} stage="analyzing" createScene={createScene} />);
+
+    expect(screen.getByRole('img', { name: /SVG/ })).toBeVisible();
+    expect(dispose).toHaveBeenCalledOnce();
+  });
+});
