@@ -5,12 +5,19 @@ import { repairMeshSafe } from '../mesh/repair-mesh';
 import type { MeshProblemReport, TriangleMesh } from '../mesh/types';
 import { selectOutlineAxis } from '../outline-2.5d/axis';
 import {
+  colorizeExteriorLayers,
   ExactContourAmbiguityError,
   extractExactContours,
   extractProjectedContours,
   type OutlineLayer,
 } from '../outline-2.5d/extract';
 import { scheduleOutlineLayers } from '../outline-2.5d/layer-schedule';
+import {
+  featureEvidenceFingerprint,
+  validateAutomaticColoredResult,
+  type ColoredOutlineLayer,
+  type OutlinePreviewPayload,
+} from '../outline-features/types';
 import {
   DEFAULT_OUTLINE_BUDGETS,
   type OutlineAxisSelection,
@@ -25,6 +32,10 @@ export type AutomaticOutlineResult = {
   readonly status: OutlineResultStatus;
   readonly axis: OutlineAxisSelection;
   readonly layers: readonly OutlineLayer[];
+  readonly coloredLayers: readonly ColoredOutlineLayer[];
+  readonly featureWarnings: readonly string[];
+  readonly featureEvidenceFingerprint: string;
+  readonly preview: OutlinePreviewPayload;
   readonly warnings: readonly string[];
   readonly originalReport: MeshProblemReport;
   readonly repairAccepted: boolean;
@@ -83,8 +94,36 @@ export function diagnosticsFingerprint(value: AutomaticOutlineDiagnostics): stri
   return lanes.map((item) => item.toString(16).padStart(8, '0')).join('');
 }
 
-function withRemovalFingerprint(result: Omit<AutomaticOutlineResult, 'removalEvidenceFingerprint'>): AutomaticOutlineResult {
-  return { ...result, removalEvidenceFingerprint: removalEvidenceFingerprint(result) };
+function withResultEvidence(
+  result: Omit<AutomaticOutlineResult, 'coloredLayers' | 'featureWarnings' | 'featureEvidenceFingerprint' | 'preview' | 'removalEvidenceFingerprint'>,
+  previewMesh: TriangleMesh,
+  deadline: number,
+): AutomaticOutlineResult {
+  const coloredLayers = colorizeExteriorLayers(result.layers, result.diagnostics.rasterCellSizeMm ?? 0);
+  const coloredResult = {
+    ...result,
+    coloredLayers,
+    featureWarnings: [],
+    preview: {
+      mesh: {
+        positions: Float32Array.from(previewMesh.positions),
+        indices: previewMesh.indices.slice(),
+      },
+      axis: { origin: result.axis.axis.origin, direction: result.axis.axis.direction },
+      layers: coloredLayers,
+    },
+  };
+  const complete: AutomaticOutlineResult = {
+    ...coloredResult,
+    removalEvidenceFingerprint: removalEvidenceFingerprint(result),
+    featureEvidenceFingerprint: featureEvidenceFingerprint(coloredResult),
+  };
+  try {
+    validateAutomaticColoredResult(complete, deadline);
+  } catch (error) {
+    throw asAutomaticOutlineError(error, 'NO_OUTLINE');
+  }
+  return complete;
 }
 
 function diagnostics(extraction: { readonly layers: readonly OutlineLayer[]; readonly cellSizeMm?: number }, report: MeshProblemReport, repairAccepted: boolean): AutomaticOutlineDiagnostics {
@@ -188,7 +227,7 @@ export async function convertAutomatically(
         throw asAutomaticOutlineError(projectedError, 'NO_OUTLINE');
       }
       await emit('packaging');
-      return withRemovalFingerprint({
+      return withResultEvidence({
         sourceHash: hash,
         mode: 'outline-2.5d',
         status: 'warning',
@@ -199,10 +238,10 @@ export async function convertAutomatically(
         repairAccepted: true,
         removedComponentCount: projectedExtraction.removedComponentCount,
         diagnostics: diagnostics(projectedExtraction, originalReport, true),
-      });
+      }, extractionMesh, deadline);
     }
     await emit('packaging');
-    return withRemovalFingerprint({
+    return withResultEvidence({
       sourceHash: hash,
       mode: 'exact',
       status: axisWarnings.length === 0 ? 'success' : 'warning',
@@ -213,7 +252,7 @@ export async function convertAutomatically(
       repairAccepted: true,
       removedComponentCount: 0,
       diagnostics: diagnostics(exactExtraction, originalReport, true),
-    });
+    }, extractionMesh, deadline);
   }
 
   let projectedExtraction: ReturnType<typeof extractProjectedContours>;
@@ -223,7 +262,7 @@ export async function convertAutomatically(
     throw asAutomaticOutlineError(error, 'NO_OUTLINE');
   }
   await emit('packaging');
-  return withRemovalFingerprint({
+  return withResultEvidence({
     sourceHash: hash,
     mode: 'outline-2.5d',
     status: 'warning',
@@ -234,5 +273,5 @@ export async function convertAutomatically(
     repairAccepted: false,
     removedComponentCount: projectedExtraction.removedComponentCount,
     diagnostics: diagnostics(projectedExtraction, originalReport, false),
-  });
+  }, originalMesh, deadline);
 }

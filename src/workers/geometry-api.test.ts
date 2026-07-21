@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { proxyMarker } from 'comlink';
 import type { AutomaticOutlineResult } from '../domain/pipeline/automatic-outline-pipeline';
+import { featureEvidenceFingerprint, validateAutomaticColoredResult } from '../domain/outline-features/types';
 import { tetrahedron } from '../test/mesh-builders';
 import type { GeometryApi, ImportRepairAnalysis, MeshAnalysis } from './geometry-api';
 import {
@@ -50,7 +51,21 @@ function inspectOnly(inspect: GeometryApi['inspect']): GeometryApi {
 }
 
 function automaticResult(sourceHash: string): AutomaticOutlineResult {
-  return {
+  const coloredLayer = {
+    id: 'outline-layer-0', index: 0, zStart: 0, zEnd: 1,
+    exterior: {
+      id: 'outline-layer-0-exterior', role: 'CUT_BLACK' as const,
+      outer: [[-1, -1], [-1, 1], [1, 1], [1, -1]] as const,
+      boundsMm: { minX: -1, minY: -1, maxX: 1, maxY: 1 }, areaMm2: 4,
+    },
+    removedComponentCount: 0,
+    diagnostics: {
+      hole: { status: 'omitted' as const },
+      depth: { cellSizeMm: 0, contrastMm: 0, redThresholdMm: 0, blueThresholdMm: 0 },
+    },
+  };
+  const previewSource = tetrahedron();
+  const result: Omit<AutomaticOutlineResult, 'featureEvidenceFingerprint'> = {
     sourceHash,
     mode: 'exact',
     status: 'success',
@@ -58,7 +73,24 @@ function automaticResult(sourceHash: string): AutomaticOutlineResult {
       source: 'candidate',
       axis: { origin: [0, 0, 0], direction: [0, 0, 1], confidence: 1, confirmed: true },
     },
-    layers: [],
+    layers: [{
+      id: 'outline-layer-0', index: 0, zStart: 0, zEnd: 1,
+      contour: { outer: coloredLayer.exterior.outer, holes: [] },
+      sourceAreaMm2: 4, simplifiedAreaMm2: 4,
+      sourceBoundsMm: { minX: -1, minY: -1, maxX: 1, maxY: 1 },
+      simplificationToleranceMm: 0.01, boundsDriftRatio: 0, areaDriftRatio: 0,
+      removedComponentCount: 0,
+    }],
+    coloredLayers: [coloredLayer],
+    featureWarnings: [],
+    preview: {
+      mesh: {
+        positions: Float32Array.from(previewSource.positions),
+        indices: previewSource.indices.slice(),
+      },
+      axis: { origin: [0, 0, 0] as const, direction: [0, 0, 1] as const },
+      layers: [coloredLayer],
+    },
     warnings: [],
     originalReport: importRepairAnalysis(sourceHash).originalReport,
     repairAccepted: true,
@@ -66,6 +98,7 @@ function automaticResult(sourceHash: string): AutomaticOutlineResult {
     removalEvidenceFingerprint: '0'.repeat(32),
     diagnostics: { topology: { triangleCount: 4, boundaryEdgeCount: 0, nonManifoldEdgeCount: 0, degenerateTriangleCount: 0, duplicateTriangleCount: 0, inconsistentWindingEdgeCount: 0, selfIntersectionCount: 0, selfIntersectionAnalysisComplete: true }, repairDecision: 'accepted', rasterCellSizeMm: null, layers: [] },
   };
+  return { ...result, featureEvidenceFingerprint: featureEvidenceFingerprint(result) };
 }
 
 function importRepairAnalysis(sourceHash: string): ImportRepairAnalysis {
@@ -131,6 +164,22 @@ function importRepairAnalysis(sourceHash: string): ImportRepairAnalysis {
 }
 
 describe('geometry worker client', () => {
+  it('keeps the colored result and preview contract stable across structured clone', () => {
+    const cloned = structuredClone(automaticResult('automatic'));
+
+    expect(() => validateAutomaticColoredResult(cloned)).not.toThrow();
+    expect(cloned).toMatchObject({
+      coloredLayers: expect.any(Array),
+      featureWarnings: expect.any(Array),
+      featureEvidenceFingerprint: expect.stringMatching(/^[0-9a-f]{32}$/),
+      preview: {
+        layers: expect.any(Array),
+      },
+    });
+    expect(Object.prototype.toString.call(cloned.preview.mesh.positions)).toBe('[object Float32Array]');
+    expect(Object.prototype.toString.call(cloned.preview.mesh.indices)).toBe('[object Uint32Array]');
+  });
+
   it('forwards automatic conversion progress without requiring a Comlink callback in unit mocks', async () => {
     const onProgress = vi.fn();
     const api = inspectOnly(vi.fn());

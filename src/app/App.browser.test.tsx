@@ -2,12 +2,26 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { AutomaticOutlineResult } from '../domain/pipeline/automatic-outline-pipeline';
+import { featureEvidenceFingerprint, type ColoredOutlineLayer } from '../domain/outline-features/types';
 import { App } from './App';
 import type { OneClickConverterServices } from './OneClickConverter';
 
 describe('App real browser one-click flow', () => {
   it('starts from one keyboard-accessible selection and renders the result downloads', async () => {
     const user = userEvent.setup();
+    const coloredLayer: ColoredOutlineLayer = {
+      id: 'layer-0', index: 0, zStart: 0, zEnd: 1,
+      exterior: {
+        id: 'layer-0-exterior', role: 'CUT_BLACK',
+        outer: [[0, 0], [10, 0], [10, 5], [0, 5]],
+        boundsMm: { minX: 0, minY: 0, maxX: 10, maxY: 5 }, areaMm2: 50,
+      },
+      removedComponentCount: 0,
+      diagnostics: {
+        hole: { status: 'omitted' },
+        depth: { cellSizeMm: 0, contrastMm: 0, redThresholdMm: 0, blueThresholdMm: 0 },
+      },
+    };
     const result: AutomaticOutlineResult = {
       sourceHash: 'c'.repeat(32), mode: 'exact', status: 'success', warnings: [], layers: [{
         id: 'layer-0', index: 0, zStart: 0, zEnd: 1,
@@ -17,6 +31,19 @@ describe('App real browser one-click flow', () => {
         simplificationToleranceMm: 0.01, boundsDriftRatio: 0, areaDriftRatio: 0,
         removedComponentCount: 0,
       }],
+      coloredLayers: [coloredLayer],
+      featureWarnings: [],
+      featureEvidenceFingerprint: featureEvidenceFingerprint({
+        sourceHash: 'c'.repeat(32), mode: 'exact', coloredLayers: [coloredLayer],
+      }),
+      preview: {
+        mesh: {
+          positions: new Float32Array([0, 0, 0, 10, 0, 0, 0, 5, 0]),
+          indices: new Uint32Array([0, 1, 2]),
+        },
+        axis: { origin: [0, 0, 0], direction: [0, 0, 1] },
+        layers: [coloredLayer],
+      },
       axis: {
         source: 'candidate',
         axis: { origin: [0, 0, 0], direction: [0, 0, 1], confidence: 0.9, confirmed: true },

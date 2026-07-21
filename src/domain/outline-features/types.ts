@@ -1,0 +1,583 @@
+import type { Point2 } from '../decomposition/types';
+import type { OutlineLayer } from '../outline-2.5d/extract';
+import type { Bounds2 } from '../outline-2.5d/simplify';
+import type { OutlineMode } from '../outline-2.5d/types';
+import { validateOutlineLayer } from '../outline-2.5d/validate';
+
+export type FeatureRole = 'CUT_BLACK' | 'DEEP_RED' | 'LIGHT_BLUE';
+export type FeatureContour = {
+  readonly id: string;
+  readonly role: FeatureRole;
+  readonly outer: readonly Point2[];
+  readonly boundsMm: Bounds2;
+  readonly areaMm2: number;
+};
+export type LayerFeatureDiagnostics = {
+  readonly hole:
+    | { readonly status: 'retained'; readonly equivalentDiameterMm: number; readonly axisDistanceMm: number }
+    | { readonly status: 'omitted' };
+  readonly depth: {
+    readonly cellSizeMm: number;
+    readonly contrastMm: number;
+    readonly redThresholdMm: number;
+    readonly blueThresholdMm: number;
+  };
+};
+export type ColoredOutlineLayer = {
+  readonly id: string;
+  readonly index: number;
+  readonly zStart: number;
+  readonly zEnd: number;
+  readonly exterior: FeatureContour;
+  readonly centralHole?: FeatureContour;
+  readonly deepFeature?: FeatureContour;
+  readonly lightFeature?: FeatureContour;
+  readonly removedComponentCount: number;
+  readonly diagnostics: LayerFeatureDiagnostics;
+};
+export type OutlinePreviewPayload = {
+  readonly mesh: { readonly positions: Float32Array; readonly indices: Uint32Array };
+  readonly axis: {
+    readonly origin: readonly [number, number, number];
+    readonly direction: readonly [number, number, number];
+  };
+  readonly layers: readonly ColoredOutlineLayer[];
+};
+
+export type ColoredLayerValidation = { readonly ok: boolean; readonly reasons: readonly string[] };
+type FeatureFingerprintSource = {
+  readonly sourceHash: string;
+  readonly mode: OutlineMode;
+  readonly coloredLayers: readonly ColoredOutlineLayer[];
+};
+type UnknownRecord = Record<string, unknown>;
+type ValidationBudget = {
+  readonly deadline: number;
+  readonly checkpoint: () => void;
+};
+
+const FEATURE_ROLES = new Set<FeatureRole>(['CUT_BLACK', 'DEEP_RED', 'LIGHT_BLUE']);
+const LAYER_KEYS = new Set([
+  'id', 'index', 'zStart', 'zEnd', 'exterior', 'centralHole', 'deepFeature', 'lightFeature',
+  'removedComponentCount', 'diagnostics',
+]);
+const CONTOUR_KEYS = new Set(['id', 'role', 'outer', 'boundsMm', 'areaMm2']);
+const RUNTIME_REASON = 'Colored feature validation exceeded the runtime budget';
+const DEFAULT_VALIDATION_RUNTIME_MS = 30_000;
+
+function isRecord(value: unknown): value is UnknownRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function unexpectedKeys(value: UnknownRecord, permitted: ReadonlySet<string>, label: string): string[] {
+  return Object.keys(value)
+    .filter((key) => !permitted.has(key))
+    .map((key) => `${label} has unexpected enumerable field ${key}`);
+}
+
+function finiteTuple(value: unknown, length: number): value is readonly number[] {
+  return Array.isArray(value) && value.length === length && value.every(Number.isFinite);
+}
+
+function isFloat32Array(value: unknown): value is Float32Array {
+  return ArrayBuffer.isView(value) && Object.prototype.toString.call(value) === '[object Float32Array]';
+}
+
+function isUint32Array(value: unknown): value is Uint32Array {
+  return ArrayBuffer.isView(value) && Object.prototype.toString.call(value) === '[object Uint32Array]';
+}
+
+function hasRuntimeBudget(budget: ValidationBudget): boolean {
+  budget.checkpoint();
+  return Date.now() <= budget.deadline;
+}
+
+function signedArea(points: readonly (readonly number[])[]): number {
+  let twiceArea = 0;
+  for (let index = 0; index < points.length; index += 1) {
+    const point = points[index], next = points[(index + 1) % points.length];
+    twiceArea += point[0] * next[1] - next[0] * point[1];
+  }
+  return twiceArea / 2;
+}
+
+function cross(a: readonly number[], b: readonly number[], c: readonly number[]): number {
+  return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+}
+
+function segmentsIntersect(
+  a: readonly number[], b: readonly number[], c: readonly number[], d: readonly number[],
+  areaTolerance: number, lengthTolerance: number,
+): boolean {
+  const abC = cross(a, b, c), abD = cross(a, b, d), cdA = cross(c, d, a), cdB = cross(c, d, b);
+  if (abC * abD < 0 && cdA * cdB < 0) return true;
+  const onSegment = (p: readonly number[], q: readonly number[], r: readonly number[]) => Math.abs(cross(p, q, r)) <= areaTolerance
+    && r[0] >= Math.min(p[0], q[0]) - lengthTolerance && r[0] <= Math.max(p[0], q[0]) + lengthTolerance
+    && r[1] >= Math.min(p[1], q[1]) - lengthTolerance && r[1] <= Math.max(p[1], q[1]) + lengthTolerance;
+  return onSegment(a, b, c) || onSegment(a, b, d) || onSegment(c, d, a) || onSegment(c, d, b);
+}
+
+function contourReasons(
+  value: unknown,
+  expectedRole: FeatureRole,
+  label: string,
+  budget: ValidationBudget,
+): string[] {
+  if (!hasRuntimeBudget(budget)) return [RUNTIME_REASON];
+  if (!isRecord(value)) return [`${label} must be a feature contour`];
+  const reasons = unexpectedKeys(value, CONTOUR_KEYS, label);
+  if (typeof value.id !== 'string' || value.id.trim().length === 0) reasons.push(`${label} ID must be non-empty`);
+  if (!FEATURE_ROLES.has(value.role as FeatureRole)) reasons.push(`${label} role is invalid`);
+  if (value.role !== expectedRole) reasons.push(`${label} role must be ${expectedRole}`);
+
+  if (!Array.isArray(value.outer)) {
+    reasons.push(`${label} outer contour must be an array`);
+    return reasons;
+  }
+  if (value.outer.length < 3 || value.outer.length > 4096) {
+    reasons.push(`${label} outer contour requires 3 to 4096 points`);
+  }
+  const points = value.outer;
+  let finite = true, adjacentDuplicate = false;
+  const unique = new Set<string>();
+  for (let index = 0; index < points.length; index += 1) {
+    if ((index & 63) === 0 && !hasRuntimeBudget(budget)) return [...reasons, RUNTIME_REASON];
+    const point = points[index];
+    if (!finiteTuple(point, 2)) {
+      finite = false;
+      continue;
+    }
+    unique.add(`${point[0]}:${point[1]}`);
+    const next = points[(index + 1) % points.length];
+    if (finiteTuple(next, 2) && point[0] === next[0] && point[1] === next[1]) adjacentDuplicate = true;
+  }
+  if (!finite) reasons.push(`${label} coordinates must be finite point pairs`);
+  if (unique.size < 3) reasons.push(`${label} requires at least three unique points`);
+  if (adjacentDuplicate) reasons.push(`${label} has a zero-length edge`);
+
+  let geometricArea = NaN;
+  if (finite && points.length >= 3) {
+    geometricArea = Math.abs(signedArea(points as readonly (readonly number[])[]));
+    if (!Number.isFinite(geometricArea) || geometricArea <= 0) reasons.push(`${label} must have positive geometric area`);
+    if (points.length <= 4096 && !adjacentDuplicate) {
+      let scale = 1;
+      for (const point of points as readonly (readonly number[])[]) scale = Math.max(scale, Math.abs(point[0]), Math.abs(point[1]));
+      const areaTolerance = scale * scale * 64 * Number.EPSILON;
+      const lengthTolerance = scale * 64 * Number.EPSILON;
+      let simple = true;
+      for (let first = 0; first < points.length && simple; first += 1) {
+        if ((first & 63) === 0 && !hasRuntimeBudget(budget)) return [...reasons, RUNTIME_REASON];
+        const firstNext = (first + 1) % points.length;
+        for (let second = first + 1; second < points.length; second += 1) {
+          if ((second & 63) === 0 && !hasRuntimeBudget(budget)) return [...reasons, RUNTIME_REASON];
+          const secondNext = (second + 1) % points.length;
+          if (firstNext === second || secondNext === first) continue;
+          if (segmentsIntersect(
+            points[first] as readonly number[], points[firstNext] as readonly number[],
+            points[second] as readonly number[], points[secondNext] as readonly number[],
+            areaTolerance, lengthTolerance,
+          )) {
+            simple = false;
+            break;
+          }
+        }
+      }
+      if (!simple) reasons.push(`${label} has a self-intersection`);
+    }
+  }
+
+  if (!isRecord(value.boundsMm)) {
+    reasons.push(`${label} bounds must be present`);
+  } else {
+    const bounds = value.boundsMm;
+    reasons.push(...unexpectedKeys(bounds, new Set(['minX', 'minY', 'maxX', 'maxY']), `${label} bounds`));
+    const values = [bounds.minX, bounds.minY, bounds.maxX, bounds.maxY];
+    if (!values.every(Number.isFinite) || (bounds.maxX as number) <= (bounds.minX as number)
+      || (bounds.maxY as number) <= (bounds.minY as number)) {
+      reasons.push(`${label} bounds must be finite and positive`);
+    } else if (finite && points.length > 0) {
+      const numericPoints = points as readonly (readonly number[])[];
+      const actual = {
+        minX: Math.min(...numericPoints.map((point) => point[0])),
+        minY: Math.min(...numericPoints.map((point) => point[1])),
+        maxX: Math.max(...numericPoints.map((point) => point[0])),
+        maxY: Math.max(...numericPoints.map((point) => point[1])),
+      };
+      const tolerance = Math.max(1e-9, Math.max(...values.map((item) => Math.abs(item as number))) * 1e-9);
+      if (Object.entries(actual).some(([key, item]) => Math.abs(item - (bounds[key] as number)) > tolerance)) {
+        reasons.push(`${label} bounds metadata does not match its geometry`);
+      }
+    }
+  }
+  if (!Number.isFinite(value.areaMm2) || (value.areaMm2 as number) <= 0) {
+    reasons.push(`${label} area must be finite and positive`);
+  } else if (Number.isFinite(geometricArea)) {
+    const tolerance = Math.max(1e-9, geometricArea * 1e-9);
+    if (Math.abs((value.areaMm2 as number) - geometricArea) > tolerance) {
+      reasons.push(`${label} area metadata does not match its geometry`);
+    }
+  }
+  return reasons;
+}
+
+function diagnosticsReasons(value: unknown): string[] {
+  if (!isRecord(value)) return ['Layer diagnostics must be present'];
+  const reasons = unexpectedKeys(value, new Set(['hole', 'depth']), 'Layer diagnostics');
+  if (!isRecord(value.hole)) {
+    reasons.push('Hole diagnostics must be present');
+  } else if (value.hole.status === 'retained') {
+    reasons.push(...unexpectedKeys(value.hole, new Set(['status', 'equivalentDiameterMm', 'axisDistanceMm']), 'Hole diagnostics'));
+    if (!Number.isFinite(value.hole.equivalentDiameterMm) || (value.hole.equivalentDiameterMm as number) <= 0
+      || !Number.isFinite(value.hole.axisDistanceMm) || (value.hole.axisDistanceMm as number) < 0) {
+      reasons.push('Retained hole diagnostics must contain finite positive diameter and non-negative axis distance');
+    }
+  } else if (value.hole.status === 'omitted') {
+    reasons.push(...unexpectedKeys(value.hole, new Set(['status']), 'Hole diagnostics'));
+  } else {
+    reasons.push('Hole diagnostics status must be retained or omitted');
+  }
+  if (!isRecord(value.depth)) {
+    reasons.push('Depth diagnostics must be present');
+  } else {
+    reasons.push(...unexpectedKeys(value.depth, new Set([
+      'cellSizeMm', 'contrastMm', 'redThresholdMm', 'blueThresholdMm',
+    ]), 'Depth diagnostics'));
+    const depth = value.depth;
+    if (![depth.cellSizeMm, depth.contrastMm, depth.redThresholdMm, depth.blueThresholdMm].every(Number.isFinite)
+      || (depth.cellSizeMm as number) < 0 || (depth.contrastMm as number) < 0
+      || (depth.redThresholdMm as number) < 0 || (depth.blueThresholdMm as number) < 0
+      || (depth.redThresholdMm as number) < (depth.blueThresholdMm as number)) {
+      reasons.push('Depth diagnostics must be finite, non-negative, and ordered red over blue');
+    }
+  }
+  return reasons;
+}
+
+function validateColoredLayerWithBudget(value: unknown, budget: ValidationBudget): ColoredLayerValidation {
+  if (!hasRuntimeBudget(budget)) return { ok: false, reasons: [RUNTIME_REASON] };
+  if (!isRecord(value)) return { ok: false, reasons: ['Colored layer must be an object'] };
+  const reasons = unexpectedKeys(value, LAYER_KEYS, 'Colored layer');
+  if (typeof value.id !== 'string' || value.id.trim().length === 0) reasons.push('Layer ID must be non-empty');
+  if (!Number.isSafeInteger(value.index) || (value.index as number) < 0) reasons.push('Layer index must be a non-negative safe integer');
+  if (!Number.isFinite(value.zStart) || !Number.isFinite(value.zEnd) || (value.zEnd as number) <= (value.zStart as number)) {
+    reasons.push('Layer Z interval must be finite and positive');
+  }
+  if (!Number.isSafeInteger(value.removedComponentCount) || (value.removedComponentCount as number) < 0) {
+    reasons.push('Removed component count must be a non-negative safe integer');
+  }
+  const roles = [
+    ['Exterior', value.exterior, 'CUT_BLACK'],
+    ['Central hole', value.centralHole, 'CUT_BLACK'],
+    ['Deep feature', value.deepFeature, 'DEEP_RED'],
+    ['Light feature', value.lightFeature, 'LIGHT_BLUE'],
+  ] as const;
+  const ids = new Set<string>();
+  for (const [label, feature, role] of roles) {
+    if (feature === undefined && label !== 'Exterior') continue;
+    reasons.push(...contourReasons(feature, role, label, budget));
+    if (isRecord(feature) && typeof feature.id === 'string') {
+      if (ids.has(feature.id)) reasons.push(`Duplicate feature ID ${feature.id}`);
+      ids.add(feature.id);
+    }
+  }
+  reasons.push(...diagnosticsReasons(value.diagnostics));
+  return { ok: reasons.length === 0, reasons };
+}
+
+export function validateColoredLayerShape(
+  value: unknown,
+  deadline = Date.now() + DEFAULT_VALIDATION_RUNTIME_MS,
+  checkpoint: () => void = () => undefined,
+): ColoredLayerValidation {
+  return validateColoredLayerWithBudget(value, {
+    deadline,
+    checkpoint,
+  });
+}
+
+function contourRecord(contourValue: FeatureContour | undefined): unknown {
+  if (contourValue === undefined) return null;
+  return {
+    id: contourValue.id,
+    role: contourValue.role,
+    outer: contourValue.outer.map(([x, y]) => [x, y]),
+    boundsMm: {
+      minX: contourValue.boundsMm.minX, minY: contourValue.boundsMm.minY,
+      maxX: contourValue.boundsMm.maxX, maxY: contourValue.boundsMm.maxY,
+    },
+    areaMm2: contourValue.areaMm2,
+  };
+}
+
+function orderedLayerRecords(layers: readonly ColoredOutlineLayer[]): unknown {
+  return layers.map((layer) => ({
+    id: layer.id,
+    index: layer.index,
+    zStart: layer.zStart,
+    zEnd: layer.zEnd,
+    removedComponentCount: layer.removedComponentCount,
+    roles: [
+      ['exterior', contourRecord(layer.exterior)],
+      ['centralHole', contourRecord(layer.centralHole)],
+      ['deepFeature', contourRecord(layer.deepFeature)],
+      ['lightFeature', contourRecord(layer.lightFeature)],
+    ],
+    diagnostics: {
+      hole: layer.diagnostics.hole.status === 'retained'
+        ? {
+          status: 'retained',
+          equivalentDiameterMm: layer.diagnostics.hole.equivalentDiameterMm,
+          axisDistanceMm: layer.diagnostics.hole.axisDistanceMm,
+        }
+        : { status: 'omitted' },
+      depth: {
+        cellSizeMm: layer.diagnostics.depth.cellSizeMm,
+        contrastMm: layer.diagnostics.depth.contrastMm,
+        redThresholdMm: layer.diagnostics.depth.redThresholdMm,
+        blueThresholdMm: layer.diagnostics.depth.blueThresholdMm,
+      },
+    },
+  }));
+}
+
+function hashText(value: string): string {
+  const lanes = [2166136261, 2246822519, 3266489917, 668265263];
+  for (let lane = 0; lane < lanes.length; lane += 1) {
+    for (const char of value) {
+      lanes[lane] = Math.imul(lanes[lane] ^ (char.charCodeAt(0) + lane * 131), 16777619 + lane * 2) >>> 0;
+    }
+  }
+  return lanes.map((item) => item.toString(16).padStart(8, '0')).join('');
+}
+
+export function featureEvidenceFingerprint(result: FeatureFingerprintSource): string {
+  return hashText(JSON.stringify({
+    sourceHash: result.sourceHash,
+    mode: result.mode,
+    layers: orderedLayerRecords(result.coloredLayers),
+  }));
+}
+
+function previewReasons(
+  value: unknown,
+  coloredLayers: readonly ColoredOutlineLayer[],
+  coloredLayersValid: boolean,
+  selectedAxis: { readonly origin: readonly number[]; readonly direction: readonly number[] } | undefined,
+  validateLayer: (value: unknown) => ColoredLayerValidation,
+): string[] {
+  if (!isRecord(value)) return ['Preview must be present'];
+  const reasons = unexpectedKeys(value, new Set(['mesh', 'axis', 'layers']), 'Preview');
+  if (!isRecord(value.mesh)) {
+    reasons.push('Preview mesh must be present');
+  } else {
+    reasons.push(...unexpectedKeys(value.mesh, new Set(['positions', 'indices']), 'Preview mesh'));
+    const positions = value.mesh.positions, indices = value.mesh.indices;
+    if (!isFloat32Array(positions)) {
+      reasons.push('Preview mesh positions must be a Float32Array');
+    } else if (positions.length < 9 || positions.length % 3 !== 0 || !positions.every(Number.isFinite)) {
+      reasons.push('Preview mesh requires finite preview positions in XYZ triples');
+    }
+    if (!isUint32Array(indices)) {
+      reasons.push('Preview mesh indices must be a Uint32Array');
+    } else if (indices.length < 3 || indices.length % 3 !== 0
+      || !isFloat32Array(positions)
+      || indices.some((index) => index >= positions.length / 3)) {
+      reasons.push('Preview mesh requires complete, in-range triangle indices');
+    }
+  }
+  if (!isRecord(value.axis)) {
+    reasons.push('Preview axis must be present');
+  } else {
+    reasons.push(...unexpectedKeys(value.axis, new Set(['origin', 'direction']), 'Preview axis'));
+    if (!finiteTuple(value.axis.origin, 3) || !finiteTuple(value.axis.direction, 3)) {
+      reasons.push('Preview axis origin and direction must contain finite triples');
+    } else if (Math.hypot(...value.axis.direction) === 0) {
+      reasons.push('Preview axis direction must be non-zero');
+    } else if (selectedAxis && (value.axis.origin.some((item, index) => item !== selectedAxis.origin[index])
+      || value.axis.direction.some((item, index) => item !== selectedAxis.direction[index]))) {
+      reasons.push('Preview axis must match the selected automatic axis');
+    }
+  }
+  if (!Array.isArray(value.layers)) {
+    reasons.push('Preview layers must be an array');
+  } else {
+    const previewLayers = value.layers as readonly ColoredOutlineLayer[];
+    const previewValid = previewLayers.length > 0 && previewLayers.length <= 24
+      && previewLayers.every((layer) => {
+        const validation = validateLayer(layer);
+        reasons.push(...validation.reasons.map((reason) => `Preview ${reason}`));
+        return validation.ok;
+      });
+    if (previewValid && coloredLayersValid
+      && JSON.stringify(orderedLayerRecords(previewLayers)) !== JSON.stringify(orderedLayerRecords(coloredLayers))) {
+      reasons.push('Preview layers must match the ordered colored layer records');
+    } else if (previewLayers.length !== coloredLayers.length) {
+      reasons.push('Preview layers must match the ordered colored layer records');
+    }
+  }
+  return reasons;
+}
+
+function isLegacyLayerCandidate(value: unknown): value is OutlineLayer {
+  return isRecord(value) && isRecord(value.contour)
+    && Array.isArray(value.contour.outer) && Array.isArray(value.contour.holes);
+}
+
+function samePoints(left: readonly Point2[], right: readonly Point2[]): boolean {
+  return left.length === right.length
+    && left.every(([x, y], index) => x === right[index][0] && y === right[index][1]);
+}
+
+export function validateAutomaticColoredResult(
+  value: unknown,
+  deadline = Date.now() + DEFAULT_VALIDATION_RUNTIME_MS,
+  checkpoint: () => void = () => undefined,
+): void {
+  const reasons: string[] = [];
+  if (!isRecord(value)) throw new RangeError('Invalid automatic colored result: result must be an object');
+  const budget: ValidationBudget = {
+    deadline,
+    checkpoint,
+  };
+  const validationCache = new WeakMap<object, ColoredLayerValidation>();
+  const validateLayer = (candidate: unknown): ColoredLayerValidation => {
+    if (!isRecord(candidate)) return validateColoredLayerWithBudget(candidate, budget);
+    const cached = validationCache.get(candidate);
+    if (cached) return cached;
+    const validation = validateColoredLayerWithBudget(candidate, budget);
+    validationCache.set(candidate, validation);
+    return validation;
+  };
+  if (typeof value.sourceHash !== 'string' || value.sourceHash.trim().length === 0) reasons.push('Source hash must be non-empty');
+  if (value.mode !== 'exact' && value.mode !== 'outline-2.5d') reasons.push('Outline mode is invalid');
+  let selectedAxis: { readonly origin: readonly number[]; readonly direction: readonly number[] } | undefined;
+  if (!isRecord(value.axis)) {
+    reasons.push('Selected automatic axis must be present');
+  } else {
+    reasons.push(...unexpectedKeys(value.axis, new Set(['source', 'axis']), 'Selected automatic axis'));
+    if (value.axis.source !== 'candidate' && value.axis.source !== 'shortest-bounds') {
+      reasons.push('Selected automatic axis source is invalid');
+    }
+    if (!isRecord(value.axis.axis)) {
+      reasons.push('Selected automatic axis geometry must be present');
+    } else {
+      const axis = value.axis.axis;
+      reasons.push(...unexpectedKeys(axis, new Set(['origin', 'direction', 'confidence', 'confirmed']), 'Selected automatic axis geometry'));
+      if (!finiteTuple(axis.origin, 3) || !finiteTuple(axis.direction, 3) || Math.hypot(...axis.direction) === 0) {
+        reasons.push('Selected automatic axis requires finite origin and non-zero direction triples');
+      } else {
+        selectedAxis = { origin: axis.origin, direction: axis.direction };
+      }
+      if (!Number.isFinite(axis.confidence) || (axis.confidence as number) < 0 || (axis.confidence as number) > 1
+        || typeof axis.confirmed !== 'boolean') {
+        reasons.push('Selected automatic axis confidence and confirmation are invalid');
+      }
+    }
+  }
+
+  const legacyLayers = Array.isArray(value.layers) ? value.layers : undefined;
+  if (!legacyLayers) reasons.push('Migration exterior layers must be an array');
+  if (!Array.isArray(value.coloredLayers) || value.coloredLayers.length === 0 || value.coloredLayers.length > 24) {
+    reasons.push('Colored result requires at least one layer with exactly one exterior');
+  } else {
+    const layerIds = new Set<string>(), featureIds = new Set<string>(), allIds = new Set<string>();
+    let previous: ColoredOutlineLayer | undefined;
+    for (const candidate of value.coloredLayers) {
+      const validation = validateLayer(candidate);
+      reasons.push(...validation.reasons);
+      if (!isRecord(candidate)) continue;
+      if (typeof candidate.id === 'string') {
+        if (layerIds.has(candidate.id)) reasons.push(`Duplicate layer ID ${candidate.id}`);
+        layerIds.add(candidate.id);
+        if (allIds.has(candidate.id)) reasons.push(`Duplicate public ID ${candidate.id}`);
+        allIds.add(candidate.id);
+      }
+      for (const key of ['exterior', 'centralHole', 'deepFeature', 'lightFeature']) {
+        const feature = candidate[key];
+        if (isRecord(feature) && typeof feature.id === 'string') {
+          if (featureIds.has(feature.id)) reasons.push(`Duplicate feature ID ${feature.id}`);
+          featureIds.add(feature.id);
+          if (allIds.has(feature.id)) reasons.push(`Duplicate public ID ${feature.id}`);
+          allIds.add(feature.id);
+        }
+      }
+      if (previous && (typeof candidate.index !== 'number' || candidate.index <= previous.index
+        || typeof candidate.zStart !== 'number' || candidate.zStart < previous.zEnd)) {
+        reasons.push('Colored layers must be in increasing non-overlapping index and Z order');
+      }
+      previous = candidate as ColoredOutlineLayer;
+    }
+  }
+  if (!Array.isArray(value.featureWarnings) || value.featureWarnings.some((warning) => typeof warning !== 'string')) {
+    reasons.push('Feature warnings must be an array of strings');
+  }
+  const coloredLayers = Array.isArray(value.coloredLayers)
+    ? value.coloredLayers as readonly ColoredOutlineLayer[]
+    : [];
+  const coloredLayersValid = coloredLayers.length > 0 && coloredLayers.length <= 24
+    && coloredLayers.every((layer) => validateLayer(layer).ok);
+
+  if (legacyLayers) {
+    if (legacyLayers.length !== coloredLayers.length) {
+      reasons.push('Migration exterior layers must match the colored layer count and order');
+    }
+    for (let index = 0; index < legacyLayers.length; index += 1) {
+      const candidate = legacyLayers[index];
+      if (isRecord(candidate)) {
+        for (const [key, label, role] of [
+          ['exterior', 'Exterior', 'CUT_BLACK'],
+          ['centralHole', 'Central hole', 'CUT_BLACK'],
+          ['deepFeature', 'Deep feature', 'DEEP_RED'],
+          ['lightFeature', 'Light feature', 'LIGHT_BLUE'],
+        ] as const) {
+          if (candidate[key] === undefined) continue;
+          reasons.push(`Migration exterior layer has unexpected ${label.toLowerCase()} role geometry`);
+          reasons.push(...contourReasons(candidate[key], role, label, budget));
+        }
+        for (const key of ['features', 'holes']) {
+          if (Object.hasOwn(candidate, key)) reasons.push(`Migration exterior layer has unexpected generic ${key} array`);
+        }
+      }
+      if (!isLegacyLayerCandidate(candidate)) {
+        reasons.push(`Migration exterior layer ${index} is malformed`);
+        continue;
+      }
+      try {
+        const validation = validateOutlineLayer(candidate, deadline, checkpoint);
+        reasons.push(...validation.reasons.map((reason) => `Migration exterior layer ${index}: ${reason}`));
+      } catch {
+        reasons.push(`Migration exterior layer ${index} is malformed`);
+        continue;
+      }
+      const colored = coloredLayers[index];
+      if (colored && (candidate.id !== colored.id || candidate.index !== colored.index
+        || candidate.zStart !== colored.zStart || candidate.zEnd !== colored.zEnd
+        || candidate.removedComponentCount !== colored.removedComponentCount
+        || candidate.simplifiedAreaMm2 !== colored.exterior.areaMm2
+        || !samePoints(candidate.contour.outer, colored.exterior.outer))) {
+        reasons.push(`Migration exterior layer ${index} must match the ordered colored layer record`);
+      }
+    }
+  }
+  if (!Number.isSafeInteger(value.removedComponentCount) || (value.removedComponentCount as number) < 0) {
+    reasons.push('Automatic removed component count must be a non-negative safe integer');
+  } else if (coloredLayersValid && value.removedComponentCount !== coloredLayers.reduce(
+    (sum, layer) => sum + layer.removedComponentCount, 0,
+  )) {
+    reasons.push('Automatic removed component count must match ordered colored layer records');
+  }
+  reasons.push(...previewReasons(
+    value.preview, coloredLayers, coloredLayersValid, selectedAxis, validateLayer,
+  ));
+  if (typeof value.featureEvidenceFingerprint !== 'string' || value.featureEvidenceFingerprint.length === 0) {
+    reasons.push('Feature evidence fingerprint must be present and non-empty');
+  } else if (coloredLayersValid && (value.mode === 'exact' || value.mode === 'outline-2.5d') && typeof value.sourceHash === 'string'
+    && value.featureEvidenceFingerprint !== featureEvidenceFingerprint({
+      sourceHash: value.sourceHash,
+      mode: value.mode,
+      coloredLayers,
+    })) {
+    reasons.push('Feature evidence fingerprint is inconsistent with ordered role records');
+  }
+  if (reasons.length > 0) throw new RangeError(`Invalid automatic colored result: ${reasons.join('; ')}`);
+}

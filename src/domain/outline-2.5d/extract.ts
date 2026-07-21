@@ -1,5 +1,6 @@
 import type { Point2 } from '../decomposition/types';
 import type { TriangleMesh } from '../mesh/types';
+import type { ColoredOutlineLayer, FeatureContour } from '../outline-features/types';
 import { projectMesh, rasterCellSize, rasterProjectLayer, type ProjectedMesh } from './raster';
 import { contourBounds, signedArea, simplifyClosedLoop, type Bounds2 } from './simplify';
 import type { OutlineAxisSelection, OutlineBudgets, OutlineLayerSpec } from './types';
@@ -24,6 +25,41 @@ export type OutlineExtraction = {
   readonly cellSizeMm?: number;
   readonly removedComponentCount: number;
 };
+
+export function colorizeExteriorLayers(
+  layers: readonly OutlineLayer[],
+  cellSizeMm = 0,
+): readonly ColoredOutlineLayer[] {
+  if (!Number.isFinite(cellSizeMm) || cellSizeMm < 0) {
+    throw new RangeError('Colored outline layers require a finite non-negative cell size');
+  }
+  return layers.map((layer) => {
+    const exterior: FeatureContour = {
+      id: `${layer.id}-exterior`,
+      role: 'CUT_BLACK',
+      outer: layer.contour.outer,
+      boundsMm: contourBounds(layer.contour.outer),
+      areaMm2: layer.simplifiedAreaMm2,
+    };
+    return {
+      id: layer.id,
+      index: layer.index,
+      zStart: layer.zStart,
+      zEnd: layer.zEnd,
+      exterior,
+      removedComponentCount: layer.removedComponentCount,
+      diagnostics: {
+        hole: { status: 'omitted' },
+        depth: {
+          cellSizeMm,
+          contrastMm: 0,
+          redThresholdMm: 0,
+          blueThresholdMm: 0,
+        },
+      },
+    };
+  });
+}
 
 /** Exact slice topology is ambiguous, so projected extraction may be attempted. */
 export class ExactContourAmbiguityError extends RangeError {}

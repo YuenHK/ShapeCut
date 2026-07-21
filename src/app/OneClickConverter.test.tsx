@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { AutomaticOutlineError, type AutomaticOutlineResult } from '../domain/pipeline/automatic-outline-pipeline';
+import { featureEvidenceFingerprint, type ColoredOutlineLayer } from '../domain/outline-features/types';
 import { MAX_STL_BYTES } from '../domain/mesh/parse-stl';
 import { SupersededError } from '../workers/geometry-client';
 import {
@@ -9,6 +10,20 @@ import {
   type OneClickConverterServices,
   type OutlineDownloads,
 } from './OneClickConverter';
+
+const coloredLayer: ColoredOutlineLayer = {
+  id: 'layer-0', index: 0, zStart: 0, zEnd: 1,
+  exterior: {
+    id: 'layer-0-exterior', role: 'CUT_BLACK',
+    outer: [[0, 0], [10, 0], [10, 5], [0, 5]],
+    boundsMm: { minX: 0, minY: 0, maxX: 10, maxY: 5 }, areaMm2: 50,
+  },
+  removedComponentCount: 0,
+  diagnostics: {
+    hole: { status: 'omitted' },
+    depth: { cellSizeMm: 0, contrastMm: 0, redThresholdMm: 0, blueThresholdMm: 0 },
+  },
+};
 
 const result: AutomaticOutlineResult = {
   sourceHash: 'a'.repeat(32),
@@ -23,6 +38,19 @@ const result: AutomaticOutlineResult = {
     simplificationToleranceMm: 0.01, boundsDriftRatio: 0, areaDriftRatio: 0,
     removedComponentCount: 0,
   }],
+  coloredLayers: [coloredLayer],
+  featureWarnings: [],
+  featureEvidenceFingerprint: featureEvidenceFingerprint({
+    sourceHash: 'a'.repeat(32), mode: 'exact', coloredLayers: [coloredLayer],
+  }),
+  preview: {
+    mesh: {
+      positions: new Float32Array([0, 0, 0, 10, 0, 0, 0, 5, 0]),
+      indices: new Uint32Array([0, 1, 2]),
+    },
+    axis: { origin: [0, 0, 0], direction: [0, 0, 1] },
+    layers: [coloredLayer],
+  },
   warnings: [],
   originalReport: {} as AutomaticOutlineResult['originalReport'],
   repairAccepted: true,
