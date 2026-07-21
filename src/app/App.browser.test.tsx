@@ -90,10 +90,11 @@ describe('App real browser one-click flow', () => {
       cancel: vi.fn(),
       convert: vi.fn().mockResolvedValue(result),
       package: vi.fn().mockResolvedValue({
-        zip: { href: 'blob:zip', fileName: 'shape.zip' }, svg: { href: 'blob:svg', fileName: 'shape.svg' },
-        dxf: { href: 'blob:dxf', fileName: 'shape.dxf' },
-        previewPdf: { href: 'blob:preview', fileName: 'shape-preview.pdf' },
-        explodedPdf: { href: 'blob:exploded', fileName: 'shape-exploded.pdf' },
+        zip: { href: 'blob:zip', fileName: 'shapecut-files.zip' },
+        svg: { href: 'blob:svg', fileName: 'cut-and-engrave.svg' },
+        dxf: { href: 'blob:dxf', fileName: 'cut-and-engrave.dxf' },
+        previewPdf: { href: 'blob:preview', fileName: 'preview.pdf' },
+        explodedPdf: { href: 'blob:exploded', fileName: 'exploded-view.pdf' },
       }),
     };
     render(<App services={services} />);
@@ -102,12 +103,14 @@ describe('App real browser one-click flow', () => {
     input.focus();
     await user.upload(input, new File(['mesh'], 'keyboard.stl', { type: 'model/stl' }));
 
-    expect(await screen.findByRole('link', { name: '下載 ZIP 製作套件' })).toBeVisible();
+    expect(await screen.findByRole('link', { name: '下載 ZIP 製作套件' })).toHaveAttribute('download', 'shapecut-files.zip');
+    expect(screen.getByRole('link', { name: /爆炸圖 PDF/ })).toHaveAttribute('download', 'exploded-view.pdf');
+    expect(screen.getAllByRole('link', { name: /下載/ })).toHaveLength(5);
     const technicalSummary = screen.getByText('技術資料');
     technicalSummary.focus();
     await user.keyboard('{Enter}');
     expect(technicalSummary.closest('details')).toHaveAttribute('open');
-    expect(screen.getByRole('img', { name: '實際外形切片預覽' })).toHaveAttribute('viewBox', '0 0 10 5');
+    expect(screen.getByRole('img', { name: /模型分層預覽/ })).toHaveAttribute('data-layer-count', '1');
     expect(services.convert).toHaveBeenCalledOnce();
     expect(screen.queryByRole('button', { name: /修復|軸心|下一步|材料|分件/ })).toBeNull();
   });

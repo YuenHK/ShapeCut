@@ -11,12 +11,14 @@ import {
   AutomaticOutlineError,
   convertAutomatically,
   removalEvidenceFingerprint,
+  type AutomaticOutlineProgressEvent,
   type AutomaticOutlineProgressStage,
 } from './automatic-outline-pipeline';
 import * as extraction from '../outline-2.5d/extract';
 import { createOutlineAxisBasis } from '../outline-2.5d/raster';
 import * as simplification from '../outline-2.5d/simplify';
 import { MAX_STL_BYTES } from '../mesh/parse-stl';
+import type { OutlinePreviewPayload } from '../outline-features/types';
 
 function cylinder(segments = 32): TriangleMesh {
   const positions: number[] = [0, 0, -1, 0, 0, 1];
@@ -119,6 +121,15 @@ function scaled(mesh: TriangleMesh, x: number, y: number, z: number): TriangleMe
   };
 }
 
+function translated(mesh: TriangleMesh, x: number, y: number, z: number): TriangleMesh {
+  return {
+    positions: new Float64Array(Array.from(mesh.positions, (value, index) => (
+      value + (index % 3 === 0 ? x : index % 3 === 1 ? y : z)
+    ))),
+    indices: mesh.indices.slice(),
+  };
+}
+
 describe('automatic outline pipeline', () => {
   it('publishes both layer-local depth roles through preview and fingerprint evidence', async () => {
     const result = await convertAutomatically({ bytes: writeBinarySTL(layerLocalSteppedPrism(), 'safe') });
@@ -195,11 +206,11 @@ describe('automatic outline pipeline', () => {
   });
 
   it('returns an exact outline for a safe symmetric mesh and preserves complete layer metadata', async () => {
-    const progress: AutomaticOutlineProgressStage[] = [];
+    const progress: AutomaticOutlineProgressEvent[] = [];
 
     const result = await convertAutomatically(
       { bytes: writeBinarySTL(cylinder(), 'safe') },
-      (stage) => { progress.push(stage); },
+      (event) => { progress.push(event); },
     );
 
     expect(result).toMatchObject({
@@ -216,7 +227,44 @@ describe('automatic outline pipeline', () => {
     expect(result.sourceHash).toMatch(/^[0-9a-f]{32}$/);
     expect(result.diagnostics).toMatchObject({ repairDecision: 'accepted', rasterCellSizeMm: null, topology: { triangleCount: 128 } });
     expect(result.diagnostics.layers).toHaveLength(result.layers.length);
-    expect(progress).toEqual(['reading', 'analyzing', 'simplifying', 'slicing', 'packaging']);
+    expect(progress.map(({ stage }) => stage)).toEqual([
+      'reading', 'analyzing', 'simplifying', 'slicing', 'slicing', 'packaging',
+    ]);
+    const analyzing = progress.find((event) => event.stage === 'analyzing' && 'preview' in event);
+    const slicing = progress.find((event) => event.stage === 'slicing' && 'preview' in event);
+    expect(analyzing).toMatchObject({ stage: 'analyzing', preview: { layers: [] } });
+    expect(slicing).toMatchObject({ stage: 'slicing', preview: { layers: result.coloredLayers } });
+    if (analyzing && 'preview' in analyzing) {
+      expect(analyzing.preview.mesh.indices.length).toBeLessThanOrEqual(6_000);
+      expect(analyzing.preview.mesh.positions.buffer).not.toBe(result.preview.mesh.positions.buffer);
+    }
+    if (slicing && 'preview' in slicing) {
+      expect(slicing.preview.mesh.positions.buffer).not.toBe(result.preview.mesh.positions.buffer);
+      expect(slicing.preview.mesh.indices.buffer).not.toBe(result.preview.mesh.indices.buffer);
+    }
+  });
+
+  it('samples a bounded analyzing preview across the whole mesh and centers its provisional axis', async () => {
+    const stop = new Error('preview captured');
+    let analyzing: OutlinePreviewPayload | undefined;
+    const mesh = translated(cylinder(2_001), 10_000, -20_000, 30_000);
+
+    await expect(convertAutomatically({ bytes: writeBinarySTL(mesh, 'safe') }, (event) => {
+      if (event.stage === 'analyzing' && 'preview' in event) {
+        analyzing = event.preview;
+        throw stop;
+      }
+    })).rejects.toBe(stop);
+
+    expect(analyzing).toBeDefined();
+    if (!analyzing) return;
+    const xs = Array.from(analyzing.mesh.positions).filter((_, index) => index % 3 === 0);
+    expect(analyzing.mesh.indices).toHaveLength(6_000);
+    expect(Math.min(...xs)).toBeLessThan(9_996);
+    expect(Math.max(...xs)).toBeGreaterThan(10_004);
+    expect(analyzing.axis.origin[0]).toBeCloseTo(10_000, 2);
+    expect(analyzing.axis.origin[1]).toBeCloseTo(-20_000, 2);
+    expect(analyzing.axis.origin[2]).toBeCloseTo(30_000, 2);
   });
 
   it.each([
@@ -308,6 +356,18 @@ describe('automatic outline pipeline', () => {
     }
   });
 
+  it('maps deadline expiry during the first bounded preview copy to a typed time limit', async () => {
+    const originalNow = Date.now;
+    let calls = 0;
+    Date.now = () => calls++ < 2 ? 0 : 30_001;
+    try {
+      await expect(convertAutomatically({ bytes: writeBinarySTL(cylinder(), 'safe') }))
+        .rejects.toMatchObject({ code: 'TIME_LIMIT' } satisfies Partial<AutomaticOutlineError>);
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
   it('rejects when the shared deadline expires before preview preparation', async () => {
     const originalNow = Date.now;
     const contourBounds = vi.spyOn(simplification, 'contourBounds');
@@ -317,8 +377,8 @@ describe('automatic outline pipeline', () => {
     try {
       await expect(convertAutomatically(
         { bytes: writeBinarySTL(cylinder(), 'safe') },
-        (stage) => {
-          if (stage === 'packaging') {
+        (event) => {
+          if (event.stage === 'packaging') {
             callsAtPackaging = contourBounds.mock.calls.length;
             now = 30_001;
           }
@@ -352,8 +412,8 @@ describe('automatic outline pipeline', () => {
     const packagingDelivered = new Promise<void>((resolve) => { releasePackaging = resolve; });
     const packagingStarted = new Promise<void>((resolve) => { markPackagingStarted = resolve; });
     let settled = false;
-    const conversion = convertAutomatically({ bytes: writeBinarySTL(cylinder(), 'safe') }, async (stage) => {
-      if (stage === 'packaging') {
+    const conversion = convertAutomatically({ bytes: writeBinarySTL(cylinder(), 'safe') }, async (event) => {
+      if (event.stage === 'packaging') {
         markPackagingStarted();
         await packagingDelivered;
       }
@@ -371,18 +431,22 @@ describe('automatic outline pipeline', () => {
   it('fails closed when progress delivery rejects', async () => {
     const callbackError = new Error('progress receiver closed');
 
-    await expect(convertAutomatically({ bytes: writeBinarySTL(cylinder(), 'safe') }, async (stage) => {
-      if (stage === 'packaging') throw callbackError;
+    await expect(convertAutomatically({ bytes: writeBinarySTL(cylinder(), 'safe') }, async (event) => {
+      if (event.stage === 'packaging') throw callbackError;
     })).rejects.toBe(callbackError);
   });
 
-  it('emits each progress stage at most once even when exact slicing falls back', async () => {
-    const stages: AutomaticOutlineProgressStage[] = [];
-    const onProgress = vi.fn((stage: AutomaticOutlineProgressStage) => { stages.push(stage); });
+  it('keeps progress monotonic and emits one bounded preview per supported stage during fallback', async () => {
+    const events: AutomaticOutlineProgressEvent[] = [];
+    const onProgress = vi.fn((event: AutomaticOutlineProgressEvent) => { events.push(event); });
 
     await convertAutomatically({ bytes: writeBinarySTL(scaled(openTetrahedron(), 20, 20, 20), 'safe') }, onProgress);
 
-    expect(stages).toEqual(['reading', 'analyzing', 'simplifying', 'slicing', 'packaging']);
-    expect(new Set(stages).size).toBe(stages.length);
+    const stages = events.map(({ stage }) => stage);
+    expect(stages).toEqual(['reading', 'analyzing', 'simplifying', 'slicing', 'slicing', 'packaging']);
+    const stageOrder: readonly AutomaticOutlineProgressStage[] = ['reading', 'analyzing', 'simplifying', 'slicing', 'packaging'];
+    expect(stages.every((stage, index) => index === 0
+      || stageOrder.indexOf(stage) >= stageOrder.indexOf(stages[index - 1]))).toBe(true);
+    expect(events.filter((event) => 'preview' in event).map(({ stage }) => stage)).toEqual(['analyzing', 'slicing']);
   });
 });

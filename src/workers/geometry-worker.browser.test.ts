@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { finalizer } from 'comlink';
 import { writeBinarySTL } from '../domain/mesh/write-stl';
-import { removalEvidenceFingerprint } from '../domain/pipeline/automatic-outline-pipeline';
+import {
+  removalEvidenceFingerprint,
+  type AutomaticOutlineProgressEvent,
+} from '../domain/pipeline/automatic-outline-pipeline';
 import { featureEvidenceFingerprint } from '../domain/outline-features/types';
 import type { TriangleMesh } from '../domain/mesh/types';
 import {
@@ -29,10 +32,10 @@ describe('geometry worker boundary', () => {
     const client = createGeometryWorkerClient();
     clients.push(client);
     const source = writeBinarySTL(scaledOpenTetrahedron(), 'safe');
-    const progress: string[] = [];
+    const progress: AutomaticOutlineProgressEvent[] = [];
     const released = vi.fn();
     const onProgress = Object.assign(
-      (stage: string) => { progress.push(stage); },
+      (event: AutomaticOutlineProgressEvent) => { progress.push(event); },
       { [finalizer]: released },
     );
 
@@ -43,7 +46,12 @@ describe('geometry worker boundary', () => {
     expect(result.layers[0].sourceBoundsMm).toEqual(expect.objectContaining({
       minX: expect.any(Number), minY: expect.any(Number), maxX: expect.any(Number), maxY: expect.any(Number),
     }));
-    expect(progress).toEqual(['reading', 'analyzing', 'simplifying', 'slicing', 'packaging']);
+    expect(progress.map(({ stage }) => stage)).toEqual([
+      'reading', 'analyzing', 'simplifying', 'slicing', 'slicing', 'packaging',
+    ]);
+    expect(progress.filter((event) => 'preview' in event).map(({ stage }) => stage)).toEqual(['analyzing', 'slicing']);
+    expect(progress.every((event) => !('preview' in event)
+      || (event.preview.mesh.positions instanceof Float32Array && event.preview.mesh.indices instanceof Uint32Array))).toBe(true);
     await vi.waitFor(() => expect(released).toHaveBeenCalledOnce());
   });
 
@@ -52,7 +60,7 @@ describe('geometry worker boundary', () => {
     clients.push(client);
     const released = vi.fn();
     const onProgress = Object.assign(
-      async (stage: string) => { if (stage === 'packaging') throw new Error('progress receiver closed'); },
+      async (event: AutomaticOutlineProgressEvent) => { if (event.stage === 'packaging') throw new Error('progress receiver closed'); },
       { [finalizer]: released },
     );
 
@@ -322,12 +330,12 @@ describe('geometry worker boundary', () => {
     } as typeof MessagePort.prototype.addEventListener);
     const first = client.convertAutomatically(
       { bytes: writeBinarySTL(scaledOpenTetrahedron(), 'safe') },
-      (stage) => { observed.push(`old:${stage}`); },
+      (event) => { observed.push(`old:${event.stage}`); },
     ).catch((error: unknown) => error);
     await vi.waitFor(() => expect(queuedMessages.length).toBeGreaterThan(0));
     const replacement = client.convertAutomatically(
       { bytes: writeBinarySTL(scaledOpenTetrahedron(), 'safe') },
-      (stage) => { observed.push(`new:${stage}`); },
+      (event) => { observed.push(`new:${event.stage}`); },
     );
     addEventListener.mockRestore();
     for (const deliver of queuedMessages) deliver();
@@ -338,6 +346,7 @@ describe('geometry worker boundary', () => {
       'new:reading',
       'new:analyzing',
       'new:simplifying',
+      'new:slicing',
       'new:slicing',
       'new:packaging',
     ]);

@@ -149,6 +149,24 @@ describe('OutlineProcessViewport', () => {
     expect(screen.getByRole('status')).toHaveAttribute('aria-live', 'polite');
   });
 
+  it('projects the bounded mesh when analyzing has no layers in SVG fallback', () => {
+    const analyzing = { ...payload(), layers: [] };
+    render(<OutlineProcessViewport payload={analyzing} stage="analyzing" reducedMotion />);
+
+    const fallback = screen.getByRole('img', { name: /SVG/ });
+    expect(fallback.querySelector('[data-preview-mesh]')).toHaveAttribute('d', expect.stringContaining('M'));
+    expect(fallback.getAttribute('viewBox')).not.toBe('0 0 1 1');
+  });
+
+  it('separates layer contours deterministically in the SVG exploded result', () => {
+    render(<OutlineProcessViewport payload={payload('', 3)} stage="packaging" reducedMotion />);
+
+    const fallback = screen.getByRole('img', { name: /SVG/ });
+    const transforms = Array.from(fallback.querySelectorAll('[data-layer-id]'), (group) => group.getAttribute('transform'));
+    expect(new Set(transforms).size).toBe(3);
+    expect(transforms).toEqual(['translate(0 -6)', 'translate(0 0)', 'translate(0 6)']);
+  });
+
   it('renders the legal maximum fallback geometry without spreading the full point set', () => {
     expect(() => render(
       <OutlineProcessViewport payload={maximumFallbackPayload()} stage="slicing" reducedMotion />,

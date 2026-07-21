@@ -246,8 +246,12 @@ function createPayloadResources(payload: OutlinePreviewPayload): PayloadResource
     scanPlane.rotation.x = -Math.PI / 2;
     root.add(scanPlane);
 
-    const axialMinimum = Math.min(...payload.layers.map((layer) => layer.zStart));
-    const axialMaximum = Math.max(...payload.layers.map((layer) => layer.zEnd));
+    const axialMinimum = payload.layers.length > 0
+      ? Math.min(...payload.layers.map((layer) => layer.zStart))
+      : -planarSize / 2;
+    const axialMaximum = payload.layers.length > 0
+      ? Math.max(...payload.layers.map((layer) => layer.zEnd))
+      : planarSize / 2;
     const explosionMargin = Math.max((payload.layers.length - 1) * EXPLODED_LAYER_GAP / 2, planarSize * 0.1);
     const axisGeometry = new BufferGeometry();
     geometries.add(axisGeometry);

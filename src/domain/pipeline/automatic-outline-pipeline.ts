@@ -28,6 +28,9 @@ import {
 } from '../outline-2.5d/types';
 
 export type AutomaticOutlineProgressStage = 'reading' | 'analyzing' | 'simplifying' | 'slicing' | 'packaging';
+export type AutomaticOutlineProgressEvent =
+  | { readonly stage: AutomaticOutlineProgressStage }
+  | { readonly stage: 'analyzing' | 'slicing'; readonly preview: OutlinePreviewPayload };
 export type AutomaticOutlineResult = {
   readonly sourceHash: string;
   readonly mode: OutlineMode;
@@ -52,7 +55,7 @@ export type AutomaticOutlineDiagnostics = {
   readonly layers: readonly { readonly id: string; readonly simplificationToleranceMm: number; readonly boundsDriftRatio: number; readonly areaDriftRatio: number; readonly areaEvidenceBasis: 'exact-slice-pre-simplification' | 'retained-raster-pre-simplification' }[];
 };
 export type AutomaticOutlineRequest = { readonly bytes: ArrayBuffer };
-export type AutomaticOutlineProgress = (stage: AutomaticOutlineProgressStage) => void | Promise<void>;
+export type AutomaticOutlineProgress = (event: AutomaticOutlineProgressEvent) => void | Promise<void>;
 export type AutomaticOutlineErrorCode = 'INVALID_STL' | 'NO_OUTLINE' | 'RESOURCE_LIMIT' | 'TIME_LIMIT';
 
 export class AutomaticOutlineError extends Error {
@@ -100,21 +103,61 @@ function checkEvidenceDeadline(deadline: number): void {
   if (Date.now() > deadline) throw new RangeError('Automatic outline evidence exceeded the runtime budget');
 }
 
+const MAX_PREVIEW_TRIANGLES = 2_000;
+
 function copyPreviewMesh(mesh: TriangleMesh, deadline: number): OutlinePreviewPayload['mesh'] {
   checkEvidenceDeadline(deadline);
-  const positions = new Float32Array(mesh.positions.length);
-  for (let index = 0; index < mesh.positions.length; index += 1) {
-    if ((index & 4095) === 0) checkEvidenceDeadline(deadline);
-    positions[index] = mesh.positions[index];
+  const triangleCount = Math.floor(mesh.indices.length / 3);
+  const previewTriangleCount = Math.min(triangleCount, MAX_PREVIEW_TRIANGLES);
+  const sourceToPreview = new Map<number, number>();
+  const positions: number[] = [];
+  const indices = new Uint32Array(previewTriangleCount * 3);
+  for (let previewTriangle = 0; previewTriangle < previewTriangleCount; previewTriangle += 1) {
+    if ((previewTriangle & 1023) === 0) checkEvidenceDeadline(deadline);
+    const sourceTriangle = previewTriangleCount === triangleCount || previewTriangleCount <= 1
+      ? previewTriangle
+      : Math.floor(previewTriangle * (triangleCount - 1) / (previewTriangleCount - 1));
+    for (let corner = 0; corner < 3; corner += 1) {
+      const sourceIndex = mesh.indices[sourceTriangle * 3 + corner];
+      let previewIndex = sourceToPreview.get(sourceIndex);
+      if (previewIndex === undefined) {
+        previewIndex = sourceToPreview.size;
+        sourceToPreview.set(sourceIndex, previewIndex);
+        positions.push(
+          mesh.positions[sourceIndex * 3],
+          mesh.positions[sourceIndex * 3 + 1],
+          mesh.positions[sourceIndex * 3 + 2],
+        );
+      }
+      indices[previewTriangle * 3 + corner] = previewIndex;
+    }
   }
   checkEvidenceDeadline(deadline);
-  const indices = new Uint32Array(mesh.indices.length);
-  for (let index = 0; index < mesh.indices.length; index += 1) {
+  return { positions: Float32Array.from(positions), indices };
+}
+
+function meshBoundsCenter(mesh: TriangleMesh, deadline: number): readonly [number, number, number] {
+  let minX = Infinity, minY = Infinity, minZ = Infinity;
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (let index = 0; index < mesh.positions.length; index += 3) {
     if ((index & 4095) === 0) checkEvidenceDeadline(deadline);
-    indices[index] = mesh.indices[index];
+    const x = mesh.positions[index], y = mesh.positions[index + 1], z = mesh.positions[index + 2];
+    minX = Math.min(minX, x); minY = Math.min(minY, y); minZ = Math.min(minZ, z);
+    maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); maxZ = Math.max(maxZ, z);
   }
   checkEvidenceDeadline(deadline);
-  return { positions, indices };
+  return [(minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2];
+}
+
+function clonePreviewPayload(preview: OutlinePreviewPayload): OutlinePreviewPayload {
+  return {
+    mesh: {
+      positions: preview.mesh.positions.slice(),
+      indices: preview.mesh.indices.slice(),
+    },
+    axis: preview.axis,
+    layers: preview.layers,
+  };
 }
 
 function withResultEvidence(
@@ -210,15 +253,23 @@ export async function convertAutomatically(
   }
   const deadline = Date.now() + DEFAULT_OUTLINE_BUDGETS.maxRuntimeMs;
   let lastStage = -1;
+  const previewStages = new Set<AutomaticOutlineProgressEvent['stage']>();
   const stages: readonly AutomaticOutlineProgressStage[] = ['reading', 'analyzing', 'simplifying', 'slicing', 'packaging'];
-  const emit = async (stage: AutomaticOutlineProgressStage): Promise<void> => {
-    const index = stages.indexOf(stage);
-    if (index <= lastStage) return;
+  const emit = async (event: AutomaticOutlineProgressEvent): Promise<void> => {
+    const index = stages.indexOf(event.stage);
+    const hasPreview = 'preview' in event;
+    if (index < lastStage || (index === lastStage && (!hasPreview || previewStages.has(event.stage)))) return;
     lastStage = index;
-    await onProgress?.(stage);
+    if (hasPreview) previewStages.add(event.stage);
+    await onProgress?.(event);
+    try {
+      checkEvidenceDeadline(deadline);
+    } catch (error) {
+      throw asAutomaticOutlineError(error, 'TIME_LIMIT');
+    }
   };
 
-  await emit('reading');
+  await emit({ stage: 'reading' });
   const hash = sourceHash(request.bytes);
   let originalMesh: TriangleMesh;
   try {
@@ -227,7 +278,26 @@ export async function convertAutomatically(
     throw asAutomaticOutlineError(error, 'INVALID_STL');
   }
 
-  await emit('analyzing');
+  const provisionalBasis = createOutlineAxisBasis({ origin: [0, 0, 0], direction: [0, 0, 1] });
+  let analyzingPreviewMesh: OutlinePreviewPayload['mesh'];
+  let analyzingOrigin: readonly [number, number, number];
+  try {
+    analyzingPreviewMesh = copyPreviewMesh(originalMesh, deadline);
+    analyzingOrigin = meshBoundsCenter(originalMesh, deadline);
+  } catch (error) {
+    throw asAutomaticOutlineError(error, 'TIME_LIMIT');
+  }
+  await emit({
+    stage: 'analyzing',
+    preview: {
+      mesh: analyzingPreviewMesh,
+      axis: {
+        origin: analyzingOrigin, direction: [0, 0, 1],
+        planeX: provisionalBasis.planeX, planeY: provisionalBasis.planeY,
+      },
+      layers: [],
+    },
+  });
   let originalReport: MeshProblemReport;
   let safeRepair: ReturnType<typeof repairMeshSafe>;
   try {
@@ -237,7 +307,7 @@ export async function convertAutomatically(
     throw asAutomaticOutlineError(error, 'NO_OUTLINE');
   }
 
-  await emit('simplifying');
+  await emit({ stage: 'simplifying' });
   const extractionMesh = safeRepair.accepted ? safeRepair.mesh : originalMesh;
   let axis: OutlineAxisSelection;
   let specs: ReturnType<typeof scheduleOutlineLayers>;
@@ -249,7 +319,7 @@ export async function convertAutomatically(
   }
   const axisWarnings = axis.source === 'shortest-bounds' ? [FALLBACK_AXIS_WARNING] : [];
 
-  await emit('slicing');
+  await emit({ stage: 'slicing' });
   if (safeRepair.accepted) {
     let exactExtraction: ReturnType<typeof extractExactContours>;
     try {
@@ -267,8 +337,7 @@ export async function convertAutomatically(
       } catch (projectedError) {
         throw asAutomaticOutlineError(projectedError, 'NO_OUTLINE');
       }
-      await emit('packaging');
-      return withResultEvidence({
+      const result = withResultEvidence({
         sourceHash: hash,
         mode: 'outline-2.5d',
         status: 'warning',
@@ -280,9 +349,11 @@ export async function convertAutomatically(
         removedComponentCount: projectedExtraction.removedComponentCount,
         diagnostics: diagnostics(projectedExtraction, originalReport, true),
       }, extractionMesh, deadline, projectedExtraction);
+      await emit({ stage: 'slicing', preview: clonePreviewPayload(result.preview) });
+      await emit({ stage: 'packaging' });
+      return result;
     }
-    await emit('packaging');
-    return withResultEvidence({
+    const result = withResultEvidence({
       sourceHash: hash,
       mode: 'exact',
       status: axisWarnings.length === 0 && exactExtraction.featureWarnings.length === 0 ? 'success' : 'warning',
@@ -294,6 +365,9 @@ export async function convertAutomatically(
       removedComponentCount: 0,
       diagnostics: diagnostics(exactExtraction, originalReport, true),
     }, extractionMesh, deadline, exactExtraction);
+    await emit({ stage: 'slicing', preview: clonePreviewPayload(result.preview) });
+    await emit({ stage: 'packaging' });
+    return result;
   }
 
   let projectedExtraction: ReturnType<typeof extractProjectedContours>;
@@ -302,8 +376,7 @@ export async function convertAutomatically(
   } catch (error) {
     throw asAutomaticOutlineError(error, 'NO_OUTLINE');
   }
-  await emit('packaging');
-  return withResultEvidence({
+  const result = withResultEvidence({
     sourceHash: hash,
     mode: 'outline-2.5d',
     status: 'warning',
@@ -315,4 +388,7 @@ export async function convertAutomatically(
     removedComponentCount: projectedExtraction.removedComponentCount,
     diagnostics: diagnostics(projectedExtraction, originalReport, false),
   }, originalMesh, deadline, projectedExtraction);
+  await emit({ stage: 'slicing', preview: clonePreviewPayload(result.preview) });
+  await emit({ stage: 'packaging' });
+  return result;
 }

@@ -193,8 +193,8 @@ describe('geometry worker client', () => {
     const onProgress = vi.fn();
     const api = inspectOnly(vi.fn());
     api.convertAutomatically = vi.fn(async (_request, progress) => {
-      progress?.('reading');
-      progress?.('packaging');
+      progress?.({ stage: 'reading' });
+      progress?.({ stage: 'packaging' });
       return automaticResult('automatic');
     });
     const client = makeGeometryClient(api);
@@ -205,7 +205,7 @@ describe('geometry worker client', () => {
     expect(api.convertAutomatically).toHaveBeenCalledWith({ bytes }, expect.any(Function));
     const forwardedProgress = vi.mocked(api.convertAutomatically).mock.calls[0][1];
     expect((forwardedProgress as typeof forwardedProgress & { [proxyMarker]?: true })?.[proxyMarker]).toBeUndefined();
-    expect(onProgress.mock.calls).toEqual([['reading'], ['packaging']]);
+    expect(onProgress.mock.calls).toEqual([[{ stage: 'reading' }], [{ stage: 'packaging' }]]);
   });
 
   it('supersedes an active automatic conversion before starting its replacement', async () => {
@@ -246,7 +246,7 @@ describe('geometry worker client', () => {
     await expect(first).rejects.toBeInstanceOf(SupersededError);
     await expect(second).resolves.toMatchObject({ sourceHash: 'replacement' });
 
-    if (typeof staleProgress === 'function') await staleProgress('packaging');
+    if (typeof staleProgress === 'function') await staleProgress({ stage: 'packaging' });
     expect(onProgress).not.toHaveBeenCalled();
     firstRemote.resolve(automaticResult('ignored'));
   });

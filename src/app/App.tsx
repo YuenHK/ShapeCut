@@ -23,7 +23,7 @@ export function createDownloadUrls(files: OutlineDownloadContents, _fileName?: s
   };
   try {
     return {
-      zip: make(files.zip as BlobPart, 'application/zip', 'shapecut-outline.zip'),
+      zip: make(files.zip as BlobPart, 'application/zip', 'shapecut-files.zip'),
       svg: make(files.cutSvg, 'image/svg+xml;charset=utf-8', 'cut-and-engrave.svg'),
       dxf: make(files.cutDxf, 'application/dxf;charset=utf-8', 'cut-and-engrave.dxf'),
       previewPdf: make(files.previewPdf as BlobPart, 'application/pdf', 'preview.pdf'),

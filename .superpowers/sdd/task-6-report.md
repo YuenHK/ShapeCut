@@ -188,3 +188,39 @@ Both real-file UI cases completed in approximately 2.5 seconds, showed `已簡�
 - Bounds drift is the maximum direct width/height ratio between retained output and component-local source evidence. Canonical package validation recomputes the same ratio from source bounds and CUT geometry and rejects mismatched diagnostics.
 - The deterministic 18 mm regression produces a 19 mm raster span: each old opposite-edge ratio is only 2.78 percent, while direct span drift is 5.56 percent. It now fails closed; a resolvable 20 mm case remains at or below three percent.
 - `MAX_STL_BYTES` is the single 128 MiB contract. The UI checks `File.size` before `arrayBuffer`, cancels stale work, shows the Traditional Chinese resource-limit failure, and permits retry. The pipeline checks `byteLength` before progress, hashing, parsing, or allocation loops and returns typed `RESOURCE_LIMIT`.
+
+## Colored exploded one-click UI integration (2026-07-21)
+
+### Status and TDD evidence
+
+- Complete. The initial focused UI RED run failed 6 of 19 tests because the decorative spinner, old preview, incomplete download labels, and undifferentiated warnings were still present.
+- Structured progress, mesh-only fallback, preview-copy deadline, whole-mesh sampling, offset-origin, and exploded SVG regressions were each observed failing before their production changes.
+- The final one-click flow stays neutral until parsed model data exists, then renders the actual bounded mesh during analysis and the colored exploded layers during slicing, packaging, and result display.
+
+### Implementation
+
+- Added monotonic structured progress events with cloned, bounded preview buffers. Up to 2,000 triangles are sampled deterministically across the entire mesh rather than from one spatially grouped prefix.
+- Centers the provisional analysis basis on finite whole-mesh bounds, so translated STL coordinates remain framed. Non-WebGL analysis projects the bounded mesh into SVG; slicing/result SVG groups use deterministic ordered explosion offsets.
+- Replaced the processing spinner and static outline with `OutlineProcessViewport`, while preserving readable foreground status, keyboard/pointer access, reduced-motion behavior, responsive layout, and replacement controls.
+- Shows distinct 2.5D, missing-hole, missing-red, missing-blue, and axis/result warnings. Hole diameter and color thresholds appear only when their corresponding detected features exist.
+- Presents a high-contrast black/red/blue relative-depth legend and explicitly states that colors are not literal laser power, speed, or pass settings.
+- Presents exactly five downloads: ZIP, SVG, DXF, flat preview PDF, and exploded-view PDF. Generic filenames are used, JSON/manifest is not offered, and partial/replaced/unmounted object URLs are revoked independently even if one revocation throws.
+- New-file selection hard-cancels worker work and ignores all stale stage and preview events by request identity.
+
+### Review follow-up
+
+- Resolved all three Important findings from the read-only code review: deterministic whole-mesh triangle coverage, truthful SVG mesh/exploded fallback, and finite mesh-bounds provisional framing.
+- Added focused tests whose early/late triangles occupy distinct bounds, whose coordinates are far from world zero, whose analyzing payload has no layers, and whose result layers require distinct ordered SVG transforms.
+- No Task 7, documentation, external-fixture, or E2E scope was added.
+
+### Final verification
+
+- Focused pipeline/viewport regression: 2 files, 30/30 passed.
+- Full unit suite: 42 files, 1063/1063 passed.
+- Full Chromium suite: 5 files, 33/33 passed.
+- `npm run typecheck`: passed with no diagnostics.
+- `git diff --check`: passed.
+
+### Concerns
+
+- None blocking.

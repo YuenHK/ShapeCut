@@ -48,8 +48,27 @@ describe('App', () => {
     }, '/Users/person/private-model.stl');
 
     expect(Object.values(generated).map(({ fileName }) => fileName)).toEqual([
-      'shapecut-outline.zip', 'cut-and-engrave.svg', 'cut-and-engrave.dxf',
+      'shapecut-files.zip', 'cut-and-engrave.svg', 'cut-and-engrave.dxf',
       'preview.pdf', 'exploded-view.pdf',
     ]);
+  });
+
+  it('attempts to revoke every partial URL even when one revoke fails', () => {
+    const create = vi.fn()
+      .mockReturnValueOnce('blob:zip')
+      .mockReturnValueOnce('blob:svg')
+      .mockImplementationOnce(() => { throw new Error('URL quota'); });
+    const revoke = vi.fn((href: string) => {
+      if (href === 'blob:zip') throw new Error('revocation failed');
+    });
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: create });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revoke });
+
+    expect(() => createDownloadUrls({
+      zip: new Uint8Array([1]), cutSvg: '<svg/>', cutDxf: 'DXF',
+      previewPdf: new Uint8Array([2]), explodedViewPdf: new Uint8Array([3]),
+    })).toThrow('URL quota');
+    expect(revoke).toHaveBeenCalledTimes(2);
+    expect(revoke).toHaveBeenNthCalledWith(2, 'blob:svg');
   });
 });

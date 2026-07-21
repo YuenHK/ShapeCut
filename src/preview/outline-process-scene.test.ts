@@ -146,6 +146,21 @@ afterEach(() => {
 });
 
 describe('OutlineProcessScene', () => {
+  it('renders a finite mesh-only analyzing scene before validated layers exist', () => {
+    globalThis.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+    const source = { ...payload(), layers: [] };
+    const view = createOutlineProcessScene(document.createElement('div'), source, {
+      stage: 'analyzing', reducedMotion: true, createRenderer: renderer,
+    });
+
+    expect(view.layerGroups).toHaveLength(0);
+    expect(Array.from(view.centralAxis.geometry.getAttribute('position').array)).toEqual(
+      expect.arrayContaining([expect.any(Number)]),
+    );
+    expect(Array.from(view.centralAxis.geometry.getAttribute('position').array).every(Number.isFinite)).toBe(true);
+    view.dispose();
+  });
+
   it('builds the wireframe and role lines from the transferred mesh and layer geometry', () => {
     globalThis.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
     globalThis.IntersectionObserver = IntersectionObserverStub as unknown as typeof IntersectionObserver;

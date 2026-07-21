@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type DragEvent } from 'react';
 import {
   AutomaticOutlineError,
+  type AutomaticOutlineProgressEvent,
   type AutomaticOutlineProgressStage,
   type AutomaticOutlineResult,
 } from '../domain/pipeline/automatic-outline-pipeline';
+import type { OutlinePreviewPayload } from '../domain/outline-features/types';
 import { SupersededError } from '../workers/geometry-client';
 import { MAX_STL_BYTES } from '../domain/mesh/parse-stl';
+import { OutlineProcessViewport } from '../preview/OutlineProcessViewport';
 
 export type DownloadFile = { readonly href: string; readonly fileName: string };
 export type OutlineDownloads = {
@@ -18,14 +21,14 @@ export type OutlineDownloads = {
 
 export type OneClickViewState =
   | { readonly kind: 'upload' }
-  | { readonly kind: 'processing'; readonly fileName: string; readonly stage: AutomaticOutlineProgressStage }
+  | { readonly kind: 'processing'; readonly fileName: string; readonly stage: AutomaticOutlineProgressStage; readonly preview?: OutlinePreviewPayload }
   | { readonly kind: 'result'; readonly fileName: string; readonly result: AutomaticOutlineResult; readonly downloads: OutlineDownloads }
   | { readonly kind: 'failure'; readonly fileName?: string; readonly message: string };
 
 export type OneClickConverterServices = {
   readonly convert: (
     bytes: ArrayBuffer,
-    onProgress?: (stage: AutomaticOutlineProgressStage) => void | Promise<void>,
+    onProgress?: (event: AutomaticOutlineProgressEvent) => void | Promise<void>,
   ) => Promise<AutomaticOutlineResult>;
   readonly package: (result: AutomaticOutlineResult, fileName?: string) => Promise<OutlineDownloads>;
   readonly cancel: () => void;
@@ -55,7 +58,9 @@ function failureMessage(error: unknown): string {
 function revokeDownloads(downloads: OutlineDownloads | undefined): void {
   if (!downloads) return;
   if (typeof URL.revokeObjectURL !== 'function') return;
-  for (const item of Object.values(downloads)) URL.revokeObjectURL(item.href);
+  for (const item of Object.values(downloads)) {
+    try { URL.revokeObjectURL(item.href); } catch { /* Continue revoking the remaining owned URLs. */ }
+  }
 }
 
 function readFile(file: File): Promise<ArrayBuffer> {
@@ -69,11 +74,9 @@ function readFile(file: File): Promise<ArrayBuffer> {
 }
 
 type OutlinePresentation = {
-  readonly viewBox: string;
   readonly width: string;
   readonly height: string;
   readonly totalZ: string;
-  readonly paths: readonly string[];
 };
 
 function finiteDisplay(value: number): string | undefined {
@@ -88,7 +91,6 @@ function outlinePresentation(result: AutomaticOutlineResult): OutlinePresentatio
     layer.sourceBoundsMm.minX, layer.sourceBoundsMm.minY,
     layer.sourceBoundsMm.maxX, layer.sourceBoundsMm.maxY,
     layer.zStart, layer.zEnd,
-    ...layer.contour.outer.flat(),
   ]);
   if (!values.every(Number.isFinite)) return undefined;
   const minX = Math.min(...result.layers.map((layer) => layer.sourceBoundsMm.minX));
@@ -101,17 +103,50 @@ function outlinePresentation(result: AutomaticOutlineResult): OutlinePresentatio
   const height = finiteDisplay(maxY - minY);
   const totalZ = finiteDisplay(maxZ - minZ);
   if (!width || !height || !totalZ || Number(width) <= 0 || Number(height) <= 0) return undefined;
-  const paths: string[] = [];
-  for (const layer of result.layers) {
-    const commands: string[] = [];
-    for (const [index, [x, y]] of layer.contour.outer.entries()) {
-      const previewX = finiteDisplay(x - minX), previewY = finiteDisplay(maxY - y);
-      if (previewX === undefined || previewY === undefined) return undefined;
-      commands.push(`${index === 0 ? 'M' : 'L'} ${previewX} ${previewY}`);
-    }
-    paths.push(`${commands.join(' ')} Z`);
+  return { width, height, totalZ };
+}
+
+const PROJECTED_WARNING_SUMMARIES = new Set([
+  '已簡化模型',
+  '原始內部細節、孔洞及細小分離零件已被忽略',
+  '不同材料厚度會改變堆疊後高度',
+  '輸出不包含雷射功率或速度',
+]);
+
+function omittedFeatureMessage(label: string, omitted: number, total: number): string | undefined {
+  if (omitted === 0 || total === 0) return undefined;
+  return `${omitted === total ? '所有' : '部分'}切片未${label}。`;
+}
+
+function presentationWarnings(result: AutomaticOutlineResult): readonly string[] {
+  const total = result.coloredLayers.length;
+  const warnings: string[] = [];
+  if (result.mode === 'outline-2.5d') {
+    warnings.push('模型已使用 2.5D 外形簡化；內部結構及細小分離零件不會成為切割線。');
   }
-  return { viewBox: `0 0 ${width} ${height}`, width, height, totalZ, paths };
+  const missingHole = result.coloredLayers.filter((layer) => !layer.centralHole || layer.diagnostics.hole.status !== 'retained').length;
+  const missingDeep = result.coloredLayers.filter((layer) => !layer.deepFeature).length;
+  const missingLight = result.coloredLayers.filter((layer) => !layer.lightFeature).length;
+  const hole = omittedFeatureMessage('偵測到可靠中央孔；輸出已省略該孔線', missingHole, total);
+  const deep = omittedFeatureMessage('保留較深層紅色特徵', missingDeep, total);
+  const light = omittedFeatureMessage('保留較淺層藍色特徵', missingLight, total);
+  if (hole) warnings.push(hole);
+  if (deep) warnings.push(deep);
+  if (light) warnings.push(light);
+  warnings.push(...result.warnings.filter((item) => !PROJECTED_WARNING_SUMMARIES.has(item)));
+  warnings.push(...result.featureWarnings.filter((item) => (
+    !/reliable central axle hole/i.test(item)
+    && !/省略雕刻特徵/.test(item)
+  )));
+  return [...new Set(warnings)];
+}
+
+function measurementRange(values: readonly number[]): string | undefined {
+  const finite = [...new Set(values.filter((value) => Number.isFinite(value) && value >= 0).map((value) => Number(value.toFixed(2))))]
+    .sort((left, right) => left - right);
+  if (finite.length === 0) return undefined;
+  if (finite.length === 1) return `${finite[0]} mm`;
+  return `${finite[0]}–${finite[finite.length - 1]} mm`;
 }
 
 function ModelInput({ compact = false, onFile }: { readonly compact?: boolean; readonly onFile: (file: File) => void }) {
@@ -170,14 +205,16 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
     }
     setView({ kind: 'processing', fileName: file.name, stage: 'reading' });
     let lastProgressIndex = 0;
+    let latestPreview: OutlinePreviewPayload | undefined;
     try {
       const bytes = await readFile(file);
       if (current !== requestId.current) return;
-      const result = await services.convert(bytes, (stage) => {
-        const nextProgressIndex = STAGES.indexOf(stage);
+      const result = await services.convert(bytes, (event) => {
+        const nextProgressIndex = STAGES.indexOf(event.stage);
         if (current !== requestId.current || nextProgressIndex < lastProgressIndex) return;
         lastProgressIndex = nextProgressIndex;
-        setView({ kind: 'processing', fileName: file.name, stage });
+        if ('preview' in event) latestPreview = event.preview;
+        setView({ kind: 'processing', fileName: file.name, stage: event.stage, preview: latestPreview });
       });
       if (current !== requestId.current) return;
       const downloads = await services.package(result, file.name);
@@ -217,16 +254,20 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
   if (view.kind === 'processing') {
     const active = STAGES.indexOf(view.stage);
     return (
-      <section className="converter-card processing-card" aria-labelledby="processing-title">
-        <div className="spinner" aria-hidden="true" />
-        <h1 id="processing-title">正在處理你的模型</h1>
-        <p className="file-name">{view.fileName}</p>
-        <div role="status" aria-live="polite" className="progress-status">
-          <strong>{STAGE_LABELS[view.stage]}</strong>
-          <progress value={active + 1} max={STAGES.length} aria-label="轉換進度" />
-          <ol className="stage-list">
-            {STAGES.map((stage, index) => <li key={stage} className={index <= active ? 'complete' : ''}>{STAGE_LABELS[stage]}</li>)}
-          </ol>
+      <section className={`converter-card processing-card ${view.preview ? 'has-preview' : ''}`} aria-labelledby="processing-title">
+        {view.preview
+          ? <div className="processing-viewport"><OutlineProcessViewport payload={view.preview} stage={view.stage} /></div>
+          : <div className="neutral-loading" aria-hidden="true"><span /><span /><span /></div>}
+        <div className="processing-foreground">
+          <h1 id="processing-title">正在處理你的模型</h1>
+          <p className="file-name">{view.fileName}</p>
+          <div role="status" aria-live="polite" className="progress-status">
+            <strong>{STAGE_LABELS[view.stage]}</strong>
+            <progress value={active + 1} max={STAGES.length} aria-label="轉換進度" />
+            <ol className="stage-list">
+              {STAGES.map((stage, index) => <li key={stage} className={index <= active ? 'complete' : ''}>{STAGE_LABELS[stage]}</li>)}
+            </ol>
+          </div>
         </div>
         <ModelInput compact onFile={(file) => void processFile(file)} />
       </section>
@@ -246,9 +287,20 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
   );
 
   const { result, downloads } = view;
-  const warning = result.status === 'warning';
-  const simplified = result.mode === 'outline-2.5d';
+  const warnings = presentationWarnings(result);
+  const warning = result.status === 'warning' || warnings.length > 0;
   const presentation = outlinePresentation(result);
+  const holeDiameter = measurementRange(result.coloredLayers.flatMap((layer) => (
+    layer.centralHole && layer.diagnostics.hole.status === 'retained'
+      ? [layer.diagnostics.hole.equivalentDiameterMm]
+      : []
+  )));
+  const redThreshold = measurementRange(result.coloredLayers.flatMap((layer) => (
+    layer.deepFeature ? [layer.diagnostics.depth.redThresholdMm] : []
+  )));
+  const blueThreshold = measurementRange(result.coloredLayers.flatMap((layer) => (
+    layer.lightFeature ? [layer.diagnostics.depth.blueThresholdMm] : []
+  )));
   return (
     <section className="converter-card result-card" aria-labelledby="result-title">
       <div className="result-heading">
@@ -259,27 +311,37 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
           <p className="file-name">{view.fileName}</p>
         </div>
       </div>
-      {warning && simplified && <div className="warning-panel"><strong>已簡化模型</strong><p>內部細節、孔洞及細小分離零件已被忽略。不同材料厚度會改變堆疊後高度；正式製作前請先試切。</p></div>}
-      {warning && !simplified && <div className="warning-panel"><strong>處理提示</strong><ul>{result.warnings.map((item) => <li key={item}>{item}</li>)}</ul></div>}
+      {warnings.length > 0 && (
+        <section className="warning-panel" aria-label="模型處理提示">
+          <strong>處理提示</strong>
+          <ul>{warnings.map((item) => <li key={item}>{item}</li>)}</ul>
+        </section>
+      )}
       <div className="result-grid">
-        <div className="outline-preview">
-          {presentation ? <svg role="img" aria-label="實際外形切片預覽" viewBox={presentation.viewBox} preserveAspectRatio="xMidYMid meet">
-            <title>每層已驗證外形的疊加預覽</title>
-            {presentation.paths.map((path, index) => <path key={result.layers[index].id} d={path} vectorEffect="non-scaling-stroke" />)}
-          </svg> : <p>無法顯示有限尺寸預覽</p>}
+        <div className="result-viewport">
+          <OutlineProcessViewport payload={result.preview} stage="packaging" />
         </div>
         <dl className="result-summary">
           <div><dt>處理方式</dt><dd>{result.mode === 'exact' ? '精確切片' : '2.5D 外形'}</dd></div>
           <div><dt>切片數量</dt><dd>{result.layers.length} 層</dd></div>
           <div><dt>平面尺寸 X × Y</dt><dd>{presentation ? `${presentation.width} × ${presentation.height} mm` : '不可用'}</dd></div>
           <div><dt>原始 Z 範圍</dt><dd>{presentation ? `總高度 ${presentation.totalZ} mm` : '不可用'}</dd></div>
-          <div><dt>輸出內容</dt><dd>通用切割外形</dd></div>
+          <div><dt>輸出內容</dt><dd>切割外形與相對深淺層級</dd></div>
         </dl>
+      </div>
+      <div className="color-legend" aria-label="相對顏色圖例">
+        <strong>顏色圖例</strong>
+        <ul>
+          <li><span className="legend-swatch black" aria-hidden="true" />黑色：切割外框及中央孔</li>
+          <li><span className="legend-swatch red" aria-hidden="true" />紅色：相對較深層特徵</li>
+          <li><span className="legend-swatch blue" aria-hidden="true" />藍色：相對較淺層特徵</li>
+        </ul>
+        <p>顏色只表示相對深淺層級，不代表實際雷射功率、速度或走刀次數。</p>
       </div>
       <a className="primary-button download-primary" href={downloads.zip.href} download={downloads.zip.fileName}>下載 ZIP 製作套件</a>
       <nav className="secondary-downloads" aria-label="其他下載格式">
         {([
-          ['svg', 'SVG'], ['dxf', 'DXF'], ['previewPdf', 'Preview PDF'], ['explodedPdf', 'Exploded PDF'],
+          ['svg', 'SVG'], ['dxf', 'DXF'], ['previewPdf', '平面預覽 PDF'], ['explodedPdf', '爆炸圖 PDF'],
         ] as const).map(([kind, label]) => <a key={kind} href={downloads[kind].href} download={downloads[kind].fileName}>下載 {label}</a>)}
       </nav>
       <details className="technical-details">
@@ -298,10 +360,13 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
           <div><dt>修復決定</dt><dd>{result.diagnostics.repairDecision === 'accepted' ? '已接受安全修復' : '使用原始模型投影'}</dd></div>
           <div><dt>Raster cell</dt><dd>{result.diagnostics.rasterCellSizeMm === null ? '精確模式不適用' : `${result.diagnostics.rasterCellSizeMm} mm`}</dd></div>
           <div><dt>最大外形偏差</dt><dd>{`${(Math.max(...result.diagnostics.layers.map((item) => Math.max(item.boundsDriftRatio, item.areaDriftRatio))) * 100).toFixed(2)}%`}</dd></div>
+          {holeDiameter && <div><dt>偵測中央孔直徑</dt><dd>{holeDiameter}</dd></div>}
+          {redThreshold && <div><dt>紅色深層門檻</dt><dd>{redThreshold}</dd></div>}
+          {blueThreshold && <div><dt>藍色淺層門檻</dt><dd>{blueThreshold}</dd></div>}
         </dl>
         <h2>處理提示</h2>
-        {result.warnings.length > 0 ? <ul>{result.warnings.map((item) => <li key={item}>{item}</li>)}</ul> : <p>沒有額外提示。</p>}
-        <p>ZIP 內含 SVG、DXF、平面預覽及 exploded view 四項檔案。</p>
+        {warnings.length > 0 ? <ul>{warnings.map((item) => <li key={item}>{item}</li>)}</ul> : <p>沒有額外提示。</p>}
+        <p>ZIP 只內含 cut-and-engrave.svg、cut-and-engrave.dxf、preview.pdf 及 exploded-view.pdf 四項檔案。</p>
       </details>
       <ModelInput compact onFile={(file) => void processFile(file)} />
     </section>

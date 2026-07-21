@@ -1,7 +1,11 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
-import { AutomaticOutlineError, type AutomaticOutlineResult } from '../domain/pipeline/automatic-outline-pipeline';
+import {
+  AutomaticOutlineError,
+  type AutomaticOutlineProgressEvent,
+  type AutomaticOutlineResult,
+} from '../domain/pipeline/automatic-outline-pipeline';
 import { featureEvidenceFingerprint, type ColoredOutlineLayer } from '../domain/outline-features/types';
 import { MAX_STL_BYTES } from '../domain/mesh/parse-stl';
 import { SupersededError } from '../workers/geometry-client';
@@ -66,11 +70,11 @@ const result: AutomaticOutlineResult = {
 };
 
 const downloads: OutlineDownloads = {
-  zip: { href: 'blob:zip', fileName: 'model-shapecut.zip' },
-  svg: { href: 'blob:svg', fileName: 'model-cut.svg' },
-  dxf: { href: 'blob:dxf', fileName: 'model-cut.dxf' },
-  previewPdf: { href: 'blob:preview', fileName: 'model-preview.pdf' },
-  explodedPdf: { href: 'blob:exploded', fileName: 'model-exploded-view.pdf' },
+  zip: { href: 'blob:zip', fileName: 'shapecut-files.zip' },
+  svg: { href: 'blob:svg', fileName: 'cut-and-engrave.svg' },
+  dxf: { href: 'blob:dxf', fileName: 'cut-and-engrave.dxf' },
+  previewPdf: { href: 'blob:preview', fileName: 'preview.pdf' },
+  explodedPdf: { href: 'blob:exploded', fileName: 'exploded-view.pdf' },
 };
 
 function deferred<T>() {
@@ -120,30 +124,74 @@ describe('OneClickConverter', () => {
     expect(api.cancel).toHaveBeenCalledOnce();
     expect(api.convert).toHaveBeenCalledOnce();
     await screen.findByRole('heading', { name: '轉換完成' });
-    expect(screen.getByRole('status')).toHaveTextContent('轉換完成');
+    expect(screen.getAllByRole('status').some((status) => status.textContent?.includes('轉換完成'))).toBe(true);
     expect(screen.queryByRole('button', { name: /修復|軸心|下一步|材料|分件|確認輸出/ })).toBeNull();
   });
 
   it('announces monotonic processing stages through an accessible status', async () => {
     const user = userEvent.setup();
     const conversion = deferred<AutomaticOutlineResult>();
-    let report: ((stage: 'reading' | 'analyzing' | 'simplifying' | 'slicing' | 'packaging') => void) | undefined;
+    let report: ((event: AutomaticOutlineProgressEvent) => void) | undefined;
     const api = services({ convert: vi.fn((_bytes, onProgress) => { report = onProgress; return conversion.promise; }) });
     const { container } = render(<OneClickConverter services={api} />);
 
     await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'busy.stl'));
     expect(container.querySelector('.progress-status > strong')).toHaveTextContent('模型已讀取');
-    report?.('simplifying');
+    report?.({ stage: 'simplifying' });
     await vi.waitFor(() => expect(container.querySelector('.progress-status > strong')).toHaveTextContent('正在簡化'));
-    report?.('reading');
+    report?.({ stage: 'reading' });
     await vi.waitFor(() => expect(container.querySelector('.progress-status > strong')).toHaveTextContent('正在簡化'));
-    report?.('slicing');
+    report?.({ stage: 'slicing', preview: result.preview });
     await vi.waitFor(() => expect(container.querySelector('.progress-status > strong')).toHaveTextContent('正在產生切片'));
-    report?.('packaging');
+    report?.({ stage: 'packaging' });
     await vi.waitFor(() => expect(container.querySelector('.progress-status > strong')).toHaveTextContent('正在準備下載'));
     const checklist = container.querySelectorAll('.stage-list li');
     expect(checklist).toHaveLength(5);
     expect(checklist.item(4)).toHaveTextContent('正在準備下載');
+  });
+
+  it('stays neutral until parsed preview data arrives, then uses the real viewport through packaging', async () => {
+    const user = userEvent.setup();
+    const conversion = deferred<AutomaticOutlineResult>();
+    let report: ((event: AutomaticOutlineProgressEvent) => void) | undefined;
+    const api = services({ convert: vi.fn((_bytes, onProgress) => { report = onProgress; return conversion.promise; }) });
+    const { container } = render(<OneClickConverter services={api} />);
+
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'preview.stl'));
+    expect(screen.queryByRole('img', { name: /模型分層預覽/ })).toBeNull();
+    expect(container.querySelector('.spinner')).toBeNull();
+
+    report?.({ stage: 'analyzing', preview: result.preview });
+    const preview = await screen.findByRole('img', { name: /模型分層預覽/ });
+    expect(preview.closest('.outline-process-viewport')).toHaveAttribute('data-stage', 'analyzing');
+
+    report?.({ stage: 'slicing', preview: result.preview });
+    report?.({ stage: 'packaging' });
+    await vi.waitFor(() => expect(preview.closest('.outline-process-viewport')).toHaveAttribute('data-stage', 'packaging'));
+  });
+
+  it('ignores a stale preview frame after a second file hard-cancels the first job', async () => {
+    const user = userEvent.setup();
+    const conversions = [deferred<AutomaticOutlineResult>(), deferred<AutomaticOutlineResult>()];
+    const reports: Array<((event: AutomaticOutlineProgressEvent) => void) | undefined> = [];
+    const api = services({
+      convert: vi.fn((_bytes, onProgress) => {
+        reports.push(onProgress);
+        return conversions[reports.length - 1].promise;
+      }),
+    });
+    render(<OneClickConverter services={api} />);
+
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['one'], 'old.stl'));
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['two'], 'new.stl'));
+    reports[0]?.({ stage: 'slicing', preview: result.preview });
+    await Promise.resolve();
+    expect(screen.queryByRole('img', { name: /模型分層預覽/ })).toBeNull();
+    expect(screen.getByText('new.stl')).toBeVisible();
+
+    reports[1]?.({ stage: 'analyzing', preview: result.preview });
+    expect(await screen.findByRole('img', { name: /模型分層預覽/ })).toBeVisible();
+    expect(api.cancel).toHaveBeenCalledTimes(2);
   });
 
   it('cancels an old selection and never publishes its late result', async () => {
@@ -159,7 +207,7 @@ describe('OneClickConverter', () => {
     await vi.waitFor(() => expect(convert).toHaveBeenCalledOnce());
     await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['two'], 'new.stl'));
     second.resolve({ ...result, sourceHash: 'b'.repeat(32) });
-    await vi.waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('new.stl'));
+    await vi.waitFor(() => expect(screen.getByText('new.stl')).toBeVisible());
     first.resolve(result);
     await Promise.resolve();
 
@@ -176,23 +224,88 @@ describe('OneClickConverter', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
-  it('shows the simplified warning and all five colored package payloads', async () => {
+  it('shows the simplified warning, primary real viewport, and exact five colored downloads', async () => {
     const user = userEvent.setup();
     const warning = { ...result, mode: 'outline-2.5d' as const, status: 'warning' as const, warnings: ['已簡化模型'] };
     render(<OneClickConverter services={services({ convert: vi.fn().mockResolvedValue(warning) })} />);
     await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'broken.stl'));
 
     await screen.findByRole('heading', { name: '轉換完成' });
-    expect(screen.getByRole('status')).toHaveTextContent('需注意');
-    expect(screen.getAllByText('已簡化模型')[0]).toBeVisible();
-    expect(screen.getByText(/不同材料厚度會改變堆疊後高度/)).toBeVisible();
+    expect(screen.getAllByRole('status').some((status) => status.textContent?.includes('需注意'))).toBe(true);
+    expect(screen.getAllByText(/模型已使用 2.5D 外形簡化/)[0]).toBeVisible();
     expect(screen.getByRole('link', { name: '下載 ZIP 製作套件' })).toHaveAttribute('href', 'blob:zip');
-    for (const name of ['SVG', 'DXF', 'Preview PDF', 'Exploded PDF']) {
-      expect(screen.getByRole('link', { name: `下載 ${name}` })).toBeVisible();
-    }
+    expect(screen.getByRole('link', { name: /下載 ZIP/ })).toHaveAttribute('download', 'shapecut-files.zip');
+    expect(screen.getByRole('link', { name: /下載 SVG/ })).toHaveAttribute('download', 'cut-and-engrave.svg');
+    expect(screen.getByRole('link', { name: /下載 DXF/ })).toHaveAttribute('download', 'cut-and-engrave.dxf');
+    expect(screen.getByRole('link', { name: /平面預覽 PDF/ })).toHaveAttribute('download', 'preview.pdf');
+    expect(screen.getByRole('link', { name: /爆炸圖 PDF/ })).toHaveAttribute('download', 'exploded-view.pdf');
+    expect(screen.queryByRole('link', { name: /JSON|manifest/i })).not.toBeInTheDocument();
     expect(screen.getByText('10 × 5 mm')).toBeVisible();
     expect(screen.getByText('總高度 1 mm')).toBeVisible();
-    expect(screen.getByRole('img', { name: '實際外形切片預覽' })).toHaveAttribute('viewBox', '0 0 10 5');
+    expect(screen.getByRole('img', { name: /模型分層預覽/ })).toBeVisible();
+    expect(screen.getByText(/顏色.*相對.*不代表.*雷射功率/)).toBeVisible();
+  });
+
+  it('distinguishes omitted hole, deep, and light features and only shows measured technical values', async () => {
+    const user = userEvent.setup();
+    const retainedHole = {
+      id: 'hole', role: 'CUT_BLACK' as const,
+      outer: [[3, 2], [4, 1], [5, 2], [4, 3]] as const,
+      boundsMm: { minX: 3, minY: 1, maxX: 5, maxY: 3 }, areaMm2: 2,
+    };
+    const deepFeature = {
+      id: 'deep', role: 'DEEP_RED' as const,
+      outer: [[1, 1], [2, 1], [2, 2], [1, 2]] as const,
+      boundsMm: { minX: 1, minY: 1, maxX: 2, maxY: 2 }, areaMm2: 1,
+    };
+    const measuredLayer: ColoredOutlineLayer = {
+      ...coloredLayer,
+      centralHole: retainedHole,
+      deepFeature,
+      diagnostics: {
+        hole: { status: 'retained', equivalentDiameterMm: 1.6, axisDistanceMm: 0.1 },
+        depth: { cellSizeMm: 0.1, contrastMm: 0.9, redThresholdMm: 0.7, blueThresholdMm: 0.3 },
+      },
+    };
+    const omittedLayer: ColoredOutlineLayer = {
+      ...coloredLayer,
+      id: 'layer-1', index: 1, zStart: 1, zEnd: 2,
+      exterior: { ...coloredLayer.exterior, id: 'layer-1-exterior' },
+    };
+    const warningResult = {
+      ...result,
+      status: 'warning' as const,
+      coloredLayers: [measuredLayer, omittedLayer],
+      preview: { ...result.preview, layers: [measuredLayer, omittedLayer] },
+      featureWarnings: [
+        'No reliable central axle hole was found; the hole was omitted.',
+        '表面深度資料不足，已省略雕刻特徵',
+      ],
+    };
+    render(<OneClickConverter services={services({ convert: vi.fn().mockResolvedValue(warningResult) })} />);
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'features.stl'));
+    await screen.findByRole('heading', { name: '轉換完成' });
+
+    const warningPanel = screen.getByRole('region', { name: '模型處理提示' });
+    expect(warningPanel).toHaveTextContent('部分切片未偵測到可靠中央孔');
+    expect(warningPanel).toHaveTextContent('部分切片未保留較深層紅色特徵');
+    expect(warningPanel).toHaveTextContent('未保留較淺層藍色特徵');
+    await user.click(screen.getByText('技術資料'));
+    expect(screen.getByText('1.6 mm')).toBeVisible();
+    expect(screen.getByText('0.7 mm')).toBeVisible();
+    expect(screen.queryByText('0.3 mm')).toBeNull();
+  });
+
+  it('omits hole diameter and depth-threshold rows when no corresponding feature was detected', async () => {
+    const user = userEvent.setup();
+    render(<OneClickConverter services={services()} />);
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'plain.stl'));
+    await screen.findByRole('heading', { name: '轉換完成' });
+    await user.click(screen.getByText('技術資料'));
+
+    expect(screen.queryByText('偵測中央孔直徑')).toBeNull();
+    expect(screen.queryByText('紅色深層門檻')).toBeNull();
+    expect(screen.queryByText('藍色淺層門檻')).toBeNull();
   });
 
   it('reports an exact-mode warning without falsely claiming that the model was simplified', async () => {
@@ -226,19 +339,27 @@ describe('OneClickConverter', () => {
     expect(details).toHaveTextContent('warning');
     expect(details).toHaveTextContent('a'.repeat(32));
     expect(details).toHaveTextContent('正式製作前應先試切少量零件');
-    expect(details).toHaveTextContent('SVG、DXF、平面預覽及 exploded view');
+    expect(details).toHaveTextContent('cut-and-engrave.svg、cut-and-engrave.dxf、preview.pdf 及 exploded-view.pdf');
     expect(details).not.toHaveTextContent('private-name.stl');
   });
 
-  it('renders an SVG path from the actual contour instead of a fixed decorative shape', async () => {
+  it('renders the result viewport from the actual preview payload instead of a fixed decorative shape', async () => {
     const user = userEvent.setup();
     const firstServices = services();
     const firstRender = render(<OneClickConverter services={firstServices} />);
     await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'wide.stl'));
     await screen.findByRole('heading', { name: '轉換完成' });
-    const firstPath = firstRender.container.querySelector('svg path')?.getAttribute('d');
+    const firstPath = firstRender.container.querySelector('[data-role="CUT_BLACK"]')?.getAttribute('d');
     firstRender.unmount();
 
+    const changedLayer = {
+      ...coloredLayer,
+      exterior: {
+        ...coloredLayer.exterior,
+        outer: [[0, 0], [4, 0], [2, 8]] as const,
+        boundsMm: { minX: 0, minY: 0, maxX: 4, maxY: 8 }, areaMm2: 16,
+      },
+    };
     const changed = {
       ...result,
       layers: [{
@@ -248,14 +369,16 @@ describe('OneClickConverter', () => {
         simplifiedAreaMm2: 16,
         sourceBoundsMm: { minX: 0, minY: 0, maxX: 4, maxY: 8 },
       }],
+      coloredLayers: [changedLayer],
+      preview: { ...result.preview, layers: [changedLayer] },
     };
     render(<OneClickConverter services={services({ convert: vi.fn().mockResolvedValue(changed) })} />);
     await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'tall.stl'));
     await screen.findByRole('heading', { name: '轉換完成' });
-    const secondPath = document.querySelector('svg path')?.getAttribute('d');
+    const secondPath = document.querySelector('[data-role="CUT_BLACK"]')?.getAttribute('d');
 
-    expect(firstPath).toBe('M 0 5 L 10 5 L 10 0 L 0 0 Z');
-    expect(secondPath).toBe('M 0 8 L 4 8 L 2 0 Z');
+    expect(firstPath).toBe('M 0 0 L 10 0 L 10 5 L 0 5 Z');
+    expect(secondPath).toBe('M 0 0 L 4 0 L 2 8 Z');
     expect(secondPath).not.toBe(firstPath);
   });
 
