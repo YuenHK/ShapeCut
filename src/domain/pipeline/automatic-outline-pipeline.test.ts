@@ -64,6 +64,25 @@ function steppedCylinder(segments = 32): TriangleMesh {
   return { positions: new Float64Array(positions), indices: new Uint32Array(indices) };
 }
 
+function layerLocalSteppedPrism(): TriangleMesh {
+  const profile = [
+    [-5, -3], [5, -3], [5, 0.55], [0, 0.55], [0, 0.8], [-5, 0.8],
+  ] as const;
+  const positions: number[] = [];
+  for (const y of [-5, 5]) for (const [x, z] of profile) positions.push(x, y, z);
+  const indices: number[] = [];
+  const frontFaces = [[0, 1, 2], [0, 2, 3], [0, 3, 5], [3, 4, 5]] as const;
+  for (const [a, b, c] of frontFaces) {
+    indices.push(a, b, c);
+    indices.push(6 + a, 6 + c, 6 + b);
+  }
+  for (let edge = 0; edge < profile.length; edge += 1) {
+    const next = (edge + 1) % profile.length;
+    indices.push(edge, 6 + edge, 6 + next, edge, 6 + next, next);
+  }
+  return { positions: new Float64Array(positions), indices: new Uint32Array(indices) };
+}
+
 function squareTube(outerSize = 20, innerSize = 4, depth = 2): TriangleMesh {
   const positions: number[] = [];
   for (const [size, z] of [[outerSize, -depth / 2], [outerSize, depth / 2], [innerSize, -depth / 2], [innerSize, depth / 2]]) {
@@ -100,6 +119,21 @@ function scaled(mesh: TriangleMesh, x: number, y: number, z: number): TriangleMe
 }
 
 describe('automatic outline pipeline', () => {
+  it('publishes both layer-local depth roles through preview and fingerprint evidence', async () => {
+    const result = await convertAutomatically({ bytes: writeBinarySTL(layerLocalSteppedPrism(), 'safe') });
+    const featured = result.coloredLayers.filter((layer) => layer.deepFeature && layer.lightFeature);
+
+    expect(featured.length).toBeGreaterThan(0);
+    expect(featured.every((layer) => layer.deepFeature?.role === 'DEEP_RED')).toBe(true);
+    expect(featured.every((layer) => layer.lightFeature?.role === 'LIGHT_BLUE')).toBe(true);
+    expect(featured.every((layer) => (
+      layer.diagnostics.depth.redThresholdMm > layer.diagnostics.depth.blueThresholdMm
+      && layer.diagnostics.depth.redThresholdMm <= layer.zEnd - layer.zStart + 1e-9
+    ))).toBe(true);
+    expect(result.preview.layers).toEqual(result.coloredLayers);
+    expect(result.featureEvidenceFingerprint).toMatch(/^[0-9a-f]{32}$/);
+  });
+
   it('bounds every stepped-mesh depth sample to its own layer slab', async () => {
     const result = await convertAutomatically({ bytes: writeBinarySTL(steppedCylinder(), 'safe') });
 

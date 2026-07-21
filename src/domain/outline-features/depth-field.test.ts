@@ -171,6 +171,58 @@ describe('adaptive source-triangle depth features', () => {
     });
   });
 
+  it('fails closed before hit-array allocation when the configured or derived crossing budget is exceeded', () => {
+    const surface = steppedSurface();
+
+    expect(() => buildDepthField(surface, request({
+      maximumSurfaceHits: 1,
+    } as unknown as Partial<DepthFeatureRequest>))).toThrow(/surface-hit resource budget/i);
+    expect(() => buildDepthField(surface, request({
+      maximumSurfaceHits: Number.MAX_SAFE_INTEGER,
+    } as unknown as Partial<DepthFeatureRequest>))).toThrow(/surface-hit resource budget/i);
+  });
+
+  it('keeps multi-component workspaces linear in raster cells instead of components times cells', () => {
+    const patches: Patch[] = [];
+    for (let y = 0; y < 4; y += 1) for (let x = 0; x < 4; x += 1) {
+      patches.push({
+        minX: -4.5 + x * 2.25,
+        maxX: -3 + x * 2.25,
+        minY: -4.5 + y * 2.25,
+        maxY: -3 + y * 2.25,
+        depth: (x + y) % 2 === 0 ? 4 : 1,
+      });
+    }
+    const allocations: { phase: string; liveBytes: number; rasterCells: number }[] = [];
+
+    extractAdaptiveDepthFeatures(patchedSurface(patches), request({
+      cellSizeMm: 0.25,
+      layer: { index: 0, zStart: 0, zMid: 2, zEnd: 4 },
+      resourceObserver: (event: { phase: string; liveBytes: number; rasterCells: number }) => allocations.push(event),
+    } as unknown as Partial<DepthFeatureRequest>));
+
+    const componentEvents = allocations.filter((event) => event.phase.startsWith('component-'));
+    const hitStorage = allocations.find((event) => event.phase === 'surface-hit-storage');
+    expect(componentEvents.length).toBeGreaterThan(0);
+    expect(Math.max(...componentEvents.map((event) => event.liveBytes / event.rasterCells)))
+      .toBeLessThanOrEqual(24);
+    expect(hitStorage?.liveBytes).toBeLessThanOrEqual(64 * 1024 * 1024);
+  });
+
+  it('honors cancellation from inside topology and per-cell hit sorting', () => {
+    for (const cancellationPhase of ['topology-sort', 'surface-hit-sort']) {
+      let activePhase = '';
+      const checkpoint = (): void => {
+        if (activePhase === cancellationPhase) throw new Error(`cancelled during ${cancellationPhase}`);
+      };
+
+      expect(() => buildDepthField(steppedSurface(), request({
+        checkpoint,
+        resourceObserver: (event: { phase: string }) => { activePhase = event.phase; },
+      } as unknown as Partial<DepthFeatureRequest>))).toThrow(`cancelled during ${cancellationPhase}`);
+    }
+  });
+
   it('rejects disconnected open planes as insufficient paired depth evidence', () => {
     const openPlanes = patchedSurface([
       { minX: -5, maxX: -2, minY: -5, maxY: 5, depth: 5 },
