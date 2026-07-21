@@ -22,7 +22,7 @@ ShapeCut now exposes one workflow: selecting one STL immediately runs analysis, 
 
 ## Output safety contract
 
-All formats are regenerated from the same canonical colored contours and provenance. Black is `CUT_BLACK`, red is `DEEP_RED`, and blue is `LIGHT_BLUE`; these roles describe cut/relative depth and never literal machine settings. Layer order, ID, Z interval, feature ID, role, color, points, cardinality and all three fingerprints must reconcile. SVG and DXF parsers consume their complete root/section streams; PDF acceptance validates the page tree, boxes, resources, font encoding, decoded visible labels and privacy-safe raw/Info text, including literal escape forms and whitespace/odd-nibble hexadecimal strings. ZIP records are exactly `cut-and-engrave.svg`, `cut-and-engrave.dxf`, `preview.pdf`, and `exploded-view.pdf`, in that order, and are byte-identical to the four individual downloads.
+All formats are regenerated from the same canonical colored contours and provenance. Black is `CUT_BLACK`, red is `DEEP_RED`, and blue is `LIGHT_BLUE`; these roles describe cut/relative depth and never literal machine settings. Layer order, ID, Z interval, feature ID, role, color, points, cardinality and all three fingerprints must reconcile. SVG and DXF parsers consume their complete root/section streams and recompute the exact 5 mm margin/gap/row layout extents from rendered entities before accepting SVG mm dimensions/viewBox or DXF `EXTMAX`. PDF acceptance validates the envelope/xref endpoint, exact reachable indirect-object set, page tree, boxes, resources, font encoding, decoded visible labels, dictionary keys/name values, string objects, and the decoded canonical content stream. ZIP records are exactly `cut-and-engrave.svg`, `cut-and-engrave.dxf`, `preview.pdf`, and `exploded-view.pdf`, in that order, and are byte-identical to the four individual downloads.
 
 A deterministic, non-secret removal-evidence fingerprint additionally binds the source hash, mode, and ordered layer ID/index/Z/count records. It detects accidental or runtime mutation, including sum-preserving count swaps; it is not cryptographic authentication against a party able to recompute the fingerprint.
 
@@ -34,7 +34,7 @@ The final release run executes `npm test`, browser tests, both real Knight E2E c
 
 | Command | Fresh result |
 | --- | --- |
-| `npm test` | 42 files, 1084 tests passed; exact artifact parser tests 32/32 |
+| `npm test` | 42 files, 1093 tests passed; exact artifact parser tests 41/41 |
 | `npm run test:browser -- --run` | 5 files, 42 tests passed |
 | External fixture presence check | 2 files present |
 | `npm run test:e2e -- --workers=1` | 15/15 passed, including Knight 2/2; 0 skipped |

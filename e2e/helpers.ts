@@ -11,6 +11,7 @@ import {
   PDFNumber,
   PDFObject,
   PDFRawStream,
+  PDFRef,
   PDFString,
 } from 'pdf-lib';
 import { expect, type Download, type Page } from '@playwright/test';
@@ -305,6 +306,48 @@ function validateEntityRecords(entities: readonly ColoredEntityRecord[], label: 
   }
 }
 
+function canonicalColoredDocumentExtents(
+  entities: readonly ColoredEntityRecord[],
+  label: string,
+): { readonly width: number; readonly height: number } {
+  const margin = 5, gap = 5, maximumRowWidth = 1000, tolerance = 1e-9;
+  let cursorX = margin, cursorY = margin, rowHeight = 0, maximumX = margin, maximumY = margin;
+  const layerOrders = [...new Set(entities.map(({ order }) => order))];
+  for (const order of layerOrders) {
+    const layerEntities = entities.filter((entity) => entity.order === order);
+    const exterior = layerEntities.find(({ role }) => role === 'CUT_BLACK');
+    if (!exterior) throw new Error(`${label} layer is missing its canonical exterior`);
+    const xValues = exterior.points.map(([x]) => x), yValues = exterior.points.map(([, y]) => y);
+    const bounds = {
+      minX: Math.min(...xValues), maxX: Math.max(...xValues),
+      minY: Math.min(...yValues), maxY: Math.max(...yValues),
+    };
+    const width = bounds.maxX - bounds.minX, height = bounds.maxY - bounds.minY;
+    if (![width, height].every((value) => Number.isFinite(value) && value > 0 && value <= 990)) {
+      throw new Error(`${label} exterior bounds are outside the canonical layout limit`);
+    }
+    if (cursorX + width > maximumRowWidth - margin && cursorX > margin) {
+      cursorX = margin;
+      cursorY += rowHeight + gap;
+      rowHeight = 0;
+    }
+    if (Math.abs(bounds.minX - cursorX) > tolerance || Math.abs(bounds.minY - cursorY) > tolerance) {
+      throw new Error(`${label} entity layout does not use the canonical margin, gap, and row placement`);
+    }
+    if (layerEntities.some(({ points }) => points.some(([x, y]) => (
+      x < bounds.minX - tolerance || x > bounds.maxX + tolerance
+      || y < bounds.minY - tolerance || y > bounds.maxY + tolerance
+    )))) {
+      throw new Error(`${label} layer feature lies outside its canonical exterior bounds`);
+    }
+    maximumX = Math.max(maximumX, cursorX + width);
+    maximumY = Math.max(maximumY, cursorY + height);
+    cursorX += width + gap;
+    rowHeight = Math.max(rowHeight, height);
+  }
+  return { width: Math.ceil(maximumX + margin), height: Math.ceil(maximumY + margin) };
+}
+
 function parsePoints(value: string, label: string): readonly (readonly number[])[] {
   if (value.trim() !== value || value === '') throw new Error(`${label} points are malformed`);
   return value.split(' ').map((pair) => {
@@ -439,6 +482,13 @@ export function parseColoredOutlineSvgArtifact(svg: string): ParsedColoredArtifa
     throw new Error('Colored SVG contains duplicate or out-of-order layer identity');
   }
   validateEntityRecords(entities, 'Colored SVG');
+  const documentExtents = canonicalColoredDocumentExtents(entities, 'Colored SVG');
+  if (root.xmlns !== 'http://www.w3.org/2000/svg'
+    || root.width !== `${documentExtents.width}mm`
+    || root.height !== `${documentExtents.height}mm`
+    || root.viewBox !== `0 0 ${documentExtents.width} ${documentExtents.height}`) {
+    throw new Error('Colored SVG namespace, physical dimensions, units, or viewBox is not canonical');
+  }
   for (const layer of layers) {
     const black = layer.roleGroups[0].entities;
     if (signedArea(black[0].points) >= 0 || black.slice(1).some(({ points }) => signedArea(points) <= 0)
@@ -587,6 +637,10 @@ export function parseColoredOutlineDxfArtifact(dxf: string): Omit<ParsedColoredA
     };
   });
   validateEntityRecords(entities, 'Colored DXF');
+  const documentExtents = canonicalColoredDocumentExtents(entities, 'Colored DXF');
+  if (maximumX !== documentExtents.width || maximumY !== documentExtents.height) {
+    throw new Error('Colored DXF EXTMAX does not match the canonical entity layout extents');
+  }
   const entityCounts = roleCounts(entities);
   if (declaredCounts !== countString(entityCounts)) throw new Error('Colored DXF entity counts are inconsistent');
   return { ...fingerprints, entities, entityCounts };
@@ -713,6 +767,106 @@ function pdfNumberArray(pdf: PDFDocument, value: unknown, label: string): readon
   });
 }
 
+function validatePdfEnvelope(bytes: Uint8Array): void {
+  const raw = new TextDecoder('latin1').decode(bytes);
+  if (!raw.startsWith('%PDF-1.7\n%\x81\x81\x81\x81\n\n')) {
+    throw new Error('Colored PDF envelope has a non-canonical header');
+  }
+  const eofMarkers = [...raw.matchAll(/%%EOF/g)];
+  const trailer = raw.match(/\nstartxref\n(\d+)\n%%EOF([\x00\t\n\f\r ]*)$/);
+  if (eofMarkers.length !== 1 || !trailer) {
+    throw new Error('Colored PDF envelope has trailing data or a non-canonical EOF marker');
+  }
+  const xrefOffset = safeInteger(trailer[1], 'Colored PDF startxref offset');
+  if (raw.slice(xrefOffset, xrefOffset + 5) !== 'xref\n') {
+    throw new Error('Colored PDF startxref does not identify the canonical cross-reference table');
+  }
+}
+
+function requiredPdfRef(value: PDFObject | undefined, label: string): PDFRef {
+  if (!(value instanceof PDFRef)) throw new Error(`Colored PDF ${label} must be an indirect reference`);
+  return value;
+}
+
+function validatePdfObjectGraph(pdf: PDFDocument): void {
+  const trailerKeys = Object.entries(pdf.context.trailerInfo)
+    .filter(([, value]) => value !== undefined)
+    .map(([key]) => key).sort();
+  if (exact(trailerKeys) !== exact(['Info', 'Root'])) {
+    throw new Error('Colored PDF trailer object roots are not canonical');
+  }
+  const rootRef = requiredPdfRef(pdf.context.trailerInfo.Root, 'catalog root');
+  const infoRef = requiredPdfRef(pdf.context.trailerInfo.Info, 'Info root');
+  if (pdf.context.lookup(rootRef) !== pdf.catalog) throw new Error('Colored PDF catalog reference is malformed');
+
+  const info = pdf.context.lookup(infoRef);
+  if (!(info instanceof PDFDict)) throw new Error('Colored PDF Info object is malformed');
+  exactPdfKeys(info, [
+    'Producer', 'ModDate', 'Creator', 'CreationDate', 'Title', 'Subject', 'Author', 'Keywords',
+  ], 'Info');
+
+  const pagesRef = requiredPdfRef(pdf.catalog.get(PDFName.of('Pages')), 'page-tree root');
+  const pagesNode = pdf.context.lookup(pagesRef);
+  if (!(pagesNode instanceof PDFDict)) throw new Error('Colored PDF page-tree root is malformed');
+  const kids = pagesNode.get(PDFName.of('Kids'));
+  if (!(kids instanceof PDFArray) || kids.size() !== 1) throw new Error('Colored PDF page-tree kids are not canonical');
+  const pageRef = requiredPdfRef(kids.get(0), 'single page');
+  const page = pdf.getPage(0);
+  if (pdf.context.lookup(pageRef) !== page.node) throw new Error('Colored PDF page reference is malformed');
+  const contents = page.node.get(PDFName.of('Contents'));
+  if (!(page.node.get(PDFName.of('Resources')) instanceof PDFDict)
+    || !(page.node.get(PDFName.of('MediaBox')) instanceof PDFArray)
+    || !(contents instanceof PDFArray) || contents.size() !== 1) {
+    throw new Error('Colored PDF page resources, MediaBox, and Contents must be direct canonical objects');
+  }
+  const contentsRef = requiredPdfRef(contents.get(0), 'content stream');
+  const content = pdf.context.lookup(contentsRef);
+  if (!(content instanceof PDFRawStream)) throw new Error('Colored PDF content object is not a raw stream');
+  exactPdfKeys(content.dict, ['Filter', 'Length'], 'content stream');
+  if (content.dict.get(PDFName.of('Filter'))?.toString() !== '/FlateDecode'
+    || !(content.dict.get(PDFName.of('Length')) instanceof PDFNumber)) {
+    throw new Error('Colored PDF content stream encoding is not canonical');
+  }
+
+  const resources = page.node.get(PDFName.of('Resources')) as PDFDict;
+  const fonts = resources.get(PDFName.of('Font'));
+  if (!(fonts instanceof PDFDict) || !(resources.get(PDFName.of('XObject')) instanceof PDFDict)
+    || !(resources.get(PDFName.of('ExtGState')) instanceof PDFDict)) {
+    throw new Error('Colored PDF resource dictionaries must be direct canonical objects');
+  }
+  const fontRefs = fonts.values().map((value) => requiredPdfRef(value, 'font'));
+  if (fontRefs.length === 0) throw new Error('Colored PDF must reference a canonical font object');
+
+  const indirect = pdf.context.enumerateIndirectObjects();
+  const indirectByRef = new Map(indirect.map(([ref, object]) => [ref.tag, object]));
+  const reachableRefs = new Set<string>(), visitedObjects = new Set<PDFObject>();
+  const visit = (object: PDFObject): void => {
+    if (object instanceof PDFRef) {
+      if (reachableRefs.has(object.tag)) return;
+      const target = indirectByRef.get(object.tag);
+      if (!target) throw new Error('Colored PDF references an object missing from its cross-reference graph');
+      reachableRefs.add(object.tag);
+      visit(target);
+      return;
+    }
+    if (visitedObjects.has(object)) return;
+    visitedObjects.add(object);
+    if (object instanceof PDFRawStream) visit(object.dict);
+    else if (object instanceof PDFDict) object.values().forEach(visit);
+    else if (object instanceof PDFArray) object.asArray().forEach(visit);
+  };
+  visit(rootRef);
+  visit(infoRef);
+  const expectedRefs = new Set([
+    rootRef.tag, infoRef.tag, pagesRef.tag, pageRef.tag, contentsRef.tag, ...fontRefs.map(({ tag }) => tag),
+  ]);
+  const sorted = (values: Iterable<string>) => [...values].sort();
+  if (exact(sorted(reachableRefs)) !== exact(sorted(expectedRefs))
+    || exact(sorted(indirectByRef.keys())) !== exact(sorted(expectedRefs))) {
+    throw new Error('Colored PDF contains an orphan, extra, or non-canonical indirect object');
+  }
+}
+
 function validatePdfStructure(pdf: PDFDocument): readonly string[] {
   exactPdfKeys(pdf.catalog, ['Type', 'Pages'], 'catalog');
   const pagesNode = pdf.context.lookup(pdf.catalog.get(PDFName.of('Pages')));
@@ -781,7 +935,7 @@ function decodePdfOctets(octets: readonly number[]): string {
 }
 
 function decodePdfObjectStrings(pdf: PDFDocument): readonly string[] {
-  const values: string[] = [], visited = new Set<PDFObject>();
+  const values: string[] = [], names: string[] = [], visited = new Set<PDFObject>();
   const visit = (object: PDFObject): void => {
     if (visited.has(object)) return;
     visited.add(object);
@@ -794,10 +948,13 @@ function decodePdfObjectStrings(pdf: PDFDocument): readonly string[] {
       }
       const normalized = lexicalValue.replace(/[\x00\t\n\f\r ]/g, '');
       values.push(PDFHexString.of(normalized).decodeText());
+    } else if (object instanceof PDFName) {
+      names.push(object.decodeText());
     } else if (object instanceof PDFRawStream) {
       // Stream dictionaries remain metadata-bearing PDF objects; only their binary payload is excluded.
       visit(object.dict);
     } else if (object instanceof PDFDict) {
+      object.keys().forEach(visit);
       object.values().forEach(visit);
     } else if (object instanceof PDFArray) {
       object.asArray().forEach(visit);
@@ -807,7 +964,17 @@ function decodePdfObjectStrings(pdf: PDFDocument): readonly string[] {
   Object.values(pdf.context.trailerInfo).forEach((object) => {
     if (object) visit(object);
   });
-  return values;
+  const canonicalNames = new Set([
+    'Type', 'Catalog', 'Pages', 'Kids', 'Count',
+    'Producer', 'ModDate', 'Creator', 'CreationDate', 'Title', 'Subject', 'Author', 'Keywords',
+    'Page', 'Parent', 'Resources', 'MediaBox', 'CropBox', 'Contents',
+    'Font', 'XObject', 'ExtGState', 'Length', 'Filter', 'FlateDecode',
+    'Subtype', 'Type1', 'BaseFont', 'Helvetica', 'Encoding', 'WinAnsiEncoding',
+  ]);
+  assertPublicText(values.join('\n'), 'Colored PDF decoded string objects');
+  const invalidName = names.find((name) => !canonicalNames.has(name) && !/^Helvetica-\d+$/.test(name));
+  if (invalidName !== undefined) throw new Error('Colored PDF contains a non-canonical dictionary key or name value');
+  return [...values, ...names];
 }
 
 function onePdfToken(tokens: readonly string[], prefix: string, pattern: RegExp, label: string): RegExpMatchArray {
@@ -823,7 +990,11 @@ export async function parseColoredOutlinePdf(
   bytes: Uint8Array,
   kind: 'preview' | 'exploded',
 ): Promise<ParsedColoredPdf> {
+  validatePdfEnvelope(bytes);
   const pdf = await PDFDocument.load(bytes, { updateMetadata: false });
+  const objectText = decodePdfObjectStrings(pdf);
+  assertPublicText(objectText.join('\n'), `Colored ${kind} PDF object names and strings`);
+  validatePdfObjectGraph(pdf);
   const fontResourceNames = validatePdfStructure(pdf);
   const expectedTitle = kind === 'preview' ? 'ShapeCut colored preview' : 'ShapeCut exploded view';
   if (pdf.getTitle() !== expectedTitle || pdf.getPageCount() !== 1
@@ -893,7 +1064,8 @@ export async function parseColoredOutlinePdf(
   }
   const publicText = [
     pdf.getTitle(), pdf.getSubject(), pdf.getAuthor(), pdf.getCreator(), pdf.getProducer(), keywordsText,
-    ...parsedGeometry.texts.map(({ text }) => text), ...decodePdfObjectStrings(pdf),
+    ...parsedGeometry.texts.map(({ text }) => text), ...objectText,
+    ...pdfContentStreams(pdf).map((stream) => stream.replace(/\/Helvetica-\d+/g, 'Helvetica')),
   ].filter((value): value is string => typeof value === 'string').join('\n');
   assertPublicText(publicText, `Colored ${kind} PDF decoded text and metadata`);
   return {
