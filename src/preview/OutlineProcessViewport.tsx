@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
 import type { AutomaticOutlineProgressStage } from '../domain/pipeline/automatic-outline-pipeline';
 import type { FeatureContour, OutlinePreviewPayload } from '../domain/outline-features/types';
 import {
@@ -66,12 +66,17 @@ function fallbackContours(payload: OutlinePreviewPayload): readonly FeatureConto
 }
 
 function fallbackViewBox(contours: readonly FeatureContour[]): string {
-  if (contours.length === 0) return '0 0 1 1';
-  const points = contours.flatMap((contour) => contour.outer);
-  const minX = Math.min(...points.map(([x]) => x));
-  const minY = Math.min(...points.map(([, y]) => y));
-  const maxX = Math.max(...points.map(([x]) => x));
-  const maxY = Math.max(...points.map(([, y]) => y));
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const contour of contours) {
+    for (const [x, y] of contour.outer) {
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
+    }
+  }
+  if (![minX, minY, maxX, maxY].every(Number.isFinite)) return '0 0 1 1';
   const width = Math.max(maxX - minX, 1);
   const height = Math.max(maxY - minY, 1);
   const padding = Math.max(width, height) * 0.06;
@@ -123,6 +128,7 @@ export function OutlineProcessViewport({
 }: OutlineProcessViewportProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<OutlineProcessScene | undefined>(undefined);
+  const appliedPayloadRef = useRef<OutlinePreviewPayload | undefined>(undefined);
   const dragRef = useRef<{ readonly pointerId: number; x: number } | undefined>(undefined);
   const reducedMotion = useReducedMotion(reducedMotionOverride);
   const hasInjectedFactory = createScene !== undefined || webglFactory !== undefined;
@@ -142,6 +148,7 @@ export function OutlineProcessViewport({
         createRenderer: webglFactory,
       });
       sceneRef.current = controller;
+      appliedPayloadRef.current = payload;
       setFallback(false);
     } catch (error) {
       const partialScene = (error as Error & { partialScene?: Pick<OutlineProcessScene, 'dispose'> }).partialScene;
@@ -152,18 +159,23 @@ export function OutlineProcessViewport({
     }
     return () => {
       controller?.dispose();
-      if (sceneRef.current === controller) sceneRef.current = undefined;
+      if (sceneRef.current === controller) {
+        sceneRef.current = undefined;
+        appliedPayloadRef.current = undefined;
+      }
     };
     // Payload, stage, and motion are synchronized by the focused effects below.
   }, [canUseWebGL, createScene, webglFactory]);
 
   useEffect(() => {
-    if (!sceneRef.current) return;
+    if (!sceneRef.current || appliedPayloadRef.current === payload) return;
     try {
       sceneRef.current.setPayload(payload);
+      appliedPayloadRef.current = payload;
     } catch {
       sceneRef.current.dispose();
       sceneRef.current = undefined;
+      appliedPayloadRef.current = undefined;
       setFallback(true);
     }
   }, [payload, canUseWebGL, createScene, webglFactory]);
@@ -205,7 +217,7 @@ export function OutlineProcessViewport({
     try { event.currentTarget.releasePointerCapture?.(event.pointerId); } catch { /* Browser may reject synthetic capture. */ }
   };
 
-  const descriptionId = 'outline-process-viewport-description';
+  const descriptionId = useId();
   return (
     <figure className="outline-process-viewport" data-stage={stage}>
       {fallback ? (
@@ -226,16 +238,18 @@ export function OutlineProcessViewport({
           onPointerCancel={onPointerEnd}
         />
       )}
-      <figcaption id={descriptionId} className="outline-process-caption">
+      <figcaption id={descriptionId} className="outline-process-caption" role="status" aria-live="polite">
         {fallback ? 'WebGL 不可用，現以實際輪廓 SVG 顯示。' : STAGE_LABELS[stage]}
       </figcaption>
-      <div className="outline-process-controls" role="group" aria-label="模型預覽控制">
-        <button type="button" onClick={() => rotate(-Math.PI / 12)} aria-label="向左旋轉">↶</button>
-        <button type="button" onClick={() => rotate(Math.PI / 12)} aria-label="向右旋轉">↷</button>
-        <button type="button" onClick={() => zoom(-0.2)} aria-label="縮小模型">−</button>
-        <button type="button" onClick={() => zoom(0.2)} aria-label="放大模型">+</button>
-        <button type="button" onClick={reset} aria-label="重設視角">重設</button>
-      </div>
+      {!fallback && (
+        <div className="outline-process-controls" role="group" aria-label="模型預覽控制">
+          <button type="button" onClick={() => rotate(-Math.PI / 12)} aria-label="向左旋轉">↶</button>
+          <button type="button" onClick={() => rotate(Math.PI / 12)} aria-label="向右旋轉">↷</button>
+          <button type="button" onClick={() => zoom(-0.2)} aria-label="縮小模型">−</button>
+          <button type="button" onClick={() => zoom(0.2)} aria-label="放大模型">+</button>
+          <button type="button" onClick={reset} aria-label="重設視角">重設</button>
+        </div>
+      )}
     </figure>
   );
 }

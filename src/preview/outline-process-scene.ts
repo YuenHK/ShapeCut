@@ -11,9 +11,9 @@ import {
   LineLoop,
   LineSegments,
   Material,
+  Matrix4,
   Mesh,
   MeshBasicMaterial,
-  Object3D,
   PerspectiveCamera,
   PlaneGeometry,
   Scene,
@@ -88,31 +88,31 @@ type PayloadResources = {
   readonly wireframe: LineSegments<WireframeGeometry, LineBasicMaterial>;
   readonly scanPlane: Mesh<PlaneGeometry, MeshBasicMaterial>;
   readonly centralAxis: Line<BufferGeometry, LineBasicMaterial>;
+  readonly axialRange: readonly [number, number];
+  readonly geometries: ReadonlySet<BufferGeometry>;
+  readonly materials: ReadonlySet<Material>;
+  disposed: boolean;
 };
 
-function disposeObject(root: Object3D): void {
-  const geometries = new Set<BufferGeometry>();
-  const materials = new Set<Material>();
-  root.traverse((object) => {
-    const renderable = object as Object3D & {
-      geometry?: BufferGeometry;
-      material?: Material | readonly Material[];
-    };
-    if (renderable.geometry) geometries.add(renderable.geometry);
-    if (renderable.material) {
-      const values = Array.isArray(renderable.material) ? renderable.material : [renderable.material];
-      for (const material of values) materials.add(material);
-    }
-  });
+function disposeOwnedResources(
+  root: Group,
+  geometries: ReadonlySet<BufferGeometry>,
+  materials: ReadonlySet<Material>,
+): void {
+  root.clear();
   for (const geometry of geometries) geometry.dispose();
   for (const material of materials) material.dispose();
-  root.clear();
 }
 
-function contourLine(contour: FeatureContour, material: LineBasicMaterial): LineLoop {
+function contourLine(
+  contour: FeatureContour,
+  material: LineBasicMaterial,
+  geometries: Set<BufferGeometry>,
+): LineLoop {
   const positions = new Float32Array(contour.outer.length * 3);
   contour.outer.forEach(([x, y], index) => positions.set([x, 0, y], index * 3));
   const geometry = new BufferGeometry();
+  geometries.add(geometry);
   geometry.setAttribute('position', new BufferAttribute(positions, 3));
   const line = new LineLoop(geometry, material);
   line.name = contour.id;
@@ -159,9 +159,11 @@ function planarBounds(layers: readonly ColoredOutlineLayer[]): Box3 {
 function createPayloadResources(payload: OutlinePreviewPayload): PayloadResources {
   const root = new Group();
   root.name = 'outline-process-payload';
-  let meshGeometry: BufferGeometry | undefined;
+  const geometries = new Set<BufferGeometry>();
+  const materials = new Set<Material>();
   try {
-    meshGeometry = new BufferGeometry();
+    const meshGeometry = new BufferGeometry();
+    geometries.add(meshGeometry);
     meshGeometry.setAttribute('position', new BufferAttribute(payload.mesh.positions, 3));
     meshGeometry.setIndex(new BufferAttribute(payload.mesh.indices, 1));
 
@@ -171,69 +173,96 @@ function createPayloadResources(payload: OutlinePreviewPayload): PayloadResource
       transparent: true,
       depthWrite: false,
     });
-    const wireframe = new LineSegments(new WireframeGeometry(meshGeometry), wireframeMaterial);
+    materials.add(wireframeMaterial);
+    const wireframeGeometry = new WireframeGeometry(meshGeometry);
+    geometries.add(wireframeGeometry);
+    const wireframe = new LineSegments(wireframeGeometry, wireframeMaterial);
     wireframe.name = 'actual-mesh-wireframe';
 
     const manufacturingTransform = new Group();
     manufacturingTransform.name = 'manufacturing-axis-to-display-y';
-    manufacturingTransform.quaternion.setFromUnitVectors(
-      normalizedDirection(payload.axis.direction),
-      new Vector3(0, 1, 0),
-    );
-    wireframe.position.set(...payload.axis.origin).multiplyScalar(-1);
+    const axial = normalizedDirection(payload.axis.direction);
+    const planeX = new Vector3(...payload.axis.planeX);
+    const planeY = new Vector3(...payload.axis.planeY);
+    const origin = new Vector3(...payload.axis.origin);
+    manufacturingTransform.matrixAutoUpdate = false;
+    manufacturingTransform.matrix.copy(new Matrix4().set(
+      planeX.x, planeX.y, planeX.z, -origin.dot(planeX),
+      axial.x, axial.y, axial.z, -origin.dot(axial),
+      planeY.x, planeY.y, planeY.z, -origin.dot(planeY),
+      0, 0, 0, 1,
+    ));
     manufacturingTransform.add(wireframe);
     root.add(manufacturingTransform);
 
-    const materials = new Map<FeatureRole, LineBasicMaterial>(
-      (Object.entries(CANONICAL_ROLE_COLORS) as [FeatureRole, string][]).map(([role, color]) => [
-        role,
-        new LineBasicMaterial({ color, transparent: true, opacity: role === 'CUT_BLACK' ? 0.9 : 0.96 }),
-      ]),
-    );
+    const roleMaterials = new Map<FeatureRole, LineBasicMaterial>();
+    const materialForRole = (role: FeatureRole): LineBasicMaterial => {
+      const existing = roleMaterials.get(role);
+      if (existing) return existing;
+      const material = new LineBasicMaterial({
+        color: CANONICAL_ROLE_COLORS[role],
+        transparent: true,
+        opacity: role === 'CUT_BLACK' ? 0.9 : 0.96,
+      });
+      roleMaterials.set(role, material);
+      materials.add(material);
+      return material;
+    };
     const layerGroups = payload.layers.map((layer, order) => {
       const group = new Group();
       group.name = layer.id;
-      group.userData = { layerId: layer.id, layerIndex: layer.index, order };
-      for (const contour of allContours(layer)) group.add(contourLine(contour, materials.get(contour.role)!));
+      group.userData = {
+        layerId: layer.id,
+        layerIndex: layer.index,
+        order,
+        baseAxial: (layer.zStart + layer.zEnd) / 2,
+      };
+      for (const contour of allContours(layer)) {
+        group.add(contourLine(contour, materialForRole(contour.role), geometries));
+      }
       root.add(group);
       return group;
     });
 
     const bounds = planarBounds(payload.layers);
-    const boundsCenter = bounds.isEmpty() ? new Vector3() : bounds.getCenter(new Vector3());
     const boundsSize = bounds.isEmpty() ? new Vector3(10, 0, 10) : bounds.getSize(new Vector3());
-    for (const group of layerGroups) {
-      group.position.x = -boundsCenter.x;
-      group.position.z = -boundsCenter.z;
-    }
     const planarSize = Math.max(boundsSize.x, boundsSize.z, 1);
 
+    const scanGeometry = new PlaneGeometry(planarSize * 1.14, planarSize * 1.14);
+    geometries.add(scanGeometry);
+    const scanMaterial = new MeshBasicMaterial({
+      color: SCAN_PLANE_COLOR,
+      opacity: 0.16,
+      transparent: true,
+      depthWrite: false,
+      side: DoubleSide,
+    });
+    materials.add(scanMaterial);
     const scanPlane = new Mesh(
-      new PlaneGeometry(planarSize * 1.14, planarSize * 1.14),
-      new MeshBasicMaterial({
-        color: SCAN_PLANE_COLOR,
-        opacity: 0.16,
-        transparent: true,
-        depthWrite: false,
-        side: DoubleSide,
-      }),
+      scanGeometry,
+      scanMaterial,
     );
     scanPlane.name = 'manufacturing-scan-plane';
     scanPlane.rotation.x = -Math.PI / 2;
     root.add(scanPlane);
 
-    const axisHalfLength = Math.max((payload.layers.length + 1) * EXPLODED_LAYER_GAP / 2, planarSize * 0.55);
+    const axialMinimum = Math.min(...payload.layers.map((layer) => layer.zStart));
+    const axialMaximum = Math.max(...payload.layers.map((layer) => layer.zEnd));
+    const explosionMargin = Math.max((payload.layers.length - 1) * EXPLODED_LAYER_GAP / 2, planarSize * 0.1);
     const axisGeometry = new BufferGeometry();
+    geometries.add(axisGeometry);
     axisGeometry.setAttribute('position', new BufferAttribute(Float32Array.from([
-      0, -axisHalfLength, 0,
-      0, axisHalfLength, 0,
+      0, axialMinimum - explosionMargin, 0,
+      0, axialMaximum + explosionMargin, 0,
     ]), 3));
-    const centralAxis = new Line(axisGeometry, new LineBasicMaterial({
+    const axisMaterial = new LineBasicMaterial({
       color: AXIS_COLOR,
       opacity: 0.72,
       transparent: true,
       depthTest: false,
-    }));
+    });
+    materials.add(axisMaterial);
+    const centralAxis = new Line(axisGeometry, axisMaterial);
     centralAxis.name = 'selected-manufacturing-axis';
     root.add(centralAxis);
 
@@ -245,17 +274,21 @@ function createPayloadResources(payload: OutlinePreviewPayload): PayloadResource
       wireframe,
       scanPlane,
       centralAxis,
+      axialRange: [axialMinimum, axialMaximum],
+      geometries,
+      materials,
+      disposed: false,
     };
   } catch (error) {
-    disposeObject(root);
-    meshGeometry?.dispose();
+    disposeOwnedResources(root, geometries, materials);
     throw error;
   }
 }
 
 function disposePayloadResources(resources: PayloadResources): void {
-  disposeObject(resources.root);
-  resources.meshGeometry.dispose();
+  if (resources.disposed) return;
+  resources.disposed = true;
+  disposeOwnedResources(resources.root, resources.geometries, resources.materials);
 }
 
 export function createOutlineProcessScene(
@@ -282,7 +315,7 @@ export function createOutlineProcessScene(
   let disposed = false;
   let reducedMotion = options.reducedMotion ?? false;
   let manualVisible = true;
-  let intersectionVisible = typeof IntersectionObserver !== 'function';
+  let intersectionVisible = false;
   let stage = options.stage ?? 'analyzing';
   let explosionAmount = reducedMotion ? explosionForStage(stage) : 0;
   let lastFrameTime: number | undefined;
@@ -297,10 +330,11 @@ export function createOutlineProcessScene(
     if (!resources) return;
     const middle = (resources.layerGroups.length - 1) / 2;
     resources.layerGroups.forEach((group, order) => {
-      group.position.y = (order - middle) * EXPLODED_LAYER_GAP * explosionAmount;
+      const baseAxial = typeof group.userData.baseAxial === 'number' ? group.userData.baseAxial : 0;
+      group.position.y = baseAxial + (order - middle) * EXPLODED_LAYER_GAP * explosionAmount;
     });
-    const scanRange = Math.max(resources.layerGroups.length - 1, 1) * EXPLODED_LAYER_GAP;
-    resources.scanPlane.position.y = (stageProgress(stage) - 0.5) * scanRange;
+    const [minimum, maximum] = resources.axialRange;
+    resources.scanPlane.position.y = minimum + stageProgress(stage) * (maximum - minimum);
   };
   const frame = (): void => {
     if (!resources) return;

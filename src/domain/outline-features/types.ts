@@ -1,8 +1,10 @@
 import type { Point2 } from '../decomposition/types';
 import type { OutlineLayer } from '../outline-2.5d/extract';
+import { createOutlineAxisBasis } from '../outline-2.5d/raster';
 import type { Bounds2 } from '../outline-2.5d/simplify';
 import { DEFAULT_OUTLINE_BUDGETS, type OutlineMode } from '../outline-2.5d/types';
 import { validateOutlineLayer } from '../outline-2.5d/validate';
+import type { Vec3 } from '../types';
 import { isStrictlyContainedLoop } from './hole';
 import type { DepthFeatureOmissionCode } from './depth-field';
 import { validateDepthFeatureContours } from './validate';
@@ -39,12 +41,15 @@ export type ColoredOutlineLayer = {
   readonly removedComponentCount: number;
   readonly diagnostics: LayerFeatureDiagnostics;
 };
+export type OutlinePreviewAxis = {
+  readonly origin: Vec3;
+  readonly direction: Vec3;
+  readonly planeX: Vec3;
+  readonly planeY: Vec3;
+};
 export type OutlinePreviewPayload = {
   readonly mesh: { readonly positions: Float32Array; readonly indices: Uint32Array };
-  readonly axis: {
-    readonly origin: readonly [number, number, number];
-    readonly direction: readonly [number, number, number];
-  };
+  readonly axis: OutlinePreviewAxis;
   readonly layers: readonly ColoredOutlineLayer[];
 };
 
@@ -53,6 +58,7 @@ type FeatureFingerprintSource = {
   readonly sourceHash: string;
   readonly mode: OutlineMode;
   readonly coloredLayers: readonly ColoredOutlineLayer[];
+  readonly preview: { readonly axis: OutlinePreviewAxis };
 };
 type UnknownRecord = Record<string, unknown>;
 type ValidationBudget = {
@@ -481,6 +487,7 @@ export function featureEvidenceFingerprint(
   const serialized = JSON.stringify({
     sourceHash: result.sourceHash,
     mode: result.mode,
+    previewAxis: result.preview.axis,
     layers: orderedLayerRecords(result.coloredLayers, deadline, checkpoint),
   });
   checkRuntimeBudget(deadline, checkpoint);
@@ -536,14 +543,25 @@ function previewReasons(
   if (!isRecord(value.axis)) {
     reasons.push('Preview axis must be present');
   } else {
-    reasons.push(...unexpectedKeys(value.axis, new Set(['origin', 'direction']), 'Preview axis'));
-    if (!finiteTuple(value.axis.origin, 3) || !finiteTuple(value.axis.direction, 3)) {
-      reasons.push('Preview axis origin and direction must contain finite triples');
+    reasons.push(...unexpectedKeys(value.axis, new Set(['origin', 'direction', 'planeX', 'planeY']), 'Preview axis'));
+    if (!finiteTuple(value.axis.origin, 3) || !finiteTuple(value.axis.direction, 3)
+      || !finiteTuple(value.axis.planeX, 3) || !finiteTuple(value.axis.planeY, 3)) {
+      reasons.push('Preview axis origin, direction, and basis must contain finite triples');
     } else if (Math.hypot(...value.axis.direction) === 0) {
       reasons.push('Preview axis direction must be non-zero');
     } else if (selectedAxis && (value.axis.origin.some((item, index) => item !== selectedAxis.origin[index])
       || value.axis.direction.some((item, index) => item !== selectedAxis.direction[index]))) {
       reasons.push('Preview axis must match the selected automatic axis');
+    } else if (selectedAxis) {
+      const expected = createOutlineAxisBasis({
+        origin: selectedAxis.origin as Vec3,
+        direction: selectedAxis.direction as Vec3,
+      });
+      const tolerance = 256 * Number.EPSILON;
+      if (value.axis.planeX.some((item, index) => Math.abs(item - expected.planeX[index]) > tolerance)
+        || value.axis.planeY.some((item, index) => Math.abs(item - expected.planeY[index]) > tolerance)) {
+        reasons.push('Preview axis basis must match the deterministic extraction basis');
+      }
     }
   }
   if (!Array.isArray(value.layers)) {
@@ -755,13 +773,17 @@ export function validateAutomaticColoredResult(
   reasons.push(...previewReasons(
     value.preview, coloredLayers, coloredLayersValid, selectedAxis, validateLayer, budget,
   ));
+  const previewAxis = isRecord(value.preview) && isRecord(value.preview.axis)
+    ? value.preview.axis as unknown as OutlinePreviewAxis
+    : undefined;
   if (typeof value.featureEvidenceFingerprint !== 'string' || value.featureEvidenceFingerprint.length === 0) {
     reasons.push('Feature evidence fingerprint must be present and non-empty');
-  } else if (coloredLayersValid && (value.mode === 'exact' || value.mode === 'outline-2.5d') && typeof value.sourceHash === 'string'
+  } else if (previewAxis && coloredLayersValid && (value.mode === 'exact' || value.mode === 'outline-2.5d') && typeof value.sourceHash === 'string'
     && value.featureEvidenceFingerprint !== featureEvidenceFingerprint({
       sourceHash: value.sourceHash,
       mode: value.mode,
       coloredLayers,
+      preview: { axis: previewAxis },
     }, deadline, checkpoint)) {
     reasons.push('Feature evidence fingerprint is inconsistent with ordered role records');
   }

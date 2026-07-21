@@ -1,6 +1,37 @@
 import { describe, expect, test } from 'vitest';
 import { DEFAULT_OUTLINE_BUDGETS, type OutlineBudgets } from './types';
-import { markLineSupercover, rasterProjectLayer, type ProjectedMesh } from './raster';
+import {
+  createOutlineAxisBasis,
+  markLineSupercover,
+  projectPointToOutlineBasis,
+  rasterProjectLayer,
+  type ProjectedMesh,
+} from './raster';
+
+describe('deterministic outline axis basis', () => {
+  test.each([
+    ['X', [1, 0, 0] as const],
+    ['Y', [0, 1, 0] as const],
+    ['Z', [0, 0, 1] as const],
+    ['oblique', [1, 2, 3] as const],
+  ])('projects a translated point consistently for %s axis', (_label, direction) => {
+    const origin = [17, -11, 23] as const;
+    const basis = createOutlineAxisBasis({ origin, direction });
+    const display = [4, 7, -5] as const;
+    const point = [
+      origin[0] + basis.planeX[0] * display[0] + basis.axial[0] * display[1] + basis.planeY[0] * display[2],
+      origin[1] + basis.planeX[1] * display[0] + basis.axial[1] * display[1] + basis.planeY[1] * display[2],
+      origin[2] + basis.planeX[2] * display[0] + basis.axial[2] * display[1] + basis.planeY[2] * display[2],
+    ] as const;
+
+    const [planeX, planeY, axial] = projectPointToOutlineBasis(point, basis);
+    expect([planeX, axial, planeY]).toEqual(expect.arrayContaining([
+      expect.closeTo(display[0], 10),
+      expect.closeTo(display[1], 10),
+      expect.closeTo(display[2], 10),
+    ]));
+  });
+});
 
 function occupied(mask: Uint8Array, width: number): string[] {
   return Array.from(mask.entries())

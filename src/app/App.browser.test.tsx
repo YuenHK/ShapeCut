@@ -35,13 +35,19 @@ describe('App real browser one-click flow', () => {
       featureWarnings: [],
       featureEvidenceFingerprint: featureEvidenceFingerprint({
         sourceHash: 'c'.repeat(32), mode: 'exact', coloredLayers: [coloredLayer],
+        preview: { axis: {
+          origin: [0, 0, 0], direction: [0, 0, 1], planeX: [0, 1, 0], planeY: [-1, 0, 0],
+        } },
       }),
       preview: {
         mesh: {
           positions: new Float32Array([0, 0, 0, 10, 0, 0, 0, 5, 0]),
           indices: new Uint32Array([0, 1, 2]),
         },
-        axis: { origin: [0, 0, 0], direction: [0, 0, 1] },
+        axis: {
+          origin: [0, 0, 0], direction: [0, 0, 1],
+          planeX: [0, 1, 0], planeY: [-1, 0, 0],
+        },
         layers: [coloredLayer],
       },
       axis: {

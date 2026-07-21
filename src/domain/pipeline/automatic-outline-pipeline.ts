@@ -12,6 +12,7 @@ import {
   type OutlineExtraction,
   type OutlineLayer,
 } from '../outline-2.5d/extract';
+import { createOutlineAxisBasis } from '../outline-2.5d/raster';
 import { scheduleOutlineLayers } from '../outline-2.5d/layer-schedule';
 import {
   featureEvidenceFingerprint,
@@ -137,13 +138,19 @@ function withResultEvidence(
   } catch (error) {
     throw asAutomaticOutlineError(error, 'NO_OUTLINE');
   }
+  const previewBasis = createOutlineAxisBasis(result.axis.axis);
   const coloredResult = {
     ...result,
     coloredLayers,
     featureWarnings: extraction.featureWarnings,
     preview: {
       mesh: previewMeshCopy,
-      axis: { origin: result.axis.axis.origin, direction: result.axis.axis.direction },
+      axis: {
+        origin: result.axis.axis.origin,
+        direction: result.axis.axis.direction,
+        planeX: previewBasis.planeX,
+        planeY: previewBasis.planeY,
+      },
       layers: coloredLayers,
     },
   };

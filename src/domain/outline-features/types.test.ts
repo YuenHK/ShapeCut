@@ -131,7 +131,12 @@ function automaticResult(coloredLayers = coloredLayerSet(6)): AutomaticOutlineRe
         positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
         indices: new Uint32Array([0, 1, 2]),
       },
-      axis: { origin: [0, 0, 0] as const, direction: [0, 0, 1] as const },
+      axis: {
+        origin: [0, 0, 0] as const,
+        direction: [0, 0, 1] as const,
+        planeX: [0, 1, 0] as const,
+        planeY: [-1, 0, 0] as const,
+      },
       layers: coloredLayers,
     },
   };
@@ -291,6 +296,24 @@ describe('colored outline contracts', () => {
     };
 
     expect(() => validateAutomaticColoredResult(forged)).toThrow(/preview axis.*selected/i);
+  });
+
+  it('requires the deterministic extraction basis and fingerprints it', () => {
+    const result = automaticResult();
+    const forgedWithoutFingerprint = {
+      ...result,
+      preview: {
+        ...result.preview,
+        axis: { ...result.preview.axis, planeX: [1, 0, 0] as const },
+      },
+    };
+    const forged = {
+      ...forgedWithoutFingerprint,
+      featureEvidenceFingerprint: featureEvidenceFingerprint(forgedWithoutFingerprint),
+    };
+
+    expect(forged.featureEvidenceFingerprint).not.toBe(result.featureEvidenceFingerprint);
+    expect(() => validateAutomaticColoredResult(forged)).toThrow(/preview axis.*basis/i);
   });
 
   it('rejects non-finite or incorrectly typed preview triangle data', () => {
@@ -492,6 +515,8 @@ describe('colored outline contracts', () => {
     expect(cloned.coloredLayers).toEqual(result.coloredLayers);
     expect(Array.from(cloned.preview.mesh.positions)).toEqual(Array.from(result.preview.mesh.positions));
     expect(Array.from(cloned.preview.mesh.indices)).toEqual(Array.from(result.preview.mesh.indices));
+    expect(cloned.preview.axis.planeX).toEqual(result.preview.axis.planeX);
+    expect(cloned.preview.axis.planeY).toEqual(result.preview.axis.planeY);
     expect(Object.prototype.toString.call(cloned.preview.mesh.positions)).toBe('[object Float32Array]');
     expect(Object.prototype.toString.call(cloned.preview.mesh.indices)).toBe('[object Uint32Array]');
     expect(cloned.featureEvidenceFingerprint).toBe(featureEvidenceFingerprint(cloned));

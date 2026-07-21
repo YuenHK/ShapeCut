@@ -90,7 +90,7 @@ progress::-webkit-progress-bar { background: var(--mint-100); } progress::-webki
 .outline-process-fallback [data-role="DEEP_RED"], .outline-process-fallback [data-role="LIGHT_BLUE"] { stroke-width: 2.5; }
 .outline-process-caption { min-height: 30px; padding: 5px 14px 9px; color: var(--muted); font-size: .8rem; text-align: center; }
 .outline-process-controls { position: absolute; right: 12px; bottom: 40px; z-index: 1; display: flex; gap: 6px; padding: 6px; border: 1px solid rgba(8,116,90,.14); border-radius: 12px; background: rgba(255,255,255,.9); box-shadow: 0 7px 22px rgba(22,89,73,.1); backdrop-filter: blur(8px); }
-.outline-process-controls button { min-width: 36px; min-height: 36px; padding: 0 9px; border: 1px solid var(--mint-300); border-radius: 9px; color: var(--mint-700); background: white; font-weight: 800; cursor: pointer; }
+.outline-process-controls button { min-width: 44px; min-height: 44px; padding: 0 9px; border: 1px solid var(--mint-300); border-radius: 9px; color: var(--mint-700); background: white; font-weight: 800; cursor: pointer; }
 .outline-process-controls button:hover { background: var(--mint-100); }
 .result-summary { display: grid; margin: 0; align-content: center; gap: 1px; overflow: hidden; border: 1px solid var(--mint-100); border-radius: 16px; background: var(--mint-100); }
 .result-summary div { display: flex; min-height: 62px; padding: 12px 18px; align-items: center; justify-content: space-between; gap: 18px; background: white; }

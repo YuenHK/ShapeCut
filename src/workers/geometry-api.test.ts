@@ -88,7 +88,12 @@ function automaticResult(sourceHash: string): AutomaticOutlineResult {
         positions: Float32Array.from(previewSource.positions),
         indices: previewSource.indices.slice(),
       },
-      axis: { origin: [0, 0, 0] as const, direction: [0, 0, 1] as const },
+      axis: {
+        origin: [0, 0, 0] as const,
+        direction: [0, 0, 1] as const,
+        planeX: [0, 1, 0] as const,
+        planeY: [-1, 0, 0] as const,
+      },
       layers: coloredLayers,
     },
     warnings: [],
@@ -174,6 +179,10 @@ describe('geometry worker client', () => {
       featureEvidenceFingerprint: expect.stringMatching(/^[0-9a-f]{32}$/),
       preview: {
         layers: expect.any(Array),
+        axis: {
+          planeX: [0, 1, 0],
+          planeY: [-1, 0, 0],
+        },
       },
     });
     expect(Object.prototype.toString.call(cloned.preview.mesh.positions)).toBe('[object Float32Array]');

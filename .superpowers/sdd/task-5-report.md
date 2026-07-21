@@ -42,3 +42,36 @@ Complete. Added the standalone process viewport and scene controller without int
 ## Concerns
 
 - None blocking. Task 6 still needs to pass the live preview payload/stage into this standalone viewport.
+
+## Review follow-up: basis alignment, bounded fallback, and lifecycle ownership
+
+### RED evidence
+
+- X/Y/Z/oblique translated asymmetric mesh/contour regressions failed because extraction had no shared public basis helper and the viewport used only an axis quaternion plus independent contour centering.
+- A legal 24-layer payload carrying four 4,096-point contours per layer failed SVG fallback with `RangeError: Maximum call stack size exceeded`.
+- Construction ownership evidence showed six materials were allocated for a black-only payload while only four were reachable for disposal.
+- With `IntersectionObserver` unavailable, the scene incorrectly scheduled RAF; SVG fallback also exposed five focusable controls with no effect.
+- The React boundary called `setPayload` immediately after the scene factory had already consumed the identical payload.
+
+### Fixes
+
+- Extracted `createOutlineAxisBasis` and `projectPointToOutlineBasis` from the raster projection path and made both extraction and viewport consume that single deterministic basis.
+- Extended `OutlinePreviewPayload.axis` with `planeX`/`planeY`; the pipeline publishes them, runtime validation recomputes and checks them, the feature evidence fingerprint includes them, and structured clone tests retain them.
+- Mesh vertices now use the display matrix `(planeX, axial direction, planeY)` about the selected origin. Layer contours remain in the matching X/Z extraction coordinates, use real axial midpoints on display Y, and add only the symmetric explosion offset. Independent contour-bounds recentering was removed.
+- Replaced fallback spread-based bounds with iterative finite accumulation and covered the maximum legal 393,216-point input in unit and Chromium.
+- Replaced scene traversal disposal with explicit geometry/material ownership registries and lazy role-material construction. Replacement, construction failure, and final disposal are idempotent and exact.
+- RAF now remains stopped when intersection visibility cannot be established. Real Chromium covers non-reduced animation plus pause/resume.
+- SVG fallback omits inert controls; WebGL controls are at least 44 x 44 CSS pixels. Status text is an `aria-live="polite"` status.
+- The viewport records the payload consumed by its factory and skips the redundant initial `setPayload`, while still replacing a different payload exactly once.
+
+### Verification
+
+- Shared raster basis: 11/11 passed.
+- Review-focused unit: 74/74 passed, including the viewport React boundary in addition to the requested `.test.ts` glob.
+- Chromium viewport: 3/3 passed.
+- Full unit suite: 42 files, 1053/1053 passed.
+- TypeScript and diff checks passed before final commit.
+
+### Concerns
+
+- None blocking. Test-only preview fixtures were minimally extended with the required deterministic basis fields; no Task 6 runtime integration was added.

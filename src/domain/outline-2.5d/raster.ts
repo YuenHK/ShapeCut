@@ -4,6 +4,12 @@ import type { Vec3 } from '../types';
 import type { OutlineAxisSelection, OutlineBudgets, OutlineLayerSpec } from './types';
 
 export type ProjectedVertex = readonly [number, number, number];
+export type OutlineAxisBasis = {
+  readonly origin: Vec3;
+  readonly axial: Vec3;
+  readonly planeX: Vec3;
+  readonly planeY: Vec3;
+};
 export type ProjectedMesh = {
   readonly vertices: readonly ProjectedVertex[];
   readonly triangles: readonly (readonly [number, number, number])[];
@@ -47,6 +53,32 @@ function dot(left: Vec3, right: Vec3): number {
   return left[0] * right[0] + left[1] * right[1] + left[2] * right[2];
 }
 
+export function createOutlineAxisBasis(axis: Pick<OutlineAxisSelection['axis'], 'origin' | 'direction'>): OutlineAxisBasis {
+  if (axis.origin.some((value) => !Number.isFinite(value))) {
+    throw new RangeError('Contour extraction requires a finite axis origin');
+  }
+  const axial = normalize(axis.direction);
+  let leastAligned = 0;
+  for (let component = 1; component < 3; component += 1) {
+    if (Math.abs(axial[component]) < Math.abs(axial[leastAligned])) leastAligned = component;
+  }
+  const reference: Vec3 = leastAligned === 0 ? [1, 0, 0] : leastAligned === 1 ? [0, 1, 0] : [0, 0, 1];
+  const planeX = normalize(cross(axial, reference));
+  return { origin: axis.origin, axial, planeX, planeY: cross(axial, planeX) };
+}
+
+export function projectPointToOutlineBasis(point: Vec3, basis: OutlineAxisBasis): ProjectedVertex {
+  const relative: Vec3 = [
+    point[0] - basis.origin[0],
+    point[1] - basis.origin[1],
+    point[2] - basis.origin[2],
+  ];
+  if (relative.some((value) => !Number.isFinite(value))) {
+    throw new RangeError('Contour extraction requires finite mesh coordinates');
+  }
+  return [dot(relative, basis.planeX), dot(relative, basis.planeY), dot(relative, basis.axial)];
+}
+
 export function projectMesh(mesh: TriangleMesh, selection: OutlineAxisSelection, deadline = Infinity): ProjectedMesh {
   checkDeadline(deadline);
   if (mesh.positions.length === 0 || mesh.positions.length % 3 !== 0
@@ -54,24 +86,14 @@ export function projectMesh(mesh: TriangleMesh, selection: OutlineAxisSelection,
     || selection.axis.origin.some((value) => !Number.isFinite(value))) {
     throw new RangeError('Contour extraction requires a finite non-empty triangle mesh');
   }
-  const axial = normalize(selection.axis.direction);
-  let leastAligned = 0;
-  for (let component = 1; component < 3; component += 1) {
-    if (Math.abs(axial[component]) < Math.abs(axial[leastAligned])) leastAligned = component;
-  }
-  const reference: Vec3 = leastAligned === 0 ? [1, 0, 0] : leastAligned === 1 ? [0, 1, 0] : [0, 0, 1];
-  const planeX = normalize(cross(axial, reference)), planeY = cross(axial, planeX);
+  const basis = createOutlineAxisBasis(selection.axis);
   const vertices: ProjectedVertex[] = [];
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (let index = 0; index < mesh.positions.length; index += 3) {
     if ((index & 1023) === 0) checkDeadline(deadline);
-    const relative: Vec3 = [
-      mesh.positions[index] - selection.axis.origin[0],
-      mesh.positions[index + 1] - selection.axis.origin[1],
-      mesh.positions[index + 2] - selection.axis.origin[2],
-    ];
-    if (relative.some((value) => !Number.isFinite(value))) throw new RangeError('Contour extraction requires finite mesh coordinates');
-    const vertex: ProjectedVertex = [dot(relative, planeX), dot(relative, planeY), dot(relative, axial)];
+    const vertex = projectPointToOutlineBasis([
+      mesh.positions[index], mesh.positions[index + 1], mesh.positions[index + 2],
+    ], basis);
     vertices.push(vertex);
   }
   const triangles: (readonly [number, number, number])[] = [];

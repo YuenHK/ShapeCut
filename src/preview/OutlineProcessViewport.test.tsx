@@ -40,8 +40,29 @@ function payload(suffix = '', count = 6): OutlinePreviewPayload {
       positions: Float32Array.from([0, 0, 0, 20, 0, 0, 0, 10, 0]),
       indices: Uint32Array.from([0, 1, 2]),
     },
-    axis: { origin: [10, 5, 0], direction: [0, 0, 1] },
+    axis: {
+      origin: [10, 5, 0], direction: [0, 0, 1],
+      planeX: [0, 1, 0], planeY: [-1, 0, 0],
+    },
     layers,
+  };
+}
+
+function maximumFallbackPayload(): OutlinePreviewPayload {
+  const outer = Array.from({ length: 4_096 }, (_, index) => {
+    const angle = index / 4_096 * Math.PI * 2;
+    return [50 * Math.cos(angle), 50 * Math.sin(angle)] as const;
+  });
+  const source = payload('', 24);
+  return {
+    ...source,
+    layers: source.layers.map((item, index) => ({
+      ...item,
+      exterior: contour(`maximum-exterior-${index}`, 'CUT_BLACK', outer),
+      centralHole: contour(`maximum-hole-${index}`, 'CUT_BLACK', outer),
+      deepFeature: contour(`maximum-red-${index}`, 'DEEP_RED', outer),
+      lightFeature: contour(`maximum-blue-${index}`, 'LIGHT_BLUE', outer),
+    })),
   };
 }
 
@@ -73,7 +94,7 @@ describe('OutlineProcessViewport', () => {
     const viewport = screen.getByRole('img', { name: /模型分層預覽/ });
 
     expect(viewport).toHaveAttribute('data-layer-count', '6');
-    expect(scene.setPayload).toHaveBeenCalledWith(first);
+    expect(scene.setPayload).not.toHaveBeenCalled();
     expect(scene.setStage).toHaveBeenCalledWith('slicing');
     expect(scene.setReducedMotion).toHaveBeenCalledWith(true);
 
@@ -106,6 +127,7 @@ describe('OutlineProcessViewport', () => {
     );
     expect(screen.getByRole('img', { name: /模型分層預覽/ })).toHaveAttribute('data-layer-count', '7');
     expect(scene.setPayload).toHaveBeenLastCalledWith(replacement);
+    expect(scene.setPayload).toHaveBeenCalledTimes(1);
     expect(scene.setStage).toHaveBeenLastCalledWith('packaging');
 
     view.unmount();
@@ -123,6 +145,18 @@ describe('OutlineProcessViewport', () => {
     expect(fallback.querySelector('[data-feature-id="blue-2"]')).toHaveAttribute('stroke', '#3A78D4');
     expect(fallback.querySelector('[data-feature-id="exterior-0"]')).toHaveAttribute('d', 'M 0 0 L 20 0 L 20 10 L 0 10 Z');
     expect(screen.getByText(/WebGL.*SVG/)).toBeVisible();
+    expect(screen.queryByRole('group', { name: '模型預覽控制' })).not.toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveAttribute('aria-live', 'polite');
+  });
+
+  it('renders the legal maximum fallback geometry without spreading the full point set', () => {
+    expect(() => render(
+      <OutlineProcessViewport payload={maximumFallbackPayload()} stage="slicing" reducedMotion />,
+    )).not.toThrow();
+
+    const fallback = screen.getByRole('img', { name: /SVG/ });
+    expect(fallback.querySelectorAll('path')).toHaveLength(24 * 4);
+    expect(fallback.getAttribute('viewBox')).not.toMatch(/NaN|Infinity/);
   });
 
   it('falls back without leaking a partially constructed scene when construction fails', () => {

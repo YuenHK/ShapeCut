@@ -119,7 +119,12 @@ export function coloredResult(): AutomaticOutlineResult {
         positions: Float32Array.from([0, 0, 0, 1, 0, 0, 0, 1, 0]),
         indices: Uint32Array.from([0, 1, 2]),
       },
-      axis: { origin: [60, 0, 0] as const, direction: [0, 0, 1] as const },
+      axis: {
+        origin: [60, 0, 0] as const,
+        direction: [0, 0, 1] as const,
+        planeX: [0, 1, 0] as const,
+        planeY: [-1, 0, 0] as const,
+      },
       layers: coloredLayers,
     },
     warnings: [],

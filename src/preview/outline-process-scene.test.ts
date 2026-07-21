@@ -1,5 +1,6 @@
 import { BufferGeometry, Line, LineBasicMaterial, Material, Vector3 } from 'three';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createOutlineAxisBasis } from '../domain/outline-2.5d/raster';
 import type { ColoredOutlineLayer, FeatureContour, OutlinePreviewPayload } from '../domain/outline-features/types';
 import {
   CANONICAL_ROLE_COLORS,
@@ -42,13 +43,63 @@ function layer(index: number): ColoredOutlineLayer {
 }
 
 function payload(layerCount = 6): OutlinePreviewPayload {
+  const basis = createOutlineAxisBasis({ origin: [2, 3, 4], direction: [1, 0, 0] });
   return {
     mesh: {
       positions: Float32Array.from([2, 3, 4, 12, 3, 4, 2, 11, 4]),
       indices: Uint32Array.from([0, 1, 2]),
     },
-    axis: { origin: [2, 3, 4], direction: [1, 0, 0] },
+    axis: {
+      origin: [2, 3, 4], direction: [1, 0, 0],
+      planeX: basis.planeX, planeY: basis.planeY,
+    },
     layers: Array.from({ length: layerCount }, (_, index) => layer(index)),
+  };
+}
+
+function blackOnlyPayload(): OutlinePreviewPayload {
+  const source = payload();
+  return {
+    ...source,
+    layers: source.layers.map((item) => ({
+      ...item,
+      centralHole: undefined,
+      deepFeature: undefined,
+      lightFeature: undefined,
+      diagnostics: { ...item.diagnostics, hole: { status: 'omitted' as const } },
+    })),
+  };
+}
+
+function alignedPayload(direction: readonly [number, number, number]): OutlinePreviewPayload {
+  const origin = [17, -11, 23] as const;
+  const basis = createOutlineAxisBasis({ origin, direction });
+  const displayPoints = [[2, 5, 3], [8, 5, 3], [2, 5, 9]] as const;
+  const worldPoints = displayPoints.map(([x, y, z]) => [
+    origin[0] + basis.planeX[0] * x + basis.axial[0] * y + basis.planeY[0] * z,
+    origin[1] + basis.planeX[1] * x + basis.axial[1] * y + basis.planeY[1] * z,
+    origin[2] + basis.planeX[2] * x + basis.axial[2] * y + basis.planeY[2] * z,
+  ] as const);
+  const exterior = {
+    id: 'aligned-exterior', role: 'CUT_BLACK' as const,
+    outer: displayPoints.map(([x, , z]) => [x, z] as const),
+    boundsMm: { minX: 2, minY: 3, maxX: 8, maxY: 9 }, areaMm2: 18,
+  };
+  return {
+    mesh: {
+      positions: Float32Array.from(worldPoints.flat()),
+      indices: Uint32Array.from([0, 1, 2]),
+    },
+    axis: { origin, direction, planeX: basis.planeX, planeY: basis.planeY },
+    layers: Array.from({ length: 6 }, (_, index) => ({
+      id: `aligned-layer-${index}`, index, zStart: 4.5 + index, zEnd: 5.5 + index,
+      exterior: { ...exterior, id: `aligned-exterior-${index}` },
+      removedComponentCount: 0,
+      diagnostics: {
+        hole: { status: 'omitted' as const },
+        depth: { cellSizeMm: 0, contrastMm: 0, redThresholdMm: 0, blueThresholdMm: 0 },
+      },
+    })),
   };
 }
 
@@ -110,12 +161,12 @@ describe('OutlineProcessScene', () => {
     expect(view.scanPlane.material).toMatchObject({ transparent: true });
     expect(view.layerGroups).toHaveLength(6);
     expect(view.layerGroups.map((group) => group.position.y)).toEqual([
-      -2.5 * EXPLODED_LAYER_GAP,
-      -1.5 * EXPLODED_LAYER_GAP,
-      -0.5 * EXPLODED_LAYER_GAP,
-      0.5 * EXPLODED_LAYER_GAP,
-      1.5 * EXPLODED_LAYER_GAP,
-      2.5 * EXPLODED_LAYER_GAP,
+      0.5 - 2.5 * EXPLODED_LAYER_GAP,
+      1.5 - 1.5 * EXPLODED_LAYER_GAP,
+      2.5 - 0.5 * EXPLODED_LAYER_GAP,
+      3.5 + 0.5 * EXPLODED_LAYER_GAP,
+      4.5 + 1.5 * EXPLODED_LAYER_GAP,
+      5.5 + 2.5 * EXPLODED_LAYER_GAP,
     ]);
 
     const roleColors = new Map<string, string>();
@@ -131,10 +182,45 @@ describe('OutlineProcessScene', () => {
       ['LIGHT_BLUE', CANONICAL_ROLE_COLORS.LIGHT_BLUE],
     ]));
 
-    const mappedAxis = new Vector3(...source.axis.direction)
-      .applyQuaternion(view.manufacturingTransform.quaternion)
-      .normalize();
+    view.manufacturingTransform.updateMatrixWorld(true);
+    const mappedOrigin = view.manufacturingTransform.localToWorld(new Vector3(...source.axis.origin));
+    const mappedAxis = view.manufacturingTransform.localToWorld(
+      new Vector3(
+        source.axis.origin[0] + source.axis.direction[0],
+        source.axis.origin[1] + source.axis.direction[1],
+        source.axis.origin[2] + source.axis.direction[2],
+      ),
+    ).sub(mappedOrigin).normalize();
+    expect(mappedOrigin.distanceTo(new Vector3(0, 0, 0))).toBeLessThan(1e-6);
     expect(mappedAxis.distanceTo(new Vector3(0, 1, 0))).toBeLessThan(1e-6);
+    view.dispose();
+  });
+
+  it.each([
+    ['X', [1, 0, 0] as const],
+    ['Y', [0, 1, 0] as const],
+    ['Z', [0, 0, 1] as const],
+    ['oblique', [1, 2, 3] as const],
+  ])('aligns a translated asymmetric mesh and contour in the same %s extraction basis', (_label, direction) => {
+    globalThis.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+    const source = alignedPayload(direction);
+    const view = createOutlineProcessScene(document.createElement('div'), source, {
+      stage: 'analyzing', reducedMotion: true, createRenderer: renderer,
+    });
+    view.scene.updateMatrixWorld(true);
+
+    const meshPosition = view.meshGeometry.getAttribute('position');
+    const meshWorld = view.wireframe.localToWorld(new Vector3(
+      meshPosition.getX(0), meshPosition.getY(0), meshPosition.getZ(0),
+    ));
+    const contourLineObject = view.layerGroups[0].children[0] as Line<BufferGeometry, LineBasicMaterial>;
+    const contourPosition = contourLineObject.geometry.getAttribute('position');
+    const contourWorld = contourLineObject.localToWorld(new Vector3(
+      contourPosition.getX(0), contourPosition.getY(0), contourPosition.getZ(0),
+    ));
+
+    expect(meshWorld.distanceTo(new Vector3(2, 5, 3))).toBeLessThan(1e-5);
+    expect(contourWorld.distanceTo(meshWorld)).toBeLessThan(1e-5);
     view.dispose();
   });
 
@@ -191,6 +277,44 @@ describe('OutlineProcessScene', () => {
     expect(callbacks.size).toBe(1);
     view.dispose();
     expect(callbacks.size).toBe(0);
+  });
+
+  it('does not animate when IntersectionObserver is unavailable', () => {
+    globalThis.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+    globalThis.IntersectionObserver = undefined as unknown as typeof IntersectionObserver;
+    const request = vi.spyOn(window, 'requestAnimationFrame');
+    const view = createOutlineProcessScene(document.createElement('div'), payload(), {
+      stage: 'slicing', reducedMotion: false, createRenderer: renderer,
+    });
+
+    expect(request).not.toHaveBeenCalled();
+    view.setVisible(true);
+    expect(request).not.toHaveBeenCalled();
+    view.dispose();
+  });
+
+  it('owns only present role materials and disposes construction resources exactly once', () => {
+    globalThis.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+    globalThis.IntersectionObserver = IntersectionObserverStub as unknown as typeof IntersectionObserver;
+    const before = new Material();
+    const beforeId = (before as Material & { readonly id: number }).id;
+    before.dispose();
+    const geometryDispose = vi.spyOn(BufferGeometry.prototype, 'dispose');
+    const materialDispose = vi.spyOn(Material.prototype, 'dispose');
+    const output = renderer();
+    output.setSize = vi.fn(() => { throw new Error('resize construction failure'); });
+
+    expect(() => createOutlineProcessScene(document.createElement('div'), blackOnlyPayload(), {
+      stage: 'slicing', reducedMotion: true, createRenderer: () => output,
+    })).toThrow(/resize construction failure/i);
+
+    const after = new Material();
+    expect((after as Material & { readonly id: number }).id - beforeId - 1).toBe(4);
+    expect(geometryDispose).toHaveBeenCalledTimes(10);
+    expect(materialDispose).toHaveBeenCalledTimes(4);
+    expect(output.dispose).toHaveBeenCalledOnce();
+    expect(output.forceContextLoss).toHaveBeenCalledOnce();
+    after.dispose();
   });
 
   it('disposes replaced and unmounted resources, renderer, observers, RAF, and canvas', () => {

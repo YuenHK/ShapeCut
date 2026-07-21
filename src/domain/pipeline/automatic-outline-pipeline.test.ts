@@ -14,6 +14,7 @@ import {
   type AutomaticOutlineProgressStage,
 } from './automatic-outline-pipeline';
 import * as extraction from '../outline-2.5d/extract';
+import { createOutlineAxisBasis } from '../outline-2.5d/raster';
 import * as simplification from '../outline-2.5d/simplify';
 import { MAX_STL_BYTES } from '../mesh/parse-stl';
 
@@ -131,6 +132,13 @@ describe('automatic outline pipeline', () => {
       && layer.diagnostics.depth.redThresholdMm <= layer.zEnd - layer.zStart + 1e-9
     ))).toBe(true);
     expect(result.preview.layers).toEqual(result.coloredLayers);
+    const expectedBasis = createOutlineAxisBasis(result.axis.axis);
+    expect(result.preview.axis).toEqual({
+      origin: result.axis.axis.origin,
+      direction: result.axis.axis.direction,
+      planeX: expectedBasis.planeX,
+      planeY: expectedBasis.planeY,
+    });
     expect(result.featureEvidenceFingerprint).toMatch(/^[0-9a-f]{32}$/);
   });
 
