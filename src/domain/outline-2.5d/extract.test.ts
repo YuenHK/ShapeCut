@@ -51,6 +51,28 @@ function reverseTriangleOrder(value: TriangleMesh): TriangleMesh {
   return mesh(Array.from(value.positions), triangles.reverse().flat());
 }
 
+function squareTube(outerSize: number, innerSize: number, depth = 2): TriangleMesh {
+  const positions: number[] = [];
+  const rings = [
+    { size: outerSize, z: -depth / 2 }, { size: outerSize, z: depth / 2 },
+    { size: innerSize, z: -depth / 2 }, { size: innerSize, z: depth / 2 },
+  ];
+  for (const { size, z } of rings) {
+    const h = size / 2;
+    positions.push(-h, -h, z, h, -h, z, h, h, z, -h, h, z);
+  }
+  const indices: number[] = [];
+  const quad = (a: number, b: number, c: number, d: number) => indices.push(a, b, c, a, c, d);
+  for (let edge = 0; edge < 4; edge += 1) {
+    const next = (edge + 1) % 4;
+    quad(edge, next, 4 + next, 4 + edge);
+    quad(8 + next, 8 + edge, 12 + edge, 12 + next);
+    quad(4 + edge, 4 + next, 12 + next, 12 + edge);
+    quad(8 + edge, 8 + next, next, edge);
+  }
+  return mesh(positions, indices);
+}
+
 function bounds(points: readonly (readonly [number, number])[]) {
   return {
     minX: Math.min(...points.map(([x]) => x)), maxX: Math.max(...points.map(([x]) => x)),
@@ -130,6 +152,20 @@ describe('extractProjectedContours', () => {
     expect(validateOutlineLayer(result.layers[0]).ok).toBe(true);
   });
 
+  test('retains one reliable projected central void independently of the legacy filled exterior', () => {
+    const frame = combine(
+      sheet(0, -4.5, 12, 3), sheet(0, 4.5, 12, 3),
+      sheet(-4.5, 0, 3, 7), sheet(4.5, 0, 3, 7),
+    );
+    const first = extractProjectedContours(frame, selection, specs, DEFAULT_OUTLINE_BUDGETS);
+    const shuffled = extractProjectedContours(reverseTriangleOrder(frame), selection, specs, DEFAULT_OUTLINE_BUDGETS);
+
+    expect(first.layers[0].contour.holes).toEqual([]);
+    expect(first.holeSelections).toEqual(shuffled.holeSelections);
+    expect(first.holeSelections[0].hole?.outer.length).toBeGreaterThanOrEqual(4);
+    expect(first.holeSelections[0].hole?.axisDistanceMm).toBeLessThan(0.1);
+  });
+
   test.each([
     ['open', box(0, 0, 10, 8, 2, 3)],
     ['self-intersecting', combine(box(-2, 0, 8, 3), box(2, 0, 8, 3))],
@@ -155,6 +191,39 @@ describe('extractProjectedContours', () => {
 });
 
 describe('extractExactContours', () => {
+  test('classifies a strictly nested loop as a reliable central hole', () => {
+    const candidate = squareTube(20, 4);
+    const first = extractExactContours(candidate, selection, specs, DEFAULT_OUTLINE_BUDGETS);
+    const reversed = extractExactContours(reverseTriangleOrder(candidate), selection, specs, DEFAULT_OUTLINE_BUDGETS);
+
+    expect(first.layers[0].contour.holes).toEqual([]);
+    expect(first.holeSelections).toEqual(reversed.holeSelections);
+    expect(first.holeSelections[0].hole?.equivalentDiameterMm).toBeCloseTo(Math.sqrt(16 * 4 / Math.PI), 8);
+    expect(first.holeSelections[0].hole?.axisDistanceMm).toBe(0);
+  });
+
+  test('keeps two depth-zero loops as ambiguity rather than inventing a hole', () => {
+    const twoComponents = combine(box(0, 0, 20, 12), box(40, 0, 4, 4));
+    expect(() => extractExactContours(twoComponents, selection, specs, DEFAULT_OUTLINE_BUDGETS))
+      .toThrow(/depth-zero|multiple closed loops/i);
+  });
+
+  test('rejects nesting deeper than a single hole level', () => {
+    const nestedIsland = combine(squareTube(20, 8), box(0, 0, 2, 2));
+    expect(() => extractExactContours(nestedIsland, selection, specs, DEFAULT_OUTLINE_BUDGETS))
+      .toThrow(/nest|depth|ambigu/i);
+  });
+
+  test('records a sanitized omission instead of fabricating a hole in a no-hole layer', () => {
+    const result = extractExactContours(box(0, 0, 20, 12), selection, specs, DEFAULT_OUTLINE_BUDGETS);
+
+    expect(result.holeSelections).toEqual([expect.objectContaining({
+      hole: undefined,
+      omissionReason: 'NO_RELIABLE_CENTRAL_HOLE',
+      warning: expect.stringMatching(/reliable central axle hole/i),
+    })]);
+  });
+
   test('fails closed instead of silently choosing one disconnected closed slice', () => {
     const twoComponents = combine(box(0, 0, 20, 12), box(40, 0, 4, 4));
     for (const candidate of [twoComponents, reverseTriangleOrder(twoComponents)]) {

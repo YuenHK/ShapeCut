@@ -1,6 +1,11 @@
 import type { Point2 } from '../decomposition/types';
 import type { TriangleMesh } from '../mesh/types';
 import type { ColoredOutlineLayer, FeatureContour } from '../outline-features/types';
+import {
+  CENTRAL_HOLE_OMISSION_WARNING,
+  selectCentralHole,
+  type CentralHoleSelection,
+} from '../outline-features/hole';
 import { projectMesh, rasterCellSize, rasterProjectLayer, type ProjectedMesh } from './raster';
 import { contourBounds, signedArea, simplifyClosedLoop, type Bounds2 } from './simplify';
 import type { OutlineAxisSelection, OutlineBudgets, OutlineLayerSpec } from './types';
@@ -22,6 +27,8 @@ export type OutlineLayer = {
 };
 export type OutlineExtraction = {
   readonly layers: readonly OutlineLayer[];
+  readonly holeSelections: readonly CentralHoleSelection[];
+  readonly featureWarnings: readonly string[];
   readonly cellSizeMm?: number;
   readonly removedComponentCount: number;
 };
@@ -31,6 +38,7 @@ export function colorizeExteriorLayers(
   cellSizeMm = 0,
   deadline = Date.now() + 30_000,
   checkpoint: () => void = () => undefined,
+  holeSelections: readonly CentralHoleSelection[] = [],
 ): readonly ColoredOutlineLayer[] {
   const checkColorizationDeadline = (): void => {
     checkpoint();
@@ -39,6 +47,9 @@ export function colorizeExteriorLayers(
   checkColorizationDeadline();
   if (!Number.isFinite(cellSizeMm) || cellSizeMm < 0) {
     throw new RangeError('Colored outline layers require a finite non-negative cell size');
+  }
+  if (holeSelections.length !== 0 && holeSelections.length !== layers.length) {
+    throw new RangeError('Colored outline layers require one ordered hole selection per layer');
   }
   const coloredLayers: ColoredOutlineLayer[] = [];
   for (const layer of layers) {
@@ -50,6 +61,14 @@ export function colorizeExteriorLayers(
       boundsMm: contourBounds(layer.contour.outer, deadline, checkpoint),
       areaMm2: layer.simplifiedAreaMm2,
     };
+    const holeSelection = holeSelections[coloredLayers.length];
+    const centralHole: FeatureContour | undefined = holeSelection?.hole && {
+      id: `${layer.id}-central-hole`,
+      role: 'CUT_BLACK',
+      outer: holeSelection.hole.outer,
+      boundsMm: holeSelection.hole.boundsMm,
+      areaMm2: holeSelection.hole.areaMm2,
+    };
     checkColorizationDeadline();
     coloredLayers.push({
       id: layer.id,
@@ -57,9 +76,16 @@ export function colorizeExteriorLayers(
       zStart: layer.zStart,
       zEnd: layer.zEnd,
       exterior,
+      centralHole,
       removedComponentCount: layer.removedComponentCount,
       diagnostics: {
-        hole: { status: 'omitted' },
+        hole: holeSelection?.hole
+          ? {
+            status: 'retained',
+            equivalentDiameterMm: holeSelection.hole.equivalentDiameterMm,
+            axisDistanceMm: holeSelection.hole.axisDistanceMm,
+          }
+          : { status: 'omitted' },
         depth: {
           cellSizeMm,
           contrastMm: 0,
@@ -183,17 +209,34 @@ export function extractProjectedContours(
   if (width * height * specs.length > budgets.maxRasterCellsTotal) throw new RangeError('Projected contour exceeds the total raster cell budget');
   let removedComponentCount = 0;
   const tolerance = Math.max(cellSizeMm * 1.5, projected.planarDiameter * 0.001);
-  const layers: OutlineLayer[] = [];
+  const layers: OutlineLayer[] = [], holeSelections: CentralHoleSelection[] = [];
   for (let index = 0; index < specs.length; index += 1) {
     checkDeadline(deadline);
     const spec = specs[index];
     const raster = rasterProjectLayer(projected, spec, budgets, deadline);
     removedComponentCount += raster.componentCount - 1;
-    layers.push(makeLayer(spec, raster.outer, tolerance, budgets, deadline, raster.componentCount - 1, {
+    const layer = makeLayer(spec, raster.outer, tolerance, budgets, deadline, raster.componentCount - 1, {
       bounds: raster.sourceBoundsMm, area: Math.abs(signedArea(raster.outer, deadline)),
+    });
+    layers.push(layer);
+    const layerWidthMm = layer.sourceBoundsMm.maxX - layer.sourceBoundsMm.minX;
+    holeSelections.push(selectCentralHole({
+      candidates: raster.enclosedVoids,
+      exterior: layer.contour.outer,
+      axisPoint: [0, 0],
+      layerWidthMm,
+      planarDiameterMm: projected.planarDiameter,
+      cellSizeMm,
+      deadline,
     }));
   }
-  return { layers, cellSizeMm, removedComponentCount };
+  return {
+    layers,
+    holeSelections,
+    featureWarnings: holeSelections.some((selection) => !selection.hole) ? [CENTRAL_HOLE_OMISSION_WARNING] : [],
+    cellSizeMm,
+    removedComponentCount,
+  };
 }
 
 type Segment = readonly [Point2, Point2];
@@ -323,13 +366,126 @@ function exactLoops(segments: readonly Segment[], diameter: number, deadline: nu
   return loops;
 }
 
-function minimumCoordinates(points: readonly Point2[], deadline: number): readonly [number, number] {
-  let minX = Infinity, minY = Infinity;
-  for (let index = 0; index < points.length; index += 1) {
-    if ((index & 255) === 0) checkDeadline(deadline);
-    minX = Math.min(minX, points[index][0]); minY = Math.min(minY, points[index][1]);
+function exactCross(a: Point2, b: Point2, c: Point2): number {
+  return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+}
+
+function exactOnSegment(a: Point2, b: Point2, point: Point2, areaTolerance: number, lengthTolerance: number): boolean {
+  return Math.abs(exactCross(a, b, point)) <= areaTolerance
+    && point[0] >= Math.min(a[0], b[0]) - lengthTolerance
+    && point[0] <= Math.max(a[0], b[0]) + lengthTolerance
+    && point[1] >= Math.min(a[1], b[1]) - lengthTolerance
+    && point[1] <= Math.max(a[1], b[1]) + lengthTolerance;
+}
+
+function exactSegmentsIntersect(
+  a: Point2,
+  b: Point2,
+  c: Point2,
+  d: Point2,
+  areaTolerance: number,
+  lengthTolerance: number,
+): boolean {
+  const abC = exactCross(a, b, c), abD = exactCross(a, b, d);
+  const cdA = exactCross(c, d, a), cdB = exactCross(c, d, b);
+  if (((abC > areaTolerance && abD < -areaTolerance) || (abC < -areaTolerance && abD > areaTolerance))
+    && ((cdA > areaTolerance && cdB < -areaTolerance) || (cdA < -areaTolerance && cdB > areaTolerance))) return true;
+  return exactOnSegment(a, b, c, areaTolerance, lengthTolerance)
+    || exactOnSegment(a, b, d, areaTolerance, lengthTolerance)
+    || exactOnSegment(c, d, a, areaTolerance, lengthTolerance)
+    || exactOnSegment(c, d, b, areaTolerance, lengthTolerance);
+}
+
+function exactPointLocation(
+  point: Point2,
+  polygon: readonly Point2[],
+  areaTolerance: number,
+  lengthTolerance: number,
+  deadline: number,
+): -1 | 0 | 1 {
+  let inside = false;
+  for (let index = 0; index < polygon.length; index += 1) {
+    if ((index & 63) === 0) checkDeadline(deadline);
+    const a = polygon[index], b = polygon[(index + 1) % polygon.length];
+    if (exactOnSegment(a, b, point, areaTolerance, lengthTolerance)) return 0;
+    if ((a[1] > point[1]) !== (b[1] > point[1])) {
+      const x = a[0] + (point[1] - a[1]) * (b[0] - a[0]) / (b[1] - a[1]);
+      if (x > point[0]) inside = !inside;
+    }
   }
-  return [minX, minY];
+  return inside ? 1 : -1;
+}
+
+function classifyExactNestedLoops(
+  loops: readonly (readonly Point2[])[],
+  diameter: number,
+  deadline: number,
+): { readonly exterior: readonly Point2[]; readonly holes: readonly (readonly Point2[])[] } {
+  checkDeadline(deadline);
+  const lengthTolerance = Math.max(1e-9, diameter * 1e-9);
+  const areaTolerance = Math.max(1e-18, diameter * diameter * 64 * Number.EPSILON);
+  for (let loopIndex = 0; loopIndex < loops.length; loopIndex += 1) {
+    checkDeadline(deadline);
+    const loop = loops[loopIndex];
+    if (loop.length < 3 || loop.length > 4096 || !Number.isFinite(signedArea(loop, deadline))
+      || Math.abs(signedArea(loop, deadline)) <= areaTolerance) {
+      throw new ExactContourAmbiguityError('Exact contour loop is degenerate or non-simple');
+    }
+    for (let first = 0; first < loop.length; first += 1) {
+      checkDeadline(deadline);
+      const firstNext = (first + 1) % loop.length;
+      for (let second = first + 1; second < loop.length; second += 1) {
+        if ((second & 63) === 0) checkDeadline(deadline);
+        const secondNext = (second + 1) % loop.length;
+        if (firstNext === second || secondNext === first) continue;
+        if (exactSegmentsIntersect(
+          loop[first], loop[firstNext], loop[second], loop[secondNext], areaTolerance, lengthTolerance,
+        )) throw new ExactContourAmbiguityError('Exact contour loop is non-simple');
+      }
+    }
+  }
+  for (let left = 0; left < loops.length; left += 1) {
+    for (let right = left + 1; right < loops.length; right += 1) {
+      checkDeadline(deadline);
+      for (let leftEdge = 0; leftEdge < loops[left].length; leftEdge += 1) {
+        if ((leftEdge & 63) === 0) checkDeadline(deadline);
+        const leftNext = (leftEdge + 1) % loops[left].length;
+        for (let rightEdge = 0; rightEdge < loops[right].length; rightEdge += 1) {
+          if ((rightEdge & 63) === 0) checkDeadline(deadline);
+          const rightNext = (rightEdge + 1) % loops[right].length;
+          if (exactSegmentsIntersect(
+            loops[left][leftEdge], loops[left][leftNext], loops[right][rightEdge], loops[right][rightNext],
+            areaTolerance, lengthTolerance,
+          )) throw new ExactContourAmbiguityError('Exact contour loops touch or intersect ambiguously');
+        }
+      }
+    }
+  }
+  const depths = loops.map((loop, loopIndex) => {
+    let depth = 0;
+    for (let containerIndex = 0; containerIndex < loops.length; containerIndex += 1) {
+      checkDeadline(deadline);
+      if (containerIndex === loopIndex) continue;
+      const location = exactPointLocation(
+        loop[0], loops[containerIndex], areaTolerance, lengthTolerance, deadline,
+      );
+      if (location === 0) throw new ExactContourAmbiguityError('Exact contour containment is ambiguous');
+      if (location === 1) depth += 1;
+    }
+    return depth;
+  });
+  const roots = loops.filter((_, index) => depths[index] === 0);
+  if (roots.length !== 1) throw new ExactContourAmbiguityError('Exact contour has multiple closed loops at depth-zero exterior');
+  if (depths.some((depth) => depth > 1)) {
+    throw new ExactContourAmbiguityError('Exact contour nesting depth exceeds one hole level');
+  }
+  const holes = loops.filter((_, index) => depths[index] === 1);
+  if (holes.length > 64) throw new RangeError('Exact contour exceeds the central-hole candidate budget');
+  return { exterior: roots[0], holes };
+}
+
+function clockwise(points: readonly Point2[], deadline: number): readonly Point2[] {
+  return signedArea(points, deadline) < 0 ? points : [...points].reverse();
 }
 
 export function extractExactContours(
@@ -343,22 +499,28 @@ export function extractExactContours(
   const projected = projectMesh(mesh, selection, deadline);
   validateRequest(projected, specs, budgets, deadline);
   const tolerance = Math.max(rasterCellSize(projected) * 1.5, projected.planarDiameter * 0.001);
-  const layers: OutlineLayer[] = [];
+  const layers: OutlineLayer[] = [], holeSelections: CentralHoleSelection[] = [];
   for (let index = 0; index < specs.length; index += 1) {
     checkDeadline(deadline);
     const spec = specs[index];
     const loops = exactLoops(sliceSegments(projected, spec.zMid, deadline), projected.planarDiameter, deadline);
-    if (loops.length !== 1) {
-      throw new ExactContourAmbiguityError('Exact contour has multiple closed loops');
-    }
-    const candidates = loops.map((points) => ({
-      points,
-      area: Math.abs(signedArea(points, deadline)),
-      minimum: minimumCoordinates(points, deadline),
+    const classified = classifyExactNestedLoops(loops, projected.planarDiameter, deadline);
+    const layer = makeLayer(spec, clockwise(classified.exterior, deadline), tolerance, budgets, deadline, 0);
+    layers.push(layer);
+    holeSelections.push(selectCentralHole({
+      candidates: classified.holes.map((outer) => ({ outer })),
+      exterior: layer.contour.outer,
+      axisPoint: [0, 0],
+      layerWidthMm: layer.sourceBoundsMm.maxX - layer.sourceBoundsMm.minX,
+      planarDiameterMm: projected.planarDiameter,
+      cellSizeMm: rasterCellSize(projected),
+      deadline,
     }));
-    candidates.sort((left, right) => { checkDeadline(deadline); return right.area - left.area
-      || left.minimum[0] - right.minimum[0] || left.minimum[1] - right.minimum[1]; });
-    layers.push(makeLayer(spec, candidates[0].points, tolerance, budgets, deadline, 0));
   }
-  return { layers, removedComponentCount: 0 };
+  return {
+    layers,
+    holeSelections,
+    featureWarnings: holeSelections.some((selection) => !selection.hole) ? [CENTRAL_HOLE_OMISSION_WARNING] : [],
+    removedComponentCount: 0,
+  };
 }

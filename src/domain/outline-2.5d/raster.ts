@@ -17,6 +17,10 @@ export type RasterContour = {
   readonly outer: readonly Point2[];
   readonly occupiedCellCount: number;
   readonly componentCount: number;
+  readonly enclosedVoids: readonly {
+    readonly outer: readonly Point2[];
+    readonly occupiedCellCount: number;
+  }[];
   readonly sourceBoundsMm: Readonly<{ minX: number; minY: number; maxX: number; maxY: number }>;
   readonly sourceAreaMm2: number;
 };
@@ -191,7 +195,7 @@ function close3x3(source: Uint8Array, width: number, height: number, deadline: n
   return result;
 }
 
-function fillHoles(mask: Uint8Array, width: number, height: number, deadline: number): void {
+function exteriorZeroMask(mask: Uint8Array, width: number, height: number, deadline: number): Uint8Array {
   const exterior = new Uint8Array(mask.length), queue = new Int32Array(mask.length);
   let head = 0, tail = 0;
   const enqueue = (index: number) => { if (!mask[index] && !exterior[index]) { exterior[index] = 1; queue[tail++] = index; } };
@@ -203,6 +207,10 @@ function fillHoles(mask: Uint8Array, width: number, height: number, deadline: nu
     if (x > 0) enqueue(current - 1); if (x + 1 < width) enqueue(current + 1);
     if (y > 0) enqueue(current - width); if (y + 1 < height) enqueue(current + width);
   }
+  return exterior;
+}
+
+function fillHoles(mask: Uint8Array, exterior: Uint8Array, deadline: number): void {
   for (let index = 0; index < mask.length; index += 1) {
     if ((index & 255) === 0) checkDeadline(deadline);
     if (!mask[index] && !exterior[index]) mask[index] = 1;
@@ -324,6 +332,84 @@ function traceOuter(
   return outer;
 }
 
+function enclosedVoidContours(
+  preFillMask: Uint8Array,
+  exteriorZeros: Uint8Array,
+  retainedFilledMask: Uint8Array,
+  width: number,
+  height: number,
+  originX: number,
+  originY: number,
+  cellSize: number,
+  deadline: number,
+): RasterContour['enclosedVoids'] {
+  checkDeadline(deadline);
+  const visited = new Uint8Array(preFillMask.length);
+  checkDeadline(deadline);
+  const queue = new Int32Array(preFillMask.length);
+  const candidates: {
+    readonly cells: number[];
+    readonly minX: number;
+    readonly minY: number;
+    readonly maxX: number;
+    readonly maxY: number;
+  }[] = [];
+  for (let start = 0; start < preFillMask.length; start += 1) {
+    if ((start & 255) === 0) checkDeadline(deadline);
+    if (preFillMask[start] || exteriorZeros[start] || visited[start] || !retainedFilledMask[start]) continue;
+    let head = 0, tail = 0, minX = start % width, minY = Math.floor(start / width);
+    let maxX = minX, maxY = minY, retained = true;
+    const cells: number[] = [];
+    visited[start] = 1; queue[tail++] = start;
+    while (head < tail) {
+      if ((head & 255) === 0) checkDeadline(deadline);
+      const current = queue[head++], x = current % width, y = Math.floor(current / width);
+      cells.push(current); minX = Math.min(minX, x); minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
+      if (!retainedFilledMask[current]) retained = false;
+      for (const next of [
+        x > 0 ? current - 1 : -1,
+        x + 1 < width ? current + 1 : -1,
+        y > 0 ? current - width : -1,
+        y + 1 < height ? current + width : -1,
+      ]) if (next >= 0 && !preFillMask[next] && !exteriorZeros[next] && !visited[next]) {
+        visited[next] = 1; queue[tail++] = next;
+      }
+    }
+    if (!retained) continue;
+    candidates.push({ cells, minX, minY, maxX, maxY });
+  }
+  candidates.sort((left, right) => { checkDeadline(deadline); return right.cells.length - left.cells.length
+    || left.minX - right.minX || left.minY - right.minY; });
+  const result: { readonly outer: readonly Point2[]; readonly occupiedCellCount: number }[] = [];
+  for (let index = 0; index < Math.min(candidates.length, 64); index += 1) {
+    checkDeadline(deadline);
+    const candidate = candidates[index];
+    const componentWidth = candidate.maxX - candidate.minX + 1;
+    const componentHeight = candidate.maxY - candidate.minY + 1;
+    checkDeadline(deadline);
+    const componentMask = new Uint8Array(componentWidth * componentHeight);
+    for (let cellIndex = 0; cellIndex < candidate.cells.length; cellIndex += 1) {
+      if ((cellIndex & 255) === 0) checkDeadline(deadline);
+      const cell = candidate.cells[cellIndex], x = cell % width, y = Math.floor(cell / width);
+      componentMask[(y - candidate.minY) * componentWidth + x - candidate.minX] = 1;
+    }
+    result.push({
+      outer: traceOuter(
+        componentMask,
+        componentWidth,
+        componentHeight,
+        originX + candidate.minX * cellSize,
+        originY + candidate.minY * cellSize,
+        cellSize,
+        deadline,
+      ),
+      occupiedCellCount: candidate.cells.length,
+    });
+  }
+  return result;
+}
+
 export function rasterCellSize(projected: ProjectedMesh): number {
   return Math.min(0.5, Math.max(0.05, projected.planarDiameter / 512));
 }
@@ -404,6 +490,7 @@ export function rasterProjectLayer(
   const width = Math.ceil((projected.maxX - projected.minX) / cellSize) + 3;
   const height = Math.ceil((projected.maxY - projected.minY) / cellSize) + 3;
   if (width > budgets.maxRasterWidth || height > budgets.maxRasterHeight) throw new RangeError('Projected contour exceeds the raster dimension budget');
+  if (width * height > budgets.maxRasterCellsTotal) throw new RangeError('Projected contour exceeds the total raster cell budget');
   const mask = new Uint8Array(width * height);
   const activeTriangles: number[] = [];
   for (let index = 0; index < projected.triangles.length; index += 1) {
@@ -414,13 +501,21 @@ export function rasterProjectLayer(
     activeTriangles.push(index);
     rasterizeTriangle(mask, width, height, vertices.map(([x, y]) => [(x - originX) / cellSize, (y - originY) / cellSize] as const), deadline);
   }
-  const closed = close3x3(mask, width, height, deadline); fillHoles(closed, width, height, deadline);
-  const selected = greatestComponent(closed, width, height, deadline);
+  const closed = close3x3(mask, width, height, deadline);
+  const exteriorZeros = exteriorZeroMask(closed, width, height, deadline);
+  checkDeadline(deadline);
+  const filled = closed.slice();
+  checkDeadline(deadline);
+  fillHoles(filled, exteriorZeros, deadline);
+  const selected = greatestComponent(filled, width, height, deadline);
   const source = selectedSourceEvidence(projected, activeTriangles, selected.mask, width, height, originX, originY, cellSize);
   return {
     outer: traceOuter(selected.mask, width, height, originX, originY, cellSize, deadline),
     occupiedCellCount: selected.count,
     componentCount: selected.components,
+    enclosedVoids: enclosedVoidContours(
+      closed, exteriorZeros, selected.mask, width, height, originX, originY, cellSize, deadline,
+    ),
     sourceBoundsMm: source.bounds,
     sourceAreaMm2: source.area,
   };

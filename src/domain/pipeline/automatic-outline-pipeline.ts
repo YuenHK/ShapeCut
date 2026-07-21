@@ -9,6 +9,7 @@ import {
   ExactContourAmbiguityError,
   extractExactContours,
   extractProjectedContours,
+  type OutlineExtraction,
   type OutlineLayer,
 } from '../outline-2.5d/extract';
 import { scheduleOutlineLayers } from '../outline-2.5d/layer-schedule';
@@ -119,6 +120,7 @@ function withResultEvidence(
   result: Omit<AutomaticOutlineResult, 'coloredLayers' | 'featureWarnings' | 'featureEvidenceFingerprint' | 'preview' | 'removalEvidenceFingerprint'>,
   previewMesh: TriangleMesh,
   deadline: number,
+  extraction: Pick<OutlineExtraction, 'holeSelections' | 'featureWarnings'>,
 ): AutomaticOutlineResult {
   let coloredLayers: readonly ColoredOutlineLayer[];
   let previewMeshCopy: OutlinePreviewPayload['mesh'];
@@ -127,6 +129,8 @@ function withResultEvidence(
       result.layers,
       result.diagnostics.rasterCellSizeMm ?? 0,
       deadline,
+      () => undefined,
+      extraction.holeSelections,
     );
     previewMeshCopy = copyPreviewMesh(previewMesh, deadline);
   } catch (error) {
@@ -135,7 +139,7 @@ function withResultEvidence(
   const coloredResult = {
     ...result,
     coloredLayers,
-    featureWarnings: [],
+    featureWarnings: extraction.featureWarnings,
     preview: {
       mesh: previewMeshCopy,
       axis: { origin: result.axis.axis.origin, direction: result.axis.axis.direction },
@@ -267,13 +271,13 @@ export async function convertAutomatically(
         repairAccepted: true,
         removedComponentCount: projectedExtraction.removedComponentCount,
         diagnostics: diagnostics(projectedExtraction, originalReport, true),
-      }, extractionMesh, deadline);
+      }, extractionMesh, deadline, projectedExtraction);
     }
     await emit('packaging');
     return withResultEvidence({
       sourceHash: hash,
       mode: 'exact',
-      status: axisWarnings.length === 0 ? 'success' : 'warning',
+      status: axisWarnings.length === 0 && exactExtraction.featureWarnings.length === 0 ? 'success' : 'warning',
       axis,
       layers: exactExtraction.layers,
       warnings: axisWarnings,
@@ -281,7 +285,7 @@ export async function convertAutomatically(
       repairAccepted: true,
       removedComponentCount: 0,
       diagnostics: diagnostics(exactExtraction, originalReport, true),
-    }, extractionMesh, deadline);
+    }, extractionMesh, deadline, exactExtraction);
   }
 
   let projectedExtraction: ReturnType<typeof extractProjectedContours>;
@@ -302,5 +306,5 @@ export async function convertAutomatically(
     repairAccepted: false,
     removedComponentCount: projectedExtraction.removedComponentCount,
     diagnostics: diagnostics(projectedExtraction, originalReport, false),
-  }, originalMesh, deadline);
+  }, originalMesh, deadline, projectedExtraction);
 }

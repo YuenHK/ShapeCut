@@ -64,6 +64,24 @@ function steppedCylinder(segments = 32): TriangleMesh {
   return { positions: new Float64Array(positions), indices: new Uint32Array(indices) };
 }
 
+function squareTube(outerSize = 20, innerSize = 4, depth = 2): TriangleMesh {
+  const positions: number[] = [];
+  for (const [size, z] of [[outerSize, -depth / 2], [outerSize, depth / 2], [innerSize, -depth / 2], [innerSize, depth / 2]]) {
+    const half = size / 2;
+    positions.push(-half, -half, z, half, -half, z, half, half, z, -half, half, z);
+  }
+  const indices: number[] = [];
+  const quad = (a: number, b: number, c: number, d: number) => indices.push(a, b, c, a, c, d);
+  for (let edge = 0; edge < 4; edge += 1) {
+    const next = (edge + 1) % 4;
+    quad(edge, next, 4 + next, 4 + edge);
+    quad(8 + next, 8 + edge, 12 + edge, 12 + next);
+    quad(4 + edge, 4 + next, 12 + next, 12 + edge);
+    quad(8 + edge, 8 + next, next, edge);
+  }
+  return { positions: new Float64Array(positions), indices: new Uint32Array(indices) };
+}
+
 function nonManifoldTetrahedron(): TriangleMesh {
   const base = tetrahedron();
   return {
@@ -82,7 +100,28 @@ function scaled(mesh: TriangleMesh, x: number, y: number, z: number): TriangleMe
 }
 
 describe('automatic outline pipeline', () => {
-  it('returns exact success for a safe symmetric mesh and preserves complete layer metadata', async () => {
+  it('publishes a retained exact hole through colored layers, preview, diagnostics, and fingerprint evidence', async () => {
+    const result = await convertAutomatically({ bytes: writeBinarySTL(squareTube(), 'safe') });
+
+    expect(result.mode).toBe('exact');
+    expect(result.featureWarnings).toEqual([]);
+    expect(result.coloredLayers).toHaveLength(result.layers.length);
+    expect(result.coloredLayers.every((layer) => layer.centralHole?.role === 'CUT_BLACK')).toBe(true);
+    expect(result.coloredLayers.every((layer) => layer.diagnostics.hole.status === 'retained')).toBe(true);
+    expect(result.preview.layers).toEqual(result.coloredLayers);
+    expect(result.featureEvidenceFingerprint).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  it('publishes one sanitized feature warning when otherwise-valid layers have no reliable hole', async () => {
+    const result = await convertAutomatically({ bytes: writeBinarySTL(cylinder(), 'safe') });
+
+    expect(result.status).toBe('warning');
+    expect(result.coloredLayers.every((layer) => layer.centralHole === undefined)).toBe(true);
+    expect(result.featureWarnings).toEqual(['No reliable central axle hole was found; the hole was omitted.']);
+    expect(result.featureWarnings[0]).not.toMatch(/[\\/@]|[\w.+-]+@[\w.-]+/);
+  });
+
+  it('returns an exact outline for a safe symmetric mesh and preserves complete layer metadata', async () => {
     const progress: AutomaticOutlineProgressStage[] = [];
 
     const result = await convertAutomatically(
@@ -92,7 +131,7 @@ describe('automatic outline pipeline', () => {
 
     expect(result).toMatchObject({
       mode: 'exact',
-      status: 'success',
+      status: 'warning',
       repairAccepted: true,
       axis: { source: 'candidate' },
       warnings: [],
