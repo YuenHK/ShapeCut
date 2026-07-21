@@ -100,14 +100,16 @@ function scaled(mesh: TriangleMesh, x: number, y: number, z: number): TriangleMe
 }
 
 describe('automatic outline pipeline', () => {
-  it('publishes adaptive deeper red from source triangles without reversing depth by area', async () => {
+  it('bounds every stepped-mesh depth sample to its own layer slab', async () => {
     const result = await convertAutomatically({ bytes: writeBinarySTL(steppedCylinder(), 'safe') });
-    const featured = result.coloredLayers.filter((layer) => layer.deepFeature);
 
-    expect(featured.length).toBeGreaterThan(0);
-    expect(featured.every((layer) => layer.deepFeature?.role === 'DEEP_RED')).toBe(true);
-    expect(featured.every((layer) => (
-      layer.diagnostics.depth.redThresholdMm > layer.diagnostics.depth.blueThresholdMm
+    expect(result.coloredLayers.every((layer) => (
+      layer.diagnostics.depth.redThresholdMm <= layer.zEnd - layer.zStart + 1e-9
+      && layer.diagnostics.depth.blueThresholdMm <= layer.zEnd - layer.zStart + 1e-9
+    ))).toBe(true);
+    expect(result.coloredLayers.every((layer) => !layer.deepFeature && !layer.lightFeature)).toBe(true);
+    expect(result.coloredLayers.every((layer) => (
+      layer.diagnostics.depth.omissionCode === 'INSUFFICIENT_CONTRAST'
     ))).toBe(true);
     expect(result.coloredLayers.every((layer) => (
       !layer.lightFeature || layer.lightFeature.role === 'LIGHT_BLUE'

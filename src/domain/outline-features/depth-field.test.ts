@@ -2,18 +2,31 @@ import { describe, expect, it } from 'vitest';
 import type { Point2 } from '../decomposition/types';
 import type { ProjectedMesh } from '../outline-2.5d/raster';
 import { DEFAULT_OUTLINE_BUDGETS, type OutlineBudgets } from '../outline-2.5d/types';
+import type { FeatureContour } from './types';
 import {
   DEPTH_CONTRAST_OMISSION_WARNING,
+  DEPTH_DATA_OMISSION_WARNING,
+  buildDepthField,
+  closeDepthBandMask,
   extractAdaptiveDepthFeatures,
+  selectGreatestValidDepthFeatureContour,
+  simplifyDepthFeatureLoop,
   type DepthFeatureRequest,
 } from './depth-field';
 
-type Patch = Readonly<{ minX: number; maxX: number; minY: number; maxY: number; depth: number }>;
+type Patch = Readonly<{
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+  depth: number;
+  baseZ?: number;
+}>;
 
-function patchedSurface(patches: readonly Patch[]): ProjectedMesh {
+function patchedSurface(patches: readonly Patch[], closeSides = true): ProjectedMesh {
   const vertices: [number, number, number][] = [];
   const triangles: [number, number, number][] = [];
-  const quad = (patch: Patch, z: number, reverse: boolean): void => {
+  const quad = (patch: Patch, z: number, reverse: boolean): number => {
     const first = vertices.length;
     vertices.push(
       [patch.minX, patch.minY, z], [patch.maxX, patch.minY, z],
@@ -21,10 +34,20 @@ function patchedSurface(patches: readonly Patch[]): ProjectedMesh {
     );
     if (reverse) triangles.push([first, first + 2, first + 1], [first, first + 3, first + 2]);
     else triangles.push([first, first + 1, first + 2], [first, first + 2, first + 3]);
+    return first;
   };
   for (const patch of patches) {
-    quad(patch, 0, true);
-    quad(patch, patch.depth, false);
+    const baseZ = patch.baseZ ?? 0;
+    const bottom = quad(patch, baseZ, true);
+    const top = quad(patch, baseZ + patch.depth, false);
+    if (closeSides) {
+      triangles.push(
+        [bottom, bottom + 1, top + 1], [bottom, top + 1, top],
+        [bottom + 1, bottom + 2, top + 2], [bottom + 1, top + 2, top + 1],
+        [bottom + 2, bottom + 3, top + 3], [bottom + 2, top + 3, top + 2],
+        [bottom + 3, bottom, top], [bottom + 3, top, top + 3],
+      );
+    }
   }
   const minX = Math.min(...patches.map((patch) => patch.minX));
   const minY = Math.min(...patches.map((patch) => patch.minY));
@@ -53,7 +76,7 @@ const exterior: readonly Point2[] = [[-5, -5], [-5, 5], [5, 5], [5, -5]];
 function request(overrides: Partial<DepthFeatureRequest> = {}): DepthFeatureRequest {
   return {
     layerId: 'outline-layer-0',
-    layer: { index: 0, zStart: 0, zMid: 0.5, zEnd: 1 },
+    layer: { index: 0, zStart: 0, zMid: 4, zEnd: 8 },
     exterior,
     exteriorAreaMm2: 100,
     cellSizeMm: 0.5,
@@ -77,6 +100,91 @@ function boundsOverlap(
 }
 
 describe('adaptive source-triangle depth features', () => {
+  it('closes a one-cell crack while respecting valid-domain and competing-role masks', () => {
+    const width = 7, height = 7;
+    const source = new Uint8Array(width * height);
+    const legal = new Uint8Array(width * height).fill(1);
+    const competing = new Uint8Array(width * height);
+    for (let y = 1; y <= 5; y += 1) for (let x = 1; x <= 5; x += 1) source[y * width + x] = 1;
+    const crack = 3 * width + 3;
+    const prohibited = 3 * width + 4;
+    source[crack] = 0;
+    legal[prohibited] = 0;
+    competing[2 * width + 3] = 1;
+
+    const closed = closeDepthBandMask(source, legal, competing, width, height);
+
+    expect(closed[crack]).toBe(1);
+    expect(closed[prohibited]).toBe(0);
+    expect(closed[2 * width + 3]).toBe(0);
+  });
+
+  it('locally rejects a forced point-cap fallback when its final contour exceeds the 3% drift gate', () => {
+    const source = Array.from({ length: 5000 }, (_, index) => {
+      const angle = index / 5000 * Math.PI * 2;
+      return [Math.cos(angle) * 10, Math.sin(angle) * 10] as const;
+    });
+
+    expect(simplifyDepthFeatureLoop(source, 0.1, 20, 3, Infinity, () => undefined, 100))
+      .toBeUndefined();
+  });
+
+  it('tries the next greatest-area candidate when the largest geometry is invalid', () => {
+    const candidate = (id: string, areaMm2: number, minX: number): FeatureContour => ({
+      id,
+      role: 'DEEP_RED',
+      outer: [[minX, 0], [minX, 1], [minX + 1, 1], [minX + 1, 0]],
+      boundsMm: { minX, minY: 0, maxX: minX + 1, maxY: 1 },
+      areaMm2,
+    });
+    const largest = candidate('largest-invalid', 100, 0);
+    const next = candidate('next-valid', 50, 2);
+    const smallest = candidate('smallest-valid', 25, 4);
+
+    expect(selectGreatestValidDepthFeatureContour(
+      [smallest, largest, next],
+      (contour) => contour.id !== largest.id,
+    )).toBe(next);
+  });
+
+  it('clips paired surface intervals to the requested layer and ignores remote slabs', () => {
+    const surface = patchedSurface([
+      { minX: -5, maxX: -1, minY: -5, maxY: 5, depth: 4 },
+      { minX: -1, maxX: 5, minY: -5, maxY: 5, depth: 1 },
+      { minX: -5, maxX: 5, minY: -5, maxY: 5, baseZ: 10, depth: 2 },
+    ]);
+    const lowerRequest = request({ layer: { index: 0, zStart: 0, zMid: 2, zEnd: 4 } });
+    const upperRequest = request({ layerId: 'outline-layer-1', layer: { index: 1, zStart: 10, zMid: 11, zEnd: 12 } });
+
+    const lowerField = buildDepthField(surface, lowerRequest);
+    const upperField = buildDepthField(surface, upperRequest);
+    const lowerDepths = [...lowerField.depthMm].filter((depth, index) => lowerField.valid[index] && depth > 0);
+    const upperDepths = [...upperField.depthMm].filter((depth, index) => upperField.valid[index] && depth > 0);
+
+    expect(new Set(lowerDepths)).toEqual(new Set([1, 4]));
+    expect(new Set(upperDepths)).toEqual(new Set([2]));
+    expect(extractAdaptiveDepthFeatures(surface, lowerRequest).diagnostics.contrastMm).toBeGreaterThan(0);
+    expect(extractAdaptiveDepthFeatures(surface, upperRequest)).toMatchObject({
+      red: undefined,
+      blue: undefined,
+      omissionCode: 'INSUFFICIENT_CONTRAST',
+    });
+  });
+
+  it('rejects disconnected open planes as insufficient paired depth evidence', () => {
+    const openPlanes = patchedSurface([
+      { minX: -5, maxX: -2, minY: -5, maxY: 5, depth: 5 },
+      { minX: -2, maxX: 5, minY: -5, maxY: 5, depth: 1 },
+    ], false);
+
+    expect(extractAdaptiveDepthFeatures(openPlanes, request())).toMatchObject({
+      red: undefined,
+      blue: undefined,
+      omissionCode: 'INSUFFICIENT_DEPTH_DATA',
+      warning: DEPTH_DATA_OMISSION_WARNING,
+    });
+  });
+
   it('assigns the smaller deeper band to red and the larger shallower band to blue', () => {
     const features = extractAdaptiveDepthFeatures(steppedSurface(), request());
 

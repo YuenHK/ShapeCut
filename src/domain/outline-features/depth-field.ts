@@ -73,6 +73,17 @@ type CellComponent = {
   readonly componentCount: number;
 };
 
+type ReliableTriangle = {
+  readonly vertices: readonly [ProjectedVertex, ProjectedVertex, ProjectedVertex];
+  readonly component: number;
+};
+
+type SurfaceHit = {
+  readonly z: number;
+  readonly facing: -1 | 1;
+  readonly component: number;
+};
+
 function checkRuntime(deadline: number, checkpoint: () => void): void {
   checkpoint();
   if (Date.now() > deadline) throw new RangeError('Depth feature extraction exceeded the runtime budget');
@@ -200,6 +211,84 @@ function triangleSample(
   return z;
 }
 
+/**
+ * A pair of axial samples is meaningful only when it comes from a closed,
+ * two-manifold surface component.  This prevents unrelated open sheets from
+ * being mistaken for the front and back of solid material.
+ */
+function reliableSurfaceTriangles(
+  projected: ProjectedMesh,
+  deadline: number,
+  checkpoint: () => void,
+): readonly ReliableTriangle[] {
+  const parents = new Int32Array(projected.triangles.length);
+  const edgeUses = new Map<string, number[]>();
+  const vertices: (readonly [ProjectedVertex, ProjectedVertex, ProjectedVertex])[] = [];
+  for (let triangleIndex = 0; triangleIndex < projected.triangles.length; triangleIndex += 1) {
+    if ((triangleIndex & 63) === 0) checkRuntime(deadline, checkpoint);
+    parents[triangleIndex] = triangleIndex;
+    const triangle = projected.triangles[triangleIndex];
+    if (triangle.length !== 3 || triangle.some((vertex) => !Number.isSafeInteger(vertex)
+      || vertex < 0 || vertex >= projected.vertices.length)) {
+      throw new RangeError('Depth feature extraction requires valid source triangles');
+    }
+    const triangleVertices = triangle.map((index) => projected.vertices[index]) as unknown as [
+      ProjectedVertex, ProjectedVertex, ProjectedVertex,
+    ];
+    if (triangleVertices.some((vertex) => vertex.length !== 3 || vertex.some((value) => !Number.isFinite(value)))) {
+      throw new RangeError('Depth feature extraction requires finite source triangles');
+    }
+    vertices.push(triangleVertices);
+    for (let edge = 0; edge < 3; edge += 1) {
+      const first = triangle[edge], second = triangle[(edge + 1) % 3];
+      const key = first < second ? `${first}:${second}` : `${second}:${first}`;
+      const uses = edgeUses.get(key);
+      if (uses) uses.push(triangleIndex); else edgeUses.set(key, [triangleIndex]);
+    }
+  }
+  const root = (value: number): number => {
+    let current = value;
+    while (parents[current] !== current) current = parents[current];
+    while (parents[value] !== value) {
+      const next = parents[value];
+      parents[value] = current;
+      value = next;
+    }
+    return current;
+  };
+  const join = (left: number, right: number): void => {
+    const leftRoot = root(left), rightRoot = root(right);
+    if (leftRoot !== rightRoot) parents[Math.max(leftRoot, rightRoot)] = Math.min(leftRoot, rightRoot);
+  };
+  for (const uses of edgeUses.values()) {
+    checkRuntime(deadline, checkpoint);
+    for (let index = 1; index < uses.length; index += 1) join(uses[0], uses[index]);
+  }
+  const closed = new Map<number, boolean>();
+  for (let triangleIndex = 0; triangleIndex < parents.length; triangleIndex += 1) {
+    if ((triangleIndex & 255) === 0) checkRuntime(deadline, checkpoint);
+    closed.set(root(triangleIndex), true);
+  }
+  for (const uses of edgeUses.values()) {
+    checkRuntime(deadline, checkpoint);
+    if (uses.length !== 2) closed.set(root(uses[0]), false);
+  }
+  const componentIds = new Map<number, number>();
+  const result: ReliableTriangle[] = [];
+  for (let triangleIndex = 0; triangleIndex < vertices.length; triangleIndex += 1) {
+    if ((triangleIndex & 255) === 0) checkRuntime(deadline, checkpoint);
+    const componentRoot = root(triangleIndex);
+    if (!closed.get(componentRoot)) continue;
+    let component = componentIds.get(componentRoot);
+    if (component === undefined) {
+      component = componentIds.size;
+      componentIds.set(componentRoot, component);
+    }
+    result.push({ vertices: vertices[triangleIndex], component });
+  }
+  return result;
+}
+
 export function buildDepthField(projected: ProjectedMesh, request: DepthFeatureRequest): DepthField {
   const deadline = request.deadline ?? Date.now() + request.budgets.maxRuntimeMs;
   const checkpoint = request.checkpoint ?? (() => undefined);
@@ -210,13 +299,7 @@ export function buildDepthField(projected: ProjectedMesh, request: DepthFeatureR
   const origin: Point2 = [projected.minX - cellSize, projected.minY - cellSize];
   checkRuntime(deadline, checkpoint);
   const eligible = new Uint8Array(width * height);
-  const front = new Float64Array(width * height);
-  const back = new Float64Array(width * height);
-  for (let index = 0; index < front.length; index += 1) {
-    if ((index & 1023) === 0) checkRuntime(deadline, checkpoint);
-    front[index] = Infinity;
-    back[index] = -Infinity;
-  }
+  const hitsByCell = new Map<number, SurfaceHit[]>();
   const cutClearance = Math.max(cellSize, request.planarDiameterMm * 0.001);
   const centerMargin = cutClearance + cellSize * Math.SQRT1_2;
   const retainedHole = holeLoop(request);
@@ -232,17 +315,14 @@ export function buildDepthField(projected: ProjectedMesh, request: DepthFeatureR
       eligible[y * width + x] = 1;
     }
   }
-  for (let triangleIndex = 0; triangleIndex < projected.triangles.length; triangleIndex += 1) {
+  const reliableTriangles = reliableSurfaceTriangles(projected, deadline, checkpoint);
+  for (let triangleIndex = 0; triangleIndex < reliableTriangles.length; triangleIndex += 1) {
     if ((triangleIndex & 63) === 0) checkRuntime(deadline, checkpoint);
-    const triangle = projected.triangles[triangleIndex];
-    if (triangle.length !== 3 || triangle.some((vertex) => !Number.isSafeInteger(vertex)
-      || vertex < 0 || vertex >= projected.vertices.length)) {
-      throw new RangeError('Depth feature extraction requires valid source triangles');
-    }
-    const vertices = triangle.map((index) => projected.vertices[index]) as [ProjectedVertex, ProjectedVertex, ProjectedVertex];
-    if (vertices.some((vertex) => vertex.length !== 3 || vertex.some((value) => !Number.isFinite(value)))) {
-      throw new RangeError('Depth feature extraction requires finite source triangles');
-    }
+    const { vertices, component } = reliableTriangles[triangleIndex];
+    const projectedArea = (vertices[1][0] - vertices[0][0]) * (vertices[2][1] - vertices[0][1])
+      - (vertices[1][1] - vertices[0][1]) * (vertices[2][0] - vertices[0][0]);
+    if (projectedArea === 0) continue;
+    const facing: -1 | 1 = projectedArea < 0 ? -1 : 1;
     const minimumX = Math.min(...vertices.map(([x]) => x));
     const maximumX = Math.max(...vertices.map(([x]) => x));
     const minimumY = Math.min(...vertices.map(([, y]) => y));
@@ -262,8 +342,9 @@ export function buildDepthField(projected: ProjectedMesh, request: DepthFeatureR
           vertices[0], vertices[1], vertices[2],
         );
         if (z === undefined) continue;
-        front[index] = Math.min(front[index], z);
-        back[index] = Math.max(back[index], z);
+        const hits = hitsByCell.get(index);
+        const hit = { z, facing, component } as const;
+        if (hits) hits.push(hit); else hitsByCell.set(index, [hit]);
       }
     }
   }
@@ -272,9 +353,37 @@ export function buildDepthField(projected: ProjectedMesh, request: DepthFeatureR
   const positiveTolerance = Math.max(1e-9, request.planarDiameterMm * 1e-12);
   for (let index = 0; index < depthMm.length; index += 1) {
     if ((index & 1023) === 0) checkRuntime(deadline, checkpoint);
-    if (!eligible[index] || !Number.isFinite(front[index]) || !Number.isFinite(back[index])) continue;
-    const depth = back[index] - front[index];
-    if (!Number.isFinite(depth)) throw new RangeError('Depth feature extraction encountered non-finite front/back samples');
+    const hits = hitsByCell.get(index);
+    if (!eligible[index] || !hits) continue;
+    const byComponent = new Map<number, SurfaceHit[]>();
+    for (const hit of hits) {
+      const componentHits = byComponent.get(hit.component);
+      if (componentHits) componentHits.push(hit); else byComponent.set(hit.component, [hit]);
+    }
+    let depth = 0;
+    for (const componentHits of byComponent.values()) {
+      componentHits.sort((left, right) => left.z - right.z || left.facing - right.facing);
+      const unique: { z: number; facing: number }[] = [];
+      for (const hit of componentHits) {
+        const previous = unique[unique.length - 1];
+        if (previous && Math.abs(previous.z - hit.z) <= positiveTolerance) previous.facing += hit.facing;
+        else unique.push({ z: hit.z, facing: hit.facing });
+      }
+      if (unique.length < 2 || unique.length % 2 !== 0) continue;
+      let componentDepth = 0, reliablePairs = true;
+      for (let pair = 0; pair < unique.length; pair += 2) {
+        const front = unique[pair], back = unique[pair + 1];
+        if (front.facing === 0 || back.facing === 0 || Math.sign(front.facing) === Math.sign(back.facing)) {
+          reliablePairs = false;
+          break;
+        }
+        const clippedFront = Math.max(front.z, request.layer.zStart);
+        const clippedBack = Math.min(back.z, request.layer.zEnd);
+        if (clippedBack - clippedFront > positiveTolerance) componentDepth += clippedBack - clippedFront;
+      }
+      if (reliablePairs) depth = Math.max(depth, componentDepth);
+    }
+    if (!Number.isFinite(depth)) throw new RangeError('Depth feature extraction encountered non-finite paired surface samples');
     if (depth <= positiveTolerance) continue;
     depthMm[index] = depth;
     valid[index] = 1;
@@ -319,16 +428,38 @@ function close3x3(source: Uint8Array, width: number, height: number, deadline: n
   return result;
 }
 
-function selectGreatestComponent(
+export function closeDepthBandMask(
+  source: Uint8Array,
+  legalDomain: Uint8Array,
+  competingRole: Uint8Array,
+  width: number,
+  height: number,
+  deadline = Infinity,
+  checkpoint: () => void = () => undefined,
+): Uint8Array {
+  if (!Number.isSafeInteger(width) || width <= 0 || !Number.isSafeInteger(height) || height <= 0
+    || source.length !== width * height || legalDomain.length !== source.length
+    || competingRole.length !== source.length) {
+    throw new RangeError('Depth band closing requires matching bounded masks');
+  }
+  const closed = close3x3(source, width, height, deadline, checkpoint);
+  for (let index = 0; index < closed.length; index += 1) {
+    if ((index & 1023) === 0) checkRuntime(deadline, checkpoint);
+    if (!legalDomain[index] || competingRole[index]) closed[index] = 0;
+  }
+  return closed;
+}
+
+function selectComponents(
   source: Uint8Array,
   width: number,
   height: number,
   minimumCells: number,
   deadline: number,
   checkpoint: () => void,
-): CellComponent | undefined {
+): readonly CellComponent[] {
   const visited = new Uint8Array(source.length), queue = new Int32Array(source.length);
-  let best: number[] | undefined, bestMinX = Infinity, bestMinY = Infinity, componentCount = 0;
+  const candidates: { readonly cells: readonly number[]; readonly minX: number; readonly minY: number }[] = [];
   for (let start = 0; start < source.length; start += 1) {
     if ((start & 255) === 0) checkRuntime(deadline, checkpoint);
     if (!source[start] || visited[start]) continue;
@@ -353,21 +484,18 @@ function selectGreatestComponent(
       }
     }
     if (cells.length < minimumCells) continue;
-    componentCount += 1;
-    if (!best || cells.length > best.length
-      || cells.length === best.length && (minX < bestMinX || minX === bestMinX && minY < bestMinY)) {
-      best = cells;
-      bestMinX = minX;
-      bestMinY = minY;
+    candidates.push({ cells, minX, minY });
+  }
+  candidates.sort((left, right) => right.cells.length - left.cells.length
+    || left.minX - right.minX || left.minY - right.minY);
+  return candidates.map((candidate) => {
+    const mask = new Uint8Array(source.length);
+    for (let index = 0; index < candidate.cells.length; index += 1) {
+      if ((index & 255) === 0) checkRuntime(deadline, checkpoint);
+      mask[candidate.cells[index]] = 1;
     }
-  }
-  if (!best) return undefined;
-  const mask = new Uint8Array(source.length);
-  for (let index = 0; index < best.length; index += 1) {
-    if ((index & 255) === 0) checkRuntime(deadline, checkpoint);
-    mask[best[index]] = 1;
-  }
-  return { mask, cells: best, componentCount };
+    return { mask, cells: candidate.cells, componentCount: candidates.length };
+  });
 }
 
 type GridEdge = readonly [number, number];
@@ -533,24 +661,27 @@ function traceGreatestOuter(
   return candidates[0]?.points;
 }
 
-function simplifyFeature(
+export function simplifyDepthFeatureLoop(
   source: readonly Point2[],
   cellSize: number,
   planarDiameter: number,
   maximumPoints: number,
-  deadline: number,
-  checkpoint: () => void,
+  deadline = Infinity,
+  checkpoint: () => void = () => undefined,
+  initialTolerance = Math.max(cellSize * 1.5, planarDiameter * 0.001),
 ): readonly Point2[] | undefined {
   const sourceBounds = contourBounds(source, deadline, checkpoint);
   const sourceArea = Math.abs(signedArea(source, deadline, checkpoint));
-  let tolerance = Math.max(cellSize * 1.5, planarDiameter * 0.001);
+  const sourceWidth = sourceBounds.maxX - sourceBounds.minX;
+  const sourceHeight = sourceBounds.maxY - sourceBounds.minY;
+  if (!Number.isFinite(sourceArea) || sourceArea <= 0 || sourceWidth <= 0 || sourceHeight <= 0) return undefined;
+  let tolerance = initialTolerance;
   for (let attempt = 0; attempt < 17; attempt += 1) {
     checkRuntime(deadline, checkpoint);
     try {
       const simplified = simplifyClosedLoop(source, tolerance, maximumPoints, deadline);
       const outputBounds = contourBounds(simplified, deadline, checkpoint);
       const outputArea = Math.abs(signedArea(simplified, deadline, checkpoint));
-      const sourceWidth = sourceBounds.maxX - sourceBounds.minX, sourceHeight = sourceBounds.maxY - sourceBounds.minY;
       const boundsDrift = Math.max(
         Math.abs((outputBounds.maxX - outputBounds.minX) - sourceWidth) / sourceWidth,
         Math.abs((outputBounds.maxY - outputBounds.minY) - sourceHeight) / sourceHeight,
@@ -565,7 +696,22 @@ function simplifyFeature(
   return undefined;
 }
 
-function featureFromMask(
+type DepthFeatureCandidate = {
+  readonly contour: FeatureContour;
+  readonly evidence: DepthFeatureSourceEvidence;
+};
+
+export function selectGreatestValidDepthFeatureContour(
+  candidates: readonly FeatureContour[],
+  isValid: (candidate: FeatureContour) => boolean,
+): FeatureContour | undefined {
+  return [...candidates].sort((left, right) => right.areaMm2 - left.areaMm2
+    || left.boundsMm.minX - right.boundsMm.minX
+    || left.boundsMm.minY - right.boundsMm.minY)
+    .find(isValid);
+}
+
+function featureCandidatesFromMask(
   role: 'DEEP_RED' | 'LIGHT_BLUE',
   mask: Uint8Array,
   field: DepthField,
@@ -573,61 +719,61 @@ function featureFromMask(
   minimumCells: number,
   deadline: number,
   checkpoint: () => void,
-): {
-  readonly contour: FeatureContour;
-  readonly evidence: DepthFeatureSourceEvidence;
-  readonly source: readonly Point2[];
-} | undefined {
-  const selected = selectGreatestComponent(mask, field.width, field.height, minimumCells, deadline, checkpoint);
-  if (!selected) return undefined;
-  const simpleMask = openEnclosedVoids(
-    selected.mask, field.width, field.height, deadline, checkpoint,
+): readonly DepthFeatureCandidate[] {
+  const selectedComponents = selectComponents(
+    mask, field.width, field.height, minimumCells, deadline, checkpoint,
   );
-  const retainedCells: number[] = [];
-  for (let index = 0; index < selected.cells.length; index += 1) {
-    if ((index & 255) === 0) checkRuntime(deadline, checkpoint);
-    const cell = selected.cells[index];
-    if (simpleMask[cell]) retainedCells.push(cell);
+  const candidates: DepthFeatureCandidate[] = [];
+  for (const selected of selectedComponents) {
+    checkRuntime(deadline, checkpoint);
+    const simpleMask = openEnclosedVoids(
+      selected.mask, field.width, field.height, deadline, checkpoint,
+    );
+    const retainedCells: number[] = [];
+    for (let index = 0; index < selected.cells.length; index += 1) {
+      if ((index & 255) === 0) checkRuntime(deadline, checkpoint);
+      const cell = selected.cells[index];
+      if (simpleMask[cell]) retainedCells.push(cell);
+    }
+    if (retainedCells.length < minimumCells) continue;
+    const source = traceGreatestOuter(
+      simpleMask, field.width, field.height, field.origin, field.cellSizeMm, deadline, checkpoint,
+    );
+    if (!source) continue;
+    const simplified = simplifyDepthFeatureLoop(
+      source,
+      field.cellSizeMm,
+      request.planarDiameterMm,
+      request.budgets.maxContourPointsPerLayer,
+      deadline,
+      checkpoint,
+    );
+    if (!simplified) continue;
+    let minimumDepthMm = Infinity, maximumDepthMm = -Infinity;
+    for (let index = 0; index < retainedCells.length; index += 1) {
+      if ((index & 255) === 0) checkRuntime(deadline, checkpoint);
+      const depth = field.depthMm[retainedCells[index]];
+      minimumDepthMm = Math.min(minimumDepthMm, depth);
+      maximumDepthMm = Math.max(maximumDepthMm, depth);
+    }
+    candidates.push({
+      contour: {
+        id: `${request.layerId}-${role === 'DEEP_RED' ? 'deep' : 'light'}`,
+        role,
+        outer: simplified,
+        boundsMm: contourBounds(simplified, deadline, checkpoint),
+        areaMm2: Math.abs(signedArea(simplified, deadline, checkpoint)),
+      },
+      evidence: {
+        occupiedCellCount: retainedCells.length,
+        componentCount: selected.componentCount,
+        sourceAreaMm2: retainedCells.length * field.cellSizeMm * field.cellSizeMm,
+        minimumDepthMm,
+        maximumDepthMm,
+      },
+    });
   }
-  if (retainedCells.length < minimumCells) return undefined;
-  const source = traceGreatestOuter(
-    simpleMask, field.width, field.height, field.origin, field.cellSizeMm, deadline, checkpoint,
-  );
-  if (!source) return undefined;
-  const simplified = simplifyFeature(
-    source,
-    field.cellSizeMm,
-    request.planarDiameterMm,
-    request.budgets.maxContourPointsPerLayer,
-    deadline,
-    checkpoint,
-  );
-  if (!simplified) return undefined;
-  let minimumDepthMm = Infinity, maximumDepthMm = -Infinity;
-  for (let index = 0; index < retainedCells.length; index += 1) {
-    if ((index & 255) === 0) checkRuntime(deadline, checkpoint);
-    const depth = field.depthMm[retainedCells[index]];
-    minimumDepthMm = Math.min(minimumDepthMm, depth);
-    maximumDepthMm = Math.max(maximumDepthMm, depth);
-  }
-  const contour: FeatureContour = {
-    id: `${request.layerId}-${role === 'DEEP_RED' ? 'deep' : 'light'}`,
-    role,
-    outer: simplified,
-    boundsMm: contourBounds(simplified, deadline, checkpoint),
-    areaMm2: Math.abs(signedArea(simplified, deadline, checkpoint)),
-  };
-  return {
-    contour,
-    source,
-    evidence: {
-      occupiedCellCount: retainedCells.length,
-      componentCount: selected.componentCount,
-      sourceAreaMm2: retainedCells.length * field.cellSizeMm * field.cellSizeMm,
-      minimumDepthMm,
-      maximumDepthMm,
-    },
-  };
+  return candidates;
 }
 
 function omission(
@@ -683,80 +829,53 @@ export function extractAdaptiveDepthFeatures(projected: ProjectedMesh, request: 
     if (depth >= redThresholdMm) redSource[index] = 1;
     else if (depth >= blueThresholdMm) blueSource[index] = 1;
   }
-  const closedRed = close3x3(redSource, field.width, field.height, deadline, checkpoint);
-  const closedBlue = close3x3(blueSource, field.width, field.height, deadline, checkpoint);
+  const closedRed = closeDepthBandMask(
+    redSource, field.valid, blueSource, field.width, field.height, deadline, checkpoint,
+  );
+  const closedBlue = closeDepthBandMask(
+    blueSource, field.valid, redSource, field.width, field.height, deadline, checkpoint,
+  );
   for (let index = 0; index < field.valid.length; index += 1) {
     if ((index & 1023) === 0) checkRuntime(deadline, checkpoint);
-    closedRed[index] = closedRed[index] && redSource[index] ? 1 : 0;
-    closedBlue[index] = closedBlue[index] && blueSource[index] && !closedRed[index] ? 1 : 0;
+    if (closedRed[index]) closedBlue[index] = 0;
   }
   const minimumCells = Math.ceil(Math.max(
     4,
     request.exteriorAreaMm2 * 0.001 / (field.cellSizeMm * field.cellSizeMm),
   ));
-  const redCandidate = featureFromMask(
+  const redCandidates = featureCandidatesFromMask(
     'DEEP_RED', closedRed, field, request, minimumCells, deadline, checkpoint,
   );
-  const blueCandidate = featureFromMask(
+  const blueCandidates = featureCandidatesFromMask(
     'LIGHT_BLUE', closedBlue, field, request, minimumCells, deadline, checkpoint,
   );
   const clearanceMm = Math.max(field.cellSizeMm, request.planarDiameterMm * 0.001);
-  let red = redCandidate?.contour, blue = blueCandidate?.contour;
   const centralHole = holeLoop(request);
-  const exactContour = (
-    role: 'DEEP_RED' | 'LIGHT_BLUE',
-    candidate: NonNullable<typeof redCandidate> | NonNullable<typeof blueCandidate>,
-  ): FeatureContour => {
-    const outer = simplifyClosedLoop(
-      candidate.source, 0, request.budgets.maxContourPointsPerLayer, deadline,
-    );
-    return {
-      id: candidate.contour.id,
-      role,
-      outer,
-      boundsMm: contourBounds(outer, deadline, checkpoint),
-      areaMm2: Math.abs(signedArea(outer, deadline, checkpoint)),
-    };
-  };
-  if (red && !validateDepthFeatureContours({
-    exterior: request.exterior, centralHole, red, clearanceMm, deadline, checkpoint,
-  }).ok) {
-    try {
-      const exactRed = exactContour('DEEP_RED', redCandidate!);
-      red = validateDepthFeatureContours({
-        exterior: request.exterior, centralHole, red: exactRed, clearanceMm, deadline, checkpoint,
-      }).ok ? exactRed : undefined;
-    } catch (error) {
-      if (error instanceof RangeError && /runtime budget/i.test(error.message)) throw error;
-      red = undefined;
-    }
-  }
-  if (blue && !validateDepthFeatureContours({
-    exterior: request.exterior, centralHole, blue, clearanceMm, deadline, checkpoint,
-  }).ok) {
-    try {
-      const exactBlue = exactContour('LIGHT_BLUE', blueCandidate!);
-      blue = validateDepthFeatureContours({
-        exterior: request.exterior, centralHole, blue: exactBlue, clearanceMm, deadline, checkpoint,
-      }).ok ? exactBlue : undefined;
-    } catch (error) {
-      if (error instanceof RangeError && /runtime budget/i.test(error.message)) throw error;
-      blue = undefined;
-    }
-  }
-  if (red && blue && !validateDepthFeatureContours({
-    exterior: request.exterior, centralHole, red, blue, clearanceMm, deadline, checkpoint,
-  }).ok) {
-    try {
-      const exactBlue = exactContour('LIGHT_BLUE', blueCandidate!);
-      blue = validateDepthFeatureContours({
-        exterior: request.exterior, centralHole, red, blue: exactBlue, clearanceMm, deadline, checkpoint,
-      }).ok ? exactBlue : undefined;
-    } catch (error) {
-      if (error instanceof RangeError && /runtime budget/i.test(error.message)) throw error;
-      blue = undefined;
-    }
-  }
+  const red = selectGreatestValidDepthFeatureContour(
+    redCandidates.map((candidate) => candidate.contour),
+    (candidate) => validateDepthFeatureContours({
+    exterior: request.exterior,
+    centralHole,
+    red: candidate,
+    clearanceMm,
+    deadline,
+    checkpoint,
+    }).ok,
+  );
+  const redCandidate = redCandidates.find((candidate) => candidate.contour === red);
+  const blue = selectGreatestValidDepthFeatureContour(
+    blueCandidates.map((candidate) => candidate.contour),
+    (candidate) => validateDepthFeatureContours({
+    exterior: request.exterior,
+    centralHole,
+    red,
+    blue: candidate,
+    clearanceMm,
+    deadline,
+    checkpoint,
+    }).ok,
+  );
+  const blueCandidate = blueCandidates.find((candidate) => candidate.contour === blue);
   checkRuntime(deadline, checkpoint);
   const incomplete = !red || !blue;
   return {

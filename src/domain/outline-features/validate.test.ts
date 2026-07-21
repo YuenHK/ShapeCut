@@ -41,6 +41,22 @@ describe('depth feature cross-role validation', () => {
       .toMatch(/central hole/i);
   });
 
+  it('rejects positive-area role overlap whose only boundary intersections are collinear', () => {
+    const collinearRed = contour('collinear-red', 'DEEP_RED', [
+      [-8, -4], [-8, 4], [2, 4], [2, -4],
+    ]);
+    const collinearBlue = contour('collinear-blue', 'LIGHT_BLUE', [
+      [-2, -4], [-2, 4], [8, 4], [8, -4],
+    ]);
+
+    expect(validateDepthFeatureContours({
+      exterior,
+      red: collinearRed,
+      blue: collinearBlue,
+      clearanceMm: 0.5,
+    }).reasons.join('\n')).toMatch(/overlap/i);
+  });
+
   it('rejects recolored, self-intersecting, non-finite, and over-budget role geometry', () => {
     const recolored = { ...red, role: 'LIGHT_BLUE' as const };
     const bowTie = contour('bow-tie', 'DEEP_RED', [[-8, -3], [-3, 3], [-8, 3], [-3, -3]]);

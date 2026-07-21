@@ -56,11 +56,21 @@ function segmentIntersectionKind(
   [c, d]: Segment,
   areaTolerance: number,
   lengthTolerance: number,
-): 'none' | 'touch' | 'proper' {
+): 'none' | 'touch' | 'collinear-overlap' | 'proper' {
   const abC = cross(a, b, c), abD = cross(a, b, d), cdA = cross(c, d, a), cdB = cross(c, d, b);
   if (((abC > areaTolerance && abD < -areaTolerance) || (abC < -areaTolerance && abD > areaTolerance))
     && ((cdA > areaTolerance && cdB < -areaTolerance) || (cdA < -areaTolerance && cdB > areaTolerance))) {
     return 'proper';
+  }
+  if ([abC, abD, cdA, cdB].every((value) => Math.abs(value) <= areaTolerance)) {
+    const useX = Math.abs(b[0] - a[0]) >= Math.abs(b[1] - a[1]);
+    const leftMinimum = Math.min(a[useX ? 0 : 1], b[useX ? 0 : 1]);
+    const leftMaximum = Math.max(a[useX ? 0 : 1], b[useX ? 0 : 1]);
+    const rightMinimum = Math.min(c[useX ? 0 : 1], d[useX ? 0 : 1]);
+    const rightMaximum = Math.max(c[useX ? 0 : 1], d[useX ? 0 : 1]);
+    if (Math.min(leftMaximum, rightMaximum) - Math.max(leftMinimum, rightMinimum) > lengthTolerance) {
+      return 'collinear-overlap';
+    }
   }
   return onSegment(a, b, c, areaTolerance, lengthTolerance)
     || onSegment(a, b, d, areaTolerance, lengthTolerance)
@@ -200,16 +210,35 @@ function loopsOverlap(
 ): boolean {
   const scale = scaleOf([left, right], deadline, checkpoint), areaTolerance = scale * scale * 64 * Number.EPSILON;
   const lengthTolerance = scale * 64 * Number.EPSILON;
+  const leftOrientation = Math.sign(signedArea(left, deadline, checkpoint));
+  const rightOrientation = Math.sign(signedArea(right, deadline, checkpoint));
   for (let leftIndex = 0; leftIndex < left.length; leftIndex += 1) {
     checkRuntime(deadline, checkpoint);
     for (let rightIndex = 0; rightIndex < right.length; rightIndex += 1) {
       if ((rightIndex & 63) === 0) checkRuntime(deadline, checkpoint);
-      if (segmentIntersectionKind(
-        [left[leftIndex], left[(leftIndex + 1) % left.length]],
-        [right[rightIndex], right[(rightIndex + 1) % right.length]],
+      const leftStart = left[leftIndex], leftEnd = left[(leftIndex + 1) % left.length];
+      const rightStart = right[rightIndex], rightEnd = right[(rightIndex + 1) % right.length];
+      const intersection = segmentIntersectionKind(
+        [leftStart, leftEnd],
+        [rightStart, rightEnd],
         areaTolerance,
         lengthTolerance,
-      ) === 'proper') return true;
+      );
+      if (intersection === 'proper') return true;
+      if (intersection === 'collinear-overlap') {
+        const leftDx = leftEnd[0] - leftStart[0], leftDy = leftEnd[1] - leftStart[1];
+        const rightDx = rightEnd[0] - rightStart[0], rightDy = rightEnd[1] - rightStart[1];
+        const leftLength = Math.hypot(leftDx, leftDy), rightLength = Math.hypot(rightDx, rightDy);
+        const leftNormal: Point2 = [
+          -leftDy / leftLength * leftOrientation,
+          leftDx / leftLength * leftOrientation,
+        ];
+        const rightNormal: Point2 = [
+          -rightDy / rightLength * rightOrientation,
+          rightDx / rightLength * rightOrientation,
+        ];
+        if (leftNormal[0] * rightNormal[0] + leftNormal[1] * rightNormal[1] > 0) return true;
+      }
     }
   }
   const leftLocations = left.map((point) => pointLocation(
