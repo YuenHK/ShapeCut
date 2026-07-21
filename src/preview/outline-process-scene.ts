@@ -48,6 +48,8 @@ const PREWARM_MAX_CSS_HEIGHT = 720;
 const MAX_RETAINED_PHYSICAL_PIXELS = 2_560 * 1_440;
 
 let availableRenderer: WebGLRenderer | undefined;
+let poolLifecycleInstalled = false;
+let rendererPoolShuttingDown = false;
 const defaultRendererState = new WeakMap<WebGLRenderer, { pixelRatio: number; cssWidth: number; cssHeight: number }>();
 
 function disposeDefaultRenderer(renderer: WebGLRenderer): void {
@@ -90,6 +92,8 @@ function createDefaultRenderer(): WebGLRenderer {
 }
 
 function acquireDefaultRenderer(): WebGLRenderer {
+  installRendererPoolLifecycle();
+  rendererPoolShuttingDown = false;
   const cached = availableRenderer;
   availableRenderer = undefined;
   if (!cached) return createDefaultRenderer();
@@ -100,10 +104,13 @@ function acquireDefaultRenderer(): WebGLRenderer {
 
 function releaseDefaultRenderer(renderer: WebGLRenderer): void {
   renderer.domElement.remove();
-  if (!defaultRendererIsUsable(renderer)) {
+  if (rendererPoolShuttingDown || !defaultRendererIsUsable(renderer)) {
     disposeDefaultRenderer(renderer);
     return;
   }
+  renderer.setRenderTarget(null);
+  renderer.setClearColor(0x000000, 0);
+  renderer.clear(true, true, true);
   renderer.resetState();
   if (renderer.domElement.width * renderer.domElement.height > MAX_RETAINED_PHYSICAL_PIXELS) {
     const state = defaultRendererState.get(renderer);
@@ -129,7 +136,20 @@ export function disposeOutlineProcessRendererPool(): void {
   disposeDefaultRenderer(renderer);
 }
 
+export function shutdownOutlineProcessRendererPool(): void {
+  rendererPoolShuttingDown = true;
+  disposeOutlineProcessRendererPool();
+}
+
+function installRendererPoolLifecycle(): void {
+  if (poolLifecycleInstalled) return;
+  window.addEventListener('pagehide', shutdownOutlineProcessRendererPool);
+  poolLifecycleInstalled = true;
+}
+
 export function warmOutlineProcessRenderer(createRenderer: () => WebGLRenderer = createDefaultRenderer): void {
+  installRendererPoolLifecycle();
+  rendererPoolShuttingDown = false;
   if (availableRenderer || typeof window.WebGLRenderingContext === 'undefined') return;
   let renderer: WebGLRenderer | undefined;
   const lineGeometry = new BufferGeometry();

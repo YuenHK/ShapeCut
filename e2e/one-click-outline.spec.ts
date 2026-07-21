@@ -2,11 +2,12 @@ import { existsSync } from 'node:fs';
 import { expect, test } from '@playwright/test';
 import {
   downloadAndInspectOutline,
+  expectCentralHoleSelectionFromCandidates,
   expectFiniteClosedSingleContours,
-  expectRetainedHoleGeometry,
   expectResult,
   installWorkerResultProbe,
   readLatestWorkerResultSummary,
+  readWorkerProbeState,
   selectModel,
 } from './helpers';
 
@@ -33,6 +34,7 @@ for (const fixture of fixtures) {
     expect(runtime).toMatchObject({ mode: 'outline-2.5d', status: 'warning' });
     if (fixture.env === 'KNIGHT_FORTRESS_GROUP_STL') expect(runtime.removedComponentCount).toBeGreaterThan(0);
     const output = await downloadAndInspectOutline(page);
+    const probe = await readWorkerProbeState(page);
     await expect(viewport).toHaveAttribute('data-layer-count', String(output.layers.length));
     expectFiniteClosedSingleContours(output);
 
@@ -42,6 +44,17 @@ for (const fixture of fixtures) {
       entity.physicalLayerId === layer.id && entity.role === 'CUT_BLACK'
     )).length - 1), 0);
     expect(exportedHoleCount).toBe(retainedHoles.length);
+    const projectedCandidates = probe.holeCandidates.filter(({ extractionMode }) => extractionMode === 'projected');
+    expect(projectedCandidates).toHaveLength(runtime.coloredLayers.length);
+    expect(new Set(projectedCandidates.map(({ layerId }) => layerId)).size).toBe(runtime.coloredLayers.length);
+    const independentSelections = runtime.coloredLayers.map((layer) => ({
+      layerId: layer.id,
+      ...expectCentralHoleSelectionFromCandidates(
+        layer,
+        projectedCandidates.find(({ layerId }) => layerId === layer.id)!,
+      ),
+    }));
+    expect(independentSelections).toHaveLength(runtime.coloredLayers.length);
     const retainedHoleEvidence = retainedHoles.map((layer) => {
       const exportedBlack = output.entities.filter((entity) => (
         entity.physicalLayerId === layer.id && entity.role === 'CUT_BLACK'
@@ -56,7 +69,7 @@ for (const fixture of fixtures) {
         expect(Math.abs(point[0] - layer.hole.points![index][0] - translation[0])).toBeLessThanOrEqual(1e-9);
         expect(Math.abs(point[1] - layer.hole.points![index][1] - translation[1])).toBeLessThanOrEqual(1e-9);
       });
-      return { layerId: layer.id, ...expectRetainedHoleGeometry(layer) };
+      return independentSelections.find(({ layerId }) => layerId === layer.id)!;
     });
     expect(output.entityCounts.DEEP_RED).toBe(runtime.coloredLayers.filter(({ hasDeep }) => hasDeep).length);
     expect(output.entityCounts.LIGHT_BLUE).toBe(runtime.coloredLayers.filter(({ hasLight }) => hasLight).length);
@@ -68,6 +81,7 @@ for (const fixture of fixtures) {
         removedComponentCount: runtime.removedComponentCount,
         retainedHoleCount: retainedHoles.length,
         retainedHoleEvidence,
+        independentSelections,
         deepFeatureCount: output.entityCounts.DEEP_RED,
         lightFeatureCount: output.entityCounts.LIGHT_BLUE,
         sha256: output.sha256,

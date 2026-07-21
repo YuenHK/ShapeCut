@@ -9,6 +9,7 @@ import {
 import { featureEvidenceFingerprint, type ColoredOutlineLayer } from '../domain/outline-features/types';
 import { MAX_STL_BYTES } from '../domain/mesh/parse-stl';
 import { SupersededError } from '../workers/geometry-client';
+import * as outlineProcessScene from '../preview/outline-process-scene';
 import {
   OneClickConverter,
   type OneClickConverterServices,
@@ -94,6 +95,15 @@ function services(overrides: Partial<OneClickConverterServices> = {}): OneClickC
 }
 
 describe('OneClickConverter', () => {
+  it('drains the idle renderer pool when the application workflow unmounts', () => {
+    const shutdown = vi.spyOn(outlineProcessScene, 'shutdownOutlineProcessRendererPool');
+    const view = render(<OneClickConverter services={services()} />);
+
+    view.unmount();
+
+    expect(shutdown).toHaveBeenCalled();
+  });
+
   it('rejects an oversized file before reading bytes and permits a retry', async () => {
     const user = userEvent.setup();
     const api = services();

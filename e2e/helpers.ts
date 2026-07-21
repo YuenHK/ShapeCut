@@ -4,8 +4,14 @@ import JSZip from 'jszip';
 import {
   decodePDFRawStream,
   PDFArray,
+  PDFDict,
   PDFDocument,
+  PDFHexString,
+  PDFName,
+  PDFNumber,
+  PDFObject,
   PDFRawStream,
+  PDFString,
 } from 'pdf-lib';
 import { expect, type Download, type Page } from '@playwright/test';
 
@@ -106,8 +112,18 @@ export type ParsedColoredPdf = {
   readonly strokeRecords: readonly PdfStrokeRecord[];
   readonly pageSize: readonly [number, number];
   readonly textBlockCount: number;
+  readonly textRecords: readonly PdfTextRecord[];
   readonly keywords: readonly string[];
 };
+
+export type PdfTextRecord = {
+  readonly text: string;
+  readonly size: number;
+  readonly x: number;
+  readonly y: number;
+};
+
+type ParsedPdfTextRecord = PdfTextRecord & { readonly fontName: string };
 
 export type ColoredArtifactPayloads = {
   readonly zip: Uint8Array;
@@ -144,6 +160,7 @@ export type WorkerResultSummary = {
     readonly exteriorPoints: readonly (readonly [number, number])[];
     readonly hole: {
       readonly status: 'retained' | 'omitted';
+      readonly id?: string;
       readonly equivalentDiameterMm?: number;
       readonly axisDistanceMm?: number;
       readonly areaMm2?: number;
@@ -152,6 +169,21 @@ export type WorkerResultSummary = {
     readonly hasDeep: boolean;
     readonly hasLight: boolean;
   }[];
+};
+
+export type WorkerHoleCandidateEvidence = {
+  readonly extractionMode: 'exact' | 'projected';
+  readonly layerId: string;
+  readonly candidates: readonly {
+    readonly outer: readonly Point2[];
+    readonly occupiedCellCount?: number;
+    readonly closed?: boolean;
+  }[];
+  readonly exterior: readonly Point2[];
+  readonly axisPoint: Point2;
+  readonly layerWidthMm: number;
+  readonly planarDiameterMm: number;
+  readonly cellSizeMm: number;
 };
 
 export type WorkerProbeState = {
@@ -164,6 +196,14 @@ export type WorkerProbeState = {
   readonly replacementTriggered: number;
   readonly replacementCheckpoint?: string;
   readonly applyPaths: readonly string[];
+  readonly holeCandidates: readonly WorkerHoleCandidateEvidence[];
+  readonly packageWorkloads: readonly {
+    readonly layers: number;
+    readonly contoursPerLayer: number;
+    readonly minimumPointsPerContour: number;
+    readonly maximumPointsPerContour: number;
+    readonly totalPoints: number;
+  }[];
 };
 
 type MutableSvgRoleGroup = {
@@ -299,7 +339,8 @@ export function parseColoredOutlineSvgArtifact(svg: string): ParsedColoredArtifa
 
   const allTags = [...svg.matchAll(/<[^>]*>/g)].map((match) => match[0]);
   const allowedTag = /^(?:<\?xml version="1\.0" encoding="UTF-8"\?>|<svg\b[^>]*>|<\/svg>|<g\b[^>]*>|<\/g>|<polygon\b[^>]*\/>)$/;
-  if (allTags.length === 0 || allTags[0] !== '<?xml version="1.0" encoding="UTF-8"?>'
+  if (allTags.length < 3 || allTags[0] !== '<?xml version="1.0" encoding="UTF-8"?>'
+    || allTags[1] !== roots[0][0] || allTags.at(-1) !== '</svg>'
     || allTags.some((tag) => !allowedTag.test(tag)) || svg.replace(/<[^>]*>/g, '') !== '') {
     throw new Error('Colored SVG contains text, comments, or an element outside the canonical SVG/g/polygon grammar');
   }
@@ -452,20 +493,67 @@ export function parseColoredOutlineDxfArtifact(dxf: string): Omit<ParsedColoredA
     throw new Error('Colored DXF contains a non-canonical numeric group code');
   }
   const pairs = Array.from({ length: lines.length / 2 }, (_, index) => [lines[index * 2], lines[index * 2 + 1]] as const);
-  const entitySectionStarts = pairs.flatMap((pair, index) => (
-    pair[0] === '0' && pair[1] === 'SECTION' && pairs[index + 1]?.[0] === '2' && pairs[index + 1]?.[1] === 'ENTITIES'
-      ? [index + 2]
-      : []
-  ));
-  if (entitySectionStarts.length !== 1) throw new Error('Colored DXF must contain exactly one canonical ENTITIES section');
-  const entityEnd = pairs.findIndex((pair, index) => index >= entitySectionStarts[0] && pair[0] === '0' && pair[1] === 'ENDSEC');
-  if (entityEnd < 0) throw new Error('Colored DXF ENTITIES section is not terminated');
-  const entityTypes = pairs.slice(entitySectionStarts[0], entityEnd)
-    .filter(([code]) => code === '0')
-    .map(([, value]) => value);
-  if (entityTypes.some((type) => type !== 'LWPOLYLINE')) {
-    throw new Error(`Colored DXF contains a non-canonical drawable entity: ${entityTypes.find((type) => type !== 'LWPOLYLINE')}`);
+  let cursor = 0;
+  const expectPair = (code: string, value: string, label: string): void => {
+    const pair = pairs[cursor++];
+    if (!pair || pair[0] !== code || pair[1] !== value) {
+      throw new Error(`Colored DXF canonical ${label} record is malformed`);
+    }
+  };
+  const expectFinitePair = (code: string, label: string): number => {
+    const pair = pairs[cursor++];
+    if (!pair || pair[0] !== code) throw new Error(`Colored DXF canonical ${label} record is malformed`);
+    return safeFinite(pair[1], `Colored DXF ${label}`);
+  };
+  expectPair('0', 'SECTION', 'HEADER section'); expectPair('2', 'HEADER', 'HEADER name');
+  expectPair('9', '$INSUNITS', 'units variable'); expectPair('70', '4', 'millimetre units');
+  expectPair('9', '$EXTMIN', 'minimum extent variable');
+  expectPair('10', '0', 'minimum X'); expectPair('20', '0', 'minimum Y'); expectPair('30', '0', 'minimum Z');
+  expectPair('9', '$EXTMAX', 'maximum extent variable');
+  const maximumX = expectFinitePair('10', 'maximum X'), maximumY = expectFinitePair('20', 'maximum Y');
+  expectPair('30', '0', 'maximum Z');
+  if (maximumX <= 0 || maximumY <= 0) throw new Error('Colored DXF canonical extents must be positive');
+  expectPair('999', `OUTLINE_SOURCE_HASH:${fingerprints.sourceHash}`, 'source fingerprint');
+  expectPair('999', `FEATURE_EVIDENCE_FINGERPRINT:${fingerprints.featureEvidenceFingerprint}`, 'feature fingerprint');
+  expectPair('999', `DIAGNOSTICS_FINGERPRINT:${fingerprints.diagnosticsFingerprint}`, 'diagnostics fingerprint');
+  expectPair('999', `ENTITY_COUNTS:${declaredCounts}`, 'entity counts');
+  expectPair('0', 'ENDSEC', 'HEADER close');
+  expectPair('0', 'SECTION', 'TABLES section'); expectPair('2', 'TABLES', 'TABLES name');
+  expectPair('0', 'TABLE', 'LAYER table'); expectPair('2', 'LAYER', 'LAYER table name'); expectPair('70', '3', 'LAYER table count');
+  for (const role of COLORED_ROLES) {
+    expectPair('0', 'LAYER', `${role} layer type`); expectPair('2', role, `${role} layer name`);
+    expectPair('70', '0', `${role} flags`); expectPair('62', String(ROLE_DXF[role].aci), `${role} ACI`);
+    expectPair('420', String(ROLE_DXF[role].trueColor), `${role} true color`); expectPair('6', 'CONTINUOUS', `${role} line type`);
   }
+  expectPair('0', 'ENDTAB', 'LAYER table close'); expectPair('0', 'ENDSEC', 'TABLES close');
+  expectPair('0', 'SECTION', 'ENTITIES section'); expectPair('2', 'ENTITIES', 'ENTITIES name');
+  let structuralEntityCount = 0;
+  while (!(pairs[cursor]?.[0] === '0' && pairs[cursor]?.[1] === 'ENDSEC')) {
+    const idPair = pairs[cursor++], physicalPair = pairs[cursor++];
+    if (!idPair || idPair[0] !== '999' || !idPair[1].startsWith('ENTITY_ID:')
+      || !physicalPair || physicalPair[0] !== '999' || !physicalPair[1].startsWith('PHYSICAL_LAYER:')) {
+      throw new Error('Colored DXF canonical entity marker record is malformed');
+    }
+    expectPair('0', 'LWPOLYLINE', 'entity type');
+    const rolePair = pairs[cursor++];
+    const role = rolePair?.[0] === '8' ? rolePair[1] as ColoredRole : undefined;
+    if (!role || !COLORED_ROLES.includes(role)) throw new Error('Colored DXF canonical entity role record is malformed');
+    expectPair('62', String(ROLE_DXF[role].aci), 'entity ACI');
+    expectPair('420', String(ROLE_DXF[role].trueColor), 'entity true color');
+    const countPair = pairs[cursor++];
+    if (!countPair || countPair[0] !== '90') throw new Error('Colored DXF canonical entity point count record is malformed');
+    const pointCount = safeInteger(countPair[1], 'Colored DXF point count');
+    expectPair('70', '1', 'closed polyline flag');
+    for (let point = 0; point < pointCount; point += 1) {
+      expectFinitePair('10', 'entity X'); expectFinitePair('20', 'entity Y');
+    }
+    structuralEntityCount += 1;
+  }
+  expectPair('0', 'ENDSEC', 'ENTITIES close'); expectPair('0', 'EOF', 'EOF');
+  if (cursor !== pairs.length || structuralEntityCount === 0) {
+    throw new Error('Colored DXF canonical record stream was not fully consumed');
+  }
+  const entityTypes = Array.from({ length: structuralEntityCount }, () => 'LWPOLYLINE');
   const rawEntitySections = [...dxf.matchAll(/0\nSECTION\n2\nENTITIES\n([\s\S]*?)0\nENDSEC\n/g)];
   if (rawEntitySections.length !== 1) throw new Error('Colored DXF ENTITIES lexical stream is malformed');
   const entityBody = rawEntitySections[0][1];
@@ -524,7 +612,7 @@ function pdfContentStreams(pdf: PDFDocument): readonly string[] {
 
 function parsePdfGeometry(pdf: PDFDocument): {
   readonly strokes: readonly PdfStrokeRecord[];
-  readonly textBlockCount: number;
+  readonly texts: readonly ParsedPdfTextRecord[];
   readonly pageSize: readonly [number, number];
 } {
   const streams = pdfContentStreams(pdf);
@@ -560,18 +648,22 @@ function parsePdfGeometry(pdf: PDFDocument): {
   const dashPattern = new RegExp(`^\\[(${number}(?: ${number})*)?\\] (${number}) d$`);
   const pointPattern = (operator: 'm' | 'l') => new RegExp(`^(${number}) (${number}) ${operator}$`);
   const strokes: PdfStrokeRecord[] = [];
-  let textBlockCount = 0;
+  const texts: ParsedPdfTextRecord[] = [];
   for (const candidate of blocks) {
     if (candidate[1] === 'BT') {
+      const font = candidate[3]?.match(/^\/(Helvetica-\d+) (7|8) Tf$/);
+      const position = candidate[5]?.match(new RegExp(`^1 0 0 1 (${number}) (${number}) Tm$`));
+      const encoded = candidate[6]?.match(/^<((?:[0-9A-F]{2})+)> Tj$/);
       if (candidate.length !== 10 || candidate[2] !== '0 0 0 rg'
-        || !/^\/Helvetica-\d+ (?:7|8) Tf$/.test(candidate[3])
+        || !font
         || candidate[4] !== '24 TL'
-        || !(new RegExp(`^1 0 0 1 ${number} ${number} Tm$`)).test(candidate[5])
-        || !/^<(?:[0-9A-F]{2})+> Tj$/.test(candidate[6])
+        || !position || !encoded
         || candidate[7] !== 'T*' || candidate[8] !== 'ET' || candidate[9] !== 'Q') {
         throw new Error('Colored PDF text block does not match the exact canonical grammar');
       }
-      textBlockCount += 1;
+      const bytes = encoded[1].match(/../g)!.map((value) => Number.parseInt(value, 16));
+      const text = String.fromCodePoint(...bytes.map((value) => value === 0x97 ? 0x2014 : value));
+      texts.push({ text, fontName: font[1], size: Number(font[2]), x: Number(position[1]), y: Number(position[2]) });
       continue;
     }
     if (candidate.length !== 9 || candidate[7] !== 'S') {
@@ -603,7 +695,119 @@ function parsePdfGeometry(pdf: PDFDocument): {
     strokes.push(stroke);
   }
   const page = pdf.getPage(0);
-  return { strokes, textBlockCount, pageSize: [page.getWidth(), page.getHeight()] };
+  return { strokes, texts, pageSize: [page.getWidth(), page.getHeight()] };
+}
+
+function exactPdfKeys(dict: PDFDict, expected: readonly string[], label: string): void {
+  const keys = dict.keys().map((key) => key.asString().slice(1)).sort();
+  if (exact(keys) !== exact([...expected].sort())) throw new Error(`Colored PDF ${label} dictionary is not canonical`);
+}
+
+function pdfNumberArray(pdf: PDFDocument, value: unknown, label: string): readonly number[] {
+  const resolved = pdf.context.lookup(value as never);
+  if (!(resolved instanceof PDFArray)) throw new Error(`Colored PDF ${label} is not a canonical number array`);
+  return resolved.asArray().map((item) => {
+    const number = pdf.context.lookup(item);
+    if (!(number instanceof PDFNumber)) throw new Error(`Colored PDF ${label} contains a non-number`);
+    return number.asNumber();
+  });
+}
+
+function validatePdfStructure(pdf: PDFDocument): readonly string[] {
+  exactPdfKeys(pdf.catalog, ['Type', 'Pages'], 'catalog');
+  const pagesNode = pdf.context.lookup(pdf.catalog.get(PDFName.of('Pages')));
+  if (!(pagesNode instanceof PDFDict)) throw new Error('Colored PDF page tree is malformed');
+  exactPdfKeys(pagesNode, ['Type', 'Kids', 'Count'], 'page tree');
+  const count = pdf.context.lookup(pagesNode.get(PDFName.of('Count')));
+  const kids = pdf.context.lookup(pagesNode.get(PDFName.of('Kids')));
+  if (!(count instanceof PDFNumber) || count.asNumber() !== 1 || !(kids instanceof PDFArray) || kids.size() !== 1) {
+    throw new Error('Colored PDF page tree cardinality is not canonical');
+  }
+  const page = pdf.getPage(0);
+  if (pdf.context.lookup(kids.get(0)) !== page.node
+    || pdf.context.lookup(page.node.get(PDFName.of('Parent'))) !== pagesNode) {
+    throw new Error('Colored PDF page tree parent/child linkage is not canonical');
+  }
+  const keys = page.node.keys().map((key) => key.asString().slice(1));
+  const forbidden = ['Rotate', 'UserUnit', 'Annots'].find((key) => keys.includes(key));
+  if (forbidden) throw new Error(`Colored PDF contains forbidden page ${forbidden}`);
+  const allowed = ['Type', 'Parent', 'Resources', 'MediaBox', 'Contents', 'CropBox'];
+  if (keys.some((key) => !allowed.includes(key)) || !['Type', 'Parent', 'Resources', 'MediaBox', 'Contents'].every((key) => keys.includes(key))) {
+    throw new Error('Colored PDF page dictionary is not canonical');
+  }
+  const mediaBox = pdfNumberArray(pdf, page.node.get(PDFName.of('MediaBox')), 'MediaBox');
+  if (mediaBox.length !== 4 || mediaBox[0] !== 0 || mediaBox[1] !== 0
+    || !mediaBox.slice(2).every((value) => Number.isFinite(value) && value > 0)) {
+    throw new Error('Colored PDF MediaBox is not canonical');
+  }
+  if (page.node.has(PDFName.of('CropBox'))
+    && exact(pdfNumberArray(pdf, page.node.get(PDFName.of('CropBox')), 'CropBox')) !== exact(mediaBox)) {
+    throw new Error('Colored PDF CropBox must equal the canonical MediaBox');
+  }
+  if (pdf.catalog.has(PDFName.of('AcroForm'))) throw new Error('Colored PDF contains a forbidden AcroForm');
+  const resources = pdf.context.lookup(page.node.get(PDFName.of('Resources')));
+  if (!(resources instanceof PDFDict)) throw new Error('Colored PDF resources are malformed');
+  exactPdfKeys(resources, ['Font', 'XObject', 'ExtGState'], 'resources');
+  const fonts = pdf.context.lookup(resources.get(PDFName.of('Font')));
+  const xObjects = pdf.context.lookup(resources.get(PDFName.of('XObject')));
+  const extGStates = pdf.context.lookup(resources.get(PDFName.of('ExtGState')));
+  if (!(fonts instanceof PDFDict) || fonts.keys().length === 0
+    || !(xObjects instanceof PDFDict) || xObjects.keys().length !== 0
+    || !(extGStates instanceof PDFDict) || extGStates.keys().length !== 0) {
+    throw new Error('Colored PDF contains a forbidden or malformed render resource');
+  }
+  for (const key of fonts.keys()) {
+    if (!/^\/Helvetica-\d+$/.test(key.asString())) throw new Error('Colored PDF font resource name is not canonical');
+    const font = pdf.context.lookup(fonts.get(key));
+    if (!(font instanceof PDFDict)) throw new Error('Colored PDF font resource is malformed');
+    exactPdfKeys(font, ['Type', 'Subtype', 'BaseFont', 'Encoding'], 'font');
+    if (font.get(PDFName.of('Type'))?.toString() !== '/Font'
+      || font.get(PDFName.of('Subtype'))?.toString() !== '/Type1'
+      || font.get(PDFName.of('BaseFont'))?.toString() !== '/Helvetica'
+      || font.get(PDFName.of('Encoding'))?.toString() !== '/WinAnsiEncoding') {
+      throw new Error('Colored PDF font encoding is not canonical WinAnsi Helvetica');
+    }
+  }
+  return fonts.keys().map((key) => key.asString().slice(1));
+}
+
+function decodePdfOctets(octets: readonly number[]): string {
+  if (octets[0] === 0xfe && octets[1] === 0xff) {
+    return String.fromCodePoint(...Array.from({ length: (octets.length - 2) / 2 }, (_, index) => (
+      octets[index * 2 + 2] * 256 + octets[index * 2 + 3]
+    )));
+  }
+  return String.fromCodePoint(...octets.map((value) => value === 0x97 ? 0x2014 : value));
+}
+
+function decodePdfObjectStrings(pdf: PDFDocument): readonly string[] {
+  const values: string[] = [], visited = new Set<PDFObject>();
+  const visit = (object: PDFObject): void => {
+    if (visited.has(object)) return;
+    visited.add(object);
+    if (object instanceof PDFString) {
+      values.push(object.decodeText());
+    } else if (object instanceof PDFHexString) {
+      const lexicalValue = object.asString();
+      if (!/^[0-9A-Fa-f\x00\t\n\f\r ]*$/.test(lexicalValue)) {
+        throw new Error('Colored PDF hexadecimal string is malformed');
+      }
+      const normalized = lexicalValue.replace(/[\x00\t\n\f\r ]/g, '');
+      values.push(PDFHexString.of(normalized).decodeText());
+    } else if (object instanceof PDFRawStream) {
+      // Stream dictionaries remain metadata-bearing PDF objects; only their binary payload is excluded.
+      visit(object.dict);
+    } else if (object instanceof PDFDict) {
+      object.values().forEach(visit);
+    } else if (object instanceof PDFArray) {
+      object.asArray().forEach(visit);
+    }
+  };
+  pdf.context.enumerateIndirectObjects().forEach(([, object]) => visit(object));
+  Object.values(pdf.context.trailerInfo).forEach((object) => {
+    if (object) visit(object);
+  });
+  return values;
 }
 
 function onePdfToken(tokens: readonly string[], prefix: string, pattern: RegExp, label: string): RegExpMatchArray {
@@ -620,6 +824,7 @@ export async function parseColoredOutlinePdf(
   kind: 'preview' | 'exploded',
 ): Promise<ParsedColoredPdf> {
   const pdf = await PDFDocument.load(bytes, { updateMetadata: false });
+  const fontResourceNames = validatePdfStructure(pdf);
   const expectedTitle = kind === 'preview' ? 'ShapeCut colored preview' : 'ShapeCut exploded view';
   if (pdf.getTitle() !== expectedTitle || pdf.getPageCount() !== 1
     || pdf.getSubject() !== 'Canonical colored outline' || pdf.getAuthor() !== 'ShapeCut'
@@ -682,6 +887,15 @@ export async function parseColoredOutlinePdf(
   if (keywords.length !== recognizedCount) throw new Error(`Colored ${kind} PDF contains extra or malformed metadata markers`);
   assertPublicText(keywordsText, `Colored ${kind} PDF metadata`);
   const parsedGeometry = parsePdfGeometry(pdf);
+  if (new Set(parsedGeometry.texts.map(({ fontName }) => fontName)).size !== parsedGeometry.texts.length
+    || exact([...fontResourceNames].sort()) !== exact(parsedGeometry.texts.map(({ fontName }) => fontName).sort())) {
+    throw new Error(`Colored ${kind} PDF text/font resource coverage is not canonical`);
+  }
+  const publicText = [
+    pdf.getTitle(), pdf.getSubject(), pdf.getAuthor(), pdf.getCreator(), pdf.getProducer(), keywordsText,
+    ...parsedGeometry.texts.map(({ text }) => text), ...decodePdfObjectStrings(pdf),
+  ].filter((value): value is string => typeof value === 'string').join('\n');
+  assertPublicText(publicText, `Colored ${kind} PDF decoded text and metadata`);
   return {
     kind,
     fingerprints: fingerprintsFromValues({
@@ -691,7 +905,8 @@ export async function parseColoredOutlinePdf(
     geometryRecords: parsedGeometry.strokes.flatMap(({ role, start, end }) => role ? [{ role, start, end }] : []),
     strokeRecords: parsedGeometry.strokes,
     pageSize: parsedGeometry.pageSize,
-    textBlockCount: parsedGeometry.textBlockCount,
+    textBlockCount: parsedGeometry.texts.length,
+    textRecords: parsedGeometry.texts,
     keywords,
   };
 }
@@ -866,6 +1081,17 @@ function assertPdfStrokeRecords(actual: readonly PdfStrokeRecord[], expected: re
   }
 }
 
+function assertPdfTextRecords(actual: readonly PdfTextRecord[], expected: readonly PdfTextRecord[], kind: string): void {
+  if (actual.length !== expected.length) throw new Error(`Colored ${kind} PDF text cardinality does not reconcile`);
+  expected.forEach((record, index) => {
+    const candidate = actual[index];
+    if (candidate.text !== record.text || candidate.size !== record.size
+      || !nearlyEqual(candidate.x, record.x) || !nearlyEqual(candidate.y, record.y)) {
+      throw new Error(`Colored ${kind} PDF text label ${index + 1} does not exactly reconcile`);
+    }
+  });
+}
+
 function reconcilePdf(
   pdf: ParsedColoredPdf,
   svg: ParsedColoredArtifact,
@@ -890,11 +1116,13 @@ function reconcilePdf(
       throw new Error('Colored preview PDF page dimensions or label cardinality do not reconcile with SVG');
     }
     const expectedStrokes: PdfStrokeRecord[] = [];
+    const expectedTexts: PdfTextRecord[] = [];
     let cursorY = expectedPageSize[1] - 12 * MM_TO_POINTS;
     for (const [layerIndex, layer] of svg.layers.entries()) {
       const bounds = entityBounds(exteriors[layerIndex]);
       const height = bounds.maxY - bounds.minY;
       const originX = 12 * MM_TO_POINTS, originY = cursorY - height * MM_TO_POINTS;
+      expectedTexts.push({ text: `${layer.order}. ${layer.id}  1:1`, size: 8, x: originX, y: cursorY + 2 * MM_TO_POINTS });
       for (const entity of svg.entities.filter(({ physicalLayerId }) => physicalLayerId === layer.id)) {
         entity.points.forEach((point, index) => {
           const next = entity.points[(index + 1) % entity.points.length];
@@ -907,6 +1135,11 @@ function reconcilePdf(
       }
       cursorY = originY - 12 * MM_TO_POINTS;
     }
+    expectedTexts.push({
+      text: 'Verify fit and dimensions before fabrication.', size: 7,
+      x: 12 * MM_TO_POINTS, y: 5 * MM_TO_POINTS,
+    });
+    assertPdfTextRecords(pdf.textRecords, expectedTexts, 'preview');
     assertPdfStrokeRecords(pdf.strokeRecords, expectedStrokes, 'preview');
     return;
   }
@@ -944,11 +1177,17 @@ function reconcilePdf(
     [centerX, baseY - 8 * MM_TO_POINTS],
     [centerX, topY],
   )];
+  const expectedTexts: PdfTextRecord[] = [{ text: 'Central axis', size: 8, x: centerX + 3 * MM_TO_POINTS, y: topY - 6 }];
   svg.layers.forEach((layer, layerIndex) => {
     const bounds = exteriorBounds[layerIndex];
     const offsetX = centerX - ((bounds.maxX - bounds.minX) / 2) * drawingScale * MM_TO_POINTS
       + layerIndex * Math.min(4, 22 / Math.max(1, svg.layers.length - 1)) * MM_TO_POINTS;
     const offsetY = baseY + layerIndex * gapMm * MM_TO_POINTS;
+    const dimensions = pdf.layerRecords[layerIndex];
+    expectedTexts.push({
+      text: `${layer.order}. ${layer.id}  thickness ${dimensions.thickness} X ${dimensions.width} Y ${dimensions.height} hole diameter ${dimensions.holeDiameter ?? '—'}`,
+      size: 7, x: 184 * MM_TO_POINTS, y: offsetY + 4,
+    });
     const project = (point: readonly number[]): readonly [number, number] => [
       offsetX + (point[0] - bounds.minX) * drawingScale * MM_TO_POINTS
         + (point[1] - bounds.minY) * 0.28 * drawingScale * MM_TO_POINTS,
@@ -968,6 +1207,11 @@ function reconcilePdf(
     [18 * MM_TO_POINTS, (192 - index * 7) * MM_TO_POINTS],
     [28 * MM_TO_POINTS, (192 - index * 7) * MM_TO_POINTS],
   )));
+  COLORED_ROLES.forEach((role, index) => expectedTexts.push({
+    text: `${role} ${ROLE_COLORS[role]}`, size: 7,
+    x: 31 * MM_TO_POINTS, y: (192 - index * 7) * MM_TO_POINTS - 3,
+  }));
+  assertPdfTextRecords(pdf.textRecords, expectedTexts, 'exploded');
   assertPdfStrokeRecords(pdf.strokeRecords, expectedStrokes, 'exploded');
 }
 
@@ -1068,6 +1312,7 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
         exteriorPoints: Array<[number, number]>;
         hole: {
           status: 'retained' | 'omitted';
+          id?: string;
           equivalentDiameterMm?: number;
           axisDistanceMm?: number;
           areaMm2?: number;
@@ -1087,11 +1332,15 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
       replacementTriggered: number;
       replacementCheckpoint?: string;
       applyPaths: string[];
+      holeCandidates: WorkerHoleCandidateEvidence[];
+      packageWorkloads: WorkerProbeState['packageWorkloads'][number][];
+      activeWorker?: Worker;
+      nearLimitPackageArmed?: boolean;
       replacement?: { name: string; mimeType: string; bytes: number[] };
     };
     const state: ProbeState = {
       results: [], errorCodes: [], created: 0, terminated: 0,
-      packageRequests: 0, packageCheckpoints: [], replacementTriggered: 0, applyPaths: [],
+      packageRequests: 0, packageCheckpoints: [], replacementTriggered: 0, applyPaths: [], holeCandidates: [], packageWorkloads: [],
     };
     Object.assign(window, { __shapeCutWorkerProbe: state });
     const inspect = (candidate: unknown, seen = new WeakSet<object>()): void => {
@@ -1113,7 +1362,7 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
             outer?: unknown;
             boundsMm?: { minX?: unknown; minY?: unknown; maxX?: unknown; maxY?: unknown };
           } | undefined;
-          const centralHole = layer.centralHole as { outer?: unknown; areaMm2?: unknown } | undefined;
+          const centralHole = layer.centralHole as { id?: unknown; outer?: unknown; areaMm2?: unknown } | undefined;
           const diagnostics = layer.diagnostics as {
             hole?: Record<string, unknown>;
             depth?: { cellSizeMm?: unknown };
@@ -1138,6 +1387,7 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
             exteriorPoints: exterior.outer,
             hole: {
               status: hole.status,
+              ...(hole.status === 'retained' && typeof centralHole?.id === 'string' ? { id: centralHole.id } : {}),
               ...(typeof hole.equivalentDiameterMm === 'number' ? { equivalentDiameterMm: hole.equivalentDiameterMm } : {}),
               ...(typeof hole.axisDistanceMm === 'number' ? { axisDistanceMm: hole.axisDistanceMm } : {}),
               ...(hole.status === 'retained' ? { areaMm2: centralHole!.areaMm2 as number, points: centralHole!.outer as Array<[number, number]> } : {}),
@@ -1172,10 +1422,16 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
       });
     };
     const NativeWorker = window.Worker;
+    const acceptanceWorkerUrl = (url: string | URL): URL => {
+      const resolved = new URL(url.toString(), window.location.href);
+      resolved.searchParams.set('shapecut-acceptance', '1');
+      return resolved;
+    };
     class ProbedWorker extends NativeWorker {
       constructor(url: string | URL, options?: WorkerOptions) {
-        super(url, options);
+        super(acceptanceWorkerUrl(url), options);
         state.created += 1;
+        state.activeWorker = this;
         super.addEventListener('message', (event) => {
           const message = typeof event.data === 'object' && event.data !== null
             ? event.data as Record<string, unknown>
@@ -1184,12 +1440,25 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
             state.packageCheckpoints.push(message.label);
             if (message.label === 'pdf:create:before') triggerReplacement(message.label);
           }
+          if (message?.type === 'SHAPECUT_HOLE_CANDIDATES' && typeof message.evidence === 'object' && message.evidence !== null) {
+            const evidence = message.evidence as WorkerHoleCandidateEvidence;
+            if (Array.isArray(evidence.candidates) && evidence.candidates.length <= 64) state.holeCandidates.push(evidence);
+          }
+          if (message?.type === 'SHAPECUT_PACKAGE_WORKLOAD_READY' && typeof message.evidence === 'object' && message.evidence !== null) {
+            state.packageWorkloads.push(message.evidence as WorkerProbeState['packageWorkloads'][number]);
+          }
           inspect(event.data);
         });
+        super.postMessage({ type: 'SHAPECUT_TEST_HOLE_PROBE_ENABLE' });
+        if (state.nearLimitPackageArmed) {
+          state.nearLimitPackageArmed = false;
+          super.postMessage({ type: 'SHAPECUT_TEST_NEAR_LIMIT_PACKAGE' });
+        }
       }
 
       override terminate(): void {
         state.terminated += 1;
+        if (state.activeWorker === this) state.activeWorker = undefined;
         super.terminate();
       }
 
@@ -1217,9 +1486,15 @@ export async function armWorkerPackageReplacement(
 ): Promise<void> {
   await page.evaluate(({ name, mimeType, bytes }) => {
     const state = (window as unknown as {
-      __shapeCutWorkerProbe: { replacement?: { name: string; mimeType: string; bytes: number[] } };
+      __shapeCutWorkerProbe: {
+        replacement?: { name: string; mimeType: string; bytes: number[] };
+        activeWorker?: Worker;
+        nearLimitPackageArmed?: boolean;
+      };
     }).__shapeCutWorkerProbe;
     state.replacement = { name, mimeType, bytes };
+    if (state.activeWorker) state.activeWorker.postMessage({ type: 'SHAPECUT_TEST_NEAR_LIMIT_PACKAGE' });
+    else state.nearLimitPackageArmed = true;
   }, { name: fixture.name, mimeType: fixture.mimeType, bytes: Array.from(fixture.buffer) });
 }
 
@@ -1236,6 +1511,8 @@ export async function readWorkerProbeState(page: Page): Promise<WorkerProbeState
       replacementTriggered: state.replacementTriggered,
       replacementCheckpoint: state.replacementCheckpoint,
       applyPaths: state.applyPaths,
+      holeCandidates: state.holeCandidates,
+      packageWorkloads: state.packageWorkloads,
     };
   });
 }
@@ -1436,4 +1713,86 @@ export function expectRetainedHoleGeometry(
     recomputedAxisDistanceMm,
     axisDistanceRatio,
   };
+}
+
+export type IndependentHoleSelectionEvidence = {
+  readonly candidateCount: number;
+  readonly qualifiedCount: number;
+  readonly selected: boolean;
+};
+
+export function expectCentralHoleSelectionFromCandidates(
+  layer: WorkerResultSummary['coloredLayers'][number],
+  evidence: WorkerHoleCandidateEvidence,
+): IndependentHoleSelectionEvidence {
+  expect(evidence.layerId).toBe(layer.id);
+  expect(evidence.candidates.length).toBeLessThanOrEqual(64);
+  expect(evidence.layerWidthMm).toBeGreaterThan(0);
+  expect(evidence.planarDiameterMm).toBeGreaterThan(0);
+  expect(evidence.cellSizeMm).toBeGreaterThanOrEqual(0);
+  expect(evidence.axisPoint.every(Number.isFinite)).toBe(true);
+  expect(evidence.exterior).toEqual(layer.exteriorPoints);
+  const epsilon = Math.max(1e-9, evidence.planarDiameterMm * 1e-10);
+  const minimumClearance = Math.max(evidence.cellSizeMm, evidence.planarDiameterMm * 0.001);
+  const minimumDiameter = Math.max(0.5, evidence.layerWidthMm * 0.01);
+  const qualified = evidence.candidates.flatMap((candidate) => {
+    const points = candidate.outer;
+    if (candidate.closed === false || points.length < 3 || points.length > 4096
+      || points.some((point) => point.length !== 2 || !point.every(Number.isFinite))
+      || new Set(points.map((point) => point.join(':'))).size < 3
+      || candidate.occupiedCellCount !== undefined
+        && (!Number.isSafeInteger(candidate.occupiedCellCount) || candidate.occupiedCellCount <= 0)
+      || !isSimplePolygon(points, epsilon)) return [];
+    if (points.some((point, index) => !strictlyInsidePolygon(point, evidence.exterior, epsilon)
+      || !strictlyInsidePolygon([
+        (point[0] + points[(index + 1) % points.length][0]) / 2,
+        (point[1] + points[(index + 1) % points.length][1]) / 2,
+      ], evidence.exterior, epsilon))) return [];
+    if (minimumBoundaryDistance(points, evidence.exterior, epsilon) + epsilon < minimumClearance) return [];
+    let mass: ReturnType<typeof polygonCentroid>;
+    try { mass = polygonCentroid(points); } catch { return []; }
+    const areaMm2 = Math.abs(mass.area);
+    const evidenceArea = candidate.occupiedCellCount === undefined
+      ? areaMm2
+      : candidate.occupiedCellCount * evidence.cellSizeMm * evidence.cellSizeMm;
+    const equivalentDiameterMm = 2 * Math.sqrt(evidenceArea / Math.PI);
+    if (!Number.isFinite(equivalentDiameterMm) || equivalentDiameterMm + 1e-12 < minimumDiameter) return [];
+    const axisDistanceMm = Math.hypot(
+      mass.centroid[0] - evidence.axisPoint[0], mass.centroid[1] - evidence.axisPoint[1],
+    );
+    if (!Number.isFinite(axisDistanceMm)) return [];
+    const minX = Math.min(...points.map(([x]) => x)), minY = Math.min(...points.map(([, y]) => y));
+    return [{
+      points: mass.area > 0 ? [...points] : [...points].reverse(),
+      areaMm2, equivalentDiameterMm, axisDistanceMm, minX, minY,
+    }];
+  });
+  const nearest = qualified.length === 0 ? Infinity : Math.min(...qualified.map(({ axisDistanceMm }) => axisDistanceMm));
+  const centralBand = Math.max(0.5, evidence.layerWidthMm * 0.02);
+  const central = qualified.filter(({ axisDistanceMm }) => axisDistanceMm <= nearest + centralBand + 1e-12);
+  central.sort((left, right) => {
+    const areaDifference = right.areaMm2 - left.areaMm2;
+    const areaTolerance = Math.max(left.areaMm2, right.areaMm2) * 1e-12;
+    return Math.abs(areaDifference) > areaTolerance ? areaDifference
+      : left.minX - right.minX || left.minY - right.minY;
+  });
+  const selected = central[0];
+  if (!selected) {
+    expect(layer.hole).toEqual({ status: 'omitted' });
+    return { candidateCount: evidence.candidates.length, qualifiedCount: 0, selected: false };
+  }
+  expect(layer.hole.status).toBe('retained');
+  if (layer.hole.status !== 'retained' || !layer.hole.points) throw new Error(`Layer ${layer.id} omitted the independent winner`);
+  expect(layer.hole.id).toBe(`${layer.id}-central-hole`);
+  expect(layer.hole.points).toHaveLength(selected.points.length);
+  layer.hole.points.forEach((point, index) => {
+    expect(Math.abs(point[0] - selected.points[index][0])).toBeLessThanOrEqual(epsilon);
+    expect(Math.abs(point[1] - selected.points[index][1])).toBeLessThanOrEqual(epsilon);
+  });
+  expect(Math.abs(layer.hole.areaMm2! - selected.areaMm2)).toBeLessThanOrEqual(Math.max(1e-8, selected.areaMm2 * 1e-9));
+  expect(Math.abs(layer.hole.equivalentDiameterMm! - selected.equivalentDiameterMm))
+    .toBeLessThanOrEqual(Math.max(1e-8, selected.equivalentDiameterMm * 1e-9));
+  expect(Math.abs(layer.hole.axisDistanceMm! - selected.axisDistanceMm))
+    .toBeLessThanOrEqual(Math.max(1e-8, evidence.planarDiameterMm * 1e-9));
+  return { candidateCount: evidence.candidates.length, qualifiedCount: qualified.length, selected: true };
 }

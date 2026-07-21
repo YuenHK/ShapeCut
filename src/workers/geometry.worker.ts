@@ -15,7 +15,40 @@ import {
 import type { MeshRepairResult, TriangleMesh } from '../domain/mesh/types';
 import { writeBinarySTL } from '../domain/mesh/write-stl';
 import { createOutlinePackage } from '../export/outline-package';
+import { nearLimitColoredResult } from '../export/colored-outline-test-fixture';
+import { setHoleCandidateProbeForTesting } from '../domain/outline-2.5d/extract';
 import type { GeometryApi, ImportRepairAnalysis, MeshAnalysis, OutlinePackageTransfer } from './geometry-api';
+
+let nearLimitPackageWorkload: ReturnType<typeof nearLimitColoredResult> | undefined;
+const acceptanceProbeEnabled = new URL(globalThis.location.href).searchParams.get('shapecut-acceptance') === '1';
+
+globalThis.addEventListener('message', (event: MessageEvent<unknown>) => {
+  if (!acceptanceProbeEnabled) return;
+  const message = typeof event.data === 'object' && event.data !== null
+    ? event.data as Record<string, unknown>
+    : undefined;
+  if (message?.type === 'SHAPECUT_TEST_HOLE_PROBE_ENABLE') {
+    setHoleCandidateProbeForTesting((evidence) => {
+      globalThis.postMessage({ type: 'SHAPECUT_HOLE_CANDIDATES', evidence });
+    });
+  }
+  if (message?.type === 'SHAPECUT_TEST_NEAR_LIMIT_PACKAGE') {
+    nearLimitPackageWorkload = nearLimitColoredResult();
+    const contourPoints = nearLimitPackageWorkload.coloredLayers.flatMap((layer) => [
+      layer.exterior, layer.centralHole, layer.deepFeature, layer.lightFeature,
+    ].flatMap((contour) => contour ? [contour.outer.length] : []));
+    globalThis.postMessage({
+      type: 'SHAPECUT_PACKAGE_WORKLOAD_READY',
+      evidence: {
+        layers: nearLimitPackageWorkload.coloredLayers.length,
+        contoursPerLayer: contourPoints.length / nearLimitPackageWorkload.coloredLayers.length,
+        minimumPointsPerContour: Math.min(...contourPoints),
+        maximumPointsPerContour: Math.max(...contourPoints),
+        totalPoints: contourPoints.reduce((sum, count) => sum + count, 0),
+      },
+    });
+  }
+});
 
 function previewMesh(mesh: TriangleMesh, maximumTriangles = 2_000): TriangleMesh {
   const indexLimit = Math.min(mesh.indices.length, maximumTriangles * 3);
@@ -71,7 +104,9 @@ const geometryApi: GeometryApi = {
     let output: Awaited<ReturnType<typeof createOutlinePackage>>;
     let acknowledgedPdfStart = false;
     try {
-      output = await createOutlinePackage(result, deadline, {
+      const packageInput = nearLimitPackageWorkload ?? result;
+      nearLimitPackageWorkload = undefined;
+      output = await createOutlinePackage(packageInput, deadline, {
         onCheckpoint: (label) => {
           if (acknowledgedPdfStart || label !== 'pdf:create:before') return;
           acknowledgedPdfStart = true;

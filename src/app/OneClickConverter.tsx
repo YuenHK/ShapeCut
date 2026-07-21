@@ -9,7 +9,7 @@ import type { OutlinePreviewPayload } from '../domain/outline-features/types';
 import { SupersededError } from '../workers/geometry-client';
 import { MAX_STL_BYTES } from '../domain/mesh/parse-stl';
 import { OutlineProcessViewport } from '../preview/OutlineProcessViewport';
-import { warmOutlineProcessRenderer } from '../preview/outline-process-scene';
+import { shutdownOutlineProcessRendererPool, warmOutlineProcessRenderer } from '../preview/outline-process-scene';
 
 export type DownloadFile = { readonly href: string; readonly fileName: string };
 export type OutlineDownloads = {
@@ -185,7 +185,10 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
   const requestId = useRef(0);
   const downloadsRef = useRef<OutlineDownloads | undefined>(undefined);
 
-  useEffect(() => { warmOutlineProcessRenderer(); }, []);
+  useEffect(() => {
+    warmOutlineProcessRenderer();
+    return shutdownOutlineProcessRendererPool;
+  }, []);
 
   const releaseCurrentDownloads = useCallback(() => {
     revokeDownloads(downloadsRef.current);

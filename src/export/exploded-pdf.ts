@@ -1,4 +1,4 @@
-import { PDFDocument, StandardFonts, rgb, type PDFPage, type PDFFont } from 'pdf-lib';
+import { PDFDocument, PDFName, StandardFonts, rgb, type PDFPage, type PDFFont } from 'pdf-lib';
 import {
   COLORED_ROLE_COLORS,
   type ColoredDocumentCheckpoint,
@@ -68,6 +68,7 @@ async function createPdf(
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   checkpoint('pdf:font:after');
   draw(pdf, font, checkpoint);
+  for (const page of pdf.getPages()) page.node.delete(PDFName.of('Annots'));
   // pdf-lib may lazily initialize its Info dictionary while drawing/embedding.
   // Reapply both dates immediately before serialization for byte determinism.
   pdf.setCreationDate(FIXED_DATE);
@@ -171,8 +172,12 @@ export async function writeExplodedViewPdf(
       for (const role of Object.keys(COLORED_ROLE_COLORS) as ColoredOutlineRole[]) {
         for (const contour of layer.roles[role]) drawLoop(page, contour.outer, project, role, drawCheckpoint);
       }
-      const dimensions = layerDimensionKeyword(layer).split(':').at(-1)!.replaceAll('=', ' ');
-      page.drawText(`${layer.order}. ${layer.id}  ${dimensions.replace('hole-diameter', 'hole diameter')}`, {
+      const exteriorBounds = layer.roles.CUT_BLACK[0].boundsMm;
+      const width = exteriorBounds.maxX - exteriorBounds.minX;
+      const height = exteriorBounds.maxY - exteriorBounds.minY;
+      const central = layer.roles.CUT_BLACK[1];
+      const diameter = central ? Number((2 * Math.sqrt(central.areaMm2 / Math.PI)).toFixed(3)) : '—';
+      page.drawText(`${layer.order}. ${layer.id}  thickness ${layer.zEnd - layer.zStart} X ${width} Y ${height} hole diameter ${diameter}`, {
         x: 184 * MM_TO_POINTS, y: offsetY + 4, size: 7, font,
       });
     }

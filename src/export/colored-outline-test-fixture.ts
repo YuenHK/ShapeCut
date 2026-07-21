@@ -157,3 +157,83 @@ export function coloredResult(): AutomaticOutlineResult {
   if (!/^[0-9a-f]{32}$/.test(diagnosticsFingerprint(result.diagnostics))) throw new Error('Invalid fixture diagnostics');
   return result;
 }
+
+function regularLoop(
+  centerX: number,
+  centerY: number,
+  radius: number,
+  pointCount: number,
+  clockwise: boolean,
+): readonly (readonly [number, number])[] {
+  return Array.from({ length: pointCount }, (_, index) => {
+    const angle = (clockwise ? -1 : 1) * index * Math.PI * 2 / pointCount;
+    return [centerX + Math.cos(angle) * radius, centerY + Math.sin(angle) * radius] as const;
+  });
+}
+
+/**
+ * Test-only legal packaging workload: the 24-layer maximum, all four contours,
+ * and 512 points per contour (49,152 segments). The 1,024-point variant took
+ * 90.3 s on the acceptance host, so it cannot satisfy the 30 s worker boundary.
+ */
+export function nearLimitColoredResult(pointCount = 512): AutomaticOutlineResult {
+  const seed = coloredResult(), layerCount = 24;
+  const coloredLayers: ColoredOutlineLayer[] = Array.from({ length: layerCount }, (_, index) => {
+    const id = `stress-layer-${index + 1}`;
+    const exterior = contour(`${id}-exterior`, 'CUT_BLACK', regularLoop(0, 0, 20, pointCount, true));
+    const centralHole = contour(`${id}-hole`, 'CUT_BLACK', regularLoop(0, 0, 3, pointCount, false));
+    const deepFeature = contour(`${id}-deep`, 'DEEP_RED', regularLoop(-9, 0, 2, pointCount, true));
+    const lightFeature = contour(`${id}-light`, 'LIGHT_BLUE', regularLoop(9, 0, 2, pointCount, true));
+    return {
+      id, index, zStart: index * 2, zEnd: index * 2 + 2,
+      exterior, centralHole, deepFeature, lightFeature,
+      removedComponentCount: 0,
+      diagnostics: {
+        hole: {
+          status: 'retained',
+          equivalentDiameterMm: 2 * Math.sqrt(centralHole.areaMm2 / Math.PI),
+          axisDistanceMm: 0,
+        },
+        depth: { cellSizeMm: 0.25, contrastMm: 2, redThresholdMm: 1.5, blueThresholdMm: 0.5 },
+      },
+    };
+  });
+  const layers = coloredLayers.map((layer) => ({
+    id: layer.id, index: layer.index, zStart: layer.zStart, zEnd: layer.zEnd,
+    contour: { outer: layer.exterior.outer, holes: [] as const },
+    sourceAreaMm2: layer.exterior.areaMm2,
+    simplifiedAreaMm2: layer.exterior.areaMm2,
+    sourceBoundsMm: { ...layer.exterior.boundsMm },
+    simplificationToleranceMm: 0.01,
+    boundsDriftRatio: 0,
+    areaDriftRatio: 0,
+    removedComponentCount: 0,
+  }));
+  const diagnostics = {
+    ...seed.diagnostics,
+    layers: layers.map(({ id, simplificationToleranceMm, boundsDriftRatio, areaDriftRatio }) => ({
+      id, simplificationToleranceMm, boundsDriftRatio, areaDriftRatio,
+      areaEvidenceBasis: 'exact-slice-pre-simplification' as const,
+    })),
+  };
+  const base = {
+    ...seed,
+    axis: {
+      source: 'candidate' as const,
+      axis: { origin: [0, 0, 0] as const, direction: [0, 0, 1] as const, confidence: 1, confirmed: true },
+    },
+    layers,
+    coloredLayers,
+    preview: {
+      ...seed.preview,
+      axis: { ...seed.preview.axis, origin: [0, 0, 0] as const },
+      layers: coloredLayers,
+    },
+    diagnostics,
+  };
+  return {
+    ...base,
+    removalEvidenceFingerprint: removalEvidenceFingerprint(base),
+    featureEvidenceFingerprint: featureEvidenceFingerprint(base),
+  };
+}

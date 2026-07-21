@@ -6,6 +6,7 @@ import {
   type AutomaticOutlineProgressEvent,
 } from '../domain/pipeline/automatic-outline-pipeline';
 import { featureEvidenceFingerprint } from '../domain/outline-features/types';
+import { nearLimitColoredResult } from '../export/colored-outline-test-fixture';
 import type { TriangleMesh } from '../domain/mesh/types';
 import {
   interpenetratingTetrahedra,
@@ -278,6 +279,15 @@ describe('geometry worker boundary', () => {
       name: 'AutomaticOutlineError', code: 'TIME_LIMIT', message: '模型處理超出時間上限',
     });
   });
+
+  it('maps a real over-30-second maximum-layer packaging workload to typed TIME_LIMIT', async () => {
+    const client = createGeometryWorkerClient();
+    clients.push(client);
+
+    await expect(client.packageOutline(nearLimitColoredResult(1_024))).rejects.toMatchObject({
+      name: 'AutomaticOutlineError', code: 'TIME_LIMIT', message: '模型處理超出時間上限',
+    });
+  }, 40_000);
 
   it('still terminates and recreates when progress finalization throws during cancel', async () => {
     const terminate = vi.spyOn(Worker.prototype, 'terminate');

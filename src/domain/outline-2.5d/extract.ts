@@ -5,6 +5,7 @@ import {
   CENTRAL_HOLE_OMISSION_WARNING,
   selectCentralHole,
   type CentralHoleSelection,
+  type CentralHoleCandidate,
 } from '../outline-features/hole';
 import {
   extractAdaptiveDepthFeatures,
@@ -37,6 +38,39 @@ export type OutlineExtraction = {
   readonly cellSizeMm?: number;
   readonly removedComponentCount: number;
 };
+
+export type HoleCandidateProbeEvidence = {
+  readonly extractionMode: 'exact' | 'projected';
+  readonly layerId: string;
+  readonly candidates: readonly CentralHoleCandidate[];
+  readonly exterior: readonly Point2[];
+  readonly axisPoint: Point2;
+  readonly layerWidthMm: number;
+  readonly planarDiameterMm: number;
+  readonly cellSizeMm: number;
+};
+
+let holeCandidateProbeForTesting: ((evidence: HoleCandidateProbeEvidence) => void) | undefined;
+
+export function setHoleCandidateProbeForTesting(
+  probe: ((evidence: HoleCandidateProbeEvidence) => void) | undefined,
+): void {
+  holeCandidateProbeForTesting = probe;
+}
+
+function emitHoleCandidatesForTesting(evidence: HoleCandidateProbeEvidence): void {
+  if (!holeCandidateProbeForTesting) return;
+  if (evidence.candidates.length > 64) throw new RangeError('Central-hole probe candidate bound exceeded');
+  holeCandidateProbeForTesting({
+    ...evidence,
+    exterior: evidence.exterior.map(([x, y]) => [x, y] as Point2),
+    candidates: evidence.candidates.map((candidate) => ({
+      outer: candidate.outer.map(([x, y]) => [x, y] as Point2),
+      ...(candidate.occupiedCellCount === undefined ? {} : { occupiedCellCount: candidate.occupiedCellCount }),
+      ...(candidate.closed === undefined ? {} : { closed: candidate.closed }),
+    })),
+  });
+}
 
 export function colorizeExteriorLayers(
   layers: readonly OutlineLayer[],
@@ -233,7 +267,7 @@ export function extractProjectedContours(
     });
     layers.push(layer);
     const layerWidthMm = layer.sourceBoundsMm.maxX - layer.sourceBoundsMm.minX;
-    const holeSelection = selectCentralHole({
+    const holeRequest = {
       candidates: raster.enclosedVoids,
       exterior: layer.contour.outer,
       axisPoint: [0, 0],
@@ -241,7 +275,9 @@ export function extractProjectedContours(
       planarDiameterMm: projected.planarDiameter,
       cellSizeMm,
       deadline,
-    });
+    } as const;
+    emitHoleCandidatesForTesting({ extractionMode: 'projected', layerId: layer.id, ...holeRequest });
+    const holeSelection = selectCentralHole(holeRequest);
     holeSelections.push(holeSelection);
     depthFeatures.push(extractAdaptiveDepthFeatures(projected, {
       layerId: layer.id,
@@ -538,7 +574,7 @@ export function extractExactContours(
     const classified = classifyExactNestedLoops(loops, projected.planarDiameter, deadline);
     const layer = makeLayer(spec, clockwise(classified.exterior, deadline), tolerance, budgets, deadline, 0);
     layers.push(layer);
-    const holeSelection = selectCentralHole({
+    const holeRequest = {
       candidates: classified.holes.map((outer) => ({ outer })),
       exterior: layer.contour.outer,
       axisPoint: [0, 0],
@@ -546,7 +582,9 @@ export function extractExactContours(
       planarDiameterMm: projected.planarDiameter,
       cellSizeMm,
       deadline,
-    });
+    } as const;
+    emitHoleCandidatesForTesting({ extractionMode: 'exact', layerId: layer.id, ...holeRequest });
+    const holeSelection = selectCentralHole(holeRequest);
     holeSelections.push(holeSelection);
     depthFeatures.push(extractAdaptiveDepthFeatures(projected, {
       layerId: layer.id,

@@ -7,6 +7,7 @@ import { OutlineProcessViewport } from './OutlineProcessViewport';
 import {
   createOutlineProcessScene,
   disposeOutlineProcessRendererPool,
+  shutdownOutlineProcessRendererPool,
   type OutlineProcessScene,
   warmOutlineProcessRenderer,
 } from './outline-process-scene';
@@ -66,6 +67,52 @@ describe('OutlineProcessViewport in Chromium', () => {
       screen.getByRole('img', { name: /模型分層預覽/ }).querySelector('canvas'),
     ).toBe(firstCanvas));
     result.unmount();
+  });
+
+  it('clears the framebuffer before returning a renderer to the idle pool', async () => {
+    const clear1 = vi.spyOn(WebGLRenderingContext.prototype, 'clear');
+    const clear2 = vi.spyOn(WebGL2RenderingContext.prototype, 'clear');
+    const view = render(<OutlineProcessViewport payload={browserPayload()} stage="slicing" reducedMotion />);
+    await waitFor(() => expect(view.container.querySelector('canvas')).not.toBeNull());
+    const before = clear1.mock.calls.length + clear2.mock.calls.length;
+
+    view.unmount();
+
+    expect(clear1.mock.calls.length + clear2.mock.calls.length).toBeGreaterThan(before);
+    clear1.mockRestore();
+    clear2.mockRestore();
+  });
+
+  it('drains an idle renderer context on pagehide', async () => {
+    const view = render(<OutlineProcessViewport payload={browserPayload()} stage="result" reducedMotion />);
+    const canvas = await waitFor(() => {
+      const candidate = view.container.querySelector('canvas');
+      expect(candidate).not.toBeNull();
+      return candidate!;
+    });
+    const context = canvas.getContext('webgl2') ?? canvas.getContext('webgl');
+    expect(context).not.toBeNull();
+    view.unmount();
+
+    window.dispatchEvent(new PageTransitionEvent('pagehide'));
+
+    await waitFor(() => expect(context!.isContextLost()).toBe(true));
+  });
+
+  it('disposes a renderer released after parent-first application shutdown', async () => {
+    const view = render(<OutlineProcessViewport payload={browserPayload()} stage="result" reducedMotion />);
+    const canvas = await waitFor(() => {
+      const candidate = view.container.querySelector('canvas');
+      expect(candidate).not.toBeNull();
+      return candidate!;
+    });
+    const context = canvas.getContext('webgl2') ?? canvas.getContext('webgl');
+    expect(context).not.toBeNull();
+
+    shutdownOutlineProcessRendererPool();
+    view.unmount();
+
+    await waitFor(() => expect(context!.isContextLost()).toBe(true));
   });
 
   it('constructs real WebGL geometry, responds to controls, and disposes on unmount', async () => {

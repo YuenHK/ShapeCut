@@ -137,8 +137,13 @@ test('feature-rich PDF packaging is terminated and replaced by a second complete
     mimeType: 'model/stl',
     buffer: await readFile('fixtures/acceptance/symmetric-smooth.stl'),
   });
-
   await selectModel(page, 'fixtures/acceptance/symmetric-textured.stl');
+  const expectedWorkload = [{
+    layers: 24, contoursPerLayer: 4,
+    minimumPointsPerContour: 512, maximumPointsPerContour: 512, totalPoints: 49_152,
+  }];
+  await expect.poll(async () => (await readWorkerProbeState(page)).packageWorkloads).toEqual(expectedWorkload);
+  const armed = await readWorkerProbeState(page);
   await expect(page.getByText('replacement-safe.stl', { exact: true })).toBeVisible({ timeout: 45_000 });
   await expectResult(page, '需注意', '精確切片');
   const output = await downloadAndInspectOutline(page);
@@ -152,4 +157,5 @@ test('feature-rich PDF packaging is terminated and replaced by a second complete
   expect(probe.created).toBeGreaterThanOrEqual(2);
   expect(probe.results[0].coloredLayers.some(({ hasDeep, hasLight }) => hasDeep || hasLight)).toBe(true);
   expect(probe.results.at(-1)).toMatchObject({ mode: 'exact' });
+  expect(probe.packageWorkloads).toEqual(armed.packageWorkloads);
 });

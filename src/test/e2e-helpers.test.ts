@@ -1,5 +1,5 @@
 import JSZip from 'jszip';
-import { decodePDFRawStream, PDFArray, PDFDocument, PDFName, PDFRawStream, rgb } from 'pdf-lib';
+import { decodePDFRawStream, PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFNumber, PDFRawStream, PDFString, rgb } from 'pdf-lib';
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
   inspectColoredArtifacts,
@@ -101,6 +101,73 @@ async function mutatePdfEndpoint(bytes: Uint8Array, lineIndex: number): Promise<
   }));
 }
 
+async function mutatePdfPage(
+  bytes: Uint8Array,
+  mutate: (pdf: PDFDocument) => void,
+): Promise<Uint8Array> {
+  const pdf = await PDFDocument.load(bytes, { updateMetadata: false });
+  mutate(pdf);
+  pdf.setCreationDate(new Date('2000-01-01T00:00:00.000Z'));
+  pdf.setModificationDate(new Date('2000-01-01T00:00:00.000Z'));
+  return pdf.save({ useObjectStreams: false, addDefaultPage: false });
+}
+
+function encodedPdfText(value: string): string {
+  return [...value].map((character) => character.codePointAt(0)!.toString(16).padStart(2, '0').toUpperCase()).join('');
+}
+
+async function mutatePdfRawInfoWithOctalPath(bytes: Uint8Array): Promise<Uint8Array> {
+  const pdf = await PDFDocument.load(bytes, { updateMetadata: false });
+  const info = pdf.context.lookup(pdf.context.trailerInfo.Info);
+  if (!(info instanceof PDFDict)) throw new Error('Fixture PDF has no Info dictionary');
+  const placeholder = 'XXXXprivateXXXXvarXXXXsecret';
+  info.set(PDFName.of('Private'), PDFString.of(placeholder));
+  pdf.setCreationDate(new Date('2000-01-01T00:00:00.000Z'));
+  pdf.setModificationDate(new Date('2000-01-01T00:00:00.000Z'));
+  const saved = await pdf.save({ useObjectStreams: false, addDefaultPage: false });
+  const encoded = '\\057private\\057var\\057secret';
+  const needle = new TextEncoder().encode(`(${placeholder})`);
+  const replacement = new TextEncoder().encode(`(${encoded})`);
+  const offset = saved.findIndex((_value, index) => needle.every((value, inner) => saved[index + inner] === value));
+  if (placeholder.length !== encoded.length || offset < 0) {
+    throw new Error('Fixture PDF raw Info placeholder is unavailable');
+  }
+  const mutated = saved.slice();
+  mutated.set(replacement, offset);
+  return mutated;
+}
+
+async function mutatePdfRawInfoWithWhitespaceAndOddNibbleHexPath(bytes: Uint8Array): Promise<Uint8Array> {
+  const pdf = await PDFDocument.load(bytes, { updateMetadata: false });
+  const info = pdf.context.lookup(pdf.context.trailerInfo.Info);
+  if (!(info instanceof PDFDict)) throw new Error('Fixture PDF has no Info dictionary');
+  const encoded = '2 F707269766174652F7661722F736563726574F';
+  const placeholder = 'A'.repeat(encoded.length);
+  info.set(PDFName.of('Private'), PDFHexString.of(placeholder));
+  pdf.setCreationDate(new Date('2000-01-01T00:00:00.000Z'));
+  pdf.setModificationDate(new Date('2000-01-01T00:00:00.000Z'));
+  const saved = await pdf.save({ useObjectStreams: false, addDefaultPage: false });
+  const needle = new TextEncoder().encode(`<${placeholder}>`);
+  const replacement = new TextEncoder().encode(`<${encoded}>`);
+  const offset = saved.findIndex((_value, index) => needle.every((value, inner) => saved[index + inner] === value));
+  if (needle.length !== replacement.length || offset < 0) throw new Error('Fixture PDF raw hex placeholder is unavailable');
+  const mutated = saved.slice();
+  mutated.set(replacement, offset);
+  return mutated;
+}
+
+async function mutatePdfInfoWithStreamLikeLiteralPath(bytes: Uint8Array): Promise<Uint8Array> {
+  const pdf = await PDFDocument.load(bytes, { updateMetadata: false });
+  const info = pdf.context.lookup(pdf.context.trailerInfo.Info);
+  if (!(info instanceof PDFDict)) throw new Error('Fixture PDF has no Info dictionary');
+  info.set(PDFName.of('Private'), PDFString.of([
+    'stream', ['', 'private', 'var', 'secret'].join('/'), 'endstream',
+  ].join('\n')));
+  pdf.setCreationDate(new Date('2000-01-01T00:00:00.000Z'));
+  pdf.setModificationDate(new Date('2000-01-01T00:00:00.000Z'));
+  return pdf.save({ useObjectStreams: false, addDefaultPage: false });
+}
+
 async function zipWithArtifacts(value: ColoredArtifactPayloads): Promise<Uint8Array> {
   const zip = new JSZip(), date = new Date('2000-01-01T00:00:00.000Z');
   zip.file('cut-and-engrave.svg', value.svg, { date });
@@ -167,6 +234,12 @@ describe('release E2E colored artifact parsers', () => {
     expect(() => parseColoredOutlineSvgArtifact(mutated)).toThrow(/drawable|canonical|polygon/i);
   });
 
+  it('rejects geometry moved after the single SVG root', () => {
+    const firstGroup = output.cutSvg.indexOf('<g ');
+    const mutated = `${output.cutSvg.slice(0, firstGroup)}</svg>${output.cutSvg.slice(firstGroup, -6)}`;
+    expect(() => parseColoredOutlineSvgArtifact(mutated)).toThrow(/root|canonical|outside/i);
+  });
+
   it('rejects extra SVG text instead of relying on a partial drawable blacklist', async () => {
     const mutated = { ...artifacts, svg: output.cutSvg.replace(
       '</svg>',
@@ -190,6 +263,14 @@ describe('release E2E colored artifact parsers', () => {
       '0\nLINE\n8\nCUT_BLACK\n62\n7\n420\n0\n10\n0\n20\n0\n11\n1\n21\n1\n0\nENDSEC\n0\nEOF\n',
     );
     expect(() => parseColoredOutlineDxfArtifact(mutated)).toThrow(/entity|canonical|LINE/i);
+  });
+
+  it('rejects a drawable DXF entity placed after ENTITIES but before EOF', () => {
+    const mutated = output.cutDxf.replace(
+      '0\nENDSEC\n0\nEOF\n',
+      '0\nENDSEC\n0\nLINE\n8\nCUT_BLACK\n10\n0\n20\n0\n11\n1\n21\n1\n0\nEOF\n',
+    );
+    expect(() => parseColoredOutlineDxfArtifact(mutated)).toThrow(/canonical|record|LINE|EOF/i);
   });
 
   it('rejects a non-canonical numeric DXF group code hiding an extra entity', async () => {
@@ -238,14 +319,14 @@ describe('release E2E colored artifact parsers', () => {
     extraDocument.setCreationDate(new Date('2000-01-01T00:00:00.000Z'));
     extraDocument.setModificationDate(new Date('2000-01-01T00:00:00.000Z'));
     const extra = await extraDocument.save({ useObjectStreams: false, addDefaultPage: false });
-    await expect(parseColoredOutlinePdf(extra, 'preview')).rejects.toThrow(/drawing|geometry|stream|canonical/i);
+    await expect(parseColoredOutlinePdf(extra, 'preview')).rejects.toThrow(/drawing|geometry|stream|canonical|forbidden|Annots/i);
 
     const transformedDocument = await PDFDocument.load(output.previewPdf, { updateMetadata: false });
     transformedDocument.getPage(0).translateContent(1, 0);
     transformedDocument.setCreationDate(new Date('2000-01-01T00:00:00.000Z'));
     transformedDocument.setModificationDate(new Date('2000-01-01T00:00:00.000Z'));
     const transformed = await transformedDocument.save({ useObjectStreams: false, addDefaultPage: false });
-    await expect(parseColoredOutlinePdf(transformed, 'preview')).rejects.toThrow(/drawing|geometry|stream|canonical/i);
+    await expect(parseColoredOutlinePdf(transformed, 'preview')).rejects.toThrow(/drawing|geometry|stream|canonical|forbidden|Annots/i);
   });
 
   it.each([
@@ -255,6 +336,58 @@ describe('release E2E colored artifact parsers', () => {
     const mutated = { ...artifacts, [field]: await mutatePdfEndpoint(artifacts[field], lineIndex) };
     mutated.zip = await zipWithArtifacts(mutated);
     await expect(inspectColoredArtifacts(mutated)).rejects.toThrow(/PDF|drawing|geometry|reconcile/i);
+  });
+
+  it.each([
+    ['Rotate', (bytes: Uint8Array) => mutatePdfPage(bytes, (pdf) => {
+      pdf.getPage(0).node.set(PDFName.of('Rotate'), PDFNumber.of(90));
+    })],
+    ['UserUnit', (bytes: Uint8Array) => mutatePdfPage(bytes, (pdf) => {
+      pdf.getPage(0).node.set(PDFName.of('UserUnit'), PDFNumber.of(2));
+    })],
+    ['annotation', (bytes: Uint8Array) => mutatePdfPage(bytes, (pdf) => {
+      pdf.getPage(0).node.set(PDFName.of('Annots'), pdf.context.obj([{
+        Type: 'Annot', Subtype: 'Text', Rect: [0, 0, 1, 1],
+      }]));
+    })],
+    ['non-canonical CropBox', (bytes: Uint8Array) => mutatePdfPage(bytes, (pdf) => {
+      pdf.getPage(0).node.set(PDFName.of('CropBox'), pdf.context.obj([0, 0, 10, 10]));
+    })],
+  ] as const)('rejects byte-consistent ZIP with forbidden PDF page feature: %s', async (_label, mutate) => {
+    const mutated = { ...artifacts, previewPdf: await mutate(artifacts.previewPdf) };
+    mutated.zip = await zipWithArtifacts(mutated);
+    await expect(inspectColoredArtifacts(mutated)).rejects.toThrow(/PDF|page|box|forbidden|canonical/i);
+  });
+
+  it.each([
+    ['wrong label', 'WRONG LAYER LABEL', /text|label|reconcile/i],
+    ['private path', ['', 'private', 'var', 'secret-model.stl'].join('/'), /private|path|source|forbidden|text/i],
+  ] as const)('rejects byte-consistent ZIP with decoded PDF %s', async (_label, replacement, error) => {
+    const previewPdf = await mutatePdfContent(artifacts.previewPdf, (content) => content.replace(
+      /<(?:[0-9A-F]{2})+> Tj/,
+      `<${encodedPdfText(replacement)}> Tj`,
+    ));
+    const mutated = { ...artifacts, previewPdf };
+    mutated.zip = await zipWithArtifacts(mutated);
+    await expect(inspectColoredArtifacts(mutated)).rejects.toThrow(error);
+  });
+
+  it('rejects a byte-consistent ZIP whose raw PDF Info string hides a private path in octal escapes', async () => {
+    const mutated = { ...artifacts, previewPdf: await mutatePdfRawInfoWithOctalPath(artifacts.previewPdf) };
+    mutated.zip = await zipWithArtifacts(mutated);
+    await expect(inspectColoredArtifacts(mutated)).rejects.toThrow(/private|path|forbidden|text/i);
+  });
+
+  it('rejects a byte-consistent ZIP whose raw PDF Info hex string hides a private path around whitespace and an odd nibble', async () => {
+    const mutated = { ...artifacts, previewPdf: await mutatePdfRawInfoWithWhitespaceAndOddNibbleHexPath(artifacts.previewPdf) };
+    mutated.zip = await zipWithArtifacts(mutated);
+    await expect(inspectColoredArtifacts(mutated)).rejects.toThrow(/private|path|forbidden|text/i);
+  });
+
+  it('rejects a byte-consistent ZIP whose Info literal mimics a PDF stream around a private path', async () => {
+    const mutated = { ...artifacts, previewPdf: await mutatePdfInfoWithStreamLikeLiteralPath(artifacts.previewPdf) };
+    mutated.zip = await zipWithArtifacts(mutated);
+    await expect(inspectColoredArtifacts(mutated)).rejects.toThrow(/private|path|forbidden|text/i);
   });
 
   it('rejects executable PDF drawing operators hidden inside a text block with comments', async () => {
