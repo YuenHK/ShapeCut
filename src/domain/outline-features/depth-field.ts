@@ -39,13 +39,18 @@ export type DepthFeatureRequest = {
   readonly checkpoint?: () => void;
   /** Optional stricter test/caller cap; it may never exceed the derived global hit budget. */
   readonly maximumSurfaceHits?: number;
+  readonly maximumComponentBytes?: number;
   readonly resourceObserver?: (event: DepthFeatureResourceEvent) => void;
 };
 
 export type DepthFeatureResourceEvent = {
-  readonly phase: 'topology-sort' | 'surface-hit-storage' | 'surface-hit-sort' | 'component-labels' | 'component-candidate';
+  readonly phase: 'topology-sort' | 'surface-hit-storage' | 'surface-hit-sort' | 'component-labels'
+    | 'component-candidate' | 'component-boundary' | 'component-boundary-rejected' | 'component-final';
   readonly liveBytes: number;
   readonly rasterCells: number;
+  readonly sourceCellCount?: number;
+  readonly finalAreaMm2?: number;
+  readonly minimumX?: number;
 };
 
 export type DepthFeatureSourceEvidence = {
@@ -90,7 +95,9 @@ type LabeledComponents = {
 
 const MAX_DEPTH_HIT_BYTES = 64 * 1024 * 1024;
 const MAX_DEPTH_TOPOLOGY_BYTES = 64 * 1024 * 1024;
+const MAX_DEPTH_COMPONENT_BYTES = 64 * 1024 * 1024;
 const HIT_RECORD_BYTES = Float64Array.BYTES_PER_ELEMENT + Int32Array.BYTES_PER_ELEMENT;
+const ESTIMATED_POINT_BYTES = 64;
 
 function checkRuntime(deadline: number, checkpoint: () => void): void {
   checkpoint();
@@ -102,8 +109,9 @@ function observeResources(
   phase: DepthFeatureResourceEvent['phase'],
   liveBytes: number,
   rasterCells: number,
+  details: Pick<DepthFeatureResourceEvent, 'sourceCellCount' | 'finalAreaMm2' | 'minimumX'> = {},
 ): void {
-  request.resourceObserver?.({ phase, liveBytes, rasterCells });
+  request.resourceObserver?.({ phase, liveBytes, rasterCells, ...details });
 }
 
 function holeLoop(request: DepthFeatureRequest): readonly Point2[] | undefined {
@@ -180,6 +188,9 @@ function validateRequest(projected: ProjectedMesh, request: DepthFeatureRequest,
     || !Number.isFinite(request.exteriorAreaMm2) || request.exteriorAreaMm2 <= 0
     || request.maximumSurfaceHits !== undefined
       && (!Number.isSafeInteger(request.maximumSurfaceHits) || request.maximumSurfaceHits <= 0)
+    || request.maximumComponentBytes !== undefined
+      && (!Number.isSafeInteger(request.maximumComponentBytes) || request.maximumComponentBytes <= 0
+        || request.maximumComponentBytes > MAX_DEPTH_COMPONENT_BYTES)
     || !Number.isSafeInteger(totalLayerCount) || totalLayerCount <= 0 || totalLayerCount > request.budgets.maxLayers) {
     throw new RangeError('Depth feature extraction requires finite bounded layer evidence');
   }
@@ -653,6 +664,7 @@ function labelComponents(
   deadline: number,
   checkpoint: () => void,
   request: DepthFeatureRequest,
+  retainedExternalBytes = 0,
 ): LabeledComponents {
   const labels = new Int32Array(source.length), queue = new Int32Array(source.length);
   labels.fill(-1);
@@ -705,7 +717,7 @@ function labelComponents(
   const workspaceBytes = labels.byteLength + queue.byteLength + counts.byteLength
     + minXValues.byteLength + minYValues.byteLength + maxXValues.byteLength + maxYValues.byteLength
     + order.byteLength;
-  observeResources(request, 'component-labels', workspaceBytes, source.length);
+  observeResources(request, 'component-labels', workspaceBytes + retainedExternalBytes, source.length);
   checkRuntime(deadline, checkpoint);
   let comparisons = 0;
   order.sort((left, right) => {
@@ -728,9 +740,7 @@ function labelComponents(
   };
 }
 
-type GridEdge = readonly [number, number];
-
-/** Opens raster holes with deterministic one-cell seams because public features are singular simple loops. */
+/** Opens raster holes with a deterministic bounded seam because public features are singular simple loops. */
 function openEnclosedVoids(
   source: Uint8Array,
   width: number,
@@ -797,98 +807,103 @@ function openEnclosedVoids(
       }
     }
     const seamX = seamCell % width, seamY = Math.floor(seamCell / width);
-    for (let x = seamX; x >= 0; x -= 1) {
-      if ((x & 255) === 0) checkRuntime(deadline, checkpoint);
-      result[seamY * width + x] = 0;
+    for (let row = seamY; row <= Math.min(height - 1, seamY + 1); row += 1) {
+      checkRuntime(deadline, checkpoint);
+      for (let x = seamX; x >= 0; x -= 1) {
+        if ((x & 255) === 0) checkRuntime(deadline, checkpoint);
+        result[row * width + x] = 0;
+      }
     }
   }
   return result;
 }
 
-function traceGreatestOuter(
+function traceSingleOuter(
   mask: Uint8Array,
   width: number,
   height: number,
   origin: Point2,
   cellSize: number,
+  request: DepthFeatureRequest,
+  existingLiveBytes: number,
+  candidateMinimumX: number,
   deadline: number,
   checkpoint: () => void,
 ): readonly Point2[] | undefined {
-  const vertexWidth = width + 1, edges: GridEdge[] = [];
+  const vertexWidth = width + 1;
   const key = (x: number, y: number): number => y * vertexWidth + x;
   const empty = (x: number, y: number): boolean => x < 0 || x >= width || y < 0 || y >= height || !mask[y * width + x];
+  let edgeCount = 0;
   for (let y = 0; y < height; y += 1) {
     checkRuntime(deadline, checkpoint);
     for (let x = 0; x < width; x += 1) if (mask[y * width + x]) {
-      if (empty(x, y - 1)) edges.push([key(x + 1, y), key(x, y)]);
-      if (empty(x + 1, y)) edges.push([key(x + 1, y + 1), key(x + 1, y)]);
-      if (empty(x, y + 1)) edges.push([key(x, y + 1), key(x + 1, y + 1)]);
-      if (empty(x - 1, y)) edges.push([key(x, y), key(x, y + 1)]);
+      if (empty(x, y - 1)) edgeCount += 1;
+      if (empty(x + 1, y)) edgeCount += 1;
+      if (empty(x, y + 1)) edgeCount += 1;
+      if (empty(x - 1, y)) edgeCount += 1;
     }
   }
-  if (edges.length === 0) return undefined;
-  edges.sort((left, right) => {
+  if (edgeCount === 0) return undefined;
+  const vertexCount = vertexWidth * (height + 1);
+  const traceBytes = edgeCount * (
+    Uint32Array.BYTES_PER_ELEMENT * 3 + ESTIMATED_POINT_BYTES
+  ) + vertexCount * (
+    Int32Array.BYTES_PER_ELEMENT + Uint8Array.BYTES_PER_ELEMENT * 2
+  );
+  const liveBytes = existingLiveBytes + traceBytes;
+  const componentByteLimit = request.maximumComponentBytes ?? MAX_DEPTH_COMPONENT_BYTES;
+  if (!Number.isSafeInteger(traceBytes) || liveBytes > componentByteLimit) {
+    observeResources(request, 'component-boundary-rejected', liveBytes, mask.length, { minimumX: candidateMinimumX });
     checkRuntime(deadline, checkpoint);
-    return left[0] - right[0] || left[1] - right[1];
-  });
-  const outgoing = new Map<number, number[]>(), unused = new Set<string>();
-  for (let index = 0; index < edges.length; index += 1) {
-    if ((index & 255) === 0) checkRuntime(deadline, checkpoint);
-    const [start, end] = edges[index], values = outgoing.get(start);
-    if (values) values.push(end); else outgoing.set(start, [end]);
-    unused.add(`${start}:${end}`);
+    return undefined;
   }
-  for (const values of outgoing.values()) values.sort((left, right) => {
-    checkRuntime(deadline, checkpoint);
-    return left - right;
-  });
-  const loops: number[][] = [];
-  for (let edgeIndex = 0; edgeIndex < edges.length; edgeIndex += 1) {
+  observeResources(request, 'component-boundary', liveBytes, mask.length, { minimumX: candidateMinimumX });
+  checkRuntime(deadline, checkpoint);
+  const edgeStarts = new Uint32Array(edgeCount), edgeEnds = new Uint32Array(edgeCount);
+  const loopVertices = new Uint32Array(edgeCount), outgoingEdge = new Int32Array(vertexCount);
+  const incomingDegree = new Uint8Array(vertexCount), outgoingDegree = new Uint8Array(vertexCount);
+  outgoingEdge.fill(-1);
+  let edgeIndex = 0, reliable = true, firstVertex = Infinity;
+  const addEdge = (start: number, end: number): void => {
     if ((edgeIndex & 255) === 0) checkRuntime(deadline, checkpoint);
-    const [edgeStart, edgeEnd] = edges[edgeIndex];
-    if (!unused.has(`${edgeStart}:${edgeEnd}`)) continue;
-    const loop = [edgeStart];
-    let start = edgeStart, end = edgeEnd;
-    for (let guard = 0; guard <= edges.length; guard += 1) {
-      if ((guard & 255) === 0) checkRuntime(deadline, checkpoint);
-      unused.delete(`${start}:${end}`);
-      loop.push(end);
-      if (end === edgeStart) break;
-      const candidates = (outgoing.get(end) ?? []).filter((candidate) => unused.has(`${end}:${candidate}`));
-      const coordinates = (vertex: number): readonly [number, number] => [vertex % vertexWidth, Math.floor(vertex / vertexWidth)];
-      const direction = (from: number, to: number): number => {
-        const [fromX, fromY] = coordinates(from), [toX, toY] = coordinates(to);
-        return toX > fromX ? 0 : toY > fromY ? 1 : toX < fromX ? 2 : 3;
-      };
-      const incoming = direction(start, end), turnRank = [1, 2, 3, 0];
-      candidates.sort((left, right) => turnRank[(direction(end, left) - incoming + 4) % 4]
-        - turnRank[(direction(end, right) - incoming + 4) % 4] || left - right);
-      const next = candidates[0];
-      if (next === undefined) return undefined;
-      start = end;
-      end = next;
-    }
-    if (loop[loop.length - 1] !== edgeStart) return undefined;
-    loops.push(loop.slice(0, -1));
-  }
-  const candidates: { readonly points: readonly Point2[]; readonly area: number; readonly bounds: ReturnType<typeof contourBounds> }[] = [];
-  for (let loopIndex = 0; loopIndex < loops.length; loopIndex += 1) {
+    edgeStarts[edgeIndex] = start;
+    edgeEnds[edgeIndex] = end;
+    if (outgoingDegree[start] !== 0 || incomingDegree[end] !== 0) reliable = false;
+    if (outgoingDegree[start] < 255) outgoingDegree[start] += 1;
+    if (incomingDegree[end] < 255) incomingDegree[end] += 1;
+    outgoingEdge[start] = edgeIndex;
+    firstVertex = Math.min(firstVertex, start);
+    edgeIndex += 1;
+  };
+  for (let y = 0; y < height; y += 1) {
     checkRuntime(deadline, checkpoint);
-    const loop = loops[loopIndex], points: Point2[] = [];
-    for (let index = 0; index < loop.length; index += 1) {
-      if ((index & 255) === 0) checkRuntime(deadline, checkpoint);
-      const vertex = loop[index];
-      const x = vertex % vertexWidth, y = Math.floor(vertex / vertexWidth);
-      points.push([origin[0] + x * cellSize, origin[1] + y * cellSize]);
+    for (let x = 0; x < width; x += 1) if (mask[y * width + x]) {
+      if (empty(x, y - 1)) addEdge(key(x + 1, y), key(x, y));
+      if (empty(x + 1, y)) addEdge(key(x + 1, y + 1), key(x + 1, y));
+      if (empty(x, y + 1)) addEdge(key(x, y + 1), key(x + 1, y + 1));
+      if (empty(x - 1, y)) addEdge(key(x, y), key(x, y + 1));
     }
-    const bounds = contourBounds(points, deadline, checkpoint);
-    candidates.push({ points, area: Math.abs(signedArea(points, deadline, checkpoint)), bounds });
   }
-  candidates.sort((left, right) => {
-    checkRuntime(deadline, checkpoint);
-    return right.area - left.area || left.bounds.minX - right.bounds.minX || left.bounds.minY - right.bounds.minY;
-  });
-  return candidates[0]?.points;
+  if (!reliable || edgeIndex !== edgeCount || !Number.isFinite(firstVertex)) return undefined;
+  let currentVertex = firstVertex;
+  for (let step = 0; step < edgeCount; step += 1) {
+    if ((step & 255) === 0) checkRuntime(deadline, checkpoint);
+    if (step > 0 && currentVertex === firstVertex) return undefined;
+    if (incomingDegree[currentVertex] !== 1 || outgoingDegree[currentVertex] !== 1) return undefined;
+    loopVertices[step] = currentVertex;
+    const nextEdge = outgoingEdge[currentVertex];
+    if (nextEdge < 0 || edgeStarts[nextEdge] !== currentVertex) return undefined;
+    currentVertex = edgeEnds[nextEdge];
+  }
+  if (currentVertex !== firstVertex) return undefined;
+  const points: Point2[] = new Array(edgeCount);
+  for (let index = 0; index < edgeCount; index += 1) {
+    if ((index & 255) === 0) checkRuntime(deadline, checkpoint);
+    const vertex = loopVertices[index], x = vertex % vertexWidth, y = Math.floor(vertex / vertexWidth);
+    points[index] = [origin[0] + x * cellSize, origin[1] + y * cellSize];
+  }
+  checkRuntime(deadline, checkpoint);
+  return points;
 }
 
 export function simplifyDepthFeatureLoop(
@@ -931,17 +946,7 @@ type DepthFeatureCandidate = {
   readonly evidence: DepthFeatureSourceEvidence;
 };
 
-export function selectGreatestValidDepthFeatureContour(
-  candidates: readonly FeatureContour[],
-  isValid: (candidate: FeatureContour) => boolean,
-): FeatureContour | undefined {
-  return [...candidates].sort((left, right) => right.areaMm2 - left.areaMm2
-    || left.boundsMm.minX - right.boundsMm.minX
-    || left.boundsMm.minY - right.boundsMm.minY)
-    .find(isValid);
-}
-
-function firstValidFeatureFromMask(
+function greatestValidFeatureFromMask(
   role: 'DEEP_RED' | 'LIGHT_BLUE',
   mask: Uint8Array,
   field: DepthField,
@@ -949,17 +954,30 @@ function firstValidFeatureFromMask(
   minimumCells: number,
   deadline: number,
   checkpoint: () => void,
+  retainedExternalBytes: number,
   isValid: (candidate: FeatureContour) => boolean,
 ): DepthFeatureCandidate | undefined {
   const selected = labelComponents(
-    mask, field.width, field.height, minimumCells, deadline, checkpoint, request,
+    mask, field.width, field.height, minimumCells, deadline, checkpoint, request, retainedExternalBytes,
   );
+  const componentByteLimit = request.maximumComponentBytes ?? MAX_DEPTH_COMPONENT_BYTES;
+  let best: DepthFeatureCandidate | undefined;
   for (let orderIndex = 0; orderIndex < selected.order.length; orderIndex += 1) {
     checkRuntime(deadline, checkpoint);
     const component = selected.order[orderIndex];
     const minimumX = selected.minX[component], minimumY = selected.minY[component];
     const maximumX = selected.maxX[component], maximumY = selected.maxY[component];
     const localWidth = maximumX - minimumX + 3, localHeight = maximumY - minimumY + 3;
+    const bestRetainedBytes = (best?.contour.outer.length ?? 0) * ESTIMATED_POINT_BYTES;
+    const candidatePeakBytes = selected.workspaceBytes + localWidth * localHeight * 8
+      + retainedExternalBytes + bestRetainedBytes;
+    if (candidatePeakBytes > componentByteLimit) {
+      observeResources(
+        request, 'component-boundary-rejected', candidatePeakBytes, field.valid.length, { minimumX },
+      );
+      checkRuntime(deadline, checkpoint);
+      continue;
+    }
     const localMask = new Uint8Array(localWidth * localHeight);
     for (let y = minimumY; y <= maximumY; y += 1) {
       checkRuntime(deadline, checkpoint);
@@ -973,8 +991,9 @@ function firstValidFeatureFromMask(
     observeResources(
       request,
       'component-candidate',
-      selected.workspaceBytes + localMask.length * 8,
+      candidatePeakBytes,
       field.valid.length,
+      { sourceCellCount: selected.counts[component], minimumX },
     );
     checkRuntime(deadline, checkpoint);
     const simpleMask = openEnclosedVoids(
@@ -998,8 +1017,17 @@ function firstValidFeatureFromMask(
       field.origin[0] + (minimumX - 1) * field.cellSizeMm,
       field.origin[1] + (minimumY - 1) * field.cellSizeMm,
     ];
-    const source = traceGreatestOuter(
-      simpleMask, localWidth, localHeight, localOrigin, field.cellSizeMm, deadline, checkpoint,
+    const source = traceSingleOuter(
+      simpleMask,
+      localWidth,
+      localHeight,
+      localOrigin,
+      field.cellSizeMm,
+      request,
+      selected.workspaceBytes + localMask.length * 2 + retainedExternalBytes + bestRetainedBytes,
+      minimumX,
+      deadline,
+      checkpoint,
     );
     if (!source) continue;
     const simplified = simplifyDepthFeatureLoop(
@@ -1019,7 +1047,16 @@ function firstValidFeatureFromMask(
         areaMm2: Math.abs(signedArea(simplified, deadline, checkpoint)),
     };
     if (!isValid(contour)) continue;
-    return {
+    observeResources(
+      request,
+      'component-final',
+      selected.workspaceBytes + retainedExternalBytes + bestRetainedBytes
+        + contour.outer.length * ESTIMATED_POINT_BYTES,
+      field.valid.length,
+      { sourceCellCount: selected.counts[component], finalAreaMm2: contour.areaMm2, minimumX },
+    );
+    checkRuntime(deadline, checkpoint);
+    const candidate: DepthFeatureCandidate = {
       contour,
       evidence: {
         occupiedCellCount: retainedCellCount,
@@ -1029,8 +1066,15 @@ function firstValidFeatureFromMask(
         maximumDepthMm,
       },
     };
+    if (!best || candidate.contour.areaMm2 > best.contour.areaMm2 + 1e-12
+      || Math.abs(candidate.contour.areaMm2 - best.contour.areaMm2) <= 1e-12
+        && (candidate.contour.boundsMm.minX < best.contour.boundsMm.minX
+          || candidate.contour.boundsMm.minX === best.contour.boundsMm.minX
+            && candidate.contour.boundsMm.minY < best.contour.boundsMm.minY)) {
+      best = candidate;
+    }
   }
-  return undefined;
+  return best;
 }
 
 function omission(
@@ -1102,8 +1146,9 @@ export function extractAdaptiveDepthFeatures(projected: ProjectedMesh, request: 
   ));
   const clearanceMm = Math.max(field.cellSizeMm, request.planarDiameterMm * 0.001);
   const centralHole = holeLoop(request);
-  const redCandidate = firstValidFeatureFromMask(
+  const redCandidate = greatestValidFeatureFromMask(
     'DEEP_RED', closedRed, field, request, minimumCells, deadline, checkpoint,
+    0,
     (red) => validateDepthFeatureContours({
       exterior: request.exterior,
       centralHole,
@@ -1114,8 +1159,9 @@ export function extractAdaptiveDepthFeatures(projected: ProjectedMesh, request: 
     }).ok,
   );
   const red = redCandidate?.contour;
-  const blueCandidate = firstValidFeatureFromMask(
+  const blueCandidate = greatestValidFeatureFromMask(
     'LIGHT_BLUE', closedBlue, field, request, minimumCells, deadline, checkpoint,
+    (red?.outer.length ?? 0) * ESTIMATED_POINT_BYTES,
     (blue) => validateDepthFeatureContours({
       exterior: request.exterior,
       centralHole,

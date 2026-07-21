@@ -2,14 +2,12 @@ import { describe, expect, it } from 'vitest';
 import type { Point2 } from '../decomposition/types';
 import type { ProjectedMesh } from '../outline-2.5d/raster';
 import { DEFAULT_OUTLINE_BUDGETS, type OutlineBudgets } from '../outline-2.5d/types';
-import type { FeatureContour } from './types';
 import {
   DEPTH_CONTRAST_OMISSION_WARNING,
   DEPTH_DATA_OMISSION_WARNING,
   buildDepthField,
   closeDepthBandMask,
   extractAdaptiveDepthFeatures,
-  selectGreatestValidDepthFeatureContour,
   simplifyDepthFeatureLoop,
   type DepthFeatureRequest,
 } from './depth-field';
@@ -129,24 +127,6 @@ describe('adaptive source-triangle depth features', () => {
       .toBeUndefined();
   });
 
-  it('tries the next greatest-area candidate when the largest geometry is invalid', () => {
-    const candidate = (id: string, areaMm2: number, minX: number): FeatureContour => ({
-      id,
-      role: 'DEEP_RED',
-      outer: [[minX, 0], [minX, 1], [minX + 1, 1], [minX + 1, 0]],
-      boundsMm: { minX, minY: 0, maxX: minX + 1, maxY: 1 },
-      areaMm2,
-    });
-    const largest = candidate('largest-invalid', 100, 0);
-    const next = candidate('next-valid', 50, 2);
-    const smallest = candidate('smallest-valid', 25, 4);
-
-    expect(selectGreatestValidDepthFeatureContour(
-      [smallest, largest, next],
-      (contour) => contour.id !== largest.id,
-    )).toBe(next);
-  });
-
   it('clips paired surface intervals to the requested layer and ignores remote slabs', () => {
     const surface = patchedSurface([
       { minX: -5, maxX: -1, minY: -5, maxY: 5, depth: 4 },
@@ -201,12 +181,93 @@ describe('adaptive source-triangle depth features', () => {
       resourceObserver: (event: { phase: string; liveBytes: number; rasterCells: number }) => allocations.push(event),
     } as unknown as Partial<DepthFeatureRequest>));
 
-    const componentEvents = allocations.filter((event) => event.phase.startsWith('component-'));
+    const componentEvents = allocations.filter((event) => (
+      event.phase === 'component-labels' || event.phase === 'component-candidate'
+    ));
     const hitStorage = allocations.find((event) => event.phase === 'surface-hit-storage');
     expect(componentEvents.length).toBeGreaterThan(0);
     expect(Math.max(...componentEvents.map((event) => event.liveBytes / event.rasterCells)))
       .toBeLessThanOrEqual(24);
     expect(hitStorage?.liveBytes).toBeLessThanOrEqual(64 * 1024 * 1024);
+  });
+
+  it('rejects a sawtooth boundary before typed edge allocation when remaining component bytes are exhausted', () => {
+    const patches: Patch[] = [
+      { minX: -5, maxX: -1, minY: -4, maxY: -3, depth: 4 },
+      { minX: 0, maxX: 5, minY: -4, maxY: 4, depth: 1 },
+    ];
+    for (let tooth = 0; tooth < 8; tooth += 1) patches.push({
+      minX: -5 + tooth * 0.5,
+      maxX: -4.75 + tooth * 0.5,
+      minY: -3,
+      maxY: 4,
+      depth: 4,
+    });
+    const firstEvents: { phase: string; liveBytes: number; rasterCells: number; minimumX?: number }[] = [];
+    const surface = patchedSurface(patches);
+    const normal = extractAdaptiveDepthFeatures(surface, request({
+      cellSizeMm: 0.25,
+      layer: { index: 0, zStart: 0, zMid: 2, zEnd: 4 },
+      resourceObserver: (event) => firstEvents.push(event),
+    }));
+    const boundaryLimit = Math.min(...firstEvents
+      .filter((event) => event.phase === 'component-boundary')
+      .map((event) => event.liveBytes)) - 1;
+    const limitedEvents: { phase: string; liveBytes: number; rasterCells: number; minimumX?: number }[] = [];
+
+    const limited = extractAdaptiveDepthFeatures(surface, request({
+      cellSizeMm: 0.25,
+      layer: { index: 0, zStart: 0, zMid: 2, zEnd: 4 },
+      maximumComponentBytes: boundaryLimit,
+      resourceObserver: (event) => limitedEvents.push(event),
+    }));
+
+    expect(normal.red).toBeDefined();
+    expect(Number.isSafeInteger(boundaryLimit)).toBe(true);
+    const rejected = limitedEvents.find((event) => event.phase === 'component-boundary-rejected');
+    expect(rejected).toBeDefined();
+    expect(limitedEvents.some((event) => (
+      event.phase === 'component-boundary' && event.minimumX === rejected!.minimumX
+    ))).toBe(false);
+    expect(limited.red).toBeUndefined();
+  });
+
+  it('selects the greatest final traced area even when a pre-seam component has more cells', () => {
+    const largerPreSeamRing: Patch[] = [
+      { minX: -9, maxX: -1, minY: 3.5, maxY: 4, depth: 4 },
+      { minX: -9, maxX: -1, minY: -4, maxY: -3.5, depth: 4 },
+      { minX: -9, maxX: -3, minY: -3.5, maxY: 3.5, depth: 4 },
+      { minX: -1.5, maxX: -1, minY: -3.5, maxY: 3.5, depth: 4 },
+    ];
+    const laterRectangle: Patch = { minX: 1, maxX: 7.25, minY: -4, maxY: 4, depth: 4 };
+    const blueBalance: Patch = { minX: -15, maxX: 15, minY: 6, maxY: 10, depth: 1 };
+    const largeExterior = [[-16, -11], [-16, 11], [16, 11], [16, -11]] as const;
+    const candidates: {
+      phase: string;
+      sourceCellCount?: number;
+      finalAreaMm2?: number;
+      minimumX?: number;
+    }[] = [];
+
+    const features = extractAdaptiveDepthFeatures(
+      patchedSurface([...largerPreSeamRing, laterRectangle, blueBalance]),
+      request({
+        exterior: largeExterior,
+        exteriorAreaMm2: 704,
+        planarDiameterMm: Math.hypot(32, 22),
+        layer: { index: 0, zStart: 0, zMid: 2, zEnd: 4 },
+        resourceObserver: (event) => candidates.push(event),
+      }),
+    );
+    const finalCandidates = candidates.filter((event) => event.phase === 'component-final');
+    const [ring, rectangle] = finalCandidates
+      .filter((event) => (event.finalAreaMm2 ?? Infinity) < 100)
+      .sort((left, right) => left.minimumX! - right.minimumX!);
+
+    expect(features.red).toBeDefined();
+    expect(ring?.sourceCellCount).toBeGreaterThan(rectangle!.sourceCellCount!);
+    expect(ring?.finalAreaMm2).toBeLessThan(rectangle!.finalAreaMm2!);
+    expect(features.red!.boundsMm.minX).toBeGreaterThan(0);
   });
 
   it('honors cancellation from inside topology and per-cell hit sorting', () => {
