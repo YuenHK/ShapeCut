@@ -5,6 +5,8 @@ import type { OutlineMode, OutlineResultStatus } from '../domain/outline-2.5d/ty
 import type { AutomaticOutlineDiagnostics } from '../domain/pipeline/automatic-outline-pipeline';
 
 export type LayerName = 'CUT' | 'SCORE' | `ENGRAVE_${1 | 2 | 3 | 4 | 5}`;
+export type ColoredLayerName = 'CUT_BLACK' | 'DEEP_RED' | 'LIGHT_BLUE';
+export const COLORED_LAYER_ORDER: readonly ColoredLayerName[] = ['CUT_BLACK', 'DEEP_RED', 'LIGHT_BLUE'];
 export const LAYER_ORDER: readonly LayerName[] = ['CUT', 'SCORE', 'ENGRAVE_1', 'ENGRAVE_2', 'ENGRAVE_3', 'ENGRAVE_4', 'ENGRAVE_5'];
 
 export type LayerEntity = {

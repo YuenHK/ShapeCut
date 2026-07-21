@@ -22,6 +22,20 @@ import {
   writeOutlineZip,
 } from './package';
 import { writeOutlineProjectJson } from './project-json';
+import {
+  createColoredOutlineDocument,
+  validateColoredOutlineDocument,
+  type ColoredDocumentDeadlineOptions,
+} from './colored-outline-document';
+import { writeColoredPreviewPdf, writeExplodedViewPdf } from './exploded-pdf';
+import {
+  coloredOutlineEntityRecords,
+  parseColoredOutlineDxf,
+  parseColoredOutlineSvg,
+  writeColoredOutlineDxf,
+  writeColoredOutlineSvg,
+  writeColoredOutlineZip,
+} from './package';
 
 const MARGIN_MM = 5;
 const SPACING_MM = 5;
@@ -95,6 +109,14 @@ export type OutlinePackage = {
   readonly previewPdf: Uint8Array;
   readonly projectJson: string;
   readonly manifestJson: string;
+  readonly zip: Uint8Array;
+};
+
+export type ColoredOutlinePackage = {
+  readonly cutSvg: string;
+  readonly cutDxf: string;
+  readonly previewPdf: Uint8Array;
+  readonly explodedViewPdf: Uint8Array;
   readonly zip: Uint8Array;
 };
 
@@ -383,7 +405,7 @@ function manifestFromDocument(document: ManufacturingDocument, checkpoint: Packa
   };
 }
 
-export async function createOutlinePackage(result: AutomaticOutlineResult, deadline = Date.now() + DEFAULT_OUTLINE_BUDGETS.maxRuntimeMs, options: PackageDeadlineInput = {}): Promise<OutlinePackage> {
+export async function createLegacyOutlinePackage(result: AutomaticOutlineResult, deadline = Date.now() + DEFAULT_OUTLINE_BUDGETS.maxRuntimeMs, options: PackageDeadlineInput = {}): Promise<OutlinePackage> {
   const checkpoint = packageCheckpoint(deadline, options);
   checkpoint('create:start');
   const document = createOutlineDocument(result, checkpoint);
@@ -400,7 +422,7 @@ export async function createOutlinePackage(result: AutomaticOutlineResult, deadl
   const zip = await writeOutlineZip({ cutSvg, cutDxf, previewPdf, projectJson, manifestJson }, checkpoint);
   checkpoint('create:zip:after');
   const output = { document, manifest, cutSvg, cutDxf, previewPdf, projectJson, manifestJson, zip };
-  await verifyOutlinePackage(output, deadline, options);
+  await verifyLegacyOutlinePackage(output, deadline, options);
   checkpoint('create:return');
   return output;
 }
@@ -609,7 +631,7 @@ function relativeDifference(left: number, right: number): number {
   return Math.abs(left - right) / Math.max(Number.MIN_VALUE, Math.abs(left));
 }
 
-export async function verifyOutlinePackage(output: OutlinePackage, deadline = Date.now() + DEFAULT_OUTLINE_BUDGETS.maxRuntimeMs, options: PackageDeadlineInput = {}): Promise<void> {
+export async function verifyLegacyOutlinePackage(output: OutlinePackage, deadline = Date.now() + DEFAULT_OUTLINE_BUDGETS.maxRuntimeMs, options: PackageDeadlineInput = {}): Promise<void> {
   const checkpoint = packageCheckpoint(deadline, options);
   checkpoint('verify:start');
   validateOutlineDocument(output.document, checkpoint);
@@ -696,4 +718,219 @@ export async function verifyOutlinePackage(output: OutlinePackage, deadline = Da
     throw new RangeError('Outline ZIP package reconciliation mismatch');
   }
   checkpoint('verify:return');
+}
+
+function coloredDeadlineOptions(input: PackageDeadlineInput): ColoredDocumentDeadlineOptions {
+  return typeof input === 'function' ? { now: input } : input;
+}
+
+function bytesEqual(
+  left: Uint8Array,
+  right: Uint8Array,
+  checkpoint: PackageCheckpoint,
+  label: string,
+): boolean {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    if ((index & 4095) === 0) checkpoint(`${label}-byte-loop`);
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+}
+
+function rawZipCentralDirectoryNames(bytes: Uint8Array, checkpoint: PackageCheckpoint): string[] {
+  if (bytes.length < 22) throw new RangeError('Colored ZIP has no valid central directory');
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const firstPossibleEocd = Math.max(0, bytes.length - 65_557);
+  let eocd = -1;
+  for (let index = bytes.length - 22; index >= firstPossibleEocd; index -= 1) {
+    if ((index & 255) === 0) checkpoint('colored-package:verify-zip-central-byte-loop');
+    if (view.getUint32(index, true) === 0x06054b50
+      && index + 22 + view.getUint16(index + 20, true) === bytes.length) {
+      eocd = index;
+      break;
+    }
+  }
+  if (eocd < 0) throw new RangeError('Colored ZIP has no valid central directory end record');
+
+  const disk = view.getUint16(eocd + 4, true);
+  const centralDisk = view.getUint16(eocd + 6, true);
+  const diskRecords = view.getUint16(eocd + 8, true);
+  const recordCount = view.getUint16(eocd + 10, true);
+  const centralSize = view.getUint32(eocd + 12, true);
+  const centralOffset = view.getUint32(eocd + 16, true);
+  if (disk !== 0 || centralDisk !== 0 || diskRecords !== recordCount
+    || recordCount === 0xffff || centralSize === 0xffffffff || centralOffset === 0xffffffff) {
+    throw new RangeError('Colored ZIP must use one non-ZIP64 central directory');
+  }
+  const centralEnd = centralOffset + centralSize;
+  if (centralOffset > eocd || centralEnd !== eocd) {
+    throw new RangeError('Colored ZIP central directory bounds are invalid');
+  }
+
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  const names: string[] = [];
+  let cursor = centralOffset;
+  for (let record = 0; record < recordCount; record += 1) {
+    checkpoint('colored-package:verify-zip-central-record-loop');
+    if (cursor + 46 > centralEnd || view.getUint32(cursor, true) !== 0x02014b50) {
+      throw new RangeError('Colored ZIP central directory record is invalid');
+    }
+    const nameLength = view.getUint16(cursor + 28, true);
+    const extraLength = view.getUint16(cursor + 30, true);
+    const commentLength = view.getUint16(cursor + 32, true);
+    const recordLength = 46 + nameLength + extraLength + commentLength;
+    if (nameLength === 0 || cursor + recordLength > centralEnd) {
+      throw new RangeError('Colored ZIP central directory record bounds are invalid');
+    }
+    let name: string;
+    try {
+      name = decoder.decode(bytes.subarray(cursor + 46, cursor + 46 + nameLength));
+    } catch {
+      throw new RangeError('Colored ZIP central directory record name is not valid UTF-8');
+    }
+    names.push(name);
+    cursor += recordLength;
+  }
+  if (cursor !== centralEnd) throw new RangeError('Colored ZIP central directory record count is inconsistent');
+  return names;
+}
+
+function assertColoredPublicText(value: string, label: string): void {
+  const decoded = decodePublicTextForScan(value, label);
+  const privacyScanText = svgAwarePrivacyScanText(decoded);
+  const privateMatch = decoded.match(EMAIL_PATTERN) ?? decoded.match(FILE_URI_PATTERN)
+    ?? privacyScanText.match(POSIX_PATH_PATTERN) ?? decoded.match(WINDOWS_PATH_PATTERN)
+    ?? decoded.match(FORWARD_UNC_PATH_PATTERN) ?? decoded.match(SOURCE_FILE_PATTERN);
+  if (privateMatch) throw new RangeError(`${label} must not contain a private path, source filename, or email address`);
+  if (/80\s*%|40\s*%|power|speed|pass(?:es)?|material|\.stl\b|\.json\b|manifest/i.test(decoded.normalize('NFKC'))) {
+    throw new RangeError(`${label} must not contain source, JSON, manifest, material, or machine-setting text`);
+  }
+}
+
+function assertExactColoredOutputKeys(output: ColoredOutlinePackage): void {
+  const keys = Object.keys(output).sort();
+  if (exactJson(keys) !== exactJson(['cutDxf', 'cutSvg', 'explodedViewPdf', 'previewPdf', 'zip'])) {
+    throw new RangeError('Colored outline package must expose exactly five download payloads');
+  }
+}
+
+export async function createOutlinePackage(
+  result: AutomaticOutlineResult,
+  deadline = Date.now() + DEFAULT_OUTLINE_BUDGETS.maxRuntimeMs,
+  options: PackageDeadlineInput = {},
+): Promise<ColoredOutlinePackage> {
+  const checkpoint = packageCheckpoint(deadline, options), documentOptions = coloredDeadlineOptions(options);
+  checkpoint('colored-package:create:start');
+  const document = createColoredOutlineDocument(result, deadline, documentOptions);
+  checkpoint('colored-package:document:after');
+  const cutSvg = writeColoredOutlineSvg(document, checkpoint);
+  checkpoint('colored-package:svg:after');
+  const cutDxf = writeColoredOutlineDxf(document, checkpoint);
+  checkpoint('colored-package:dxf:after');
+  const previewPdf = await writeColoredPreviewPdf(document, checkpoint);
+  checkpoint('colored-package:preview-pdf:after');
+  const explodedViewPdf = await writeExplodedViewPdf(document, checkpoint);
+  checkpoint('colored-package:exploded-pdf:after');
+  const zip = await writeColoredOutlineZip({ cutSvg, cutDxf, previewPdf, explodedViewPdf }, checkpoint);
+  checkpoint('colored-package:zip:after');
+  const output: ColoredOutlinePackage = { cutSvg, cutDxf, previewPdf, explodedViewPdf, zip };
+  await verifyOutlinePackage(output, result, deadline, options);
+  checkpoint('colored-package:create:return');
+  return output;
+}
+
+export async function verifyOutlinePackage(
+  output: ColoredOutlinePackage,
+  result: AutomaticOutlineResult,
+  deadline = Date.now() + DEFAULT_OUTLINE_BUDGETS.maxRuntimeMs,
+  options: PackageDeadlineInput = {},
+): Promise<void> {
+  const checkpoint = packageCheckpoint(deadline, options), documentOptions = coloredDeadlineOptions(options);
+  checkpoint('colored-package:verify:start');
+  assertExactColoredOutputKeys(output);
+  const document = createColoredOutlineDocument(result, deadline, documentOptions);
+  validateColoredOutlineDocument(document, result, deadline, documentOptions);
+  checkpoint('colored-package:verify-document:after');
+
+  const expectedSvg = writeColoredOutlineSvg(document, checkpoint);
+  const expectedDxf = writeColoredOutlineDxf(document, checkpoint);
+  if (output.cutSvg !== expectedSvg || output.cutDxf !== expectedDxf) {
+    throw new RangeError('Colored SVG or DXF canonical geometry, role, color, fingerprint, or entity-count mismatch');
+  }
+  const expectedEntities = coloredOutlineEntityRecords(document, checkpoint);
+  if (exactJson(parseColoredOutlineSvg(output.cutSvg, checkpoint)) !== exactJson(expectedEntities)
+    || exactJson(parseColoredOutlineDxf(output.cutDxf, checkpoint)) !== exactJson(expectedEntities)) {
+    throw new RangeError('Colored SVG or DXF parsed entities do not match the canonical entity order and counts');
+  }
+  assertColoredPublicText(output.cutSvg, 'Colored SVG');
+  assertColoredPublicText(output.cutDxf, 'Colored DXF');
+
+  const expectedPreview = await writeColoredPreviewPdf(document, checkpoint);
+  checkpoint('colored-package:verify-preview-regenerate:after');
+  const expectedExploded = await writeExplodedViewPdf(document, checkpoint);
+  checkpoint('colored-package:verify-exploded-regenerate:after');
+  if (!bytesEqual(output.previewPdf, expectedPreview, checkpoint, 'colored-package:verify-preview')
+    || !bytesEqual(output.explodedViewPdf, expectedExploded, checkpoint, 'colored-package:verify-exploded')) {
+    throw new RangeError('Colored PDF content, color, label, dimension, axis, or fingerprint mismatch');
+  }
+  checkpoint('colored-package:verify-preview-load:before');
+  const preview = await PDFDocument.load(output.previewPdf, { updateMetadata: false });
+  checkpoint('colored-package:verify-preview-load:after');
+  checkpoint('colored-package:verify-exploded-load:before');
+  const exploded = await PDFDocument.load(output.explodedViewPdf, { updateMetadata: false });
+  checkpoint('colored-package:verify-exploded-load:after');
+  for (const [label, pdf] of [['preview', preview], ['exploded', exploded]] as const) {
+    const metadata = [
+      pdf.getTitle(), pdf.getSubject(), pdf.getAuthor(), pdf.getCreator(), pdf.getProducer(), pdf.getKeywords(),
+    ].filter((value): value is string => typeof value === 'string').join('\n');
+    assertColoredPublicText(metadata, `Colored ${label} PDF metadata`);
+    if (pdf.getCreationDate()?.toISOString() !== '2000-01-01T00:00:00.000Z'
+      || pdf.getModificationDate()?.toISOString() !== '2000-01-01T00:00:00.000Z') {
+      throw new RangeError(`Colored ${label} PDF dates are not deterministic`);
+    }
+  }
+
+  const expectedNames = ['cut-and-engrave.dxf', 'cut-and-engrave.svg', 'exploded-view.pdf', 'preview.pdf'];
+  const rawNames = rawZipCentralDirectoryNames(output.zip, checkpoint).sort((left, right) => left.localeCompare(right));
+  if (rawNames.length !== 4 || exactJson(rawNames) !== exactJson(expectedNames)) {
+    throw new RangeError('Colored ZIP must contain exactly four unique central directory records');
+  }
+  for (const name of rawNames) assertColoredPublicText(name, 'Colored ZIP raw record name');
+
+  checkpoint('colored-package:verify-zip-load:before');
+  const zip = await JSZip.loadAsync(output.zip);
+  checkpoint('colored-package:verify-zip-load:after');
+  const entries = Object.entries(zip.files).sort(([left], [right]) => left.localeCompare(right));
+  if (entries.length !== 4 || entries.some(([, entry]) => entry.dir)
+    || exactJson(entries.map(([name]) => name)) !== exactJson(expectedNames)) {
+    throw new RangeError('Colored ZIP must contain exactly four non-directory records');
+  }
+  for (const [name, entry] of entries) {
+    checkpoint(`colored-package:verify-zip-entry:${name}:metadata`);
+    const originalName = entry.unsafeOriginalName ?? name;
+    if (originalName !== name) throw new RangeError('Colored ZIP original record name was sanitized');
+    assertColoredPublicText(name, 'Colored ZIP record name');
+    assertColoredPublicText(originalName, 'Colored ZIP original record name');
+  }
+  checkpoint('colored-package:verify-zip-svg:before-read');
+  const zippedSvg = await zip.file('cut-and-engrave.svg')!.async('string');
+  checkpoint('colored-package:verify-zip-svg:after-read');
+  checkpoint('colored-package:verify-zip-dxf:before-read');
+  const zippedDxf = await zip.file('cut-and-engrave.dxf')!.async('string');
+  checkpoint('colored-package:verify-zip-dxf:after-read');
+  checkpoint('colored-package:verify-zip-preview:before-read');
+  const zippedPreview = await zip.file('preview.pdf')!.async('uint8array');
+  checkpoint('colored-package:verify-zip-preview:after-read');
+  checkpoint('colored-package:verify-zip-exploded:before-read');
+  const zippedExploded = await zip.file('exploded-view.pdf')!.async('uint8array');
+  checkpoint('colored-package:verify-zip-exploded:after-read');
+  assertColoredPublicText(zippedSvg, 'Colored ZIP SVG payload');
+  assertColoredPublicText(zippedDxf, 'Colored ZIP DXF payload');
+  if (zippedSvg !== output.cutSvg || zippedDxf !== output.cutDxf
+    || !bytesEqual(zippedPreview, output.previewPdf, checkpoint, 'colored-package:verify-zipped-preview')
+    || !bytesEqual(zippedExploded, output.explodedViewPdf, checkpoint, 'colored-package:verify-zipped-exploded')) {
+    throw new RangeError('Colored ZIP payloads are not byte-identical to the four downloads');
+  }
+  checkpoint('colored-package:verify:return');
 }

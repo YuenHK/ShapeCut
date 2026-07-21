@@ -63,8 +63,8 @@ const downloads: OutlineDownloads = {
   zip: { href: 'blob:zip', fileName: 'model-shapecut.zip' },
   svg: { href: 'blob:svg', fileName: 'model-cut.svg' },
   dxf: { href: 'blob:dxf', fileName: 'model-cut.dxf' },
-  pdf: { href: 'blob:pdf', fileName: 'model-preview.pdf' },
-  json: { href: 'blob:json', fileName: 'model-manifest.json' },
+  previewPdf: { href: 'blob:preview', fileName: 'model-preview.pdf' },
+  explodedPdf: { href: 'blob:exploded', fileName: 'model-exploded-view.pdf' },
 };
 
 function deferred<T>() {
@@ -170,7 +170,7 @@ describe('OneClickConverter', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
-  it('shows the simplified warning and all five download formats', async () => {
+  it('shows the simplified warning and all five colored package payloads', async () => {
     const user = userEvent.setup();
     const warning = { ...result, mode: 'outline-2.5d' as const, status: 'warning' as const, warnings: ['已簡化模型'] };
     render(<OneClickConverter services={services({ convert: vi.fn().mockResolvedValue(warning) })} />);
@@ -181,7 +181,9 @@ describe('OneClickConverter', () => {
     expect(screen.getAllByText('已簡化模型')[0]).toBeVisible();
     expect(screen.getByText(/不同材料厚度會改變堆疊後高度/)).toBeVisible();
     expect(screen.getByRole('link', { name: '下載 ZIP 製作套件' })).toHaveAttribute('href', 'blob:zip');
-    for (const name of ['SVG', 'DXF', 'PDF', 'JSON']) expect(screen.getByRole('link', { name: `下載 ${name}` })).toBeVisible();
+    for (const name of ['SVG', 'DXF', 'Preview PDF', 'Exploded PDF']) {
+      expect(screen.getByRole('link', { name: `下載 ${name}` })).toBeVisible();
+    }
     expect(screen.getByText('10 × 5 mm')).toBeVisible();
     expect(screen.getByText('總高度 1 mm')).toBeVisible();
     expect(screen.getByRole('img', { name: '實際外形切片預覽' })).toHaveAttribute('viewBox', '0 0 10 5');
@@ -200,7 +202,7 @@ describe('OneClickConverter', () => {
     expect(screen.getAllByText(axisWarning)[0]).toBeVisible();
   });
 
-  it('provides keyboard-accessible technical data from the actual result and points to JSON diagnostics', async () => {
+  it('provides keyboard-accessible technical data and describes the exact ZIP contents', async () => {
     const user = userEvent.setup();
     const warning = { ...result, mode: 'outline-2.5d' as const, status: 'warning' as const, warnings: ['已簡化模型', '正式製作前應先試切少量零件'] };
     render(<OneClickConverter services={services({ convert: vi.fn().mockResolvedValue(warning) })} />);
@@ -218,7 +220,7 @@ describe('OneClickConverter', () => {
     expect(details).toHaveTextContent('warning');
     expect(details).toHaveTextContent('a'.repeat(32));
     expect(details).toHaveTextContent('正式製作前應先試切少量零件');
-    expect(details).toHaveTextContent('JSON manifest');
+    expect(details).toHaveTextContent('SVG、DXF、平面預覽及 exploded view');
     expect(details).not.toHaveTextContent('private-name.stl');
   });
 

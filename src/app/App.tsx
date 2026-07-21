@@ -11,7 +11,7 @@ export type OutlineDownloadContents = {
   readonly cutSvg: string;
   readonly cutDxf: string;
   readonly previewPdf: Uint8Array;
-  readonly manifestJson: string;
+  readonly explodedViewPdf: Uint8Array;
 };
 
 export function createDownloadUrls(files: OutlineDownloadContents, _fileName?: string): OutlineDownloads {
@@ -24,10 +24,10 @@ export function createDownloadUrls(files: OutlineDownloadContents, _fileName?: s
   try {
     return {
       zip: make(files.zip as BlobPart, 'application/zip', 'shapecut-outline.zip'),
-      svg: make(files.cutSvg, 'image/svg+xml;charset=utf-8', 'shapecut-cut.svg'),
-      dxf: make(files.cutDxf, 'application/dxf;charset=utf-8', 'shapecut-cut.dxf'),
-      pdf: make(files.previewPdf as BlobPart, 'application/pdf', 'shapecut-preview.pdf'),
-      json: make(files.manifestJson, 'application/json;charset=utf-8', 'shapecut-manifest.json'),
+      svg: make(files.cutSvg, 'image/svg+xml;charset=utf-8', 'cut-and-engrave.svg'),
+      dxf: make(files.cutDxf, 'application/dxf;charset=utf-8', 'cut-and-engrave.dxf'),
+      previewPdf: make(files.previewPdf as BlobPart, 'application/pdf', 'preview.pdf'),
+      explodedPdf: make(files.explodedViewPdf as BlobPart, 'application/pdf', 'exploded-view.pdf'),
     };
   } catch (error) {
     for (const href of created) {

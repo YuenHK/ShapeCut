@@ -82,9 +82,13 @@ const geometryApi: GeometryApi = {
       cutSvg: output.cutSvg,
       cutDxf: output.cutDxf,
       previewPdf: output.previewPdf,
-      manifestJson: output.manifestJson,
+      explodedViewPdf: output.explodedViewPdf,
     };
-    return transfer(packaged, [packaged.zip.buffer, packaged.previewPdf.buffer]);
+    return transfer(packaged, [
+      packaged.zip.buffer,
+      packaged.previewPdf.buffer,
+      packaged.explodedViewPdf.buffer,
+    ]);
   },
   async inspect(input) {
     const sourceHash = hashBuffer(input);

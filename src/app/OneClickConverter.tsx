@@ -12,8 +12,8 @@ export type OutlineDownloads = {
   readonly zip: DownloadFile;
   readonly svg: DownloadFile;
   readonly dxf: DownloadFile;
-  readonly pdf: DownloadFile;
-  readonly json: DownloadFile;
+  readonly previewPdf: DownloadFile;
+  readonly explodedPdf: DownloadFile;
 };
 
 export type OneClickViewState =
@@ -278,7 +278,9 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
       </div>
       <a className="primary-button download-primary" href={downloads.zip.href} download={downloads.zip.fileName}>下載 ZIP 製作套件</a>
       <nav className="secondary-downloads" aria-label="其他下載格式">
-        {(['svg', 'dxf', 'pdf', 'json'] as const).map((kind) => <a key={kind} href={downloads[kind].href} download={downloads[kind].fileName}>下載 {kind.toUpperCase()}</a>)}
+        {([
+          ['svg', 'SVG'], ['dxf', 'DXF'], ['previewPdf', 'Preview PDF'], ['explodedPdf', 'Exploded PDF'],
+        ] as const).map(([kind, label]) => <a key={kind} href={downloads[kind].href} download={downloads[kind].fileName}>下載 {label}</a>)}
       </nav>
       <details className="technical-details">
         <summary onKeyDown={(event) => {
@@ -299,7 +301,7 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
         </dl>
         <h2>處理提示</h2>
         {result.warnings.length > 0 ? <ul>{result.warnings.map((item) => <li key={item}>{item}</li>)}</ul> : <p>沒有額外提示。</p>}
-        <p>完整診斷、層次和來源資料亦已收錄於 JSON manifest。</p>
+        <p>ZIP 內含 SVG、DXF、平面預覽及 exploded view 四項檔案。</p>
       </details>
       <ModelInput compact onFile={(file) => void processFile(file)} />
     </section>

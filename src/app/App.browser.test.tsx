@@ -85,8 +85,9 @@ describe('App real browser one-click flow', () => {
       convert: vi.fn().mockResolvedValue(result),
       package: vi.fn().mockResolvedValue({
         zip: { href: 'blob:zip', fileName: 'shape.zip' }, svg: { href: 'blob:svg', fileName: 'shape.svg' },
-        dxf: { href: 'blob:dxf', fileName: 'shape.dxf' }, pdf: { href: 'blob:pdf', fileName: 'shape.pdf' },
-        json: { href: 'blob:json', fileName: 'shape.json' },
+        dxf: { href: 'blob:dxf', fileName: 'shape.dxf' },
+        previewPdf: { href: 'blob:preview', fileName: 'shape-preview.pdf' },
+        explodedPdf: { href: 'blob:exploded', fileName: 'shape-exploded.pdf' },
       }),
     };
     render(<App services={services} />);

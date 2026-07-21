@@ -1,0 +1,65 @@
+import { describe, expect, it } from 'vitest';
+import { diagnosticsFingerprint } from '../domain/pipeline/automatic-outline-pipeline';
+import {
+  createColoredOutlineDocument,
+  validateColoredOutlineDocument,
+} from './colored-outline-document';
+import { coloredResult } from './colored-outline-test-fixture';
+
+describe('canonical colored outline document', () => {
+  it('preserves ordered physical layers and exact canonical role identity', () => {
+    const result = coloredResult();
+    const document = createColoredOutlineDocument(result);
+
+    expect(document).toMatchObject({
+      schemaVersion: 2,
+      sourceHash: result.sourceHash,
+      featureEvidenceFingerprint: result.featureEvidenceFingerprint,
+      diagnosticsFingerprint: diagnosticsFingerprint(result.diagnostics),
+    });
+    expect(document.layers.map(({ id, order, index }) => ({ id, order, index }))).toEqual(
+      result.coloredLayers.map(({ id, index }, position) => ({ id, order: position + 1, index })),
+    );
+    expect(Object.keys(document.layers[2].roles)).toEqual(['CUT_BLACK', 'DEEP_RED', 'LIGHT_BLUE']);
+    expect(document.layers[2].roles.CUT_BLACK.map(({ id }) => id)).toEqual([
+      'layer-3-exterior', 'layer-3-hole',
+    ]);
+    expect(document.layers[2].roles.DEEP_RED).toHaveLength(1);
+    expect(document.layers[2].roles.LIGHT_BLUE).toHaveLength(1);
+    expect(() => validateColoredOutlineDocument(document, result)).not.toThrow();
+  });
+
+  it.each([
+    ['recolored role', (document: any) => { document.layers[2].roles.DEEP_RED[0].role = 'LIGHT_BLUE'; }],
+    ['mutated geometry', (document: any) => { document.layers[2].roles.CUT_BLACK[0].outer[0][0] += 1; }],
+    ['swapped layers', (document: any) => { [document.layers[1], document.layers[2]] = [document.layers[2], document.layers[1]]; }],
+    ['feature fingerprint', (document: any) => { document.featureEvidenceFingerprint = 'f'.repeat(32); }],
+    ['diagnostics fingerprint', (document: any) => { document.diagnosticsFingerprint = 'e'.repeat(32); }],
+    ['direct span drift', (document: any) => { document.layers[2].zEnd += 0.01; }],
+  ])('rejects %s instead of exporting untrusted canonical data', (_label, mutate) => {
+    const result = coloredResult();
+    const document = structuredClone(createColoredOutlineDocument(result));
+    mutate(document);
+
+    expect(() => validateColoredOutlineDocument(document, result)).toThrow(/canonical|fingerprint|role|geometry|order|span|mismatch/i);
+  });
+
+  it('shares the caller absolute deadline through colored-result and canonical polygon validation', () => {
+    const labels: string[] = [];
+    expect(() => createColoredOutlineDocument(coloredResult(), 5, {
+      now: () => labels.includes('canonical:polygon-loop') ? 6 : 0,
+      onCheckpoint: (label) => labels.push(label),
+    })).toThrow(/shared deadline/i);
+    expect(labels).toContain('canonical:polygon-loop');
+  });
+
+  it('rejects diagnostics and removal fingerprints that drift from the direct pipeline evidence', () => {
+    const diagnosticDrift = coloredResult();
+    Object.assign(diagnosticDrift.diagnostics.layers[0], { boundsDriftRatio: 0.02 });
+    expect(() => createColoredOutlineDocument(diagnosticDrift)).toThrow(/diagnostic|drift|evidence/i);
+
+    const removalDrift = coloredResult();
+    Object.assign(removalDrift, { removalEvidenceFingerprint: 'f'.repeat(32) });
+    expect(() => createColoredOutlineDocument(removalDrift)).toThrow(/removal|fingerprint|evidence/i);
+  });
+});

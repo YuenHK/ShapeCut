@@ -30,7 +30,7 @@ describe('App', () => {
 
     expect(() => createDownloadUrls({
       zip: new Uint8Array([1]), cutSvg: '<svg/>', cutDxf: 'DXF',
-      previewPdf: new Uint8Array([2]), manifestJson: '{}',
+      previewPdf: new Uint8Array([2]), explodedViewPdf: new Uint8Array([3]),
     }, 'spinner.stl')).toThrow('URL quota');
     expect(revoke).toHaveBeenNthCalledWith(1, 'blob:zip');
     expect(revoke).toHaveBeenNthCalledWith(2, 'blob:svg');
@@ -40,16 +40,16 @@ describe('App', () => {
   it('uses generic private download names rather than deriving them from the source file name', () => {
     const create = vi.fn()
       .mockReturnValueOnce('blob:zip').mockReturnValueOnce('blob:svg').mockReturnValueOnce('blob:dxf')
-      .mockReturnValueOnce('blob:pdf').mockReturnValueOnce('blob:json');
+      .mockReturnValueOnce('blob:preview').mockReturnValueOnce('blob:exploded');
     Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: create });
     const generated = createDownloadUrls({
       zip: new Uint8Array([1]), cutSvg: '<svg/>', cutDxf: 'DXF',
-      previewPdf: new Uint8Array([2]), manifestJson: '{}',
+      previewPdf: new Uint8Array([2]), explodedViewPdf: new Uint8Array([3]),
     }, '/Users/person/private-model.stl');
 
     expect(Object.values(generated).map(({ fileName }) => fileName)).toEqual([
-      'shapecut-outline.zip', 'shapecut-cut.svg', 'shapecut-cut.dxf',
-      'shapecut-preview.pdf', 'shapecut-manifest.json',
+      'shapecut-outline.zip', 'cut-and-engrave.svg', 'cut-and-engrave.dxf',
+      'preview.pdf', 'exploded-view.pdf',
     ]);
   });
 });

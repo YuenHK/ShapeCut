@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { finalizer } from 'comlink';
 import { writeBinarySTL } from '../domain/mesh/write-stl';
 import { removalEvidenceFingerprint } from '../domain/pipeline/automatic-outline-pipeline';
+import { featureEvidenceFingerprint } from '../domain/outline-features/types';
 import type { TriangleMesh } from '../domain/mesh/types';
 import {
   interpenetratingTetrahedra,
@@ -200,25 +201,36 @@ describe('geometry worker boundary', () => {
     const client = createGeometryWorkerClient();
     clients.push(client);
     const runtime = await client.convertAutomatically({ bytes: writeBinarySTL(separatedClosedCylinders(256), 'safe') });
-    for (const layer of runtime.layers) {
-      const clockwise = layer.contour.outer.reduce((sum, point, index) => {
-        const next = layer.contour.outer[(index + 1) % layer.contour.outer.length];
+    for (const [layerIndex, coloredLayer] of runtime.coloredLayers.entries()) {
+      const layer = runtime.layers[layerIndex];
+      const clockwise = coloredLayer.exterior.outer.reduce((sum, point, index) => {
+        const next = coloredLayer.exterior.outer[(index + 1) % coloredLayer.exterior.outer.length];
         return sum + point[0] * next[1] - next[0] * point[1];
       }, 0) < 0;
+      const originalBounds = coloredLayer.exterior.boundsMm;
+      const centerX = (originalBounds.minX + originalBounds.maxX) / 2;
+      const centerY = (originalBounds.minY + originalBounds.maxY) / 2;
+      const radiusX = (originalBounds.maxX - originalBounds.minX) / 2;
+      const radiusY = (originalBounds.maxY - originalBounds.minY) / 2;
       const points = Array.from({ length: 4096 }, (_, index) => {
         const angle = (clockwise ? -1 : 1) * index / 4096 * Math.PI * 2;
-        return [5 * Math.cos(angle), 5 * Math.sin(angle)] as const;
+        return [centerX + radiusX * Math.cos(angle), centerY + radiusY * Math.sin(angle)] as const;
       });
       const area = Math.abs(points.reduce((sum, point, index) => {
         const next = points[(index + 1) % points.length];
         return sum + point[0] * next[1] - next[0] * point[1];
       }, 0) / 2);
+      Object.assign(coloredLayer.exterior, { outer: points, areaMm2: area });
       Object.assign(layer, {
         contour: { outer: points, holes: [] }, sourceAreaMm2: area, simplifiedAreaMm2: area,
-        sourceBoundsMm: { minX: -5, minY: -5, maxX: 5, maxY: 5 },
+        sourceBoundsMm: { ...originalBounds },
       });
     }
-    Object.assign(runtime, { removalEvidenceFingerprint: removalEvidenceFingerprint(runtime) });
+    Object.assign(runtime.preview, { layers: runtime.coloredLayers });
+    Object.assign(runtime, {
+      removalEvidenceFingerprint: removalEvidenceFingerprint(runtime),
+      featureEvidenceFingerprint: featureEvidenceFingerprint(runtime),
+    });
     const terminate = vi.spyOn(Worker.prototype, 'terminate');
     const postMessage = vi.spyOn(Worker.prototype, 'postMessage');
     const priorApplyCount = postMessage.mock.calls.length;
@@ -230,6 +242,23 @@ describe('geometry worker boundary', () => {
     await expect(first).resolves.toMatchObject({ name: 'SupersededError', code: 'SUPERSEDED' });
     await expect(replacement).resolves.toMatchObject({ mode: 'outline-2.5d', status: 'warning' });
     expect(terminate).toHaveBeenCalled();
+  });
+
+  it('transfers exactly the four colored artifacts plus ZIP across the worker boundary', async () => {
+    const client = createGeometryWorkerClient();
+    clients.push(client);
+    const runtime = await client.convertAutomatically({ bytes: writeBinarySTL(scaledOpenTetrahedron(), 'safe') });
+
+    const packaged = await client.packageOutline(runtime);
+
+    expect(Object.keys(packaged).sort()).toEqual([
+      'cutDxf', 'cutSvg', 'explodedViewPdf', 'previewPdf', 'zip',
+    ]);
+    expect(packaged.cutSvg).toContain('CUT_BLACK');
+    expect(packaged.cutDxf).toContain('DEEP_RED');
+    expect(packaged.previewPdf.byteLength).toBeGreaterThan(0);
+    expect(packaged.explodedViewPdf.byteLength).toBeGreaterThan(0);
+    expect(packaged.zip.byteLength).toBeGreaterThan(0);
   });
 
   it('returns a typed TIME_LIMIT when the shared packaging deadline is exhausted', async () => {

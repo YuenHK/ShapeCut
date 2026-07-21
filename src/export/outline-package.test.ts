@@ -9,9 +9,11 @@ import { openTetrahedron, separatedClosedCylinders } from '../test/mesh-builders
 import type { TriangleMesh } from '../domain/mesh/types';
 import {
   createOutlineDocument,
-  createOutlinePackage,
+  createLegacyOutlinePackage as createOutlinePackage,
+  createOutlinePackage as createColoredOutlinePackage,
   type OutlinePackage,
-  verifyOutlinePackage,
+  verifyLegacyOutlinePackage as verifyOutlinePackage,
+  verifyOutlinePackage as verifyColoredOutlinePackage,
 } from './outline-package';
 import {
   flattenOutlineSheets,
@@ -21,6 +23,7 @@ import {
   writeOutlineZip,
 } from './package';
 import { writeOutlineProjectJson } from './project-json';
+import { coloredResult } from './colored-outline-test-fixture';
 
 const SOURCE_HASH = '0123456789abcdef'.repeat(2);
 const PROJECTED_WARNINGS = [
@@ -162,7 +165,96 @@ async function pdfKeywords(bytes: Uint8Array): Promise<string[]> {
   return (PDFDocument.load(bytes).then((pdf) => pdf.getKeywords() ?? '')).then((keywords) => keywords.split(/\s+/));
 }
 
+function duplicateFirstCentralDirectoryRecord(bytes: Uint8Array): Uint8Array {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let eocd = bytes.length - 22;
+  while (eocd >= 0 && view.getUint32(eocd, true) !== 0x06054b50) eocd -= 1;
+  if (eocd < 0) throw new Error('Fixture ZIP has no EOCD');
+  const centralOffset = view.getUint32(eocd + 16, true);
+  if (view.getUint32(centralOffset, true) !== 0x02014b50) throw new Error('Fixture ZIP has no central record');
+  const recordLength = 46
+    + view.getUint16(centralOffset + 28, true)
+    + view.getUint16(centralOffset + 30, true)
+    + view.getUint16(centralOffset + 32, true);
+  const forged = new Uint8Array(bytes.length + recordLength);
+  forged.set(bytes.subarray(0, eocd), 0);
+  forged.set(bytes.subarray(centralOffset, centralOffset + recordLength), eocd);
+  forged.set(bytes.subarray(eocd), eocd + recordLength);
+  const forgedView = new DataView(forged.buffer);
+  const forgedEocd = eocd + recordLength;
+  forgedView.setUint16(forgedEocd + 8, view.getUint16(eocd + 8, true) + 1, true);
+  forgedView.setUint16(forgedEocd + 10, view.getUint16(eocd + 10, true) + 1, true);
+  forgedView.setUint32(forgedEocd + 12, view.getUint32(eocd + 12, true) + recordLength, true);
+  return forged;
+}
+
 describe('material-independent outline package', () => {
+  it('returns and verifies exactly four byte-identical canonical colored files', async () => {
+    const runtime = coloredResult();
+    const output = await createColoredOutlinePackage(runtime);
+    const zip = await JSZip.loadAsync(output.zip);
+
+    expect(Object.keys(output).sort()).toEqual([
+      'cutDxf', 'cutSvg', 'explodedViewPdf', 'previewPdf', 'zip',
+    ]);
+    expect(Object.keys(zip.files).sort()).toEqual([
+      'cut-and-engrave.dxf', 'cut-and-engrave.svg', 'exploded-view.pdf', 'preview.pdf',
+    ]);
+    expect(await zip.file('cut-and-engrave.svg')!.async('string')).toBe(output.cutSvg);
+    expect(await zip.file('cut-and-engrave.dxf')!.async('string')).toBe(output.cutDxf);
+    expect(await zip.file('preview.pdf')!.async('uint8array')).toEqual(output.previewPdf);
+    expect(await zip.file('exploded-view.pdf')!.async('uint8array')).toEqual(output.explodedViewPdf);
+    await expect(verifyColoredOutlinePackage(output, runtime)).resolves.toBeUndefined();
+  });
+
+  it('uses exact SVG hex roles and DXF ACI plus true-color roles without private process text', async () => {
+    const output = await createColoredOutlinePackage(coloredResult());
+    expect(output.cutSvg).toContain('id="CUT_BLACK"');
+    expect(output.cutSvg).toContain('stroke="#000000"');
+    expect(output.cutSvg).toContain('stroke="#E5484D"');
+    expect(output.cutSvg).toContain('stroke="#3E63DD"');
+    expect(output.cutDxf).toContain('DEEP_RED');
+    expect(output.cutDxf).toMatch(/2\nDEEP_RED\n[\s\S]*62\n1\n420\n15026253\n/);
+    expect(output.cutDxf).toMatch(/2\nLIGHT_BLUE\n[\s\S]*62\n5\n420\n4088797\n/);
+    const text = `${output.cutSvg}\n${output.cutDxf}`;
+    expect(text).not.toMatch(/80%|40%|power|speed|passes|material|acrylic|plywood|\.stl|manifest|\.json|@|\/Users\//i);
+  });
+
+  it.each([
+    'svg-parse:point-loop',
+    'dxf-parse:point-loop',
+    'colored-package:verify-preview-load:after',
+    'colored-package:verify-exploded-load:after',
+    'colored-package:verify-preview-byte-loop',
+    'colored-package:verify-zip-central-record-loop',
+    'colored-package:verify-zip-load:after',
+    'colored-package:verify-zip-svg:after-read',
+    'colored-package:verify-zip-dxf:after-read',
+    'colored-package:verify-zip-preview:after-read',
+    'colored-package:verify-zip-exploded:after-read',
+  ])('checks the one absolute deadline at %s', async (expiryLabel) => {
+    let time = 0;
+    const labels: string[] = [];
+    await expect(createColoredOutlinePackage(coloredResult(), 5, {
+      now: () => time,
+      onCheckpoint: (label) => {
+        labels.push(label);
+        if (label === expiryLabel) time = 6;
+      },
+    })).rejects.toThrow(/shared deadline/i);
+    expect(labels).toContain(expiryLabel);
+  });
+
+  it('rejects a fifth raw ZIP record even when JSZip collapses its duplicate name', async () => {
+    const runtime = coloredResult();
+    const output = await createColoredOutlinePackage(runtime);
+    const duplicateZip = duplicateFirstCentralDirectoryRecord(output.zip);
+    expect(Object.keys((await JSZip.loadAsync(duplicateZip)).files)).toHaveLength(4);
+
+    await expect(verifyColoredOutlinePackage({ ...output, zip: duplicateZip }, runtime))
+      .rejects.toThrow(/four|record|duplicate|central/i);
+  });
+
   it('fails a package deterministically when its shared deadline is already exhausted', async () => {
     await expect(createOutlinePackage(result(), 0)).rejects.toThrow(/shared deadline/i);
   });
