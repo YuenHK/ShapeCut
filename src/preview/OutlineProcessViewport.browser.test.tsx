@@ -1,9 +1,15 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import type { WebGLRenderer } from 'three';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ColoredOutlineLayer, OutlinePreviewPayload } from '../domain/outline-features/types';
 import { OutlineProcessViewport } from './OutlineProcessViewport';
-import { createOutlineProcessScene, type OutlineProcessScene } from './outline-process-scene';
+import {
+  createOutlineProcessScene,
+  disposeOutlineProcessRendererPool,
+  type OutlineProcessScene,
+  warmOutlineProcessRenderer,
+} from './outline-process-scene';
 import '../styles.css';
 
 function browserPayload(): OutlinePreviewPayload {
@@ -43,6 +49,25 @@ function browserPayload(): OutlinePreviewPayload {
 }
 
 describe('OutlineProcessViewport in Chromium', () => {
+  afterEach(() => disposeOutlineProcessRendererPool());
+
+  it('reuses the warmed WebGL canvas across sequential processing and result viewports', async () => {
+    warmOutlineProcessRenderer();
+    const processing = render(<OutlineProcessViewport payload={browserPayload()} stage="slicing" reducedMotion />);
+    const firstCanvas = await waitFor(() => {
+      const canvas = screen.getByRole('img', { name: /模型分層預覽/ }).querySelector('canvas');
+      expect(canvas).not.toBeNull();
+      return canvas!;
+    });
+    processing.unmount();
+
+    const result = render(<OutlineProcessViewport payload={browserPayload()} stage="result" reducedMotion />);
+    await waitFor(() => expect(
+      screen.getByRole('img', { name: /模型分層預覽/ }).querySelector('canvas'),
+    ).toBe(firstCanvas));
+    result.unmount();
+  });
+
   it('constructs real WebGL geometry, responds to controls, and disposes on unmount', async () => {
     let scene: OutlineProcessScene | undefined;
     const createScene = vi.fn((host, payload, options) => {
@@ -73,6 +98,81 @@ describe('OutlineProcessViewport in Chromium', () => {
     const dispose = vi.spyOn(scene!, 'dispose');
     view.unmount();
     expect(dispose).toHaveBeenCalledOnce();
+  });
+
+  it('contains warmup failure and disposes the partially initialized renderer exactly once', () => {
+    disposeOutlineProcessRendererPool();
+    const canvas = document.createElement('canvas');
+    const dispose = vi.fn(), forceContextLoss = vi.fn();
+    const renderer = {
+      domElement: canvas,
+      setPixelRatio: vi.fn(),
+      setSize: vi.fn((width: number, height: number) => { canvas.width = width; canvas.height = height; }),
+      render: vi.fn(() => { throw new Error('synthetic warmup failure'); }),
+      getContext: vi.fn(() => ({ finish: vi.fn(), isContextLost: () => false })),
+      dispose,
+      forceContextLoss,
+    } as unknown as WebGLRenderer;
+
+    expect(() => warmOutlineProcessRenderer(() => renderer)).not.toThrow();
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(forceContextLoss).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a lost pooled context and creates a new canvas', async () => {
+    const first = render(<OutlineProcessViewport payload={browserPayload()} stage="slicing" reducedMotion />);
+    const firstCanvas = await waitFor(() => {
+      const canvas = first.container.querySelector('canvas');
+      expect(canvas).not.toBeNull();
+      return canvas!;
+    });
+    first.unmount();
+    const context = firstCanvas.getContext('webgl2') ?? firstCanvas.getContext('webgl');
+    const lose = context?.getExtension('WEBGL_lose_context');
+    expect(lose).not.toBeNull();
+    lose!.loseContext();
+    await new Promise((resolve) => firstCanvas.addEventListener('webglcontextlost', resolve, { once: true }));
+
+    const second = render(<OutlineProcessViewport payload={browserPayload()} stage="result" reducedMotion />);
+    await waitFor(() => expect(second.container.querySelector('canvas')).not.toBe(firstCanvas));
+    second.unmount();
+  });
+
+  it('bounds retained DPR-aware backing storage after a large viewport', () => {
+    disposeOutlineProcessRendererPool();
+    const descriptor = Object.getOwnPropertyDescriptor(window, 'devicePixelRatio');
+    Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: 2 });
+    const host = document.createElement('div');
+    Object.defineProperties(host, {
+      clientWidth: { configurable: true, value: 1_400 },
+      clientHeight: { configurable: true, value: 800 },
+    });
+    document.body.append(host);
+    try {
+      const scene = createOutlineProcessScene(host, browserPayload(), { stage: 'slicing', reducedMotion: true });
+      const canvas = host.querySelector('canvas')!;
+      expect(canvas.width).toBe(2_800);
+      expect(canvas.height).toBe(1_600);
+      scene.dispose();
+      expect(canvas.width * canvas.height).toBeLessThanOrEqual(2_560 * 1_440);
+    } finally {
+      host.remove();
+      if (descriptor) Object.defineProperty(window, 'devicePixelRatio', descriptor);
+    }
+  });
+
+  it('keeps only one idle default renderer after concurrent viewports', async () => {
+    disposeOutlineProcessRendererPool();
+    const first = render(<OutlineProcessViewport payload={browserPayload()} stage="slicing" reducedMotion />);
+    const second = render(<OutlineProcessViewport payload={browserPayload()} stage="slicing" reducedMotion />);
+    const firstCanvas = await waitFor(() => first.container.querySelector('canvas')!);
+    const secondCanvas = await waitFor(() => second.container.querySelector('canvas')!);
+    expect(firstCanvas).not.toBe(secondCanvas);
+    const secondContext = secondCanvas.getContext('webgl2') ?? secondCanvas.getContext('webgl');
+    expect(secondContext).not.toBeNull();
+    first.unmount();
+    second.unmount();
+    await waitFor(() => expect(secondContext!.isContextLost()).toBe(true));
   });
 
   it('runs real RAF only while a non-reduced viewport is visible', async () => {

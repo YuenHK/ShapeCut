@@ -42,6 +42,140 @@ const AXIS_COLOR = '#08745A';
 const ROTATION_SPEED_RADIANS_PER_MS = 0.00018;
 const MIN_ZOOM = 0.55;
 const MAX_ZOOM = 2.4;
+const MAX_PIXEL_RATIO = 2;
+const PREWARM_MAX_CSS_WIDTH = 1_280;
+const PREWARM_MAX_CSS_HEIGHT = 720;
+const MAX_RETAINED_PHYSICAL_PIXELS = 2_560 * 1_440;
+
+let availableRenderer: WebGLRenderer | undefined;
+const defaultRendererState = new WeakMap<WebGLRenderer, { pixelRatio: number; cssWidth: number; cssHeight: number }>();
+
+function disposeDefaultRenderer(renderer: WebGLRenderer): void {
+  defaultRendererState.delete(renderer);
+  renderer.dispose();
+  renderer.forceContextLoss();
+  renderer.domElement.remove();
+}
+
+function defaultRendererIsUsable(renderer: WebGLRenderer): boolean {
+  try {
+    return !renderer.getContext().isContextLost();
+  } catch {
+    return false;
+  }
+}
+
+function defaultPixelRatio(): number {
+  return Math.min(Math.max(window.devicePixelRatio || 1, 1), MAX_PIXEL_RATIO);
+}
+
+function sizeDefaultRenderer(renderer: WebGLRenderer, width: number, height: number): void {
+  const state = defaultRendererState.get(renderer);
+  const pixelRatio = state?.pixelRatio ?? defaultPixelRatio();
+  const cssWidth = Math.max(Math.round(width), 1), cssHeight = Math.max(Math.round(height), 1);
+  if (!state) renderer.setPixelRatio(pixelRatio);
+  if (!state || state.cssWidth !== cssWidth || state.cssHeight !== cssHeight) renderer.setSize(cssWidth, cssHeight, false);
+  defaultRendererState.set(renderer, { pixelRatio, cssWidth, cssHeight });
+}
+
+function createDefaultRenderer(): WebGLRenderer {
+  const canvas = document.createElement('canvas');
+  const renderer = new WebGLRenderer({ antialias: true, alpha: true, canvas });
+  sizeDefaultRenderer(
+    renderer,
+    Math.min(Math.max(window.innerWidth, 1), PREWARM_MAX_CSS_WIDTH),
+    Math.min(Math.max(window.innerHeight, 1), PREWARM_MAX_CSS_HEIGHT),
+  );
+  return renderer;
+}
+
+function acquireDefaultRenderer(): WebGLRenderer {
+  const cached = availableRenderer;
+  availableRenderer = undefined;
+  if (!cached) return createDefaultRenderer();
+  if (defaultRendererIsUsable(cached)) return cached;
+  disposeDefaultRenderer(cached);
+  return createDefaultRenderer();
+}
+
+function releaseDefaultRenderer(renderer: WebGLRenderer): void {
+  renderer.domElement.remove();
+  if (!defaultRendererIsUsable(renderer)) {
+    disposeDefaultRenderer(renderer);
+    return;
+  }
+  renderer.resetState();
+  if (renderer.domElement.width * renderer.domElement.height > MAX_RETAINED_PHYSICAL_PIXELS) {
+    const state = defaultRendererState.get(renderer);
+    const ratio = state?.pixelRatio ?? defaultPixelRatio();
+    const scale = Math.sqrt(MAX_RETAINED_PHYSICAL_PIXELS / (renderer.domElement.width * renderer.domElement.height));
+    sizeDefaultRenderer(
+      renderer,
+      Math.max(1, Math.floor(renderer.domElement.width * scale / ratio)),
+      Math.max(1, Math.floor(renderer.domElement.height * scale / ratio)),
+    );
+  }
+  if (!availableRenderer) {
+    availableRenderer = renderer;
+    return;
+  }
+  disposeDefaultRenderer(renderer);
+}
+
+export function disposeOutlineProcessRendererPool(): void {
+  if (!availableRenderer) return;
+  const renderer = availableRenderer;
+  availableRenderer = undefined;
+  disposeDefaultRenderer(renderer);
+}
+
+export function warmOutlineProcessRenderer(createRenderer: () => WebGLRenderer = createDefaultRenderer): void {
+  if (availableRenderer || typeof window.WebGLRenderingContext === 'undefined') return;
+  let renderer: WebGLRenderer | undefined;
+  const lineGeometry = new BufferGeometry();
+  const planeGeometry = new PlaneGeometry(2, 2);
+  const lineMaterials: LineBasicMaterial[] = [];
+  let planeMaterial: MeshBasicMaterial | undefined;
+  try {
+    renderer = createRenderer();
+    if (!defaultRendererState.has(renderer)) sizeDefaultRenderer(
+      renderer,
+      Math.min(Math.max(window.innerWidth, 1), PREWARM_MAX_CSS_WIDTH),
+      Math.min(Math.max(window.innerHeight, 1), PREWARM_MAX_CSS_HEIGHT),
+    );
+    const scene = new Scene();
+    const camera = new PerspectiveCamera(42, renderer.domElement.width / renderer.domElement.height, 0.01, 100);
+    camera.position.set(2, 2, 3);
+    camera.lookAt(0, 0, 0);
+    lineGeometry.setAttribute('position', new BufferAttribute(Float32Array.from([
+      -1, 0, -1, 1, 0, -1, 1, 0, 1, -1, 0, 1,
+    ]), 3));
+    lineMaterials.push(...Object.values(CANONICAL_ROLE_COLORS).map((color) => new LineBasicMaterial({
+      color, transparent: true, opacity: 0.9,
+    })));
+    lineMaterials.forEach((material, index) => {
+      const line = new LineLoop(lineGeometry, material);
+      line.position.y = index * 0.1;
+      scene.add(line);
+    });
+    planeMaterial = new MeshBasicMaterial({
+      color: SCAN_PLANE_COLOR, opacity: 0.16, transparent: true, depthWrite: false, side: DoubleSide,
+    });
+    const plane = new Mesh(planeGeometry, planeMaterial);
+    plane.rotation.x = -Math.PI / 2;
+    scene.add(plane);
+    renderer.render(scene, camera);
+    renderer.getContext().finish();
+    availableRenderer = renderer;
+  } catch {
+    if (renderer) disposeDefaultRenderer(renderer);
+  } finally {
+    lineGeometry.dispose();
+    planeGeometry.dispose();
+    lineMaterials.forEach((material) => material.dispose());
+    planeMaterial?.dispose();
+  }
+}
 
 export interface OutlineProcessRenderer {
   readonly domElement: HTMLCanvasElement;
@@ -323,6 +457,7 @@ export function createOutlineProcessScene(
   let stage = options.stage ?? 'analyzing';
   let explosionAmount = reducedMotion ? explosionForStage(stage) : 0;
   let lastFrameTime: number | undefined;
+  const usesDefaultRenderer = options.createRenderer === undefined;
 
   const render = (): void => renderer?.render(scene, camera);
   const shouldAnimate = (): boolean => !disposed
@@ -380,7 +515,8 @@ export function createOutlineProcessScene(
     if (!renderer) return;
     const width = Math.max(host.clientWidth, 1);
     const height = Math.max(host.clientHeight, 1);
-    renderer.setSize(width, height, false);
+    if (!usesDefaultRenderer) renderer.setSize(width, height, false);
+    else sizeDefaultRenderer(renderer as WebGLRenderer, width, height);
     camera.aspect = width / height;
     camera.updateProjectionMatrix();
     render();
@@ -388,8 +524,8 @@ export function createOutlineProcessScene(
   const onVisibilityChange = (): void => refreshAnimation();
 
   try {
-    renderer = options.createRenderer?.() ?? new WebGLRenderer({ antialias: true, alpha: true });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer = options.createRenderer?.() ?? acquireDefaultRenderer();
+    if (!usesDefaultRenderer) renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     renderer.domElement.setAttribute('aria-hidden', 'true');
     renderer.domElement.classList.add('outline-process-canvas');
     host.append(renderer.domElement);
@@ -425,9 +561,12 @@ export function createOutlineProcessScene(
     removeResizeFallback?.();
     document.removeEventListener('visibilitychange', onVisibilityChange);
     if (resources) disposePayloadResources(resources);
-    renderer?.dispose();
-    renderer?.forceContextLoss?.();
-    renderer?.domElement.remove();
+    if (renderer && usesDefaultRenderer) releaseDefaultRenderer(renderer as WebGLRenderer);
+    else {
+      renderer?.dispose();
+      renderer?.forceContextLoss?.();
+      renderer?.domElement.remove();
+    }
     throw error;
   }
 
@@ -505,9 +644,12 @@ export function createOutlineProcessScene(
         rotatingGroup.remove(resources.root);
         disposePayloadResources(resources);
       }
-      renderer?.dispose();
-      renderer?.forceContextLoss?.();
-      renderer?.domElement.remove();
+      if (renderer && usesDefaultRenderer) releaseDefaultRenderer(renderer as WebGLRenderer);
+      else {
+        renderer?.dispose();
+        renderer?.forceContextLoss?.();
+        renderer?.domElement.remove();
+      }
     },
   };
   return controller;

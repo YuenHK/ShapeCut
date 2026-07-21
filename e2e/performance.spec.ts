@@ -1,6 +1,13 @@
 import { expect, test } from '@playwright/test';
-import { writeFile } from 'node:fs/promises';
-import { selectModel } from './helpers';
+import { readFile, writeFile } from 'node:fs/promises';
+import {
+  armWorkerPackageReplacement,
+  downloadAndInspectOutline,
+  expectResult,
+  installWorkerResultProbe,
+  readWorkerProbeState,
+  selectModel,
+} from './helpers';
 
 function binaryTetrahedra(triangleCount: number): Buffer {
   const buffer = Buffer.allocUnsafe(84 + triangleCount * 50); buffer.fill(0, 0, 80); buffer.writeUInt32LE(triangleCount, 80);
@@ -14,29 +21,98 @@ function binaryTetrahedra(triangleCount: number): Buffer {
   return buffer;
 }
 
+async function installLongTaskObserver(page: Parameters<typeof selectModel>[0]): Promise<void> {
+  await page.evaluate(() => {
+    const state = { selectedAt: 0, previewAt: 0, resultAt: 0, downloadsAt: 0, entries: [] as Array<{ startTime: number; duration: number }> };
+    Object.assign(window, { __shapeCutPerformance: state });
+    new PerformanceObserver((list) => state.entries.push(...list.getEntries().map(({ startTime, duration }) => ({ startTime, duration }))))
+      .observe({ type: 'longtask', buffered: true });
+  });
+}
+
+async function mark(page: Parameters<typeof selectModel>[0], field: 'selectedAt' | 'previewAt' | 'resultAt' | 'downloadsAt'): Promise<void> {
+  await page.evaluate((name) => {
+    const state = (window as unknown as { __shapeCutPerformance: Record<string, number> }).__shapeCutPerformance;
+    state[name] = performance.now();
+  }, field);
+}
+
+async function performanceEvidence(page: Parameters<typeof selectModel>[0]) {
+  await page.waitForTimeout(50);
+  return page.evaluate(() => {
+    const state = (window as unknown as { __shapeCutPerformance: {
+      selectedAt: number; previewAt: number; resultAt: number; downloadsAt: number;
+      entries: Array<{ startTime: number; duration: number }>;
+    } }).__shapeCutPerformance;
+    const relevant = state.entries.filter(({ startTime }) => startTime >= state.selectedAt && startTime <= state.downloadsAt);
+    const canvas = document.querySelector<HTMLCanvasElement>('.outline-process-webgl canvas');
+    const context = canvas?.getContext('webgl2') ?? canvas?.getContext('webgl');
+    const debug = context?.getExtension('WEBGL_debug_renderer_info');
+    const webglBackend = context ? {
+      version: context.getParameter(context.VERSION) as string,
+      vendor: context.getParameter(context.VENDOR) as string,
+      renderer: context.getParameter(context.RENDERER) as string,
+      unmaskedVendor: debug ? context.getParameter(debug.UNMASKED_VENDOR_WEBGL) as string : null,
+      unmaskedRenderer: debug ? context.getParameter(debug.UNMASKED_RENDERER_WEBGL) as string : null,
+    } : null;
+    return {
+      ...state,
+      entries: relevant,
+      longestMainThreadTaskMs: Math.max(0, ...relevant.map(({ duration }) => duration)),
+      webglBackend,
+    };
+  });
+}
+
 test.describe.configure({ mode: 'serial' });
 
-test('100k triangle selection stays off the main thread and reaches a bounded result', async ({ page }, testInfo) => {
+test('safe conversion has no 100 ms main-thread task through preview, explosion, both PDFs, and URLs', async ({ page }, testInfo) => {
   test.setTimeout(45_000);
   await page.goto('/');
-  await page.evaluate(() => { (window as unknown as { longTasks: { startTime: number; duration: number }[] }).longTasks = []; new PerformanceObserver((list) => (window as unknown as { longTasks: { startTime: number; duration: number }[] }).longTasks.push(...list.getEntries().map(({ startTime, duration }) => ({ startTime, duration })))).observe({ type: 'longtask', buffered: true }); });
+  await installLongTaskObserver(page);
+  await selectModel(page, 'fixtures/acceptance/symmetric-smooth.stl', () => mark(page, 'selectedAt'));
+  await expect(page.locator('.outline-process-webgl canvas')).toBeVisible({ timeout: 30_000 });
+  await mark(page, 'previewAt');
+  await expectResult(page, '需注意', '精確切片');
+  await expect(page.getByRole('img', { name: /真實網格和爆炸圖/ })).toBeVisible();
+  await mark(page, 'resultAt');
+  const output = await downloadAndInspectOutline(page);
+  await mark(page, 'downloadsAt');
+  const evidence = await performanceEvidence(page);
+  await testInfo.attach('complete-pipeline-performance.json', { body: JSON.stringify({ ...evidence, zipSha256: output.sha256 }), contentType: 'application/json' });
+  expect(evidence.previewAt).toBeGreaterThanOrEqual(evidence.selectedAt);
+  expect(evidence.resultAt).toBeGreaterThanOrEqual(evidence.previewAt);
+  expect(evidence.downloadsAt).toBeGreaterThanOrEqual(evidence.resultAt);
+  expect(evidence.entries.filter(({ duration }) => duration >= 100), JSON.stringify(evidence)).toEqual([]);
+  expect(evidence.longestMainThreadTaskMs).toBeLessThan(100);
+  expect(evidence.webglBackend?.renderer).toEqual(expect.any(String));
+});
+
+test('100k triangle selection stays off the main thread and reaches a bounded result classification', async ({ page }, testInfo) => {
+  test.setTimeout(45_000);
+  await installWorkerResultProbe(page);
+  await page.goto('/');
+  await installLongTaskObserver(page);
   const fixturePath = testInfo.outputPath('100k.stl');
   await writeFile(fixturePath, binaryTetrahedra(100_000));
   const started = Date.now();
-  let fileSelected = 0;
-  await selectModel(page, fixturePath, async () => { fileSelected = await page.evaluate(() => performance.now()); });
+  await selectModel(page, fixturePath, () => mark(page, 'selectedAt'));
   const alert = page.getByRole('alert');
   await expect(alert).toBeVisible({ timeout: 35_000 });
-  await expect(alert).toContainText('模型太複雜，超出這次可處理的上限');
+  await expect(alert).toContainText(/模型太複雜|處理時間過長/);
+  await mark(page, 'downloadsAt');
   const elapsedMs = Date.now() - started;
-  const longestMainThreadTaskMs = await page.evaluate((selected) => Math.max(0, ...(window as unknown as { longTasks: { startTime: number; duration: number }[] }).longTasks.filter(({ startTime }) => startTime >= selected).map(({ duration }) => duration)), fileSelected);
-  await testInfo.attach('100k-performance.json', { body: JSON.stringify({ elapsedMs, longestMainThreadTaskMs }), contentType: 'application/json' });
+  const evidence = await performanceEvidence(page);
+  const probe = await readWorkerProbeState(page);
+  await testInfo.attach('100k-performance.json', { body: JSON.stringify({ elapsedMs, outcome: await alert.textContent(), errorCodes: probe.errorCodes, ...evidence }), contentType: 'application/json' });
   expect(elapsedMs).toBeLessThan(35_000);
-  expect(longestMainThreadTaskMs).toBeLessThan(100);
+  expect(evidence.entries.filter(({ duration }) => duration >= 100)).toEqual([]);
+  expect(probe.errorCodes).toContainEqual(expect.stringMatching(/^(?:RESOURCE_LIMIT|TIME_LIMIT)$/));
 });
 
-test('500k triangle selection fails within the resource/time boundary', async ({ page }, testInfo) => {
+test('500k triangle selection returns a typed resource/time failure within the boundary', async ({ page }, testInfo) => {
   test.setTimeout(25_000);
+  await installWorkerResultProbe(page);
   await page.goto('/');
   const fixturePath = testInfo.outputPath('500k.stl');
   await writeFile(fixturePath, binaryTetrahedra(500_000));
@@ -46,6 +122,34 @@ test('500k triangle selection fails within the resource/time boundary', async ({
   await expect(alert).toBeVisible({ timeout: 20_000 });
   await expect(alert).toContainText(/模型太複雜|處理時間過長/);
   const elapsedMs = Date.now() - started;
-  await testInfo.attach('500k-performance.json', { body: JSON.stringify({ elapsedMs, outcome: await alert.textContent() }), contentType: 'application/json' });
+  const probe = await readWorkerProbeState(page);
+  await testInfo.attach('500k-performance.json', { body: JSON.stringify({ elapsedMs, outcome: await alert.textContent(), errorCodes: probe.errorCodes }), contentType: 'application/json' });
   expect(elapsedMs).toBeLessThan(20_000);
+  expect(probe.errorCodes).toContainEqual(expect.stringMatching(/^(?:RESOURCE_LIMIT|TIME_LIMIT)$/));
+});
+
+test('feature-rich PDF packaging is terminated and replaced by a second complete result', async ({ page }, testInfo) => {
+  test.setTimeout(60_000);
+  await installWorkerResultProbe(page);
+  await page.goto('/');
+  await armWorkerPackageReplacement(page, {
+    name: 'replacement-safe.stl',
+    mimeType: 'model/stl',
+    buffer: await readFile('fixtures/acceptance/symmetric-smooth.stl'),
+  });
+
+  await selectModel(page, 'fixtures/acceptance/symmetric-textured.stl');
+  await expect(page.getByText('replacement-safe.stl', { exact: true })).toBeVisible({ timeout: 45_000 });
+  await expectResult(page, '需注意', '精確切片');
+  const output = await downloadAndInspectOutline(page);
+  const probe = await readWorkerProbeState(page);
+  await testInfo.attach('package-replacement.json', { body: JSON.stringify({ ...probe, replacementSha256: output.sha256 }), contentType: 'application/json' });
+  expect(probe.packageRequests).toBeGreaterThanOrEqual(2);
+  expect(probe.packageCheckpoints).toContain('pdf:create:before');
+  expect(probe.replacementCheckpoint).toBe('pdf:create:before');
+  expect(probe.replacementTriggered).toBe(1);
+  expect(probe.terminated).toBeGreaterThanOrEqual(1);
+  expect(probe.created).toBeGreaterThanOrEqual(2);
+  expect(probe.results[0].coloredLayers.some(({ hasDeep, hasLight }) => hasDeep || hasLight)).toBe(true);
+  expect(probe.results.at(-1)).toMatchObject({ mode: 'exact' });
 });

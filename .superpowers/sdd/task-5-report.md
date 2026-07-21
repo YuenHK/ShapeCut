@@ -14,13 +14,13 @@ Complete. Added the standalone process viewport and scene controller without int
 ## Implementation
 
 - `OutlineProcessScene` consumes the transferred `Float32Array` positions and `Uint32Array` indices directly in one source `BufferGeometry`, then renders a transparent mint `WireframeGeometry`.
-- Maps the selected manufacturing-axis direction to display Y with a quaternion; the containing scene rotates only around display Y.
+- Maps mesh and contours through one consistent reflected display frame; the containing scene rotates only around display Y.
 - Builds actual per-layer exterior, central-hole, deep-red, and light-blue line geometry using canonical `#000000`, `#E5484D`, and `#3A78D4` colors.
 - Adds a translucent mint scan plane, visible center axis, stage-aware scan position, and symmetric layer explosion around `(layerCount - 1) / 2`.
 - Supports pointer drag, Left/Right keyboard rotation, `+`/`-` zoom, Home/R reset, and labelled on-screen controls.
 - Uses RAF only after intersection visibility is confirmed, while the document is visible, and when reduced motion is off. Reduced motion applies stable rotation and the final stage explosion immediately.
 - Falls back on absent WebGL or renderer construction failure to actual exterior/hole/red/blue SVG paths from the payload.
-- Replacement and unmount cleanup covers source/wireframe/layer/plane/axis geometries, shared materials, renderer/context, canvas, RAF, ResizeObserver, IntersectionObserver, document visibility listener, resize fallback, React pointer handlers, and reduced-motion media listener.
+- Replacement and unmount cleanup covers source/wireframe/layer/plane/axis geometries, shared materials, canvas attachment, RAF, ResizeObserver, IntersectionObserver, document visibility listener, resize fallback, React pointer handlers, and reduced-motion media listener. Task 7 now releases one usable default renderer/context into a bounded idle pool for the next processing/result viewport; lost, excess, custom, and explicitly drained renderers are disposed with context loss.
 
 ## Verification
 
@@ -47,7 +47,7 @@ Complete. Added the standalone process viewport and scene controller without int
 
 ### RED evidence
 
-- X/Y/Z/oblique translated asymmetric mesh/contour regressions failed because extraction had no shared public basis helper and the viewport used only an axis quaternion plus independent contour centering.
+- X/Y/Z/oblique translated asymmetric mesh/contour regressions failed because extraction had no shared public basis helper and the viewport used independent mesh and contour transforms.
 - A legal 24-layer payload carrying four 4,096-point contours per layer failed SVG fallback with `RangeError: Maximum call stack size exceeded`.
 - Construction ownership evidence showed six materials were allocated for a black-only payload while only four were reachable for disposal.
 - With `IntersectionObserver` unavailable, the scene incorrectly scheduled RAF; SVG fallback also exposed five focusable controls with no effect.

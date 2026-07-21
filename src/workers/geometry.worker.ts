@@ -69,8 +69,15 @@ const geometryApi: GeometryApi = {
   },
   async packageOutline(result, deadline = Date.now() + 30_000) {
     let output: Awaited<ReturnType<typeof createOutlinePackage>>;
+    let acknowledgedPdfStart = false;
     try {
-      output = await createOutlinePackage(result, deadline);
+      output = await createOutlinePackage(result, deadline, {
+        onCheckpoint: (label) => {
+          if (acknowledgedPdfStart || label !== 'pdf:create:before') return;
+          acknowledgedPdfStart = true;
+          globalThis.postMessage({ type: 'SHAPECUT_PACKAGE_CHECKPOINT', label });
+        },
+      });
     } catch (error) {
       if (error instanceof Error && /deadline|runtime|time limit/i.test(error.message)) {
         throw { name: 'AutomaticOutlineError', code: 'TIME_LIMIT', message: '模型處理超出時間上限' };
