@@ -166,6 +166,22 @@ describe('extractProjectedContours', () => {
     expect(first.holeSelections[0].hole?.axisDistanceMm).toBeLessThan(0.1);
   });
 
+  test('omits a projected multiply-connected void instead of covering its occupied island with a hole', () => {
+    const frameWithIsland = combine(
+      sheet(0, -4.5, 12, 3), sheet(0, 4.5, 12, 3),
+      sheet(-4.5, 0, 3, 7), sheet(4.5, 0, 3, 7),
+      sheet(0, 0, 2, 2),
+    );
+    const result = extractProjectedContours(frameWithIsland, selection, specs, DEFAULT_OUTLINE_BUDGETS);
+
+    expect(result.holeSelections[0]).toEqual(expect.objectContaining({
+      hole: undefined,
+      omissionReason: 'NO_RELIABLE_CENTRAL_HOLE',
+      warning: expect.stringMatching(/reliable central axle hole/i),
+    }));
+    expect(result.featureWarnings).toEqual(['No reliable central axle hole was found; the hole was omitted.']);
+  });
+
   test.each([
     ['open', box(0, 0, 10, 8, 2, 3)],
     ['self-intersecting', combine(box(-2, 0, 8, 3), box(2, 0, 8, 3))],

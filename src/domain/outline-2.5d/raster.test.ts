@@ -54,10 +54,11 @@ describe('markLineSupercover', () => {
   });
 });
 
-function projectedFrame(open = false): ProjectedMesh {
+function projectedFrame(open = false, island = false): ProjectedMesh {
   const rectangles = [
     [-6, -6, 6, -3], [-6, 3, 6, 6], [-6, -3, -3, 3],
     ...(open ? [] : [[3, -3, 6, 3]]),
+    ...(island ? [[-1, -1, 1, 1]] : []),
   ];
   const vertices: [number, number, number][] = [];
   const triangles: [number, number, number][] = [];
@@ -88,6 +89,15 @@ describe('rasterProjectLayer enclosed void evidence', () => {
   test('does not misclassify an open gap as a projected hole', () => {
     const raster = rasterProjectLayer(
       projectedFrame(true), { index: 0, zStart: -0.5, zMid: 0, zEnd: 0.5 },
+      DEFAULT_OUTLINE_BUDGETS, Infinity,
+    );
+
+    expect(raster.enclosedVoids).toEqual([]);
+  });
+
+  test('omits a multiply-connected void surrounding an occupied island', () => {
+    const raster = rasterProjectLayer(
+      projectedFrame(false, true), { index: 0, zStart: -0.5, zMid: 0, zEnd: 0.5 },
       DEFAULT_OUTLINE_BUDGETS, Infinity,
     );
 

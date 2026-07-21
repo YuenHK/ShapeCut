@@ -256,7 +256,28 @@ function traceOuter(
   originY: number,
   cellSize: number,
   deadline: number,
-): readonly Point2[] {
+  requireSingleBoundary: true,
+): readonly Point2[] | undefined;
+function traceOuter(
+  mask: Uint8Array,
+  width: number,
+  height: number,
+  originX: number,
+  originY: number,
+  cellSize: number,
+  deadline: number,
+  requireSingleBoundary?: false,
+): readonly Point2[];
+function traceOuter(
+  mask: Uint8Array,
+  width: number,
+  height: number,
+  originX: number,
+  originY: number,
+  cellSize: number,
+  deadline: number,
+  requireSingleBoundary?: boolean,
+): readonly Point2[] | undefined {
   const vertexWidth = width + 1, edges: Edge[] = [];
   const key = (x: number, y: number) => y * vertexWidth + x;
   const empty = (x: number, y: number) => x < 0 || x >= width || y < 0 || y >= height || mask[y * width + x] === 0;
@@ -308,6 +329,7 @@ function traceOuter(
     if (loop[loop.length - 1] !== edgeStart) throw new RangeError('Projected contour tracing exceeded its edge budget');
     loops.push(loop.slice(0, -1));
   }
+  if (requireSingleBoundary && loops.length !== 1) return undefined;
   const candidates: { points: Point2[]; area: number; minX: number; minY: number }[] = [];
   for (let loopIndex = 0; loopIndex < loops.length; loopIndex += 1) {
     checkDeadline(deadline);
@@ -394,18 +416,17 @@ function enclosedVoidContours(
       const cell = candidate.cells[cellIndex], x = cell % width, y = Math.floor(cell / width);
       componentMask[(y - candidate.minY) * componentWidth + x - candidate.minX] = 1;
     }
-    result.push({
-      outer: traceOuter(
-        componentMask,
-        componentWidth,
-        componentHeight,
-        originX + candidate.minX * cellSize,
-        originY + candidate.minY * cellSize,
-        cellSize,
-        deadline,
-      ),
-      occupiedCellCount: candidate.cells.length,
-    });
+    const outer = traceOuter(
+      componentMask,
+      componentWidth,
+      componentHeight,
+      originX + candidate.minX * cellSize,
+      originY + candidate.minY * cellSize,
+      cellSize,
+      deadline,
+      true,
+    );
+    if (outer) result.push({ outer, occupiedCellCount: candidate.cells.length });
   }
   return result;
 }

@@ -3,6 +3,7 @@ import type { OutlineLayer } from '../outline-2.5d/extract';
 import type { Bounds2 } from '../outline-2.5d/simplify';
 import { DEFAULT_OUTLINE_BUDGETS, type OutlineMode } from '../outline-2.5d/types';
 import { validateOutlineLayer } from '../outline-2.5d/validate';
+import { isStrictlyContainedLoop } from './hole';
 
 export type FeatureRole = 'CUT_BLACK' | 'DEEP_RED' | 'LIGHT_BLUE';
 export type FeatureContour = {
@@ -281,15 +282,49 @@ function validateColoredLayerWithBudget(value: unknown, budget: ValidationBudget
     ['Light feature', value.lightFeature, 'LIGHT_BLUE'],
   ] as const;
   const ids = new Set<string>();
+  let exteriorValid = false, centralHoleValid = false;
   for (const [label, feature, role] of roles) {
     if (feature === undefined && label !== 'Exterior') continue;
-    reasons.push(...contourReasons(feature, role, label, budget));
+    const featureReasons = contourReasons(feature, role, label, budget);
+    reasons.push(...featureReasons);
+    if (label === 'Exterior') exteriorValid = featureReasons.length === 0;
+    if (label === 'Central hole') centralHoleValid = featureReasons.length === 0;
     if (isRecord(feature) && typeof feature.id === 'string') {
       if (ids.has(feature.id)) reasons.push(`Duplicate feature ID ${feature.id}`);
       ids.add(feature.id);
     }
   }
-  reasons.push(...diagnosticsReasons(value.diagnostics));
+  const diagnosticReasons = diagnosticsReasons(value.diagnostics);
+  reasons.push(...diagnosticReasons);
+  if (exteriorValid && centralHoleValid && diagnosticReasons.length === 0
+    && isRecord(value.exterior) && Array.isArray(value.exterior.outer)
+    && isRecord(value.centralHole) && Array.isArray(value.centralHole.outer)
+    && isRecord(value.exterior.boundsMm) && isRecord(value.diagnostics)
+    && isRecord(value.diagnostics.depth)) {
+    const exteriorBounds = value.exterior.boundsMm;
+    const planarDiameterMm = Math.hypot(
+      (exteriorBounds.maxX as number) - (exteriorBounds.minX as number),
+      (exteriorBounds.maxY as number) - (exteriorBounds.minY as number),
+    );
+    const minimumClearance = Math.max(
+      value.diagnostics.depth.cellSizeMm as number,
+      planarDiameterMm * 0.001,
+    );
+    try {
+      if (!isStrictlyContainedLoop(
+        value.exterior.outer as readonly Point2[],
+        value.centralHole.outer as readonly Point2[],
+        minimumClearance,
+        budget.deadline,
+        budget.checkpoint,
+      )) reasons.push('Central hole must be strictly contained by the exterior with required clearance');
+    } catch (error) {
+      if (error instanceof RangeError && /runtime budget/i.test(error.message)) {
+        return { ok: false, reasons: [...reasons, RUNTIME_REASON] };
+      }
+      reasons.push('Central hole containment could not be validated');
+    }
+  }
   return { ok: reasons.length === 0, reasons };
 }
 

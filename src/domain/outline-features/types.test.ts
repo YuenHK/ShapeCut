@@ -157,6 +157,29 @@ describe('colored outline contracts', () => {
     expect(() => validateAutomaticColoredResult(forged)).toThrow(/deep feature|self-intersection/i);
   });
 
+  it('rejects a fingerprint-consistent central hole whose edges leave a concave exterior', () => {
+    const concaveExterior = contour('layer-0-exterior', 'CUT_BLACK', [
+      [-5, -5], [-5, 5], [-2, 5], [-2, -2],
+      [2, -2], [2, 5], [5, 5], [5, -5],
+    ]);
+    const crossingHole = contour('layer-0-hole', 'CUT_BLACK', [
+      [-3, 0], [-3, 1], [3, 1], [3, 0],
+    ]);
+    const forgedLayer = coloredLayer({
+      exterior: concaveExterior,
+      centralHole: crossingHole,
+      deepFeature: undefined,
+      lightFeature: undefined,
+      diagnostics: {
+        hole: { status: 'retained', equivalentDiameterMm: 2, axisDistanceMm: 4.5 },
+        depth: { cellSizeMm: 0.1, contrastMm: 0, redThresholdMm: 0, blueThresholdMm: 0 },
+      },
+    });
+    const forged = automaticResult([forgedLayer, ...coloredLayerSet(6).slice(1)]);
+
+    expect(() => validateAutomaticColoredResult(forged)).toThrow(/central hole.*contain|clearance|exterior/i);
+  });
+
   it('rejects role geometry forged into the migration-only exterior layers', () => {
     const layer = coloredLayer();
     const result = automaticResult([layer]);

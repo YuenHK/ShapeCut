@@ -40,7 +40,8 @@ export type CentralHoleSelection =
 type Segment = readonly [Point2, Point2];
 type QualifiedCandidate = SelectedCentralHole & { readonly minimum: Point2 };
 
-function checkDeadline(deadline: number): void {
+function checkDeadline(deadline: number, checkpoint?: () => void): void {
+  checkpoint?.();
   if (Date.now() > deadline) throw new RangeError('Central hole selection exceeded the runtime budget');
 }
 
@@ -172,6 +173,37 @@ function boundaryClearance(inner: readonly Point2[], outer: readonly Point2[], d
   return distance;
 }
 
+export function isStrictlyContainedLoop(
+  exterior: readonly Point2[],
+  candidate: readonly Point2[],
+  minimumClearance: number,
+  deadline = Infinity,
+  checkpoint: () => void = () => undefined,
+): boolean {
+  checkDeadline(deadline, checkpoint);
+  if (!Number.isFinite(minimumClearance) || minimumClearance < 0) return false;
+  const scale = scaleOf(exterior, candidate);
+  const areaTolerance = scale * scale * 64 * Number.EPSILON;
+  const lengthTolerance = scale * 64 * Number.EPSILON;
+  for (let candidateIndex = 0; candidateIndex < candidate.length; candidateIndex += 1) {
+    checkDeadline(deadline, checkpoint);
+    const start = candidate[candidateIndex], end = candidate[(candidateIndex + 1) % candidate.length];
+    if (pointLocation(start, exterior, deadline) !== 1
+      || pointLocation([(start[0] + end[0]) / 2, (start[1] + end[1]) / 2], exterior, deadline) !== 1) return false;
+    for (let exteriorIndex = 0; exteriorIndex < exterior.length; exteriorIndex += 1) {
+      if ((exteriorIndex & 63) === 0) checkDeadline(deadline, checkpoint);
+      if (segmentsIntersect(
+        [start, end],
+        [exterior[exteriorIndex], exterior[(exteriorIndex + 1) % exterior.length]],
+        areaTolerance,
+        lengthTolerance,
+      )) return false;
+    }
+  }
+  checkDeadline(deadline, checkpoint);
+  return boundaryClearance(candidate, exterior, deadline) + 1e-12 >= minimumClearance;
+}
+
 function centroid(points: readonly Point2[], area: number, deadline: number): Point2 {
   let x = 0, y = 0;
   for (let index = 0; index < points.length; index += 1) {
@@ -213,8 +245,9 @@ export function selectCentralHole(request: CentralHoleRequest): CentralHoleSelec
     if (candidate.closed === false || !isFiniteSimpleLoop(candidate.outer, deadline)
       || candidate.occupiedCellCount !== undefined
         && (!Number.isSafeInteger(candidate.occupiedCellCount) || candidate.occupiedCellCount <= 0)) continue;
-    if (candidate.outer.some((point) => pointLocation(point, request.exterior, deadline) !== 1)) continue;
-    if (boundaryClearance(candidate.outer, request.exterior, deadline) + 1e-12 < minimumClearance) continue;
+    if (!isStrictlyContainedLoop(
+      request.exterior, candidate.outer, minimumClearance, deadline,
+    )) continue;
     const area = signedArea(candidate.outer, deadline), areaMm2 = Math.abs(area);
     const evidenceArea = candidate.occupiedCellCount === undefined
       ? areaMm2

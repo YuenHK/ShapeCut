@@ -88,6 +88,28 @@ describe('selectCentralHole', () => {
     expect(selection.warning).not.toMatch(/[\\/@]|[\w.+-]+@[\w.-]+/);
   });
 
+  test('rejects a candidate whose vertices are inside a concave exterior but whose edges cross its notch', () => {
+    const concaveExterior: readonly Point2[] = [
+      [-5, -5], [-5, 5], [-2, 5], [-2, -2],
+      [2, -2], [2, 5], [5, 5], [5, -5],
+    ];
+    const crossingNotch: CentralHoleCandidate = {
+      outer: [[-3, 0], [-3, 1], [3, 1], [3, 0]],
+    };
+
+    const selection = selectCentralHole({
+      candidates: [crossingNotch], exterior: concaveExterior, axisPoint: [0, -4],
+      layerWidthMm: 10, planarDiameterMm: Math.hypot(10, 10), cellSizeMm: 0.1,
+      deadline: Infinity,
+    });
+
+    expect(selection).toEqual(expect.objectContaining({
+      hole: undefined,
+      omissionReason: 'NO_RELIABLE_CENTRAL_HOLE',
+      warning: expect.stringMatching(/reliable central axle hole/i),
+    }));
+  });
+
   test('is translation invariant, triangle/candidate-order invariant, and emits a counter-clockwise hole', () => {
     const candidates = [circularHole(3, 0.1), circularHole(4, 0.2), circularHole(8, 9)];
     const first = selectCentralHole({
