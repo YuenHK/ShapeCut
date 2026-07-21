@@ -127,6 +127,22 @@ describe('adaptive source-triangle depth features', () => {
       .toBeUndefined();
   });
 
+  it('honors the caller checkpoint from inside RDP simplification traversal', () => {
+    const source = Array.from({ length: 2048 }, (_, index) => {
+      const angle = index / 2048 * Math.PI * 2;
+      const radius = index % 2 === 0 ? 10 : 9;
+      return [Math.cos(angle) * radius, Math.sin(angle) * radius] as const;
+    });
+    const checkpoint = (): void => {
+      if (new Error().stack?.includes('rdpOpenIndices')) {
+        throw new Error('cancelled during RDP simplification');
+      }
+    };
+
+    expect(() => simplifyDepthFeatureLoop(source, 0.001, 20, 4096, Infinity, checkpoint, 0.001))
+      .toThrow('cancelled during RDP simplification');
+  });
+
   it('clips paired surface intervals to the requested layer and ignores remote slabs', () => {
     const surface = patchedSurface([
       { minX: -5, maxX: -1, minY: -5, maxY: 5, depth: 4 },
@@ -228,6 +244,60 @@ describe('adaptive source-triangle depth features', () => {
     expect(rejected).toBeDefined();
     expect(limitedEvents.some((event) => (
       event.phase === 'component-boundary' && event.minimumX === rejected!.minimumX
+    ))).toBe(false);
+    expect(limited.red).toBeUndefined();
+  });
+
+  it('rejects before boundary allocation when tracing fits but RDP workspace does not', () => {
+    const patches: Patch[] = [
+      { minX: -5, maxX: -1, minY: -4, maxY: -3, depth: 4 },
+      { minX: 0, maxX: 5, minY: -4, maxY: 4, depth: 1 },
+    ];
+    for (let tooth = 0; tooth < 8; tooth += 1) patches.push({
+      minX: -5 + tooth * 0.5,
+      maxX: -4.75 + tooth * 0.5,
+      minY: -3,
+      maxY: 4,
+      depth: 4,
+    });
+    const surface = patchedSurface(patches);
+    const normalEvents: {
+      phase: string;
+      liveBytes: number;
+      rasterCells: number;
+      minimumX?: number;
+    }[] = [];
+
+    const normal = extractAdaptiveDepthFeatures(surface, request({
+      cellSizeMm: 0.25,
+      layer: { index: 0, zStart: 0, zMid: 2, zEnd: 4 },
+      resourceObserver: (event) => normalEvents.push(event),
+    }));
+    const simplification = normalEvents.find((event) => event.phase === 'component-simplify');
+    const tracing = normalEvents.find((event) => (
+      event.phase === 'component-boundary' && event.minimumX === simplification?.minimumX
+    ));
+    expect(normal.red).toBeDefined();
+    expect(simplification).toBeDefined();
+    expect(tracing).toBeDefined();
+    expect(simplification!.liveBytes).toBeGreaterThan(tracing!.liveBytes);
+
+    const componentLimit = simplification!.liveBytes - 1;
+    expect(componentLimit).toBeGreaterThanOrEqual(tracing!.liveBytes);
+    const limitedEvents: typeof normalEvents = [];
+    const limited = extractAdaptiveDepthFeatures(surface, request({
+      cellSizeMm: 0.25,
+      layer: { index: 0, zStart: 0, zMid: 2, zEnd: 4 },
+      maximumComponentBytes: componentLimit,
+      resourceObserver: (event) => limitedEvents.push(event),
+    }));
+
+    const rejected = limitedEvents.find((event) => (
+      event.phase === 'component-simplify-rejected' && event.minimumX === simplification!.minimumX
+    ));
+    expect(rejected?.liveBytes).toBe(simplification!.liveBytes);
+    expect(limitedEvents.some((event) => (
+      event.phase === 'component-boundary' && event.minimumX === simplification!.minimumX
     ))).toBe(false);
     expect(limited.red).toBeUndefined();
   });

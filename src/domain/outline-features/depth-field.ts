@@ -1,6 +1,11 @@
 import type { Point2 } from '../decomposition/types';
 import type { ProjectedMesh, ProjectedVertex } from '../outline-2.5d/raster';
-import { contourBounds, signedArea, simplifyClosedLoop } from '../outline-2.5d/simplify';
+import {
+  contourBounds,
+  estimateSimplifyClosedLoopWorkspaceBytes,
+  signedArea,
+  simplifyClosedLoop,
+} from '../outline-2.5d/simplify';
 import type { OutlineBudgets, OutlineLayerSpec } from '../outline-2.5d/types';
 import type { FeatureContour } from './types';
 import { isStrictlyContainedLoop } from './hole';
@@ -45,7 +50,8 @@ export type DepthFeatureRequest = {
 
 export type DepthFeatureResourceEvent = {
   readonly phase: 'topology-sort' | 'surface-hit-storage' | 'surface-hit-sort' | 'component-labels'
-    | 'component-candidate' | 'component-boundary' | 'component-boundary-rejected' | 'component-final';
+    | 'component-candidate' | 'component-boundary' | 'component-boundary-rejected'
+    | 'component-simplify' | 'component-simplify-rejected' | 'component-final';
   readonly liveBytes: number;
   readonly rasterCells: number;
   readonly sourceCellCount?: number;
@@ -829,7 +835,7 @@ function traceSingleOuter(
   candidateMinimumX: number,
   deadline: number,
   checkpoint: () => void,
-): readonly Point2[] | undefined {
+): Readonly<{ points: readonly Point2[]; simplificationLiveBytes: number }> | undefined {
   const vertexWidth = width + 1;
   const key = (x: number, y: number): number => y * vertexWidth + x;
   const empty = (x: number, y: number): boolean => x < 0 || x >= width || y < 0 || y >= height || !mask[y * width + x];
@@ -845,19 +851,38 @@ function traceSingleOuter(
   }
   if (edgeCount === 0) return undefined;
   const vertexCount = vertexWidth * (height + 1);
-  const traceBytes = edgeCount * (
-    Uint32Array.BYTES_PER_ELEMENT * 3 + ESTIMATED_POINT_BYTES
-  ) + vertexCount * (
+  const pointBytes = edgeCount * ESTIMATED_POINT_BYTES;
+  const traceWorkspaceBytes = edgeCount * Uint32Array.BYTES_PER_ELEMENT * 3 + vertexCount * (
     Int32Array.BYTES_PER_ELEMENT + Uint8Array.BYTES_PER_ELEMENT * 2
   );
-  const liveBytes = existingLiveBytes + traceBytes;
+  const traceLiveBytes = existingLiveBytes + traceWorkspaceBytes + pointBytes;
+  const simplificationWorkspaceBytes = estimateSimplifyClosedLoopWorkspaceBytes(edgeCount);
+  const simplificationLiveBytes = traceLiveBytes + simplificationWorkspaceBytes;
   const componentByteLimit = request.maximumComponentBytes ?? MAX_DEPTH_COMPONENT_BYTES;
-  if (!Number.isSafeInteger(traceBytes) || liveBytes > componentByteLimit) {
-    observeResources(request, 'component-boundary-rejected', liveBytes, mask.length, { minimumX: candidateMinimumX });
+  if (!Number.isSafeInteger(traceWorkspaceBytes) || !Number.isSafeInteger(traceLiveBytes)
+    || traceLiveBytes > componentByteLimit) {
+    observeResources(
+      request, 'component-boundary-rejected', traceLiveBytes, mask.length, { minimumX: candidateMinimumX },
+    );
     checkRuntime(deadline, checkpoint);
     return undefined;
   }
-  observeResources(request, 'component-boundary', liveBytes, mask.length, { minimumX: candidateMinimumX });
+  if (!Number.isSafeInteger(simplificationWorkspaceBytes)
+    || !Number.isSafeInteger(simplificationLiveBytes)
+    || simplificationLiveBytes > componentByteLimit) {
+    observeResources(
+      request,
+      'component-simplify-rejected',
+      simplificationLiveBytes,
+      mask.length,
+      { minimumX: candidateMinimumX },
+    );
+    checkRuntime(deadline, checkpoint);
+    return undefined;
+  }
+  observeResources(
+    request, 'component-boundary', traceLiveBytes, mask.length, { minimumX: candidateMinimumX },
+  );
   checkRuntime(deadline, checkpoint);
   const edgeStarts = new Uint32Array(edgeCount), edgeEnds = new Uint32Array(edgeCount);
   const loopVertices = new Uint32Array(edgeCount), outgoingEdge = new Int32Array(vertexCount);
@@ -903,7 +928,7 @@ function traceSingleOuter(
     points[index] = [origin[0] + x * cellSize, origin[1] + y * cellSize];
   }
   checkRuntime(deadline, checkpoint);
-  return points;
+  return { points, simplificationLiveBytes };
 }
 
 export function simplifyDepthFeatureLoop(
@@ -924,7 +949,7 @@ export function simplifyDepthFeatureLoop(
   for (let attempt = 0; attempt < 17; attempt += 1) {
     checkRuntime(deadline, checkpoint);
     try {
-      const simplified = simplifyClosedLoop(source, tolerance, maximumPoints, deadline);
+      const simplified = simplifyClosedLoop(source, tolerance, maximumPoints, deadline, checkpoint);
       const outputBounds = contourBounds(simplified, deadline, checkpoint);
       const outputArea = Math.abs(signedArea(simplified, deadline, checkpoint));
       const boundsDrift = Math.max(
@@ -934,7 +959,9 @@ export function simplifyDepthFeatureLoop(
       const areaDrift = Math.abs(outputArea - sourceArea) / sourceArea;
       if (boundsDrift <= 0.03 + 1e-12 && areaDrift <= 0.03 + 1e-12) return simplified;
     } catch (error) {
-      if (error instanceof RangeError && /runtime budget/i.test(error.message)) throw error;
+      if (!(error instanceof RangeError && /cannot be simplified within the point budget/i.test(error.message))) {
+        throw error;
+      }
     }
     tolerance /= 2;
   }
@@ -1017,7 +1044,7 @@ function greatestValidFeatureFromMask(
       field.origin[0] + (minimumX - 1) * field.cellSizeMm,
       field.origin[1] + (minimumY - 1) * field.cellSizeMm,
     ];
-    const source = traceSingleOuter(
+    const traced = traceSingleOuter(
       simpleMask,
       localWidth,
       localHeight,
@@ -1029,9 +1056,17 @@ function greatestValidFeatureFromMask(
       deadline,
       checkpoint,
     );
-    if (!source) continue;
+    if (!traced) continue;
+    observeResources(
+      request,
+      'component-simplify',
+      traced.simplificationLiveBytes,
+      field.valid.length,
+      { minimumX },
+    );
+    checkRuntime(deadline, checkpoint);
     const simplified = simplifyDepthFeatureLoop(
-      source,
+      traced.points,
       field.cellSizeMm,
       request.planarDiameterMm,
       request.budgets.maxContourPointsPerLayer,
