@@ -738,20 +738,77 @@ function bytesEqual(
   return true;
 }
 
-function rawZipCentralDirectoryNames(bytes: Uint8Array, checkpoint: PackageCheckpoint): string[] {
-  if (bytes.length < 22) throw new RangeError('Colored ZIP has no valid central directory');
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const firstPossibleEocd = Math.max(0, bytes.length - 65_557);
-  let eocd = -1;
-  for (let index = bytes.length - 22; index >= firstPossibleEocd; index -= 1) {
-    if ((index & 255) === 0) checkpoint('colored-package:verify-zip-central-byte-loop');
-    if (view.getUint32(index, true) === 0x06054b50
-      && index + 22 + view.getUint16(index + 20, true) === bytes.length) {
-      eocd = index;
-      break;
-    }
+const COLORED_ZIP_NAMES = Object.freeze([
+  'cut-and-engrave.dxf', 'cut-and-engrave.svg', 'exploded-view.pdf', 'preview.pdf',
+] as const);
+const MAX_COLORED_ZIP_BYTES = 64 * 1024 * 1024;
+const MAX_COLORED_ZIP_UNCOMPRESSED_BYTES = 64 * 1024 * 1024;
+const ZIP_NAME_BYTES = Object.freeze(COLORED_ZIP_NAMES.map((name) => ({
+  name,
+  bytes: new TextEncoder().encode(name),
+})));
+const CRC32_TABLE = Uint32Array.from({ length: 256 }, (_, index) => {
+  let value = index;
+  for (let bit = 0; bit < 8; bit += 1) value = (value & 1) !== 0 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+  return value >>> 0;
+});
+
+type RawColoredZipRecord = {
+  readonly name: typeof COLORED_ZIP_NAMES[number];
+  readonly rawName: Uint8Array;
+  readonly versionNeeded: number;
+  readonly flags: number;
+  readonly method: number;
+  readonly modifiedTime: number;
+  readonly modifiedDate: number;
+  readonly crc32: number;
+  readonly compressedSize: number;
+  readonly uncompressedSize: number;
+  readonly localOffset: number;
+  readonly dataStart: number;
+  readonly dataEnd: number;
+};
+
+function rawBytesEqual(
+  left: Uint8Array,
+  right: Uint8Array,
+  checkpoint: PackageCheckpoint,
+  label: string,
+): boolean {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    if ((index & 255) === 0) checkpoint(`${label}-byte-loop`);
+    if (left[index] !== right[index]) return false;
   }
-  if (eocd < 0) throw new RangeError('Colored ZIP has no valid central directory end record');
+  return true;
+}
+
+function canonicalZipName(rawName: Uint8Array, checkpoint: PackageCheckpoint): typeof COLORED_ZIP_NAMES[number] {
+  for (const expected of ZIP_NAME_BYTES) {
+    if (rawBytesEqual(rawName, expected.bytes, checkpoint, 'colored-package:verify-zip-name')) return expected.name;
+  }
+  throw new RangeError('Colored ZIP record name bytes are not a canonical allowed filename');
+}
+
+function payloadCrc32(bytes: Uint8Array, checkpoint: PackageCheckpoint, label: string): number {
+  let crc = 0xffffffff;
+  for (let index = 0; index < bytes.length; index += 1) {
+    if ((index & 4095) === 0) checkpoint(`${label}-byte-loop`);
+    crc = CRC32_TABLE[(crc ^ bytes[index]) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function parseRawColoredZip(bytes: Uint8Array, checkpoint: PackageCheckpoint): RawColoredZipRecord[] {
+  if (bytes.length < 22 || bytes.length > MAX_COLORED_ZIP_BYTES) {
+    throw new RangeError('Colored ZIP archive size is outside the canonical bound');
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const eocd = bytes.length - 22;
+  checkpoint('colored-package:verify-zip-central-byte-loop');
+  if (view.getUint32(eocd, true) !== 0x06054b50 || view.getUint16(eocd + 20, true) !== 0) {
+    throw new RangeError('Colored ZIP must end with one canonical uncommented EOCD record');
+  }
 
   const disk = view.getUint16(eocd + 4, true);
   const centralDisk = view.getUint16(eocd + 6, true);
@@ -759,41 +816,108 @@ function rawZipCentralDirectoryNames(bytes: Uint8Array, checkpoint: PackageCheck
   const recordCount = view.getUint16(eocd + 10, true);
   const centralSize = view.getUint32(eocd + 12, true);
   const centralOffset = view.getUint32(eocd + 16, true);
-  if (disk !== 0 || centralDisk !== 0 || diskRecords !== recordCount
-    || recordCount === 0xffff || centralSize === 0xffffffff || centralOffset === 0xffffffff) {
-    throw new RangeError('Colored ZIP must use one non-ZIP64 central directory');
+  if (disk !== 0 || centralDisk !== 0 || diskRecords !== recordCount || recordCount !== COLORED_ZIP_NAMES.length
+    || centralSize === 0xffffffff || centralOffset === 0xffffffff) {
+    throw new RangeError('Colored ZIP must use one exact four-record non-ZIP64 central directory');
   }
   const centralEnd = centralOffset + centralSize;
   if (centralOffset > eocd || centralEnd !== eocd) {
     throw new RangeError('Colored ZIP central directory bounds are invalid');
   }
 
-  const decoder = new TextDecoder('utf-8', { fatal: true });
-  const names: string[] = [];
+  const records: Omit<RawColoredZipRecord, 'dataStart' | 'dataEnd'>[] = [];
+  const names = new Set<string>();
+  let totalUncompressedSize = 0;
   let cursor = centralOffset;
   for (let record = 0; record < recordCount; record += 1) {
     checkpoint('colored-package:verify-zip-central-record-loop');
     if (cursor + 46 > centralEnd || view.getUint32(cursor, true) !== 0x02014b50) {
       throw new RangeError('Colored ZIP central directory record is invalid');
     }
+    const versionMadeBy = view.getUint16(cursor + 4, true);
+    const versionNeeded = view.getUint16(cursor + 6, true);
+    const flags = view.getUint16(cursor + 8, true);
+    const method = view.getUint16(cursor + 10, true);
+    const modifiedTime = view.getUint16(cursor + 12, true);
+    const modifiedDate = view.getUint16(cursor + 14, true);
+    const crc32 = view.getUint32(cursor + 16, true);
+    const compressedSize = view.getUint32(cursor + 20, true);
+    const uncompressedSize = view.getUint32(cursor + 24, true);
     const nameLength = view.getUint16(cursor + 28, true);
     const extraLength = view.getUint16(cursor + 30, true);
     const commentLength = view.getUint16(cursor + 32, true);
+    const diskStart = view.getUint16(cursor + 34, true);
+    const internalAttributes = view.getUint16(cursor + 36, true);
+    const externalAttributes = view.getUint32(cursor + 38, true);
+    const localOffset = view.getUint32(cursor + 42, true);
     const recordLength = 46 + nameLength + extraLength + commentLength;
-    if (nameLength === 0 || cursor + recordLength > centralEnd) {
+    if (nameLength === 0 || cursor + recordLength > centralEnd || extraLength !== 0 || commentLength !== 0) {
       throw new RangeError('Colored ZIP central directory record bounds are invalid');
     }
-    let name: string;
-    try {
-      name = decoder.decode(bytes.subarray(cursor + 46, cursor + 46 + nameLength));
-    } catch {
-      throw new RangeError('Colored ZIP central directory record name is not valid UTF-8');
+    if (versionMadeBy !== 20 || versionNeeded !== 10 || flags !== 0 || method !== 8
+      || diskStart !== 0 || internalAttributes !== 0 || externalAttributes !== 0) {
+      throw new RangeError('Colored ZIP central record is encrypted, uses a descriptor, or is not canonical DEFLATE');
     }
-    names.push(name);
+    if (compressedSize === 0xffffffff || uncompressedSize === 0xffffffff || localOffset === 0xffffffff
+      || compressedSize > MAX_COLORED_ZIP_BYTES || uncompressedSize > MAX_COLORED_ZIP_UNCOMPRESSED_BYTES) {
+      throw new RangeError('Colored ZIP record uses ZIP64 or exceeds the canonical size bound');
+    }
+    const rawName = bytes.slice(cursor + 46, cursor + 46 + nameLength);
+    const name = canonicalZipName(rawName, checkpoint);
+    if (names.has(name)) throw new RangeError('Colored ZIP contains a duplicate central record name');
+    names.add(name);
+    totalUncompressedSize += uncompressedSize;
+    if (totalUncompressedSize > MAX_COLORED_ZIP_UNCOMPRESSED_BYTES) {
+      throw new RangeError('Colored ZIP total uncompressed size exceeds the canonical bound');
+    }
+    records.push({
+      name, rawName, versionNeeded, flags, method, modifiedTime, modifiedDate, crc32,
+      compressedSize, uncompressedSize, localOffset,
+    });
     cursor += recordLength;
   }
   if (cursor !== centralEnd) throw new RangeError('Colored ZIP central directory record count is inconsistent');
-  return names;
+
+  const reconciled: RawColoredZipRecord[] = [];
+  let expectedLocalOffset = 0;
+  for (const record of [...records].sort((left, right) => left.localOffset - right.localOffset)) {
+    checkpoint('colored-package:verify-zip-local-record-loop');
+    const localOffset = record.localOffset;
+    if (localOffset !== expectedLocalOffset || localOffset + 30 > centralOffset
+      || view.getUint32(localOffset, true) !== 0x04034b50) {
+      throw new RangeError('Colored ZIP local record offsets overlap, contain gaps, or are out of range');
+    }
+    const localNameLength = view.getUint16(localOffset + 26, true);
+    const localExtraLength = view.getUint16(localOffset + 28, true);
+    if (view.getUint16(localOffset + 4, true) !== record.versionNeeded
+      || view.getUint16(localOffset + 6, true) !== record.flags
+      || view.getUint16(localOffset + 8, true) !== record.method
+      || view.getUint16(localOffset + 10, true) !== record.modifiedTime
+      || view.getUint16(localOffset + 12, true) !== record.modifiedDate
+      || view.getUint32(localOffset + 14, true) !== record.crc32
+      || view.getUint32(localOffset + 18, true) !== record.compressedSize
+      || view.getUint32(localOffset + 22, true) !== record.uncompressedSize
+      || localNameLength !== record.rawName.length || localExtraLength !== 0) {
+      throw new RangeError('Colored ZIP local header does not exactly match its central record');
+    }
+    const localNameStart = localOffset + 30;
+    const localNameEnd = localNameStart + localNameLength;
+    if (localNameEnd > centralOffset
+      || !rawBytesEqual(bytes.subarray(localNameStart, localNameEnd), record.rawName, checkpoint, 'colored-package:verify-zip-local-name')) {
+      throw new RangeError('Colored ZIP local filename bytes do not match the central record');
+    }
+    const dataStart = localNameEnd;
+    const dataEnd = dataStart + record.compressedSize;
+    if (dataEnd > centralOffset || dataEnd < dataStart) {
+      throw new RangeError('Colored ZIP compressed data range is out of bounds');
+    }
+    reconciled.push({ ...record, dataStart, dataEnd });
+    expectedLocalOffset = dataEnd;
+  }
+  if (expectedLocalOffset !== centralOffset) {
+    throw new RangeError('Colored ZIP has hidden or trailing local data before the central directory');
+  }
+  return reconciled;
 }
 
 function assertColoredPublicText(value: string, label: string): void {
@@ -891,9 +1015,10 @@ export async function verifyOutlinePackage(
     }
   }
 
-  const expectedNames = ['cut-and-engrave.dxf', 'cut-and-engrave.svg', 'exploded-view.pdf', 'preview.pdf'];
-  const rawNames = rawZipCentralDirectoryNames(output.zip, checkpoint).sort((left, right) => left.localeCompare(right));
-  if (rawNames.length !== 4 || exactJson(rawNames) !== exactJson(expectedNames)) {
+  const expectedNames = [...COLORED_ZIP_NAMES];
+  const rawRecords = parseRawColoredZip(output.zip, checkpoint);
+  const rawNames = rawRecords.map(({ name }) => name).sort((left, right) => left.localeCompare(right));
+  if (rawRecords.length !== 4 || exactJson(rawNames) !== exactJson(expectedNames)) {
     throw new RangeError('Colored ZIP must contain exactly four unique central directory records');
   }
   for (const name of rawNames) assertColoredPublicText(name, 'Colored ZIP raw record name');
@@ -914,10 +1039,10 @@ export async function verifyOutlinePackage(
     assertColoredPublicText(originalName, 'Colored ZIP original record name');
   }
   checkpoint('colored-package:verify-zip-svg:before-read');
-  const zippedSvg = await zip.file('cut-and-engrave.svg')!.async('string');
+  const zippedSvgBytes = await zip.file('cut-and-engrave.svg')!.async('uint8array');
   checkpoint('colored-package:verify-zip-svg:after-read');
   checkpoint('colored-package:verify-zip-dxf:before-read');
-  const zippedDxf = await zip.file('cut-and-engrave.dxf')!.async('string');
+  const zippedDxfBytes = await zip.file('cut-and-engrave.dxf')!.async('uint8array');
   checkpoint('colored-package:verify-zip-dxf:after-read');
   checkpoint('colored-package:verify-zip-preview:before-read');
   const zippedPreview = await zip.file('preview.pdf')!.async('uint8array');
@@ -925,9 +1050,29 @@ export async function verifyOutlinePackage(
   checkpoint('colored-package:verify-zip-exploded:before-read');
   const zippedExploded = await zip.file('exploded-view.pdf')!.async('uint8array');
   checkpoint('colored-package:verify-zip-exploded:after-read');
+  const payloads = new Map<string, Uint8Array>([
+    ['cut-and-engrave.svg', zippedSvgBytes], ['cut-and-engrave.dxf', zippedDxfBytes],
+    ['preview.pdf', zippedPreview], ['exploded-view.pdf', zippedExploded],
+  ]);
+  for (const record of rawRecords) {
+    const payload = payloads.get(record.name)!;
+    if (payload.length !== record.uncompressedSize
+      || payloadCrc32(payload, checkpoint, `colored-package:verify-zip-${record.name === 'cut-and-engrave.svg' ? 'svg' : record.name === 'cut-and-engrave.dxf' ? 'dxf' : record.name === 'preview.pdf' ? 'preview' : 'exploded'}-crc`) !== record.crc32) {
+      throw new RangeError('Colored ZIP payload size or CRC32 does not match its raw headers');
+    }
+  }
+  let zippedSvg: string, zippedDxf: string;
+  try {
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+    zippedSvg = decoder.decode(zippedSvgBytes);
+    zippedDxf = decoder.decode(zippedDxfBytes);
+  } catch {
+    throw new RangeError('Colored ZIP text payload is not canonical UTF-8');
+  }
   assertColoredPublicText(zippedSvg, 'Colored ZIP SVG payload');
   assertColoredPublicText(zippedDxf, 'Colored ZIP DXF payload');
-  if (zippedSvg !== output.cutSvg || zippedDxf !== output.cutDxf
+  if (!bytesEqual(zippedSvgBytes, new TextEncoder().encode(output.cutSvg), checkpoint, 'colored-package:verify-zipped-svg')
+    || !bytesEqual(zippedDxfBytes, new TextEncoder().encode(output.cutDxf), checkpoint, 'colored-package:verify-zipped-dxf')
     || !bytesEqual(zippedPreview, output.previewPdf, checkpoint, 'colored-package:verify-zipped-preview')
     || !bytesEqual(zippedExploded, output.explodedViewPdf, checkpoint, 'colored-package:verify-zipped-exploded')) {
     throw new RangeError('Colored ZIP payloads are not byte-identical to the four downloads');

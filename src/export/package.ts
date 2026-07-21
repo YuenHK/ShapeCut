@@ -55,7 +55,7 @@ export type ColoredOutlineEntityRecord = {
 };
 
 const COLORED_ACI = Object.freeze({ CUT_BLACK: 7, DEEP_RED: 1, LIGHT_BLUE: 5 } as const);
-const COLORED_TRUE_COLOR = Object.freeze({ CUT_BLACK: 0, DEEP_RED: 0xE5484D, LIGHT_BLUE: 0x3E63DD } as const);
+const COLORED_TRUE_COLOR = Object.freeze({ CUT_BLACK: 0, DEEP_RED: 0xE5484D, LIGHT_BLUE: 0x3A78D4 } as const);
 const COLORED_ROLES = Object.freeze(Object.keys(COLORED_ROLE_COLORS) as ColoredOutlineRole[]);
 
 function xmlEscape(value: string): string {

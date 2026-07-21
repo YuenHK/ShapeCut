@@ -188,6 +188,92 @@ function duplicateFirstCentralDirectoryRecord(bytes: Uint8Array): Uint8Array {
   return forged;
 }
 
+type RawZipFixtureRecord = {
+  readonly centralOffset: number;
+  readonly localOffset: number;
+  readonly nameLength: number;
+};
+
+function rawZipFixtureLayout(bytes: Uint8Array): {
+  readonly eocdOffset: number;
+  readonly centralOffset: number;
+  readonly records: readonly RawZipFixtureRecord[];
+} {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const eocdOffset = bytes.length - 22;
+  if (view.getUint32(eocdOffset, true) !== 0x06054b50) throw new Error('Fixture ZIP has no canonical EOCD');
+  const centralOffset = view.getUint32(eocdOffset + 16, true);
+  const recordCount = view.getUint16(eocdOffset + 10, true);
+  const records: RawZipFixtureRecord[] = [];
+  let cursor = centralOffset;
+  for (let index = 0; index < recordCount; index += 1) {
+    if (view.getUint32(cursor, true) !== 0x02014b50) throw new Error('Fixture ZIP has no central record');
+    const nameLength = view.getUint16(cursor + 28, true);
+    records.push({
+      centralOffset: cursor,
+      localOffset: view.getUint32(cursor + 42, true),
+      nameLength,
+    });
+    cursor += 46 + nameLength + view.getUint16(cursor + 30, true) + view.getUint16(cursor + 32, true);
+  }
+  return { eocdOffset, centralOffset, records };
+}
+
+function mutateRawZip(
+  bytes: Uint8Array,
+  mutate: (copy: Uint8Array, view: DataView, layout: ReturnType<typeof rawZipFixtureLayout>) => void,
+): Uint8Array {
+  const copy = bytes.slice();
+  mutate(copy, new DataView(copy.buffer, copy.byteOffset, copy.byteLength), rawZipFixtureLayout(copy));
+  return copy;
+}
+
+const STRICT_RAW_ZIP_MUTATIONS = [
+  ['central filename BOM', (bytes: Uint8Array, _view: DataView, layout: ReturnType<typeof rawZipFixtureLayout>) => {
+    bytes.set([0xef, 0xbb, 0xbf], layout.records[0].centralOffset + 46);
+  }],
+  ['central filename NUL', (bytes: Uint8Array, _view: DataView, layout: ReturnType<typeof rawZipFixtureLayout>) => {
+    bytes[layout.records[0].centralOffset + 46] = 0;
+  }],
+  ['central filename invalid UTF-8', (bytes: Uint8Array, _view: DataView, layout: ReturnType<typeof rawZipFixtureLayout>) => {
+    bytes[layout.records[0].centralOffset + 46] = 0xff;
+  }],
+  ['central directory filename', (bytes: Uint8Array, _view: DataView, layout: ReturnType<typeof rawZipFixtureLayout>) => {
+    const record = layout.records[0];
+    bytes[record.centralOffset + 46 + record.nameLength - 1] = 0x2f;
+  }],
+  ['local encryption flag', (_bytes: Uint8Array, view: DataView, layout: ReturnType<typeof rawZipFixtureLayout>) => {
+    const offset = layout.records[0].localOffset + 6;
+    view.setUint16(offset, view.getUint16(offset, true) | 1, true);
+  }],
+  ['local zero sizes', (_bytes: Uint8Array, view: DataView, layout: ReturnType<typeof rawZipFixtureLayout>) => {
+    view.setUint32(layout.records[0].localOffset + 18, 0, true);
+    view.setUint32(layout.records[0].localOffset + 22, 0, true);
+  }],
+  ['CRC mismatch against payload', (_bytes: Uint8Array, view: DataView, layout: ReturnType<typeof rawZipFixtureLayout>) => {
+    const record = layout.records[0], forged = (view.getUint32(record.centralOffset + 16, true) ^ 0xffffffff) >>> 0;
+    view.setUint32(record.centralOffset + 16, forged, true);
+    view.setUint32(record.localOffset + 14, forged, true);
+  }],
+  ['local filename mismatch', (bytes: Uint8Array, _view: DataView, layout: ReturnType<typeof rawZipFixtureLayout>) => {
+    bytes[layout.records[0].localOffset + 30] ^= 1;
+  }],
+  ['overlapping local offset', (_bytes: Uint8Array, view: DataView, layout: ReturnType<typeof rawZipFixtureLayout>) => {
+    view.setUint32(layout.records[1].centralOffset + 42, layout.records[0].localOffset, true);
+  }],
+  ['out-of-range local offset', (_bytes: Uint8Array, view: DataView, layout: ReturnType<typeof rawZipFixtureLayout>) => {
+    view.setUint32(layout.records[0].centralOffset + 42, layout.centralOffset + 1, true);
+  }],
+  ['ZIP64 size marker', (_bytes: Uint8Array, view: DataView, layout: ReturnType<typeof rawZipFixtureLayout>) => {
+    view.setUint32(layout.records[0].centralOffset + 20, 0xffffffff, true);
+  }],
+  ['data-descriptor flag without descriptor', (_bytes: Uint8Array, view: DataView, layout: ReturnType<typeof rawZipFixtureLayout>) => {
+    const record = layout.records[0];
+    view.setUint16(record.centralOffset + 8, view.getUint16(record.centralOffset + 8, true) | 8, true);
+    view.setUint16(record.localOffset + 6, view.getUint16(record.localOffset + 6, true) | 8, true);
+  }],
+] as const;
+
 describe('material-independent outline package', () => {
   it('returns and verifies exactly four byte-identical canonical colored files', async () => {
     const runtime = coloredResult();
@@ -212,10 +298,10 @@ describe('material-independent outline package', () => {
     expect(output.cutSvg).toContain('id="CUT_BLACK"');
     expect(output.cutSvg).toContain('stroke="#000000"');
     expect(output.cutSvg).toContain('stroke="#E5484D"');
-    expect(output.cutSvg).toContain('stroke="#3E63DD"');
+    expect(output.cutSvg).toContain('stroke="#3A78D4"');
     expect(output.cutDxf).toContain('DEEP_RED');
     expect(output.cutDxf).toMatch(/2\nDEEP_RED\n[\s\S]*62\n1\n420\n15026253\n/);
-    expect(output.cutDxf).toMatch(/2\nLIGHT_BLUE\n[\s\S]*62\n5\n420\n4088797\n/);
+    expect(output.cutDxf).toMatch(/2\nLIGHT_BLUE\n[\s\S]*62\n5\n420\n3832020\n/);
     const text = `${output.cutSvg}\n${output.cutDxf}`;
     expect(text).not.toMatch(/80%|40%|power|speed|passes|material|acrylic|plywood|\.stl|manifest|\.json|@|\/Users\//i);
   });
@@ -227,8 +313,10 @@ describe('material-independent outline package', () => {
     'colored-package:verify-exploded-load:after',
     'colored-package:verify-preview-byte-loop',
     'colored-package:verify-zip-central-record-loop',
+    'colored-package:verify-zip-local-record-loop',
     'colored-package:verify-zip-load:after',
     'colored-package:verify-zip-svg:after-read',
+    'colored-package:verify-zip-svg-crc-byte-loop',
     'colored-package:verify-zip-dxf:after-read',
     'colored-package:verify-zip-preview:after-read',
     'colored-package:verify-zip-exploded:after-read',
@@ -253,6 +341,15 @@ describe('material-independent outline package', () => {
 
     await expect(verifyColoredOutlinePackage({ ...output, zip: duplicateZip }, runtime))
       .rejects.toThrow(/four|record|duplicate|central/i);
+  });
+
+  it.each(STRICT_RAW_ZIP_MUTATIONS)('strictly rejects raw ZIP mutation: %s', async (_label, mutate) => {
+    const runtime = coloredResult();
+    const output = await createColoredOutlinePackage(runtime);
+    const forged = mutateRawZip(output.zip, mutate);
+
+    await expect(verifyColoredOutlinePackage({ ...output, zip: forged }, runtime))
+      .rejects.toThrow(/ZIP|archive|central|local|CRC|descriptor|encrypted|canonical/i);
   });
 
   it('fails a package deterministically when its shared deadline is already exhausted', async () => {

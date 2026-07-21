@@ -9,7 +9,7 @@ import {
 export const COLORED_ROLE_COLORS = Object.freeze({
   CUT_BLACK: '#000000',
   DEEP_RED: '#E5484D',
-  LIGHT_BLUE: '#3E63DD',
+  LIGHT_BLUE: '#3A78D4',
 } as const);
 
 export type ColoredOutlineRole = keyof typeof COLORED_ROLE_COLORS;

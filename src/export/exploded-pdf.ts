@@ -11,7 +11,7 @@ const FIXED_DATE = new Date('2000-01-01T00:00:00.000Z');
 const ROLE_RGB = Object.freeze({
   CUT_BLACK: rgb(0, 0, 0),
   DEEP_RED: rgb(0xe5 / 255, 0x48 / 255, 0x4d / 255),
-  LIGHT_BLUE: rgb(0x3e / 255, 0x63 / 255, 0xdd / 255),
+  LIGHT_BLUE: rgb(0x3a / 255, 0x78 / 255, 0xd4 / 255),
 });
 
 function configure(pdf: PDFDocument, title: string, keywords: readonly string[]): void {
@@ -82,7 +82,7 @@ export async function writeColoredPreviewPdf(
   document: ColoredOutlineDocument,
   checkpoint: ColoredDocumentCheckpoint = () => undefined,
 ): Promise<Uint8Array> {
-  const roleKeyword = 'roles:CUT_BLACK:#000000,DEEP_RED:#E5484D,LIGHT_BLUE:#3E63DD';
+  const roleKeyword = 'roles:CUT_BLACK:#000000,DEEP_RED:#E5484D,LIGHT_BLUE:#3A78D4';
   return createPdf('ShapeCut colored preview', [
     `outline-source:${document.sourceHash}`,
     `feature-evidence:${document.featureEvidenceFingerprint}`,
@@ -135,7 +135,7 @@ export async function writeExplodedViewPdf(
     `diagnostics-evidence:${document.diagnosticsFingerprint}`,
     'view:isometric-exploded',
     'axis:central',
-    'legend:CUT_BLACK:#000000,DEEP_RED:#E5484D,LIGHT_BLUE:#3E63DD',
+    'legend:CUT_BLACK:#000000,DEEP_RED:#E5484D,LIGHT_BLUE:#3A78D4',
     ...document.layers.map(layerDimensionKeyword),
   ], (pdf, font, drawCheckpoint) => {
     const page = pdf.addPage([297 * MM_TO_POINTS, 210 * MM_TO_POINTS]);
@@ -177,7 +177,7 @@ export async function writeExplodedViewPdf(
       });
     }
     const legend = [
-      ['CUT_BLACK', '#000000'], ['DEEP_RED', '#E5484D'], ['LIGHT_BLUE', '#3E63DD'],
+      ['CUT_BLACK', '#000000'], ['DEEP_RED', '#E5484D'], ['LIGHT_BLUE', '#3A78D4'],
     ] as const;
     for (const [index, [role, hex]] of legend.entries()) {
       page.drawLine({
