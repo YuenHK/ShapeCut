@@ -1,9 +1,10 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { ColoredOutlineLayer, OutlinePreviewPayload } from '../domain/outline-features/types';
 import { OutlineProcessViewport } from './OutlineProcessViewport';
 import { createOutlineProcessScene, type OutlineProcessScene } from './outline-process-scene';
+import '../styles.css';
 
 function browserPayload(): OutlinePreviewPayload {
   const exterior = {
@@ -53,14 +54,21 @@ describe('OutlineProcessViewport in Chromium', () => {
     );
 
     await waitFor(() => expect(scene).toBeDefined());
-    expect(screen.getByRole('img', { name: /模型分層預覽/ }).querySelector('canvas')).not.toBeNull();
+    const viewport = screen.getByRole('img', { name: /模型分層預覽/ });
+    expect(viewport.querySelector('canvas')).not.toBeNull();
+    expect(getComputedStyle(viewport).touchAction).toBe('pan-y');
     expect(scene!.meshGeometry.getAttribute('position').count).toBe(3);
     expect(scene!.layerGroups).toHaveLength(6);
     expect(scene!.layerGroups[0].position.y).not.toBe(scene!.layerGroups[5].position.y);
 
     const previousRotation = scene!.rotatingGroup.rotation.y;
-    await userEvent.click(screen.getByRole('button', { name: '向右旋轉' }));
+    fireEvent.pointerDown(viewport, { pointerId: 7, clientX: 10 });
+    fireEvent.pointerMove(viewport, { pointerId: 7, clientX: 30 });
+    fireEvent.pointerUp(viewport, { pointerId: 7, clientX: 30 });
     expect(scene!.rotatingGroup.rotation.y).toBeGreaterThan(previousRotation);
+    const afterPointerRotation = scene!.rotatingGroup.rotation.y;
+    await userEvent.click(screen.getByRole('button', { name: '向右旋轉' }));
+    expect(scene!.rotatingGroup.rotation.y).toBeGreaterThan(afterPointerRotation);
 
     const dispose = vi.spyOn(scene!, 'dispose');
     view.unmount();
@@ -128,6 +136,7 @@ describe('OutlineProcessViewport in Chromium', () => {
     );
 
     const fallback = await screen.findByRole('img', { name: /SVG/ });
+    expect(getComputedStyle(fallback).touchAction).toBe('auto');
     expect(fallback.querySelectorAll('path')).toHaveLength(24 * 4);
     expect(screen.queryByRole('group', { name: '模型預覽控制' })).not.toBeInTheDocument();
   });

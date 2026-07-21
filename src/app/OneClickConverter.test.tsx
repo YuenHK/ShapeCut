@@ -117,7 +117,7 @@ describe('OneClickConverter', () => {
   it('starts the whole workflow immediately after one file selection and exposes no wizard controls', async () => {
     const user = userEvent.setup();
     const api = services();
-    render(<OneClickConverter services={api} />);
+    const { container } = render(<OneClickConverter services={api} />);
 
     await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['solid model'], 'spinner.stl', { type: 'model/stl' }));
 
@@ -125,6 +125,8 @@ describe('OneClickConverter', () => {
     expect(api.convert).toHaveBeenCalledOnce();
     await screen.findByRole('heading', { name: '轉換完成' });
     expect(screen.getAllByRole('status').some((status) => status.textContent?.includes('轉換完成'))).toBe(true);
+    expect(container.querySelector('.result-viewport .outline-process-viewport')).toHaveAttribute('data-stage', 'result');
+    expect(screen.getAllByRole('status').some((status) => status.textContent?.includes('正在準備輸出'))).toBe(false);
     expect(screen.queryByRole('button', { name: /修復|軸心|下一步|材料|分件|確認輸出/ })).toBeNull();
   });
 

@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { ColoredOutlineLayer, FeatureContour, OutlinePreviewPayload } from '../domain/outline-features/types';
-import { OutlineProcessViewport } from './OutlineProcessViewport';
+import { OutlineProcessViewport, type OutlineProcessSceneFactory } from './OutlineProcessViewport';
 import type { OutlineProcessScene } from './outline-process-scene';
 
 function contour(id: string, role: FeatureContour['role'], outer: FeatureContour['outer']): FeatureContour {
@@ -86,7 +86,7 @@ describe('OutlineProcessViewport', () => {
   it('hydrates, controls, replaces, and disposes the scene through an accessible boundary', async () => {
     const user = userEvent.setup();
     const scene = fakeScene();
-    const createScene = vi.fn(() => scene);
+    const createScene = vi.fn<OutlineProcessSceneFactory>(() => scene);
     const first = payload();
     const view = render(
       <OutlineProcessViewport payload={first} stage="slicing" reducedMotion createScene={createScene} />,
@@ -156,6 +156,22 @@ describe('OutlineProcessViewport', () => {
     const fallback = screen.getByRole('img', { name: /SVG/ });
     expect(fallback.querySelector('[data-preview-mesh]')).toHaveAttribute('d', expect.stringContaining('M'));
     expect(fallback.getAttribute('viewBox')).not.toBe('0 0 1 1');
+    expect(screen.getByRole('status')).toHaveTextContent('實際模型線框');
+    expect(screen.getByRole('status')).not.toHaveTextContent('實際輪廓');
+  });
+
+  it('announces a completed result while retaining the exploded interactive scene state', () => {
+    const scene = fakeScene();
+    const createScene = vi.fn<OutlineProcessSceneFactory>(() => scene);
+    const { container } = render(
+      <OutlineProcessViewport payload={payload()} stage="result" reducedMotion createScene={createScene} />,
+    );
+
+    expect(container.querySelector('.outline-process-viewport')).toHaveAttribute('data-stage', 'result');
+    expect(screen.getByRole('status')).toHaveTextContent(/轉換完成.*模型分層預覽/);
+    expect(screen.getByRole('group', { name: '模型預覽控制' })).toBeVisible();
+    expect(createScene.mock.calls[0][2]).toMatchObject({ stage: 'packaging' });
+    expect(scene.setStage).toHaveBeenLastCalledWith('packaging');
   });
 
   it('separates layer contours deterministically in the SVG exploded result', () => {

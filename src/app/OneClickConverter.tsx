@@ -319,7 +319,7 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
       )}
       <div className="result-grid">
         <div className="result-viewport">
-          <OutlineProcessViewport payload={result.preview} stage="packaging" />
+          <OutlineProcessViewport payload={result.preview} stage="result" />
         </div>
         <dl className="result-summary">
           <div><dt>處理方式</dt><dd>{result.mode === 'exact' ? '精確切片' : '2.5D 外形'}</dd></div>

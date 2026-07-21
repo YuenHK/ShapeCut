@@ -18,19 +18,26 @@ export type OutlineProcessSceneFactory = (
 
 export type OutlineProcessViewportProps = {
   readonly payload: OutlinePreviewPayload;
-  readonly stage: AutomaticOutlineProgressStage;
+  readonly stage: OutlineProcessViewportStage;
   readonly reducedMotion?: boolean;
   readonly createScene?: OutlineProcessSceneFactory;
   readonly webglFactory?: OutlineWebGLFactory;
 };
 
-const STAGE_LABELS: Readonly<Record<AutomaticOutlineProgressStage, string>> = Object.freeze({
+export type OutlineProcessViewportStage = AutomaticOutlineProgressStage | 'result';
+
+const STAGE_LABELS: Readonly<Record<OutlineProcessViewportStage, string>> = Object.freeze({
   reading: '正在讀取模型',
   analyzing: '正在分析幾何',
   simplifying: '正在簡化輪廓',
   slicing: '正在產生分層',
   packaging: '正在準備輸出',
+  result: '轉換完成：模型分層預覽',
 });
+
+function sceneStage(stage: OutlineProcessViewportStage): AutomaticOutlineProgressStage {
+  return stage === 'result' ? 'packaging' : stage;
+}
 
 function useReducedMotion(override: boolean | undefined): boolean {
   const [mediaReduced, setMediaReduced] = useState(() => (
@@ -57,8 +64,8 @@ function featurePath(contour: FeatureContour): string {
     .join(' ') + ' Z';
 }
 
-function explodedOffset(order: number, count: number, stage: AutomaticOutlineProgressStage): number {
-  return stage === 'slicing' || stage === 'packaging'
+function explodedOffset(order: number, count: number, stage: OutlineProcessViewportStage): number {
+  return stage === 'slicing' || stage === 'packaging' || stage === 'result'
     ? (order - (count - 1) / 2) * EXPLODED_LAYER_GAP
     : 0;
 }
@@ -106,7 +113,7 @@ function fallbackViewBox(points: readonly FallbackPoint[]): string {
   return `${minX - padding} ${minY - padding} ${width + padding * 2} ${height + padding * 2}`;
 }
 
-function SvgFallback({ payload, stage }: { readonly payload: OutlinePreviewPayload; readonly stage: AutomaticOutlineProgressStage }) {
+function SvgFallback({ payload, stage }: { readonly payload: OutlinePreviewPayload; readonly stage: OutlineProcessViewportStage }) {
   const meshPoints = useMemo(() => projectedMeshPoints(payload), [payload]);
   const meshD = useMemo(() => meshPath(payload, meshPoints), [payload, meshPoints]);
   const points = useMemo(() => payload.layers.length === 0
@@ -173,6 +180,7 @@ export function OutlineProcessViewport({
   const hasInjectedFactory = createScene !== undefined || webglFactory !== undefined;
   const canUseWebGL = webGLIsAvailable(hasInjectedFactory);
   const [fallback, setFallback] = useState(!canUseWebGL);
+  const renderedSceneStage = sceneStage(stage);
 
   useEffect(() => {
     if (!hostRef.current || !canUseWebGL) {
@@ -182,7 +190,7 @@ export function OutlineProcessViewport({
     let controller: OutlineProcessScene | undefined;
     try {
       controller = (createScene ?? createOutlineProcessScene)(hostRef.current, payload, {
-        stage,
+        stage: renderedSceneStage,
         reducedMotion,
         createRenderer: webglFactory,
       });
@@ -218,7 +226,7 @@ export function OutlineProcessViewport({
       setFallback(true);
     }
   }, [payload, canUseWebGL, createScene, webglFactory]);
-  useEffect(() => { sceneRef.current?.setStage(stage); }, [stage, canUseWebGL, createScene, webglFactory]);
+  useEffect(() => { sceneRef.current?.setStage(renderedSceneStage); }, [renderedSceneStage, canUseWebGL, createScene, webglFactory]);
   useEffect(() => { sceneRef.current?.setReducedMotion(reducedMotion); }, [reducedMotion, canUseWebGL, createScene, webglFactory]);
 
   const rotate = (amount: number): void => sceneRef.current?.rotateBy(amount);
@@ -278,7 +286,13 @@ export function OutlineProcessViewport({
         />
       )}
       <figcaption id={descriptionId} className="outline-process-caption" role="status" aria-live="polite">
-        {fallback ? 'WebGL 不可用，現以實際輪廓 SVG 顯示。' : STAGE_LABELS[stage]}
+        {fallback
+          ? payload.layers.length === 0
+            ? 'WebGL 不可用，現以實際模型線框 SVG 顯示。'
+            : stage === 'result'
+              ? '轉換完成：模型分層預覽現以實際輪廓 SVG 顯示。'
+              : 'WebGL 不可用，現以實際分層輪廓 SVG 顯示。'
+          : STAGE_LABELS[stage]}
       </figcaption>
       {!fallback && (
         <div className="outline-process-controls" role="group" aria-label="模型預覽控制">

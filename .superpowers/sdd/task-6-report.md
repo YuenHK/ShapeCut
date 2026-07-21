@@ -224,3 +224,30 @@ Both real-file UI cases completed in approximately 2.5 seconds, showed `已簡�
 ### Concerns
 
 - None blocking.
+
+## Formal review follow-up: completed semantics, mobile scrolling, and Float32 safety
+
+### RED evidence
+
+- Four focused regressions failed before the fixes: the result viewport exposed `data-stage="packaging"`; the analyzing SVG caption claimed it showed contours; the completed caption was absent; and a finite ASCII coordinate of `1e39` overflowed to `Infinity`, published an invalid preview, then failed later as `NO_OUTLINE`.
+- The Chromium computed-style assertion initially observed `touch-action: auto` because the isolated component test had not loaded the production stylesheet. The test now explicitly loads that stylesheet and verifies its real computed values.
+
+### Fixes
+
+- Added a viewport-only `result` stage. It announces `轉換完成：模型分層預覽`, while mapping internally to the stable exploded `packaging` scene state so rotation, zoom, reset, and layer separation remain interactive without reusing processing semantics.
+- SVG fallback now identifies an analyzing payload with no layers as the actual bounded mesh wireframe. Completed colored output is identified as the actual layered contour preview.
+- WebGL uses `touch-action: pan-y`, preserving horizontal model drag while allowing vertical page scrolling; non-interactive SVG fallback uses `touch-action: auto`. Real Chromium verifies both computed styles and pointer rotation.
+- Every Float64-to-Float32 preview coordinate is checked after conversion under the same deadline cadence. A non-finite cast fails before preview publication with typed `RESOURCE_LIMIT`; the overflow regression receives only the earlier `reading` event and no preview payload.
+- Stale-job gating, cancellation, object-URL ownership, and cleanup paths were not changed.
+
+### Verification
+
+- Review-focused unit: 5 files, 62/62 passed.
+- Focused Chromium App/viewport: 2 files, 4/4 passed.
+- Full unit suite: 42 files, 1065/1065 passed.
+- Full Chromium suite: 5 files, 33/33 passed.
+- `npm run typecheck` and `git diff --check`: passed.
+
+### Concerns
+
+- None blocking.

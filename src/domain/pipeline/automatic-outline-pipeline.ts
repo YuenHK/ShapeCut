@@ -133,7 +133,15 @@ function copyPreviewMesh(mesh: TriangleMesh, deadline: number): OutlinePreviewPa
     }
   }
   checkEvidenceDeadline(deadline);
-  return { positions: Float32Array.from(positions), indices };
+  const previewPositions = Float32Array.from(positions);
+  for (let index = 0; index < previewPositions.length; index += 1) {
+    if ((index & 4095) === 0) checkEvidenceDeadline(deadline);
+    if (!Number.isFinite(previewPositions[index])) {
+      throw new AutomaticOutlineError('RESOURCE_LIMIT', '模型座標超出安全預覽範圍');
+    }
+  }
+  checkEvidenceDeadline(deadline);
+  return { positions: previewPositions, indices };
 }
 
 function meshBoundsCenter(mesh: TriangleMesh, deadline: number): readonly [number, number, number] {

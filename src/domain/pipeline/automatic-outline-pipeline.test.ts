@@ -329,6 +329,27 @@ describe('automatic outline pipeline', () => {
       .rejects.toMatchObject({ code: 'INVALID_STL' } satisfies Partial<AutomaticOutlineError>);
   });
 
+  it('fails closed before publishing a preview when finite ASCII coordinates overflow Float32', async () => {
+    const source = `solid overflow
+facet normal 0 0 1
+outer loop
+vertex 1e39 0 0
+vertex 1e39 1 0
+vertex 1e39 0 1
+endloop
+endfacet
+endsolid overflow`;
+    const events: AutomaticOutlineProgressEvent[] = [];
+
+    await expect(convertAutomatically(
+      { bytes: new TextEncoder().encode(source).buffer as ArrayBuffer },
+      (event) => { events.push(event); },
+    )).rejects.toMatchObject({ code: 'RESOURCE_LIMIT' } satisfies Partial<AutomaticOutlineError>);
+
+    expect(events).toEqual([{ stage: 'reading' }]);
+    expect(events.some((event) => 'preview' in event)).toBe(false);
+  });
+
   it('rejects oversized bytes before progress, hashing, or parsing work', async () => {
     const onProgress = vi.fn();
     const forged = { byteLength: MAX_STL_BYTES + 1 } as ArrayBuffer;
