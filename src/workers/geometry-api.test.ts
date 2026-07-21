@@ -51,10 +51,10 @@ function inspectOnly(inspect: GeometryApi['inspect']): GeometryApi {
 }
 
 function automaticResult(sourceHash: string): AutomaticOutlineResult {
-  const coloredLayer = {
-    id: 'outline-layer-0', index: 0, zStart: 0, zEnd: 1,
+  const coloredLayers = Array.from({ length: 6 }, (_, index) => ({
+    id: `outline-layer-${index}`, index, zStart: index, zEnd: index + 1,
     exterior: {
-      id: 'outline-layer-0-exterior', role: 'CUT_BLACK' as const,
+      id: `outline-layer-${index}-exterior`, role: 'CUT_BLACK' as const,
       outer: [[-1, -1], [-1, 1], [1, 1], [1, -1]] as const,
       boundsMm: { minX: -1, minY: -1, maxX: 1, maxY: 1 }, areaMm2: 4,
     },
@@ -63,7 +63,7 @@ function automaticResult(sourceHash: string): AutomaticOutlineResult {
       hole: { status: 'omitted' as const },
       depth: { cellSizeMm: 0, contrastMm: 0, redThresholdMm: 0, blueThresholdMm: 0 },
     },
-  };
+  }));
   const previewSource = tetrahedron();
   const result: Omit<AutomaticOutlineResult, 'featureEvidenceFingerprint'> = {
     sourceHash,
@@ -73,15 +73,15 @@ function automaticResult(sourceHash: string): AutomaticOutlineResult {
       source: 'candidate',
       axis: { origin: [0, 0, 0], direction: [0, 0, 1], confidence: 1, confirmed: true },
     },
-    layers: [{
-      id: 'outline-layer-0', index: 0, zStart: 0, zEnd: 1,
-      contour: { outer: coloredLayer.exterior.outer, holes: [] },
+    layers: coloredLayers.map((layer) => ({
+      id: layer.id, index: layer.index, zStart: layer.zStart, zEnd: layer.zEnd,
+      contour: { outer: layer.exterior.outer, holes: [] },
       sourceAreaMm2: 4, simplifiedAreaMm2: 4,
       sourceBoundsMm: { minX: -1, minY: -1, maxX: 1, maxY: 1 },
       simplificationToleranceMm: 0.01, boundsDriftRatio: 0, areaDriftRatio: 0,
       removedComponentCount: 0,
-    }],
-    coloredLayers: [coloredLayer],
+    })),
+    coloredLayers,
     featureWarnings: [],
     preview: {
       mesh: {
@@ -89,7 +89,7 @@ function automaticResult(sourceHash: string): AutomaticOutlineResult {
         indices: previewSource.indices.slice(),
       },
       axis: { origin: [0, 0, 0] as const, direction: [0, 0, 1] as const },
-      layers: [coloredLayer],
+      layers: coloredLayers,
     },
     warnings: [],
     originalReport: importRepairAnalysis(sourceHash).originalReport,

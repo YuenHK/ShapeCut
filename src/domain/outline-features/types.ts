@@ -1,7 +1,7 @@
 import type { Point2 } from '../decomposition/types';
 import type { OutlineLayer } from '../outline-2.5d/extract';
 import type { Bounds2 } from '../outline-2.5d/simplify';
-import type { OutlineMode } from '../outline-2.5d/types';
+import { DEFAULT_OUTLINE_BUDGETS, type OutlineMode } from '../outline-2.5d/types';
 import { validateOutlineLayer } from '../outline-2.5d/validate';
 
 export type FeatureRole = 'CUT_BLACK' | 'DEEP_RED' | 'LIGHT_BLUE';
@@ -64,6 +64,15 @@ const LAYER_KEYS = new Set([
 const CONTOUR_KEYS = new Set(['id', 'role', 'outer', 'boundsMm', 'areaMm2']);
 const RUNTIME_REASON = 'Colored feature validation exceeded the runtime budget';
 const DEFAULT_VALIDATION_RUNTIME_MS = 30_000;
+
+function validLayerCount(count: number): boolean {
+  return count >= DEFAULT_OUTLINE_BUDGETS.minLayers && count <= DEFAULT_OUTLINE_BUDGETS.maxLayers;
+}
+
+function checkRuntimeBudget(deadline: number, checkpoint: () => void): void {
+  checkpoint();
+  if (Date.now() > deadline) throw new RangeError(RUNTIME_REASON);
+}
 
 function isRecord(value: unknown): value is UnknownRecord {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -295,12 +304,23 @@ export function validateColoredLayerShape(
   });
 }
 
-function contourRecord(contourValue: FeatureContour | undefined): unknown {
+function contourRecord(
+  contourValue: FeatureContour | undefined,
+  deadline: number,
+  checkpoint: () => void,
+): unknown {
   if (contourValue === undefined) return null;
+  const outer: number[][] = [];
+  for (let index = 0; index < contourValue.outer.length; index += 1) {
+    if ((index & 63) === 0) checkRuntimeBudget(deadline, checkpoint);
+    const [x, y] = contourValue.outer[index];
+    outer.push([x, y]);
+  }
+  checkRuntimeBudget(deadline, checkpoint);
   return {
     id: contourValue.id,
     role: contourValue.role,
-    outer: contourValue.outer.map(([x, y]) => [x, y]),
+    outer,
     boundsMm: {
       minX: contourValue.boundsMm.minX, minY: contourValue.boundsMm.minY,
       maxX: contourValue.boundsMm.maxX, maxY: contourValue.boundsMm.maxY,
@@ -309,53 +329,75 @@ function contourRecord(contourValue: FeatureContour | undefined): unknown {
   };
 }
 
-function orderedLayerRecords(layers: readonly ColoredOutlineLayer[]): unknown {
-  return layers.map((layer) => ({
-    id: layer.id,
-    index: layer.index,
-    zStart: layer.zStart,
-    zEnd: layer.zEnd,
-    removedComponentCount: layer.removedComponentCount,
-    roles: [
-      ['exterior', contourRecord(layer.exterior)],
-      ['centralHole', contourRecord(layer.centralHole)],
-      ['deepFeature', contourRecord(layer.deepFeature)],
-      ['lightFeature', contourRecord(layer.lightFeature)],
-    ],
-    diagnostics: {
-      hole: layer.diagnostics.hole.status === 'retained'
-        ? {
-          status: 'retained',
-          equivalentDiameterMm: layer.diagnostics.hole.equivalentDiameterMm,
-          axisDistanceMm: layer.diagnostics.hole.axisDistanceMm,
-        }
-        : { status: 'omitted' },
-      depth: {
-        cellSizeMm: layer.diagnostics.depth.cellSizeMm,
-        contrastMm: layer.diagnostics.depth.contrastMm,
-        redThresholdMm: layer.diagnostics.depth.redThresholdMm,
-        blueThresholdMm: layer.diagnostics.depth.blueThresholdMm,
+function orderedLayerRecords(
+  layers: readonly ColoredOutlineLayer[],
+  deadline: number,
+  checkpoint: () => void,
+): unknown {
+  const records: unknown[] = [];
+  for (let index = 0; index < layers.length; index += 1) {
+    checkRuntimeBudget(deadline, checkpoint);
+    const layer = layers[index];
+    records.push({
+      id: layer.id,
+      index: layer.index,
+      zStart: layer.zStart,
+      zEnd: layer.zEnd,
+      removedComponentCount: layer.removedComponentCount,
+      roles: [
+        ['exterior', contourRecord(layer.exterior, deadline, checkpoint)],
+        ['centralHole', contourRecord(layer.centralHole, deadline, checkpoint)],
+        ['deepFeature', contourRecord(layer.deepFeature, deadline, checkpoint)],
+        ['lightFeature', contourRecord(layer.lightFeature, deadline, checkpoint)],
+      ],
+      diagnostics: {
+        hole: layer.diagnostics.hole.status === 'retained'
+          ? {
+            status: 'retained',
+            equivalentDiameterMm: layer.diagnostics.hole.equivalentDiameterMm,
+            axisDistanceMm: layer.diagnostics.hole.axisDistanceMm,
+          }
+          : { status: 'omitted' },
+        depth: {
+          cellSizeMm: layer.diagnostics.depth.cellSizeMm,
+          contrastMm: layer.diagnostics.depth.contrastMm,
+          redThresholdMm: layer.diagnostics.depth.redThresholdMm,
+          blueThresholdMm: layer.diagnostics.depth.blueThresholdMm,
+        },
       },
-    },
-  }));
+    });
+  }
+  checkRuntimeBudget(deadline, checkpoint);
+  return records;
 }
 
-function hashText(value: string): string {
+function hashText(value: string, deadline: number, checkpoint: () => void): string {
   const lanes = [2166136261, 2246822519, 3266489917, 668265263];
   for (let lane = 0; lane < lanes.length; lane += 1) {
-    for (const char of value) {
-      lanes[lane] = Math.imul(lanes[lane] ^ (char.charCodeAt(0) + lane * 131), 16777619 + lane * 2) >>> 0;
+    checkRuntimeBudget(deadline, checkpoint);
+    for (let index = 0; index < value.length; index += 1) {
+      if ((index & 1023) === 0) checkRuntimeBudget(deadline, checkpoint);
+      lanes[lane] = Math.imul(lanes[lane] ^ (value.charCodeAt(index) + lane * 131), 16777619 + lane * 2) >>> 0;
     }
   }
-  return lanes.map((item) => item.toString(16).padStart(8, '0')).join('');
+  const result = lanes.map((item) => item.toString(16).padStart(8, '0')).join('');
+  checkRuntimeBudget(deadline, checkpoint);
+  return result;
 }
 
-export function featureEvidenceFingerprint(result: FeatureFingerprintSource): string {
-  return hashText(JSON.stringify({
+export function featureEvidenceFingerprint(
+  result: FeatureFingerprintSource,
+  deadline = Date.now() + DEFAULT_VALIDATION_RUNTIME_MS,
+  checkpoint: () => void = () => undefined,
+): string {
+  checkRuntimeBudget(deadline, checkpoint);
+  const serialized = JSON.stringify({
     sourceHash: result.sourceHash,
     mode: result.mode,
-    layers: orderedLayerRecords(result.coloredLayers),
-  }));
+    layers: orderedLayerRecords(result.coloredLayers, deadline, checkpoint),
+  });
+  checkRuntimeBudget(deadline, checkpoint);
+  return hashText(serialized, deadline, checkpoint);
 }
 
 function previewReasons(
@@ -364,6 +406,7 @@ function previewReasons(
   coloredLayersValid: boolean,
   selectedAxis: { readonly origin: readonly number[]; readonly direction: readonly number[] } | undefined,
   validateLayer: (value: unknown) => ColoredLayerValidation,
+  budget: ValidationBudget,
 ): string[] {
   if (!isRecord(value)) return ['Preview must be present'];
   const reasons = unexpectedKeys(value, new Set(['mesh', 'axis', 'layers']), 'Preview');
@@ -402,15 +445,23 @@ function previewReasons(
     reasons.push('Preview layers must be an array');
   } else {
     const previewLayers = value.layers as readonly ColoredOutlineLayer[];
-    const previewValid = previewLayers.length > 0 && previewLayers.length <= 24
+    if (!validLayerCount(previewLayers.length)) {
+      reasons.push('Preview layers must contain 6 to 24 ordered layer records');
+    }
+    const previewValid = validLayerCount(previewLayers.length)
       && previewLayers.every((layer) => {
         const validation = validateLayer(layer);
         reasons.push(...validation.reasons.map((reason) => `Preview ${reason}`));
         return validation.ok;
       });
-    if (previewValid && coloredLayersValid
-      && JSON.stringify(orderedLayerRecords(previewLayers)) !== JSON.stringify(orderedLayerRecords(coloredLayers))) {
-      reasons.push('Preview layers must match the ordered colored layer records');
+    if (previewValid && coloredLayersValid) {
+      const previewRecords = JSON.stringify(orderedLayerRecords(previewLayers, budget.deadline, budget.checkpoint));
+      checkRuntimeBudget(budget.deadline, budget.checkpoint);
+      const coloredRecords = JSON.stringify(orderedLayerRecords(coloredLayers, budget.deadline, budget.checkpoint));
+      checkRuntimeBudget(budget.deadline, budget.checkpoint);
+      if (previewRecords !== coloredRecords) {
+        reasons.push('Preview layers must match the ordered colored layer records');
+      }
     } else if (previewLayers.length !== coloredLayers.length) {
       reasons.push('Preview layers must match the ordered colored layer records');
     }
@@ -477,8 +528,8 @@ export function validateAutomaticColoredResult(
 
   const legacyLayers = Array.isArray(value.layers) ? value.layers : undefined;
   if (!legacyLayers) reasons.push('Migration exterior layers must be an array');
-  if (!Array.isArray(value.coloredLayers) || value.coloredLayers.length === 0 || value.coloredLayers.length > 24) {
-    reasons.push('Colored result requires at least one layer with exactly one exterior');
+  if (!Array.isArray(value.coloredLayers) || !validLayerCount(value.coloredLayers.length)) {
+    reasons.push('Colored result requires 6 to 24 ordered layers with exactly one exterior each');
   } else {
     const layerIds = new Set<string>(), featureIds = new Set<string>(), allIds = new Set<string>();
     let previous: ColoredOutlineLayer | undefined;
@@ -514,10 +565,13 @@ export function validateAutomaticColoredResult(
   const coloredLayers = Array.isArray(value.coloredLayers)
     ? value.coloredLayers as readonly ColoredOutlineLayer[]
     : [];
-  const coloredLayersValid = coloredLayers.length > 0 && coloredLayers.length <= 24
+  const coloredLayersValid = validLayerCount(coloredLayers.length)
     && coloredLayers.every((layer) => validateLayer(layer).ok);
 
   if (legacyLayers) {
+    if (!validLayerCount(legacyLayers.length)) {
+      reasons.push('Migration exterior layers must contain 6 to 24 ordered layer records');
+    }
     if (legacyLayers.length !== coloredLayers.length) {
       reasons.push('Migration exterior layers must match the colored layer count and order');
     }
@@ -567,7 +621,7 @@ export function validateAutomaticColoredResult(
     reasons.push('Automatic removed component count must match ordered colored layer records');
   }
   reasons.push(...previewReasons(
-    value.preview, coloredLayers, coloredLayersValid, selectedAxis, validateLayer,
+    value.preview, coloredLayers, coloredLayersValid, selectedAxis, validateLayer, budget,
   ));
   if (typeof value.featureEvidenceFingerprint !== 'string' || value.featureEvidenceFingerprint.length === 0) {
     reasons.push('Feature evidence fingerprint must be present and non-empty');
@@ -576,7 +630,7 @@ export function validateAutomaticColoredResult(
       sourceHash: value.sourceHash,
       mode: value.mode,
       coloredLayers,
-    })) {
+    }, deadline, checkpoint)) {
     reasons.push('Feature evidence fingerprint is inconsistent with ordered role records');
   }
   if (reasons.length > 0) throw new RangeError(`Invalid automatic colored result: ${reasons.join('; ')}`);

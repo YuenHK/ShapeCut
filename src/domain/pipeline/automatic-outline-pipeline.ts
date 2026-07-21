@@ -94,36 +94,60 @@ export function diagnosticsFingerprint(value: AutomaticOutlineDiagnostics): stri
   return lanes.map((item) => item.toString(16).padStart(8, '0')).join('');
 }
 
+function checkEvidenceDeadline(deadline: number): void {
+  if (Date.now() > deadline) throw new RangeError('Automatic outline evidence exceeded the runtime budget');
+}
+
+function copyPreviewMesh(mesh: TriangleMesh, deadline: number): OutlinePreviewPayload['mesh'] {
+  checkEvidenceDeadline(deadline);
+  const positions = new Float32Array(mesh.positions.length);
+  for (let index = 0; index < mesh.positions.length; index += 1) {
+    if ((index & 4095) === 0) checkEvidenceDeadline(deadline);
+    positions[index] = mesh.positions[index];
+  }
+  checkEvidenceDeadline(deadline);
+  const indices = new Uint32Array(mesh.indices.length);
+  for (let index = 0; index < mesh.indices.length; index += 1) {
+    if ((index & 4095) === 0) checkEvidenceDeadline(deadline);
+    indices[index] = mesh.indices[index];
+  }
+  checkEvidenceDeadline(deadline);
+  return { positions, indices };
+}
+
 function withResultEvidence(
   result: Omit<AutomaticOutlineResult, 'coloredLayers' | 'featureWarnings' | 'featureEvidenceFingerprint' | 'preview' | 'removalEvidenceFingerprint'>,
   previewMesh: TriangleMesh,
   deadline: number,
 ): AutomaticOutlineResult {
   const coloredLayers = colorizeExteriorLayers(result.layers, result.diagnostics.rasterCellSizeMm ?? 0);
+  let previewMeshCopy: OutlinePreviewPayload['mesh'];
+  try {
+    previewMeshCopy = copyPreviewMesh(previewMesh, deadline);
+  } catch (error) {
+    throw asAutomaticOutlineError(error, 'NO_OUTLINE');
+  }
   const coloredResult = {
     ...result,
     coloredLayers,
     featureWarnings: [],
     preview: {
-      mesh: {
-        positions: Float32Array.from(previewMesh.positions),
-        indices: previewMesh.indices.slice(),
-      },
+      mesh: previewMeshCopy,
       axis: { origin: result.axis.axis.origin, direction: result.axis.axis.direction },
       layers: coloredLayers,
     },
   };
-  const complete: AutomaticOutlineResult = {
-    ...coloredResult,
-    removalEvidenceFingerprint: removalEvidenceFingerprint(result),
-    featureEvidenceFingerprint: featureEvidenceFingerprint(coloredResult),
-  };
   try {
+    const complete: AutomaticOutlineResult = {
+      ...coloredResult,
+      removalEvidenceFingerprint: removalEvidenceFingerprint(result),
+      featureEvidenceFingerprint: featureEvidenceFingerprint(coloredResult, deadline),
+    };
     validateAutomaticColoredResult(complete, deadline);
+    return complete;
   } catch (error) {
     throw asAutomaticOutlineError(error, 'NO_OUTLINE');
   }
-  return complete;
 }
 
 function diagnostics(extraction: { readonly layers: readonly OutlineLayer[]; readonly cellSizeMm?: number }, report: MeshProblemReport, repairAccepted: boolean): AutomaticOutlineDiagnostics {

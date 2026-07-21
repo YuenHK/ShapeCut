@@ -66,18 +66,34 @@ function coloredLayer(overrides: Partial<ColoredOutlineLayer> = {}): ColoredOutl
   };
 }
 
-function legacyLayer(): OutlineLayer {
+function indexedColoredLayer(index: number): ColoredOutlineLayer {
+  return coloredLayer({
+    id: `outline-layer-${index}`,
+    index,
+    zStart: index,
+    zEnd: index + 1,
+    exterior: square(20, `layer-${index}-exterior`),
+    centralHole: circle(2, `layer-${index}-hole`),
+    deepFeature: rectangle(3, 2, `layer-${index}-deep`),
+  });
+}
+
+function coloredLayerSet(count: number): readonly ColoredOutlineLayer[] {
+  return Array.from({ length: count }, (_, index) => indexedColoredLayer(index));
+}
+
+function legacyLayer(layer = indexedColoredLayer(0)): OutlineLayer {
   return {
-    id: 'outline-layer-0', index: 0, zStart: 0, zEnd: 1,
-    contour: { outer: square(20).outer, holes: [] },
-    sourceAreaMm2: 400, simplifiedAreaMm2: 400,
-    sourceBoundsMm: { minX: -10, minY: -10, maxX: 10, maxY: 10 },
+    id: layer.id, index: layer.index, zStart: layer.zStart, zEnd: layer.zEnd,
+    contour: { outer: layer.exterior.outer, holes: [] },
+    sourceAreaMm2: layer.exterior.areaMm2, simplifiedAreaMm2: layer.exterior.areaMm2,
+    sourceBoundsMm: layer.exterior.boundsMm,
     simplificationToleranceMm: 0.01, boundsDriftRatio: 0, areaDriftRatio: 0,
-    removedComponentCount: 1,
+    removedComponentCount: layer.removedComponentCount,
   };
 }
 
-function automaticResult(layer = coloredLayer()): AutomaticOutlineResult {
+function automaticResult(coloredLayers = coloredLayerSet(6)): AutomaticOutlineResult {
   const result = {
     sourceHash: 'a'.repeat(32),
     mode: 'exact' as const,
@@ -86,8 +102,8 @@ function automaticResult(layer = coloredLayer()): AutomaticOutlineResult {
       source: 'candidate' as const,
       axis: { origin: [0, 0, 0] as const, direction: [0, 0, 1] as const, confidence: 1, confirmed: true },
     },
-    layers: [legacyLayer()],
-    coloredLayers: [layer],
+    layers: coloredLayers.map((layer) => legacyLayer(layer)),
+    coloredLayers,
     featureWarnings: [],
     warnings: [],
     originalReport: {
@@ -102,12 +118,12 @@ function automaticResult(layer = coloredLayer()): AutomaticOutlineResult {
       },
     },
     repairAccepted: true,
-    removedComponentCount: 1,
+    removedComponentCount: coloredLayers.reduce((sum, layer) => sum + layer.removedComponentCount, 0),
     removalEvidenceFingerprint: 'b'.repeat(32),
     diagnostics: {
       topology: { triangleCount: 1, boundaryEdgeCount: 0, nonManifoldEdgeCount: 0, degenerateTriangleCount: 0, duplicateTriangleCount: 0, inconsistentWindingEdgeCount: 0, selfIntersectionCount: 0, selfIntersectionAnalysisComplete: true },
       repairDecision: 'accepted' as const, rasterCellSizeMm: null,
-      layers: [{ id: 'outline-layer-0', simplificationToleranceMm: 0.01, boundsDriftRatio: 0, areaDriftRatio: 0, areaEvidenceBasis: 'exact-slice-pre-simplification' as const }],
+      layers: coloredLayers.map((layer) => ({ id: layer.id, simplificationToleranceMm: 0.01, boundsDriftRatio: 0, areaDriftRatio: 0, areaEvidenceBasis: 'exact-slice-pre-simplification' as const })),
     },
     preview: {
       mesh: {
@@ -115,7 +131,7 @@ function automaticResult(layer = coloredLayer()): AutomaticOutlineResult {
         indices: new Uint32Array([0, 1, 2]),
       },
       axis: { origin: [0, 0, 0] as const, direction: [0, 0, 1] as const },
-      layers: [layer],
+      layers: coloredLayers,
     },
   };
   return { ...result, featureEvidenceFingerprint: featureEvidenceFingerprint(result) };
@@ -134,8 +150,8 @@ describe('colored outline contracts', () => {
     const forgedLayer = { ...cloned.coloredLayers[0], deepFeature: bowTie() };
     const forged = {
       ...cloned,
-      coloredLayers: [forgedLayer],
-      preview: { ...cloned.preview, layers: [forgedLayer] },
+      coloredLayers: [forgedLayer, ...cloned.coloredLayers.slice(1)],
+      preview: { ...cloned.preview, layers: [forgedLayer, ...cloned.preview.layers.slice(1)] },
     };
 
     expect(() => validateAutomaticColoredResult(forged)).toThrow(/deep feature|self-intersection/i);
@@ -143,7 +159,7 @@ describe('colored outline contracts', () => {
 
   it('rejects role geometry forged into the migration-only exterior layers', () => {
     const layer = coloredLayer();
-    const result = automaticResult(layer);
+    const result = automaticResult([layer]);
     const forged = structuredClone({ ...result, layers: [{ ...layer, deepFeature: bowTie() }] });
 
     expect(() => validateAutomaticColoredResult(forged)).toThrow(/deep feature|self-intersection/i);
@@ -192,7 +208,7 @@ describe('colored outline contracts', () => {
         depth: { cellSizeMm: 0, contrastMm: 0, redThresholdMm: 0, blueThresholdMm: 0 },
       },
     });
-    const cloned = structuredClone(automaticResult(first));
+    const cloned = structuredClone(automaticResult([first]));
     const forgedWithoutFingerprint = {
       ...cloned,
       coloredLayers: [first, second],
@@ -222,6 +238,25 @@ describe('colored outline contracts', () => {
     expect(() => validateAutomaticColoredResult({
       ...automaticResult(), layers: [],
     })).toThrow(/migration.*match.*colored/i);
+  });
+
+  it.each([1, 5])('rejects %i-layer colored, preview, and migration truncation', (count) => {
+    expect(() => validateAutomaticColoredResult(automaticResult(coloredLayerSet(count))))
+      .toThrow(/colored result.*6.*24/i);
+
+    const valid = automaticResult();
+    expect(() => validateAutomaticColoredResult({
+      ...valid, preview: { ...valid.preview, layers: valid.preview.layers.slice(0, count) },
+    })).toThrow(/preview layers.*6.*24/i);
+    expect(() => validateAutomaticColoredResult({
+      ...valid, layers: valid.layers.slice(0, count),
+    })).toThrow(/migration exterior layers.*6.*24/i);
+  });
+
+  it('accepts 24 ordered layers and rejects 25', () => {
+    expect(() => validateAutomaticColoredResult(automaticResult(coloredLayerSet(24)))).not.toThrow();
+    expect(() => validateAutomaticColoredResult(automaticResult(coloredLayerSet(25))))
+      .toThrow(/colored result.*6.*24/i);
   });
 
   it('requires the preview axis to match the selected automatic axis', () => {
@@ -262,7 +297,10 @@ describe('colored outline contracts', () => {
     };
     const genericRoleArray = {
       ...roleArraySource,
-      preview: { ...roleArraySource.preview, layers: [previewLayer] },
+      preview: {
+        ...roleArraySource.preview,
+        layers: [previewLayer, ...roleArraySource.preview.layers.slice(1)],
+      },
     };
     expect(() => validateAutomaticColoredResult(genericRoleArray)).toThrow(/unexpected.*features/i);
   });
@@ -277,6 +315,28 @@ describe('colored outline contracts', () => {
     expect(() => validateAutomaticColoredResult({
       ...automaticResult(), featureEvidenceFingerprint: '0'.repeat(32),
     })).toThrow(/feature.*fingerprint/i);
+  });
+
+  it('uses the supplied absolute deadline for fingerprint generation and validation', () => {
+    const result = automaticResult();
+    expect(() => featureEvidenceFingerprint(result, 0)).toThrow(/runtime budget/i);
+
+    const originalNow = Date.now;
+    let now = 0;
+    const forged = { ...result };
+    Object.defineProperty(forged, 'featureEvidenceFingerprint', {
+      enumerable: true,
+      get: () => {
+        now = 2;
+        return result.featureEvidenceFingerprint;
+      },
+    });
+    Date.now = () => now;
+    try {
+      expect(() => validateAutomaticColoredResult(forged, 1)).toThrow(/runtime budget/i);
+    } finally {
+      Date.now = originalNow;
+    }
   });
 
   it('remains valid and preserves typed arrays after a structured clone', () => {

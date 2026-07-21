@@ -195,6 +195,23 @@ describe('automatic outline pipeline', () => {
     }
   });
 
+  it('rejects when the shared deadline expires before preview preparation', async () => {
+    const originalNow = Date.now;
+    const previewCopy = vi.spyOn(Float32Array, 'from');
+    let now = 0;
+    Date.now = () => now;
+    try {
+      await expect(convertAutomatically(
+        { bytes: writeBinarySTL(cylinder(), 'safe') },
+        (stage) => { if (stage === 'packaging') now = 30_001; },
+      )).rejects.toMatchObject({ code: 'TIME_LIMIT' } satisfies Partial<AutomaticOutlineError>);
+      expect(previewCopy).not.toHaveBeenCalled();
+    } finally {
+      Date.now = originalNow;
+      previewCopy.mockRestore();
+    }
+  });
+
   it('does not project after exact extraction exhausts a resource limit', async () => {
     const exact = vi.spyOn(extraction, 'extractExactContours')
       .mockImplementationOnce(() => { throw new RangeError('Exact contour exceeds the triangle-layer test budget'); });
