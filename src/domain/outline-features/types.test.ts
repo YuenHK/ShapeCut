@@ -186,11 +186,21 @@ function withFeatureCounts(topDeep: number, lowerDeep: number): AutomaticOutline
 }
 
 describe('colored outline contracts', () => {
-  it('migrates legacy singular colored contours into canonical ordered arrays', () => {
+  function legacyLayerBase(): Record<string, unknown> {
     const { deepFeatures: _deepFeatures, lightFeatures: _lightFeatures,
       launcherCuts: _launcherCuts, fastenerHoles: _fastenerHoles, ...legacyBase } = coloredLayer();
+    return legacyBase;
+  }
+
+  it('migrates a zero-feature legacy layer to empty canonical arrays', () => {
+    expect(migrateColoredOutlineLayer(legacyLayerBase())).toMatchObject({
+      launcherCuts: [], fastenerHoles: [], deepFeatures: [], lightFeatures: [],
+    });
+  });
+
+  it('migrates legacy singular colored contours into canonical ordered arrays', () => {
     const legacy = {
-      ...legacyBase,
+      ...legacyLayerBase(),
       deepFeature: rectangle(3, 2, 'legacy-deep'),
       lightFeature: contour('legacy-light', 'LIGHT_BLUE', [[3, -1], [3, 1], [5, 1], [5, -1]]),
     };
@@ -203,6 +213,27 @@ describe('colored outline contracts', () => {
     });
     expect(migrateColoredOutlineLayer(legacy)).not.toHaveProperty('deepFeature');
     expect(migrateColoredOutlineLayer(legacy)).not.toHaveProperty('lightFeature');
+  });
+
+  it('rejects cross-role mixing between legacy and canonical engraving fields', () => {
+    expect(() => migrateColoredOutlineLayer({
+      ...legacyLayerBase(),
+      deepFeature: rectangle(1, 1, 'legacy-deep'),
+      lightFeatures: [],
+    })).toThrow(/legacy.*canonical|mixed/i);
+    expect(() => migrateColoredOutlineLayer({
+      ...legacyLayerBase(),
+      deepFeatures: [],
+      lightFeature: contour('legacy-light', 'LIGHT_BLUE', [[3, -1], [3, 1], [5, 1], [5, -1]]),
+    })).toThrow(/legacy.*canonical|mixed/i);
+  });
+
+  it.each([
+    { deepFeature: rectangle(1, 1, 'legacy-deep'), deepFeatures: [] },
+    { lightFeature: contour('legacy-light', 'LIGHT_BLUE', [[3, -1], [3, 1], [5, 1], [5, -1]]), lightFeatures: [] },
+  ])('rejects same-role mixing between legacy and canonical engraving fields', (mixed) => {
+    expect(() => migrateColoredOutlineLayer({ ...legacyLayerBase(), ...mixed }))
+      .toThrow(/legacy.*canonical|mixed/i);
   });
 
   it('bounds top and lower engraving arrays independently', () => {

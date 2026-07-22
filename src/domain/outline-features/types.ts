@@ -95,8 +95,9 @@ export function migrateColoredOutlineLayer(value: unknown): ColoredOutlineLayer 
   if (!isRecord(value)) throw new RangeError('Legacy colored layer must be an object');
   const hasLegacyDeep = Object.hasOwn(value, 'deepFeature');
   const hasLegacyLight = Object.hasOwn(value, 'lightFeature');
-  if ((hasLegacyDeep && Object.hasOwn(value, 'deepFeatures'))
-    || (hasLegacyLight && Object.hasOwn(value, 'lightFeatures'))) {
+  const hasLegacyEngraving = hasLegacyDeep || hasLegacyLight;
+  const hasCanonicalEngraving = Object.hasOwn(value, 'deepFeatures') || Object.hasOwn(value, 'lightFeatures');
+  if (hasLegacyEngraving && hasCanonicalEngraving) {
     throw new RangeError('Legacy and canonical colored feature fields must not be mixed');
   }
   const { deepFeature, lightFeature, ...withoutLegacy } = value;
@@ -104,8 +105,10 @@ export function migrateColoredOutlineLayer(value: unknown): ColoredOutlineLayer 
     ...withoutLegacy,
     launcherCuts: Array.isArray(withoutLegacy.launcherCuts) ? withoutLegacy.launcherCuts : [],
     fastenerHoles: Array.isArray(withoutLegacy.fastenerHoles) ? withoutLegacy.fastenerHoles : [],
-    deepFeatures: hasLegacyDeep ? deepFeature === undefined ? [] : [deepFeature] : withoutLegacy.deepFeatures,
-    lightFeatures: hasLegacyLight ? lightFeature === undefined ? [] : [lightFeature] : withoutLegacy.lightFeatures,
+    deepFeatures: hasLegacyDeep ? deepFeature === undefined ? [] : [deepFeature]
+      : Array.isArray(withoutLegacy.deepFeatures) ? withoutLegacy.deepFeatures : [],
+    lightFeatures: hasLegacyLight ? lightFeature === undefined ? [] : [lightFeature]
+      : Array.isArray(withoutLegacy.lightFeatures) ? withoutLegacy.lightFeatures : [],
   } as unknown as ColoredOutlineLayer;
 }
 

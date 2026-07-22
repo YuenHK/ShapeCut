@@ -4,6 +4,8 @@ import { page } from '@vitest/browser/context';
 import { describe, expect, it, vi } from 'vitest';
 import type { AutomaticOutlineProgressEvent, AutomaticOutlineResult } from '../domain/pipeline/automatic-outline-pipeline';
 import { featureEvidenceFingerprint, type ColoredOutlineLayer } from '../domain/outline-features/types';
+import { manufacturingGeometryProfile } from '../domain/materials/manufacturing-profile';
+import { defaultPendingMaterialProfile } from '../domain/materials/default-profiles';
 import '../styles.css';
 import { App } from './App';
 import type { OneClickConverterServices } from './OneClickConverter';
@@ -100,7 +102,7 @@ describe('App real browser one-click flow', () => {
     let report: ((event: AutomaticOutlineProgressEvent) => void) | undefined;
     const services: OneClickConverterServices = {
       cancel: vi.fn(),
-      convert: vi.fn((_bytes, onProgress) => {
+      convert: vi.fn((_bytes, _material, onProgress) => {
         report = onProgress;
         return conversion.promise;
       }),
@@ -117,6 +119,11 @@ describe('App real browser one-click flow', () => {
     const input = screen.getByLabelText('選擇 STL 模型');
     input.focus();
     await user.upload(input, new File(['mesh'], 'keyboard.stl', { type: 'model/stl' }));
+    const material = manufacturingGeometryProfile(defaultPendingMaterialProfile('plywood-3')!);
+
+    expect(services.convert).not.toHaveBeenCalled();
+    await user.selectOptions(await screen.findByLabelText('選擇製作材料'), material.id);
+    expect(services.convert).toHaveBeenCalledWith(expect.any(ArrayBuffer), material, expect.any(Function));
 
     expect(document.querySelector('.processing-loading-panel')).toBeInTheDocument();
     expect(document.querySelector('.processing-status-overlay')).not.toBeInTheDocument();
