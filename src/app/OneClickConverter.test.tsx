@@ -90,6 +90,16 @@ const downloads: OutlineDownloads = {
   explodedPdf: { href: 'blob:exploded', fileName: 'exploded-view.pdf' },
 };
 
+function packageDownloads(prefix: string): OutlineDownloads {
+  return {
+    zip: { href: `blob:${prefix}-zip`, fileName: 'shapecut-files.zip' },
+    svg: { href: `blob:${prefix}-svg`, fileName: 'cut-and-engrave.svg' },
+    dxf: { href: `blob:${prefix}-dxf`, fileName: 'cut-and-engrave.dxf' },
+    previewPdf: { href: `blob:${prefix}-preview`, fileName: 'preview.pdf' },
+    explodedPdf: { href: `blob:${prefix}-exploded`, fileName: 'exploded-view.pdf' },
+  };
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (error: unknown) => void;
@@ -153,6 +163,132 @@ describe('OneClickConverter', () => {
       await vi.advanceTimersByTimeAsync(1);
       await act(async () => { await Promise.resolve(); });
       expect(screen.getByRole('heading', { name: '轉換完成' })).toBeVisible();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('revokes package URLs already resolved during the result hold when a replacement cancels it', async () => {
+    vi.useFakeTimers();
+    try {
+      const packaged = deferred<OutlineDownloads>();
+      const revoke = vi.fn();
+      Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revoke });
+      const api = services({
+        createTimeline: undefined,
+        convert: vi.fn((_bytes, _material, onProgress) => {
+          onProgress?.({ stage: 'reading' });
+          onProgress?.({ stage: 'analyzing', preview: result.preview });
+          onProgress?.({ stage: 'simplifying' });
+          onProgress?.({ stage: 'slicing', preview: result.preview });
+          onProgress?.({ stage: 'packaging' });
+          return Promise.resolve(result);
+        }),
+        package: vi.fn().mockReturnValue(packaged.promise),
+      });
+      render(<OneClickConverter services={api} />);
+      const first = new File(['mesh'], 'held.stl');
+      const replacement = new File(['new'], 'replacement.stl');
+      Object.defineProperty(first, 'arrayBuffer', { value: vi.fn().mockResolvedValue(new ArrayBuffer(4)) });
+      Object.defineProperty(replacement, 'arrayBuffer', { value: vi.fn().mockResolvedValue(new ArrayBuffer(4)) });
+      await act(async () => { fireEvent.change(screen.getByLabelText('選擇 STL 模型'), { target: { files: [first] } }); });
+      await act(async () => { fireEvent.change(screen.getByLabelText('選擇製作材料'), { target: { value: 'plywood-3' } }); });
+      await act(async () => { await Promise.resolve(); });
+      packaged.resolve(packageDownloads('held'));
+      await act(async () => { await Promise.resolve(); });
+      await vi.advanceTimersByTimeAsync(7_999);
+
+      await act(async () => { fireEvent.change(screen.getByLabelText('選擇 STL 模型'), { target: { files: [replacement] } }); });
+
+      expect(revoke.mock.calls.map(([href]) => href)).toEqual([
+        'blob:held-zip', 'blob:held-svg', 'blob:held-dxf', 'blob:held-preview', 'blob:held-exploded',
+      ]);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(screen.queryByRole('heading', { name: '轉換完成' })).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('revokes package URLs that arrive after the result hold has been cancelled', async () => {
+    vi.useFakeTimers();
+    try {
+      const packaged = deferred<OutlineDownloads>();
+      const revoke = vi.fn();
+      Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revoke });
+      const api = services({ createTimeline: undefined, convert: vi.fn().mockResolvedValue(result), package: vi.fn().mockReturnValue(packaged.promise) });
+      render(<OneClickConverter services={api} />);
+      const first = new File(['mesh'], 'late-package.stl');
+      const replacement = new File(['new'], 'replacement.stl');
+      Object.defineProperty(first, 'arrayBuffer', { value: vi.fn().mockResolvedValue(new ArrayBuffer(4)) });
+      Object.defineProperty(replacement, 'arrayBuffer', { value: vi.fn().mockResolvedValue(new ArrayBuffer(4)) });
+      await act(async () => { fireEvent.change(screen.getByLabelText('選擇 STL 模型'), { target: { files: [first] } }); });
+      await act(async () => { fireEvent.change(screen.getByLabelText('選擇製作材料'), { target: { value: 'plywood-3' } }); });
+      await act(async () => { await Promise.resolve(); });
+      await act(async () => { fireEvent.change(screen.getByLabelText('選擇 STL 模型'), { target: { files: [replacement] } }); });
+      packaged.resolve(packageDownloads('late'));
+      await act(async () => { await Promise.resolve(); });
+
+      expect(revoke.mock.calls.map(([href]) => href)).toEqual([
+        'blob:late-zip', 'blob:late-svg', 'blob:late-dxf', 'blob:late-preview', 'blob:late-exploded',
+      ]);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(screen.queryByRole('heading', { name: '轉換完成' })).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('revokes package URLs already resolved during the result hold on unmount', async () => {
+    vi.useFakeTimers();
+    try {
+      const packaged = deferred<OutlineDownloads>();
+      const revoke = vi.fn();
+      Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revoke });
+      const api = services({ createTimeline: undefined, convert: vi.fn().mockResolvedValue(result), package: vi.fn().mockReturnValue(packaged.promise) });
+      const view = render(<OneClickConverter services={api} />);
+      const file = new File(['mesh'], 'unmount-held.stl');
+      Object.defineProperty(file, 'arrayBuffer', { value: vi.fn().mockResolvedValue(new ArrayBuffer(4)) });
+      await act(async () => { fireEvent.change(screen.getByLabelText('選擇 STL 模型'), { target: { files: [file] } }); });
+      await act(async () => { fireEvent.change(screen.getByLabelText('選擇製作材料'), { target: { value: 'plywood-3' } }); });
+      await act(async () => { await Promise.resolve(); });
+      packaged.resolve(packageDownloads('unmount-held'));
+      await act(async () => { await Promise.resolve(); });
+      await vi.advanceTimersByTimeAsync(7_999);
+      view.unmount();
+
+      expect(revoke.mock.calls.map(([href]) => href)).toEqual([
+        'blob:unmount-held-zip', 'blob:unmount-held-svg', 'blob:unmount-held-dxf', 'blob:unmount-held-preview', 'blob:unmount-held-exploded',
+      ]);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('ignores late same-request worker progress after conversion resolves', async () => {
+    vi.useFakeTimers();
+    try {
+      let report: ((event: AutomaticOutlineProgressEvent) => void) | undefined;
+      const api = services({
+        createTimeline: undefined,
+        convert: vi.fn((_bytes, _material, onProgress) => {
+          report = onProgress;
+          return Promise.resolve(result);
+        }),
+      });
+      render(<OneClickConverter services={api} />);
+      const file = new File(['mesh'], 'late-progress.stl');
+      Object.defineProperty(file, 'arrayBuffer', { value: vi.fn().mockResolvedValue(new ArrayBuffer(4)) });
+      await act(async () => { fireEvent.change(screen.getByLabelText('選擇 STL 模型'), { target: { files: [file] } }); });
+      await act(async () => { fireEvent.change(screen.getByLabelText('選擇製作材料'), { target: { value: 'plywood-3' } }); });
+      await act(async () => { await Promise.resolve(); });
+      report?.({ stage: 'analyzing', preview: result.preview });
+      await vi.advanceTimersByTimeAsync(8_000);
+      await act(async () => { await Promise.resolve(); });
+
+      expect(screen.getByRole('heading', { name: '轉換完成' })).toBeVisible();
+      expect(vi.getTimerCount()).toBe(0);
     } finally {
       vi.useRealTimers();
     }

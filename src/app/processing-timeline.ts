@@ -94,7 +94,7 @@ export function createProcessingTimeline<Timer>(clock: ProcessingTimelineClock<T
 
   return {
     advance(stage, preview) {
-      if (cancelled) return;
+      if (cancelled || finishRequested) return;
       const index = STAGES.indexOf(stage);
       if (index < 0 || index <= acceptedStage) return;
       acceptedStage = index;

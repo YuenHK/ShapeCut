@@ -102,4 +102,20 @@ describe('createProcessingTimeline', () => {
     expect(shown.mock.calls.map(([stage]) => stage)).toEqual(['reading']);
     await expect(done).rejects.toBeInstanceOf(ProcessingTimelineCancelledError);
   });
+
+  it('settles the final hold when a late worker event arrives after finish', async () => {
+    const clock = fakeClock();
+    const shown = vi.fn();
+    const timeline = createProcessingTimeline({ ...clock, onStage: shown });
+    timeline.advance('reading');
+    const done = timeline.finish();
+
+    clock.advance(100);
+    timeline.advance('analyzing');
+    clock.advance(7_900);
+
+    await expect(done).resolves.toBeUndefined();
+    expect(shown.mock.calls.map(([stage]) => stage)).toEqual(['reading']);
+    expect(clock.pending()).toBe(0);
+  });
 });

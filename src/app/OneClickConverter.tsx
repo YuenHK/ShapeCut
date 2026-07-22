@@ -265,6 +265,8 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
     releaseCurrentDownloads();
     let latestPreview: OutlinePreviewPayload | undefined;
     let completedResult: AutomaticOutlineResult | undefined;
+    let ownedDownloads: OutlineDownloads | undefined;
+    let workerFinished = false;
     const timeline = (services.createTimeline ?? createProcessingTimeline)({
       now: () => Date.now(),
       setTimeout: (callback, delay) => window.setTimeout(callback, delay),
@@ -278,18 +280,28 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
     timeline.advance('reading');
     try {
       const result = await services.convert(bytes, material, (event) => {
-        if (current !== requestId.current) return;
+        if (current !== requestId.current || workerFinished) return;
         if ('preview' in event) latestPreview = event.preview;
         timeline.advance(event.stage, latestPreview);
       });
       if (current !== requestId.current) return;
+      workerFinished = true;
       completedResult = result;
-      const [, downloads] = await Promise.all([timeline.finish(), services.package(result, fileName)]);
+      const packaged = services.package(result, fileName).then((downloads) => {
+        if (current !== requestId.current) {
+          revokeDownloads(downloads);
+          throw new SupersededError(current);
+        }
+        ownedDownloads = downloads;
+        downloadsRef.current = downloads;
+        return downloads;
+      });
+      const [, downloads] = await Promise.all([timeline.finish(), packaged]);
       if (current !== requestId.current) {
-        revokeDownloads(downloads);
+        if (downloadsRef.current === downloads) releaseCurrentDownloads();
+        else revokeDownloads(downloads);
         return;
       }
-      downloadsRef.current = downloads;
       if (timelineRef.current === timeline) timelineRef.current = undefined;
       setView({ kind: 'result', fileName, result, downloads });
     } catch (error) {
@@ -298,6 +310,7 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
         timeline.cancel();
         timelineRef.current = undefined;
       }
+      if (downloadsRef.current === ownedDownloads) releaseCurrentDownloads();
       const artifact = completedResult && error instanceof OutlineArtifactError
         ? error.artifact
         : undefined;
