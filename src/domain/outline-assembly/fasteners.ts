@@ -49,6 +49,12 @@ export type FastenerPlanningRequest = {
   readonly material: ManufacturingGeometryProfile;
   readonly deadline?: number;
   readonly checkpoint?: () => void;
+  readonly searchLimits?: FastenerSearchLimits;
+};
+
+export type FastenerSearchLimits = {
+  readonly maxRadialEvaluations?: number;
+  readonly maxSingleCells?: number;
 };
 
 export type FastenerMaterializationLayer = Pick<
@@ -80,6 +86,69 @@ type SearchCell = CommonBounds & {
   readonly clearanceMm: number;
   readonly upperClearanceMm: number;
 };
+
+type ResolvedSearchLimits = {
+  readonly maxRadialEvaluations: number;
+  readonly maxSingleCells: number;
+};
+
+export function fastenerPatternIntervalUpperBound(input: {
+  readonly lowMarginMm: number;
+  readonly middleMarginMm: number;
+  readonly highMarginMm: number;
+  readonly widthMm: number;
+  readonly lipschitz: number;
+}): number {
+  const values = [
+    input.lowMarginMm, input.middleMarginMm, input.highMarginMm,
+    input.widthMm, input.lipschitz,
+  ];
+  if (!values.every(Number.isFinite) || input.widthMm <= 0 || input.lipschitz < 0) {
+    throw new RangeError('Fastener interval certification requires finite Lipschitz samples and positive width');
+  }
+  const halfWidth = input.widthMm / 2;
+  const halfUpperBound = (left: number, right: number): number => Math.max(
+    left,
+    right,
+    (left + right + input.lipschitz * halfWidth) / 2,
+  );
+  return Math.max(
+    halfUpperBound(input.lowMarginMm, input.middleMarginMm),
+    halfUpperBound(input.middleMarginMm, input.highMarginMm),
+  );
+}
+
+export function shouldPruneFastenerSingleCell(input: {
+  readonly bestClearanceMm?: number;
+  readonly cellUpperClearanceMm: number;
+  readonly requiredClearanceMm: number;
+}): boolean {
+  if (!Number.isFinite(input.cellUpperClearanceMm)
+    || !Number.isFinite(input.requiredClearanceMm)) return false;
+  if (input.bestClearanceMm !== undefined
+    && Number.isFinite(input.bestClearanceMm)
+    && input.bestClearanceMm + 1e-12 >= input.requiredClearanceMm) {
+    return input.cellUpperClearanceMm
+      <= input.bestClearanceMm + FASTENER_SEARCH_RESOLUTION_MM;
+  }
+  return input.cellUpperClearanceMm < input.requiredClearanceMm;
+}
+
+function resolvedSearchLimits(limits: FastenerSearchLimits | undefined): ResolvedSearchLimits {
+  const resolve = (value: number | undefined, fallback: number, name: string): number => {
+    const resolved = value ?? fallback;
+    if (!Number.isSafeInteger(resolved) || resolved < 1 || resolved > fallback) {
+      throw new RangeError(`Fastener ${name} must be a positive bounded integer`);
+    }
+    return resolved;
+  };
+  return {
+    maxRadialEvaluations: resolve(
+      limits?.maxRadialEvaluations, FASTENER_MAX_RADIAL_EVALUATIONS, 'radial evaluation limit',
+    ),
+    maxSingleCells: resolve(limits?.maxSingleCells, FASTENER_MAX_SINGLE_CELLS, 'single-cell limit'),
+  };
+}
 
 function checkRuntime(deadline: number, checkpoint: () => void): void {
   checkpoint();
@@ -279,6 +348,7 @@ function searchPattern(
   minimumWebMm: number,
   deadline: number,
   checkpoint: () => void,
+  limits: ResolvedSearchLimits,
 ): CandidatePattern | undefined {
   const seeds = radialSeeds(
     count, axisPoint, maximumRadiusMm, prepared, requiredBoundaryClearanceMm,
@@ -289,7 +359,7 @@ function searchPattern(
   const evaluate = (radius: number): PatternEvaluation => {
     let value = evaluations.get(radius);
     if (value) return value;
-    if (evaluations.size >= FASTENER_MAX_RADIAL_EVALUATIONS) {
+    if (evaluations.size >= limits.maxRadialEvaluations) {
       throw new RangeError('Fastener radial search could not establish bounded manufacturing-resolution completeness');
     }
     value = evaluatePatternRadius(
@@ -313,13 +383,22 @@ function searchPattern(
     const interval = intervals.shift()!;
     if (best && interval.high <= best.radiusMm + FASTENER_SEARCH_RESOLUTION_MM) continue;
     const width = interval.high - interval.low;
-    if (width <= FASTENER_SEARCH_RESOLUTION_MM + 1e-12) continue;
     const middle = (interval.low + interval.high) / 2;
+    if (!(middle > interval.low && middle < interval.high)) {
+      throw new RangeError('Fastener radial search could not resolve a potentially safe representable interval');
+    }
     const middleEvaluation = evaluate(middle);
     if (middleEvaluation.candidate && (!best || middle > best.radiusMm + 1e-12)) {
       best = middleEvaluation.candidate;
     }
-    if (middleEvaluation.marginMm + lipschitz * width / 2 < -1e-12) continue;
+    const upperBound = fastenerPatternIntervalUpperBound({
+      lowMarginMm: evaluate(interval.low).marginMm,
+      middleMarginMm: middleEvaluation.marginMm,
+      highMarginMm: evaluate(interval.high).marginMm,
+      widthMm: width,
+      lipschitz,
+    });
+    if (upperBound < -1e-12) continue;
     intervals.push({ low: interval.low, high: middle }, { low: middle, high: interval.high });
   }
   return best;
@@ -356,6 +435,7 @@ function searchSingle(
   requiredBoundaryClearanceMm: number,
   deadline: number,
   checkpoint: () => void,
+  limits: ResolvedSearchLimits,
 ): CandidatePattern | undefined {
   if (!(bounds.minX <= bounds.maxX && bounds.minY <= bounds.maxY)) return undefined;
   let safest: CandidatePattern | undefined;
@@ -402,21 +482,30 @@ function searchSingle(
     cells.sort((left, right) => right.upperClearanceMm - left.upperClearanceMm || comparePoint(left.center, right.center));
     const cell = cells.shift()!;
     visited += 1;
-    if (visited > FASTENER_MAX_SINGLE_CELLS) {
+    if (visited > limits.maxSingleCells) {
       throw new RangeError('Fastener single-hole search could not establish bounded manufacturing-resolution completeness');
     }
     update(cell.center, cell.clearanceMm);
-    if (safest && cell.upperClearanceMm <= safest.minimumClearanceMm + FASTENER_SEARCH_RESOLUTION_MM) continue;
+    if (shouldPruneFastenerSingleCell({
+      bestClearanceMm: safest?.minimumClearanceMm,
+      cellUpperClearanceMm: cell.upperClearanceMm,
+      requiredClearanceMm: requiredBoundaryClearanceMm,
+    })) continue;
     const width = cell.maxX - cell.minX, height = cell.maxY - cell.minY;
-    if (Math.max(width, height) <= FASTENER_SEARCH_RESOLUTION_MM + 1e-12) continue;
     if (width >= height) {
       const midX = (cell.minX + cell.maxX) / 2;
+      if (!(midX > cell.minX && midX < cell.maxX)) {
+        throw new RangeError('Fastener single-hole search could not resolve a potentially safe representable cell');
+      }
       for (const child of [
         { minX: cell.minX, minY: cell.minY, maxX: midX, maxY: cell.maxY },
         { minX: midX, minY: cell.minY, maxX: cell.maxX, maxY: cell.maxY },
       ]) cells.push(makeCell(child, prepared, deadline, checkpoint));
     } else {
       const midY = (cell.minY + cell.maxY) / 2;
+      if (!(midY > cell.minY && midY < cell.maxY)) {
+        throw new RangeError('Fastener single-hole search could not resolve a potentially safe representable cell');
+      }
       for (const child of [
         { minX: cell.minX, minY: cell.minY, maxX: cell.maxX, maxY: midY },
         { minX: cell.minX, minY: midY, maxX: cell.maxX, maxY: cell.maxY },
@@ -474,6 +563,115 @@ function featureIds(layer: FastenerMaterializationLayer): readonly string[] {
   ];
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function requireOnlyKeys(
+  value: unknown,
+  permitted: ReadonlySet<string>,
+  label: string,
+): asserts value is Record<string, unknown> {
+  if (!isRecord(value) || Reflect.ownKeys(value).some((key) => (
+    typeof key !== 'string' || !permitted.has(key)
+  ))) {
+    throw new RangeError(`Fastener ${label} contains an unexpected runtime key or shape`);
+  }
+}
+
+function nearlyEqual(left: number, right: number): boolean {
+  return Math.abs(left - right) <= Number.EPSILON * 64 * Math.max(1, Math.abs(left), Math.abs(right));
+}
+
+const FASTENER_PLAN_KEYS = new Set([
+  'count', 'holes', 'centers', 'finishedDiameterMm', 'pathDiameterMm',
+  'radiusMm', 'rotationRad', 'warning',
+]);
+const FASTENER_GEOMETRY_KEYS = new Set(['role', 'outer', 'boundsMm', 'areaMm2']);
+const FASTENER_BOUNDS_KEYS = new Set(['minX', 'minY', 'maxX', 'maxY']);
+
+function validateMaterializationPlan(
+  value: FastenerPlan,
+  deadline: number,
+  checkpoint: () => void,
+): void {
+  requireOnlyKeys(value, FASTENER_PLAN_KEYS, 'shared plan');
+  const count = value.count;
+  if (!Number.isInteger(count) || ![0, 1, 2, 3].includes(count)
+    || !Array.isArray(value.holes) || value.holes.length !== count
+    || !Array.isArray(value.centers) || value.centers.length !== count
+    || value.finishedDiameterMm !== FASTENER_FINISHED_DIAMETER_MM
+    || !Number.isFinite(value.pathDiameterMm) || value.pathDiameterMm <= 0) {
+    throw new RangeError('Fastener materialization requires one bounded shared plan with a consistent count');
+  }
+  if (count === 0) {
+    if (value.warning !== FASTENER_OMISSION_WARNING
+      || value.radiusMm !== undefined || value.rotationRad !== undefined) {
+      throw new RangeError('Fastener zero-hole plan requires only the canonical omission warning');
+    }
+    return;
+  }
+  if (value.warning !== undefined
+    || !Number.isFinite(value.radiusMm) || value.radiusMm! < 0
+    || !Number.isFinite(value.rotationRad)) {
+    throw new RangeError('Fastener nonzero plan requires finite radius and rotation without an omission warning');
+  }
+  const pathRadiusMm = value.pathDiameterMm / 2;
+  for (let index = 0; index < count; index += 1) {
+    checkRuntime(deadline, checkpoint);
+    const center = value.centers[index];
+    if (!Array.isArray(center) || center.length !== 2 || !center.every(Number.isFinite)) {
+      throw new RangeError('Fastener shared plan centers must be finite two-dimensional points');
+    }
+    const geometry = value.holes[index];
+    if (isRecord(geometry) && Object.hasOwn(geometry, 'id')) {
+      throw new RangeError('Fastener shared geometry must remain ID-free');
+    }
+    requireOnlyKeys(geometry, FASTENER_GEOMETRY_KEYS, 'shared geometry');
+    const outer = geometry.outer;
+    const areaMm2 = geometry.areaMm2;
+    if (geometry.role !== 'CUT_BLACK' || !Array.isArray(outer)
+      || outer.length !== 48 || typeof areaMm2 !== 'number'
+      || !Number.isFinite(areaMm2) || areaMm2 <= 0) {
+      throw new RangeError('Fastener shared geometry requires one finite 48-point CUT_BLACK contour');
+    }
+    const distinct = new Set<string>();
+    for (let pointIndex = 0; pointIndex < outer.length; pointIndex += 1) {
+      const point = outer[pointIndex];
+      if (!Array.isArray(point) || point.length !== 2 || !point.every(Number.isFinite)) {
+        throw new RangeError('Fastener shared geometry contour points must be finite');
+      }
+      distinct.add(`${point[0]}:${point[1]}`);
+      const angle = pointIndex * Math.PI * 2 / 48;
+      const expected: Point2 = [
+        center[0] + Math.cos(angle) * pathRadiusMm,
+        center[1] + Math.sin(angle) * pathRadiusMm,
+      ];
+      if (!nearlyEqual(point[0], expected[0]) || !nearlyEqual(point[1], expected[1])) {
+        throw new RangeError('Fastener shared geometry must be consistent with its center and path diameter');
+      }
+    }
+    if (distinct.size !== 48
+      || !validatePolygon({ points: outer as readonly Point2[] }, () => checkRuntime(deadline, checkpoint))) {
+      throw new RangeError('Fastener shared geometry contour must be distinct and simple');
+    }
+    requireOnlyKeys(geometry.boundsMm, FASTENER_BOUNDS_KEYS, 'geometry bounds');
+    const geometryBounds = geometry.boundsMm;
+    const minX = geometryBounds.minX, minY = geometryBounds.minY;
+    const maxX = geometryBounds.maxX, maxY = geometryBounds.maxY;
+    const bounds = contourBounds(outer as readonly Point2[], deadline, checkpoint);
+    const area = Math.abs(signedArea(outer as readonly Point2[], deadline, checkpoint));
+    if (![minX, minY, maxX, maxY].every((item) => typeof item === 'number' && Number.isFinite(item))
+      || !nearlyEqual(minX as number, bounds.minX)
+      || !nearlyEqual(minY as number, bounds.minY)
+      || !nearlyEqual(maxX as number, bounds.maxX)
+      || !nearlyEqual(maxY as number, bounds.maxY)
+      || !nearlyEqual(areaMm2, area)) {
+      throw new RangeError('Fastener shared geometry area and bounds must remain consistent');
+    }
+  }
+}
+
 export function materializeFastenerHoles(
   plan: FastenerPlan,
   layers: readonly FastenerMaterializationLayer[],
@@ -481,8 +679,8 @@ export function materializeFastenerHoles(
   checkpoint: () => void = () => undefined,
 ): readonly (readonly FeatureContour[])[] {
   checkRuntime(deadline, checkpoint);
-  if (!Array.isArray(layers) || layers.length < 1 || layers.length > MAX_FASTENER_LAYERS
-    || plan.holes.length !== plan.count || plan.centers.length !== plan.count) {
+  validateMaterializationPlan(plan, deadline, checkpoint);
+  if (!Array.isArray(layers) || layers.length < 1 || layers.length > MAX_FASTENER_LAYERS) {
     throw new RangeError('Fastener materialization requires one bounded shared plan and 1 to 24 layers');
   }
   const used = new Set<string>();
@@ -505,7 +703,7 @@ export function materializeFastenerHoles(
       suffix += 1;
     }
     used.add(id);
-    return { id, ...geometry };
+    return { ...geometry, id };
   }));
 }
 
@@ -513,6 +711,7 @@ export function planFastenerHoles(request: FastenerPlanningRequest): FastenerPla
   const deadline = request.deadline ?? Date.now() + 30_000;
   const checkpoint = request.checkpoint ?? (() => undefined);
   checkRuntime(deadline, checkpoint);
+  const searchLimits = resolvedSearchLimits(request.searchLimits);
   if (!Array.isArray(request.layers) || request.layers.length < 1 || request.layers.length > MAX_FASTENER_LAYERS) {
     throw new RangeError('Fastener planning requires 1 to 24 bounded layers');
   }
@@ -541,12 +740,12 @@ export function planFastenerHoles(request: FastenerPlanningRequest): FastenerPla
     + material.minWebMm + material.kerfMm / 2;
   const candidate = searchPattern(
     3, request.axisPoint, maximumRadiusMm, prepared, requiredBoundaryClearanceMm,
-    material.minWebMm, deadline, checkpoint,
+    material.minWebMm, deadline, checkpoint, searchLimits,
   ) ?? searchPattern(
     2, request.axisPoint, maximumRadiusMm, prepared, requiredBoundaryClearanceMm,
-    material.minWebMm, deadline, checkpoint,
+    material.minWebMm, deadline, checkpoint, searchLimits,
   ) ?? searchSingle(
-    bounds, request.axisPoint, prepared, requiredBoundaryClearanceMm, deadline, checkpoint,
+    bounds, request.axisPoint, prepared, requiredBoundaryClearanceMm, deadline, checkpoint, searchLimits,
   );
   if (!candidate) {
     return {

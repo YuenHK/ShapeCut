@@ -8,8 +8,11 @@ import {
   FASTENER_ANGULAR_CANDIDATES,
   FASTENER_OMISSION_WARNING,
   FASTENER_SEARCH_RESOLUTION_MM,
+  fastenerPatternIntervalUpperBound,
   materializeFastenerHoles,
   planFastenerHoles,
+  shouldPruneFastenerSingleCell,
+  type FastenerPlan,
   type FastenerPlanningLayer,
 } from './fasteners';
 import { isCircleSafeThroughAllLayers, type ProtectedRegionLayer } from './protected-region';
@@ -77,6 +80,29 @@ function protectedLayers(layers: readonly FastenerPlanningLayer[]): readonly Pro
 }
 
 describe('safe degrading fastener planning', () => {
+  it('keeps refining a narrow potentially-safe radial window between unsafe samples', () => {
+    expect(fastenerPatternIntervalUpperBound({
+      lowMarginMm: -0.01,
+      middleMarginMm: -0.01,
+      highMarginMm: -0.01,
+      widthMm: FASTENER_SEARCH_RESOLUTION_MM,
+      lipschitz: 1,
+    })).toBeGreaterThan(0);
+  });
+
+  it('does not prune an unresolved single-hole cell before the best point is safe', () => {
+    expect(shouldPruneFastenerSingleCell({
+      bestClearanceMm: 2,
+      cellUpperClearanceMm: 2.2,
+      requiredClearanceMm: 2.1,
+    })).toBe(false);
+    expect(shouldPruneFastenerSingleCell({
+      bestClearanceMm: 2.1,
+      cellUpperClearanceMm: 2.2,
+      requiredClearanceMm: 2.1,
+    })).toBe(true);
+  });
+
   it('keeps shared geometry ID-free and materializes collision-free layer IDs without changing any point', () => {
     const plan = planFastenerHoles({
       layers: [layer('wide', rectangle('wide-exterior', -12, -12, 12, 12))],
@@ -113,6 +139,38 @@ describe('safe degrading fastener planning', () => {
     const withLayers = { ...seed, coloredLayers, preview: { ...seed.preview, layers: coloredLayers } };
     const complete = { ...withLayers, featureEvidenceFingerprint: featureEvidenceFingerprint(withLayers) };
     expect(() => validateAutomaticColoredResult(complete)).not.toThrow();
+  });
+
+  it('rejects forged IDs, unexpected keys, and malformed shared geometry before materialization', () => {
+    const plan = planFastenerHoles({
+      layers: [layer('wide', rectangle('wide-exterior', -12, -12, 12, 12))],
+      axisPoint: [0, 0], material,
+    });
+    const sourceLayers = coloredResult().coloredLayers;
+    const first = plan.holes[0];
+    const replaceFirst = (geometry: object): FastenerPlan => ({
+      ...plan,
+      holes: [geometry, ...plan.holes.slice(1)],
+    }) as unknown as FastenerPlan;
+
+    expect(() => materializeFastenerHoles(replaceFirst({ ...first, id: 'forged-public-id' }), sourceLayers))
+      .toThrow(/id|shared geometry|unexpected/i);
+    expect(() => materializeFastenerHoles(replaceFirst({ ...first, secret: true }), sourceLayers))
+      .toThrow(/unexpected|shared geometry/i);
+    expect(() => materializeFastenerHoles({ ...plan, secret: true } as unknown as FastenerPlan, sourceLayers))
+      .toThrow(/unexpected|plan/i);
+    expect(() => materializeFastenerHoles(replaceFirst({
+      ...first,
+      outer: first.outer.slice(0, 47),
+    }), sourceLayers)).toThrow(/48|geometry|contour/i);
+    expect(() => materializeFastenerHoles(replaceFirst({
+      ...first,
+      boundsMm: { ...first.boundsMm, maxX: first.boundsMm.maxX + 1 },
+    }), sourceLayers)).toThrow(/bounds|geometry|consistent/i);
+    expect(() => materializeFastenerHoles({
+      ...plan,
+      count: 2,
+    } as unknown as FastenerPlan, sourceLayers)).toThrow(/count|shared plan|bounded/i);
   });
 
   it('finds the review long-tail three-hole chamber without letting a remote vertex dominate radius resolution', () => {
@@ -313,5 +371,14 @@ describe('safe degrading fastener planning', () => {
     expect(calls).toBeLessThan(50_000);
     expect(() => planFastenerHoles({ ...request, layers: Array.from({ length: 25 }, () => request.layers[0]) }))
       .toThrow(/24|bounded/i);
+  });
+
+  it('throws at an unresolved bounded-search cap instead of degrading to zero holes', () => {
+    expect(() => planFastenerHoles({
+      layers: [layer('wide', rectangle('wide-exterior', -12, -12, 12, 12))],
+      axisPoint: [0, 0],
+      material,
+      searchLimits: { maxRadialEvaluations: 1 },
+    })).toThrow(/radial search|completeness|bounded/i);
   });
 });

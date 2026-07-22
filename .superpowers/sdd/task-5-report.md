@@ -141,3 +141,48 @@ The full suite was run once after all production/test changes: 52 files / 1,236 
 - Physical 3.00 mm envelopes, material minimum web, kerf loss, shared deadline/cancellation, deterministic ordering, and count priority remain intact.
 - Shared model-space geometry is now cleanly separated from public per-layer identity, ready for Task 6 integration.
 - No Task 5 blocker remains. The only observed concern is the unrelated pre-existing `OneClickConverter` asynchronous replacement race described above.
+
+---
+
+## Review remediation — fail-closed resolution and runtime ID-free validation
+
+### RED evidence
+
+Four regressions failed before production changes:
+
+- a 0.25 mm radial interval whose low/middle/high margins were all `-0.01` still had a positive Lipschitz upper bound, but the planner discarded that unresolved interval;
+- the single-hole policy pruned `best = 2.0`, `cell upper = 2.2`, `required = 2.1` even though the cell could still contain a safe center;
+- materialization accepted shared geometry forged with its own public `id`;
+- an intentionally reduced unresolved radial-evaluation cap was ignored and planning continued instead of throwing.
+
+The focused RED result was 13 passed / 4 failed.
+
+### GREEN implementation
+
+- Pattern subdivision now evaluates low, midpoint, and high margins and derives a conservative Lipschitz upper bound over both half-intervals. An unsafe interval is discarded only when that bound is below the safety margin. Manufacturing-resolution-sized intervals are subdivided further when unresolved; evaluation or representability caps throw instead of allowing count degradation.
+- Single-hole branch-and-bound uses `best + 0.25 mm` optimization only after the best sampled clearance is safe. While the best is unsafe, a cell is pruned only when its upper bound is below the required clearance. Unresolved sub-resolution cells continue splitting until certified, a safe point is found, or the bounded cell/representability cap throws.
+- The optional bounded search limits are validated as positive safe integers no larger than the production defaults, enabling deterministic cap regression coverage without weakening default bounds.
+- Materialization now performs a strict runtime validation of the shared plan: exact permitted plan/geometry/bounds keys, count-array consistency, finite center/radius/rotation/path data, canonical zero/nonzero warning shape, ID-free 48-point `CUT_BLACK` geometry, finite distinct simple points, exact circle/path correspondence, and recomputed bounds/area consistency.
+- Any own `id`, unknown string key, symbol key, malformed point/count, or inconsistent geometry is rejected before layer IDs are allocated. Materialized contours are constructed as `{ ...geometry, id }`, so the generated collision-free ID is authoritative.
+- The valid materialization regression still recomputes the global feature fingerprint and passes `validateAutomaticColoredResult()`.
+
+### Verification
+
+Focused command:
+
+```sh
+npx vitest run src/domain/outline-assembly/fasteners.test.ts src/domain/outline-assembly/protected-region.test.ts src/domain/outline-features/types.test.ts
+```
+
+Result: 3 files / 61 tests passed.
+
+`npm run typecheck` exited 0. `npm run build` exited 0; Vite transformed 141 modules.
+
+The full suite was run once after the final production/test changes and passed completely: 52 files / 1,240 tests, zero failures. `git diff --check` also passed.
+
+### Self-review
+
+- A safe higher-count candidate is never lost to an unresolved unsafe seed interval; unresolved proof now fails closed.
+- The one-hole resolution optimization cannot suppress discovery of the first safe point.
+- Shared geometry cannot smuggle or override a public layer ID, and generated plans continue to satisfy global ID/fingerprint validation.
+- No Task 5 blocker remains.
