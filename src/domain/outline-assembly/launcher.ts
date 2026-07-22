@@ -69,10 +69,15 @@ function checkRuntime(deadline: number, checkpoint: () => void): void {
   if (Date.now() > deadline) throw new RangeError('Launcher detection exceeded the runtime budget');
 }
 
-function polygonCentroid(points: readonly Point2[]): Point2 {
-  const area = signedArea(points);
+function polygonCentroid(
+  points: readonly Point2[],
+  deadline = Infinity,
+  checkpoint: () => void = () => undefined,
+): Point2 {
+  const area = signedArea(points, deadline, checkpoint);
   let x = 0, y = 0;
   for (let index = 0; index < points.length; index += 1) {
+    if ((index & 255) === 0) checkRuntime(deadline, checkpoint);
     const point = points[index], next = points[(index + 1) % points.length];
     const cross = point[0] * next[1] - next[0] * point[1];
     x += (point[0] + next[0]) * cross;
@@ -107,7 +112,7 @@ function evaluateCandidate(
     if (!loop.closed || !Number.isFinite(loop.support) || loop.support < LAUNCHER_MIN_LOOP_SUPPORT || loop.support > 1
       || !simple) return undefined;
   }
-  const centers = candidate.loops.map(({ outer }) => polygonCentroid(outer));
+  const centers = candidate.loops.map(({ outer }) => polygonCentroid(outer, deadline, checkpoint));
   const angles = centers.map(([x, y]) => positiveAngle(Math.atan2(y - axisPoint[1], x - axisPoint[0])))
     .sort((left, right) => left - right);
   const gaps = angles.map((angle, index) => positiveAngle(angles[(index + 1) % 3] - angle) * 180 / Math.PI);
@@ -124,10 +129,31 @@ function evaluateCandidate(
   const centeredError = Math.hypot(groupCenter[0] - axisPoint[0], groupCenter[1] - axisPoint[1]) / meanRadius;
   const symmetryError = gaps.reduce((sum, gap) => sum + Math.abs(gap - 120) / 8, 0) / 3;
   const support = (candidate.evidenceStrength + candidate.loops.reduce((sum, loop) => sum + loop.support, 0) / 3) / 2;
-  const averageArea = candidate.loops.reduce((sum, loop) => sum + Math.abs(signedArea(loop.outer)), 0) / 3;
+  const averageArea = candidate.loops.reduce(
+    (sum, loop) => sum + Math.abs(signedArea(loop.outer, deadline, checkpoint)),
+    0,
+  ) / 3;
   const normalizedSize = Math.max(0, Math.min(1, averageArea / (meanRadius * meanRadius * 0.05)));
   return support - centeredError * 2 - symmetryError * 0.1 - radialSpread
     + normalizedSize * LAUNCHER_SIZE_SCORE_WEIGHT;
+}
+
+function copySelectedLauncherLoops(
+  candidate: LauncherCandidateGroup,
+  axisPoint: Point2,
+  deadline: number,
+  checkpoint: () => void,
+): LauncherLoops {
+  const copied: Point2[][] = [];
+  for (const { outer } of candidate.loops) {
+    const loop: Point2[] = [];
+    for (let index = 0; index < outer.length; index += 1) {
+      if ((index & 255) === 0) checkRuntime(deadline, checkpoint);
+      loop.push([outer[index][0] - axisPoint[0], outer[index][1] - axisPoint[1]]);
+    }
+    copied.push(loop);
+  }
+  return copied as unknown as LauncherLoops;
 }
 
 export function detectLauncherTemplate(request: LauncherDetectionRequest): LauncherDetection {
@@ -146,15 +172,29 @@ export function detectLauncherTemplate(request: LauncherDetectionRequest): Launc
     if (!selected || score > selected.score + 1e-12) selected = { score, index };
   }
   if (!selected) return { status: 'omitted', reason: 'No reliable three-hook launcher evidence' };
-  const source = request.candidates[selected.index].loops.map(({ outer }) => outer.map(([x, y]): Point2 => [
-    x - request.axisPoint[0], y - request.axisPoint[1],
-  ]));
+  const source = copySelectedLauncherLoops(
+    request.candidates[selected.index], request.axisPoint, deadline, checkpoint,
+  );
   return {
     status: 'detected',
     loops: normalizeLauncherLoops(source, deadline, checkpoint),
     score: selected.score,
     sourceCandidateIndex: selected.index,
   };
+}
+
+function translateLauncherLoop(
+  loop: readonly Point2[],
+  axisPoint: Point2,
+  deadline: number,
+  checkpoint: () => void,
+): Point2[] {
+  const translated: Point2[] = [];
+  for (let index = 0; index < loop.length; index += 1) {
+    if ((index & 255) === 0) checkRuntime(deadline, checkpoint);
+    translated.push([loop[index][0] + axisPoint[0], loop[index][1] + axisPoint[1]]);
+  }
+  return translated;
 }
 
 function distancePointToSegment(point: Point2, start: Point2, end: Point2): number {
@@ -228,7 +268,9 @@ export function planLauncherClearance(request: LauncherClearanceRequest): Launch
   try {
     for (let index = 0; index < 3; index += 1) {
       checkRuntime(deadline, checkpoint);
-      const translated = selection.loops[index].map(([x, y]): Point2 => [x + request.axisPoint[0], y + request.axisPoint[1]]);
+      const translated = translateLauncherLoop(
+        selection.loops[index], request.axisPoint, deadline, checkpoint,
+      );
       const finished = simpleMiterPolygonKernel.offset(
         { points: translated }, LAUNCHER_ASSEMBLY_ALLOWANCE_MM, kernelCheckpoint,
       );

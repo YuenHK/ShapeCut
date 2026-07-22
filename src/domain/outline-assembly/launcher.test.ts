@@ -48,6 +48,48 @@ function group(
   };
 }
 
+function compressOnlyDuringPolygonValidation(points: readonly Point2[]): readonly Point2[] {
+  return new Proxy(points, {
+    get: (target, property, receiver) => {
+      const validating = new Error().stack?.includes('/engraving/geometry.ts') ?? false;
+      if (validating && property === 'length') return 4;
+      if (validating && typeof property === 'string' && /^[0-3]$/.test(property)) {
+        return target[Math.floor(Number(property) * target.length / 4)];
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  });
+}
+
+function denseGroup(pointCount = 4_096, denseEveryLoop = false): LauncherCandidateGroup {
+  return {
+    evidenceStrength: 0.8,
+    loops: [0, 120, 240].map((degrees, loopIndex) => {
+      const angle = degrees * Math.PI / 180;
+      const center: Point2 = [Math.cos(angle) * 10, Math.sin(angle) * 10];
+      const loopPointCount = denseEveryLoop || loopIndex === 2 ? pointCount : 4;
+      const outer = Array.from({ length: loopPointCount }, (_, index): Point2 => {
+        const pointAngle = index * Math.PI * 2 / loopPointCount;
+        return [center[0] + Math.cos(pointAngle), center[1] + Math.sin(pointAngle) * 0.5];
+      });
+      return {
+        closed: true,
+        support: 0.8,
+        outer: loopPointCount === pointCount ? compressOnlyDuringPolygonValidation(outer) : outer,
+      };
+    }) as unknown as LauncherCandidateGroup['loops'],
+  };
+}
+
+function captureThrown(operation: () => void): unknown {
+  try {
+    operation();
+  } catch (error) {
+    return error;
+  }
+  return undefined;
+}
+
 function exterior(id: string, halfSize: number): FeatureContour {
   const outer = rectangle([0, 0], halfSize * 2, halfSize * 2);
   return {
@@ -178,6 +220,61 @@ describe('three-hook launcher detection', () => {
     expect(result.status).toBe('detected');
     if (result.status === 'detected') expect(result.sourceCandidateIndex).toBe(1);
   });
+
+  it('propagates the exact caller cancellation late inside the third dense-loop centroid', () => {
+    const cancellation = new RangeError('cancelled inside dense centroid');
+    let centroidPolls = 0;
+    const thrown = captureThrown(() => detectLauncherTemplate({
+      candidates: [denseGroup()],
+      axisPoint: [0, 0],
+      checkpoint: () => {
+        const stack = new Error().stack;
+        if (stack?.includes('normalizeLauncherLoops')) throw new RangeError('centroid pass was not checkpointed');
+        if (!stack?.includes('polygonCentroid')) return;
+        centroidPolls += 1;
+        if (centroidPolls === 82) throw cancellation;
+      },
+    }));
+    expect(centroidPolls).toBe(82);
+    expect(thrown).toBe(cancellation);
+  }, 30_000);
+
+  it('propagates the exact caller cancellation late inside the third dense-loop scoring area scan', () => {
+    const cancellation = new RangeError('cancelled inside dense area scan');
+    let scoringAreaPolls = 0;
+    const thrown = captureThrown(() => detectLauncherTemplate({
+      candidates: [denseGroup()],
+      axisPoint: [0, 0],
+      checkpoint: () => {
+        const stack = new Error().stack;
+        if (stack?.includes('normalizeLauncherLoops')) throw new RangeError('scoring area pass was not checkpointed');
+        if (!stack?.includes('outline-2.5d/simplify.ts') || !stack.includes('signedArea')
+          || !stack.includes('evaluateCandidate') || stack.includes('polygonCentroid')) return;
+        scoringAreaPolls += 1;
+        if (scoringAreaPolls === 60) throw cancellation;
+      },
+    }));
+    expect(scoringAreaPolls).toBe(60);
+    expect(thrown).toBe(cancellation);
+  }, 30_000);
+
+  it('propagates the exact caller cancellation late inside the selected dense-loop copy', () => {
+    const cancellation = new RangeError('cancelled inside selected-loop copy');
+    let copyPolls = 0;
+    const thrown = captureThrown(() => detectLauncherTemplate({
+      candidates: [denseGroup()],
+      axisPoint: [0, 0],
+      checkpoint: () => {
+        const stack = new Error().stack;
+        if (stack?.includes('normalizeLauncherLoops')) throw new RangeError('selected-loop copy was not checkpointed');
+        if (!stack?.includes('copySelectedLauncherLoops')) return;
+        copyPolls += 1;
+        if (copyPolls === 16) throw cancellation;
+      },
+    }));
+    expect(copyPolls).toBe(16);
+    expect(thrown).toBe(cancellation);
+  }, 30_000);
 });
 
 describe('safe two-layer launcher planning', () => {
@@ -316,5 +413,30 @@ describe('safe two-layer launcher planning', () => {
         if (calls === 4) throw new Error('planner cancelled');
       },
     })).toThrow(/planner cancelled/);
+  });
+
+  it('propagates the exact caller cancellation late inside dense-loop translation', () => {
+    const cancellation = new RangeError('cancelled inside planner translation');
+    let translationPolls = 0;
+    const loops = denseGroup(4_096, true).loops.map(({ outer }) => outer) as unknown as Extract<
+      LauncherDetection,
+      { readonly status: 'detected' }
+    >['loops'];
+    const thrown = captureThrown(() => planLauncherClearance({
+      detection: { status: 'detected', loops, score: 1, sourceCandidateIndex: 0 },
+      axisPoint: [0, 0],
+      topExterior: exterior('top', 30),
+      secondExterior: exterior('second', 30),
+      material: { kerfMm: 0.2, minWebMm: 0.8 },
+      checkpoint: () => {
+        const stack = new Error().stack;
+        if (stack?.includes('offsetMitered')) throw new RangeError('planner translation was not checkpointed');
+        if (!stack?.includes('translateLauncherLoop')) return;
+        translationPolls += 1;
+        if (translationPolls === 10) throw cancellation;
+      },
+    }));
+    expect(translationPolls).toBe(10);
+    expect(thrown).toBe(cancellation);
   });
 });

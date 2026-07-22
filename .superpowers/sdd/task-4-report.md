@@ -275,3 +275,37 @@ Final focused result: 5 files / 58 tests passed, including raster, template, lau
 - `git diff --check`: exit 0.
 
 No remaining cumulative Task 4 unchecked input-sized helper loop, output change, or blocker was found.
+
+---
+
+## Launcher detection and planning polling closure (2026-07-22)
+
+### Root cause and RED evidence
+
+- The shared `signedArea` implementation already supported bounded deadline/checkpoint polling, but `evaluateCandidate` omitted those arguments for all three centroid area passes and all three scoring area passes.
+- `polygonCentroid` performed its own second input-sized point pass without any runtime check.
+- Copying the selected detection loops and translating planner loops each used a native `map`, leaving up to 4,096 points between caller checkpoints.
+
+The definitive public-API RED ran 23 launcher tests: 19 passed and 4 failed. Each failure used a 4,096-point loop, allowed validation to finish, and then targeted only the named centroid, scoring-area, selected-copy, or planner-translation stack. All four target poll counts remained zero. Distinct post-stage diagnostic errors prevented a missing target checkpoint from being mistaken for later validation, normalization, or kernel cancellation.
+
+The synthetic detection arrays expose four evenly spaced points only while the unrelated polygon validator is on the stack, avoiding three repeated quadratic self-intersection scans. They retain their full 4,096-point length and coordinates throughout every launcher helper under test; target-stack poll counts and post-stage guards prove that cancellation occurs in the intended pass.
+
+### GREEN implementation
+
+- `polygonCentroid` now has API-compatible optional deadline/checkpoint parameters, passes them into `signedArea`, and polls its second pass at most every 256 points.
+- `evaluateCandidate` passes its one deadline/checkpoint through all three centroids and all three standalone area scans.
+- Selected-loop copying and planner translation now use explicit, order-preserving point loops that poll at most every 256 items.
+- The public regressions cancel late in the third dense centroid, third dense scoring-area scan, selected dense-loop copy, and dense planner translation. Every assertion confirms that the exact opaque caller `RangeError` object is rethrown.
+- The rest of `launcher.ts` was audited. Remaining maps/reductions/some calls operate only on fixed groups of two or three; the candidate scan is bounded to 64 and checks every item; nested boundary-distance scans already poll every 64/256 points; downstream validation, containment, bounds, area, and kernel calls receive the same checkpoint.
+- Coordinate arithmetic, iteration order, outputs, and existing public request shapes remain unchanged; new helper arguments are optional.
+
+### Final verification
+
+- Launcher GREEN: 23 / 23 tests passed.
+- Launcher/kernel focused run: 2 files / 29 tests passed.
+- `npx tsc -b --pretty false`: exit 0.
+- `npm run build`: exit 0; Vite transformed 141 modules.
+- Fresh full suite, run once: 50 files / 1,216 tests passed.
+- `git diff --check`: exit 0.
+
+No launcher.ts polling gap, output change, or blocker remains.
