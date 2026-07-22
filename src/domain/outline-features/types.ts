@@ -27,6 +27,8 @@ export type LayerFeatureDiagnostics = {
     readonly contrastMm: number;
     readonly redThresholdMm: number;
     readonly blueThresholdMm: number;
+    readonly retained?: { readonly red: number; readonly blue: number };
+    readonly omitted?: { readonly red: number; readonly blue: number };
     readonly omissionCode?: DepthFeatureOmissionCode;
   };
 };
@@ -389,7 +391,7 @@ function diagnosticsReasons(value: unknown): string[] {
     reasons.push('Depth diagnostics must be present');
   } else {
     reasons.push(...unexpectedKeys(value.depth, new Set([
-      'cellSizeMm', 'contrastMm', 'redThresholdMm', 'blueThresholdMm', 'omissionCode',
+      'cellSizeMm', 'contrastMm', 'redThresholdMm', 'blueThresholdMm', 'retained', 'omitted', 'omissionCode',
     ]), 'Depth diagnostics'));
     const depth = value.depth;
     if (![depth.cellSizeMm, depth.contrastMm, depth.redThresholdMm, depth.blueThresholdMm].every(Number.isFinite)
@@ -400,6 +402,13 @@ function diagnosticsReasons(value: unknown): string[] {
     }
     if (depth.omissionCode !== undefined && !DEPTH_OMISSION_CODES.has(depth.omissionCode as DepthFeatureOmissionCode)) {
       reasons.push('Depth diagnostics omission code is invalid');
+    }
+    for (const [label, counts] of [['retained', depth.retained], ['omitted', depth.omitted]] as const) {
+      if (counts === undefined) continue;
+      if (!isRecord(counts) || !Number.isSafeInteger(counts.red) || (counts.red as number) < 0
+        || !Number.isSafeInteger(counts.blue) || (counts.blue as number) < 0) {
+        reasons.push(`Depth diagnostics ${label} counts must be non-negative safe integers`);
+      }
     }
   }
   return reasons;
@@ -613,6 +622,8 @@ function orderedLayerRecords(
           contrastMm: layer.diagnostics.depth.contrastMm,
           redThresholdMm: layer.diagnostics.depth.redThresholdMm,
           blueThresholdMm: layer.diagnostics.depth.blueThresholdMm,
+          retained: layer.diagnostics.depth.retained,
+          omitted: layer.diagnostics.depth.omitted,
           omissionCode: layer.diagnostics.depth.omissionCode,
         },
       },

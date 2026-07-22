@@ -3,6 +3,7 @@ import type { TriangleMesh } from '../mesh/types';
 import { CENTRAL_HOLE_OMISSION_WARNING } from '../outline-features/hole';
 import { DEFAULT_OUTLINE_BUDGETS, type OutlineAxisSelection, type OutlineLayerSpec } from './types';
 import {
+  colorizeExteriorLayers,
   ExactContourAmbiguityError,
   extractExactContours,
   extractProjectedContours,
@@ -114,6 +115,29 @@ function bounds(points: readonly (readonly [number, number])[]) {
 }
 
 describe('extractProjectedContours', () => {
+  test('publishes all ordered depth contours instead of wrapping the feature arrays', () => {
+    const layer = extractProjectedContours(box(0, 0, 20, 20, 2), selection, specs, DEFAULT_OUTLINE_BUDGETS).layers[0];
+    const feature = (id: string, role: 'DEEP_RED' | 'LIGHT_BLUE', minX: number) => ({
+      id,
+      role,
+      outer: [[minX, 1], [minX + 1, 1], [minX + 1, 2], [minX, 2]] as const,
+      boundsMm: { minX, minY: 1, maxX: minX + 1, maxY: 2 },
+      areaMm2: 1,
+    });
+    const [colored] = colorizeExteriorLayers([layer], 0, Infinity, () => undefined, [], [{
+      red: [feature('deep-0', 'DEEP_RED', -4), feature('deep-1', 'DEEP_RED', -2)],
+      blue: [feature('light-0', 'LIGHT_BLUE', 2), feature('light-1', 'LIGHT_BLUE', 4)],
+      diagnostics: {
+        cellSizeMm: 0.5, contrastMm: 3, redThresholdMm: 5, blueThresholdMm: 2,
+        retained: { red: 2, blue: 2 }, omitted: { red: 0, blue: 0 },
+      },
+      evidence: { red: [], blue: [] },
+    }]);
+
+    expect(colored.deepFeatures.map(({ id }) => id)).toEqual(['deep-0', 'deep-1']);
+    expect(colored.lightFeatures.map(({ id }) => id)).toEqual(['light-0', 'light-1']);
+  });
+
   test.each([0.1, 0.2, 1])('fails closed when a %s mm projected dimension cannot stay within three percent', (size) => {
     expect(() => extractProjectedContours(box(0, 0, size, size, 2, 3), selection, specs, DEFAULT_OUTLINE_BUDGETS))
       .toThrow(/projected.*drift|three percent|resolution/i);

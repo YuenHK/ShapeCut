@@ -124,8 +124,8 @@ export function colorizeExteriorLayers(
       centralHole,
       launcherCuts: [],
       fastenerHoles: [],
-      deepFeatures: depthFeature?.red ? [depthFeature.red] : [],
-      lightFeatures: depthFeature?.blue ? [depthFeature.blue] : [],
+      deepFeatures: depthFeature?.red ?? [],
+      lightFeatures: depthFeature?.blue ?? [],
       removedComponentCount: layer.removedComponentCount,
       diagnostics: {
         hole: holeSelection?.hole
@@ -140,6 +140,8 @@ export function colorizeExteriorLayers(
           contrastMm: 0,
           redThresholdMm: 0,
           blueThresholdMm: 0,
+          retained: { red: 0, blue: 0 },
+          omitted: { red: 0, blue: 0 },
         },
       },
     });
@@ -293,6 +295,7 @@ export function extractProjectedContours(
       planarDiameterMm: projected.planarDiameter,
       budgets,
       totalLayerCount: specs.length,
+      maximumFeaturesPerRole: index === layers.length - 1 ? 12 : 1,
       deadline,
     }));
   const featureWarnings = new Set<string>();
@@ -601,6 +604,7 @@ export function extractExactContours(
       planarDiameterMm: projected.planarDiameter,
       budgets,
       totalLayerCount: specs.length,
+      maximumFeaturesPerRole: index === layers.length - 1 ? 12 : 1,
       deadline,
     }));
   const featureWarnings = new Set<string>();

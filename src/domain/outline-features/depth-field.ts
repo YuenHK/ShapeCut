@@ -10,6 +10,7 @@ import type { OutlineBudgets, OutlineLayerSpec } from '../outline-2.5d/types';
 import type { FeatureContour } from './types';
 import { isStrictlyContainedLoop } from './hole';
 import { validateDepthFeatureContours } from './validate';
+import { rankTopFeatures, type TopFeatureCandidate } from './top-feature-planner';
 
 export const DEPTH_CONTRAST_OMISSION_WARNING = '表面深度差不足，已省略雕刻特徵';
 export const DEPTH_DATA_OMISSION_WARNING = '表面深度資料不足，已省略雕刻特徵';
@@ -45,6 +46,10 @@ export type DepthFeatureRequest = {
   /** Optional stricter test/caller cap; it may never exceed the derived global hit budget. */
   readonly maximumSurfaceHits?: number;
   readonly maximumComponentBytes?: number;
+  /** Top layers retain up to twelve contours; lower layers are deliberately singular. */
+  readonly maximumFeaturesPerRole?: number;
+  /** Black-cut polygons which engraving must not enter, including the normal cut clearance. */
+  readonly protectedCuts?: readonly (readonly Point2[])[];
   readonly resourceObserver?: (event: DepthFeatureResourceEvent) => void;
 };
 
@@ -72,18 +77,20 @@ export type DepthFeatureDiagnostics = {
   readonly contrastMm: number;
   readonly redThresholdMm: number;
   readonly blueThresholdMm: number;
+  readonly retained: { readonly red: number; readonly blue: number };
+  readonly omitted: { readonly red: number; readonly blue: number };
   readonly omissionCode?: DepthFeatureOmissionCode;
 };
 
 export type DepthFeatureResult = {
-  readonly red?: FeatureContour;
-  readonly blue?: FeatureContour;
+  readonly red: readonly FeatureContour[];
+  readonly blue: readonly FeatureContour[];
   readonly warning?: string;
   readonly omissionCode?: DepthFeatureOmissionCode;
   readonly diagnostics: DepthFeatureDiagnostics;
   readonly evidence: {
-    readonly red?: DepthFeatureSourceEvidence;
-    readonly blue?: DepthFeatureSourceEvidence;
+    readonly red: readonly DepthFeatureSourceEvidence[];
+    readonly blue: readonly DepthFeatureSourceEvidence[];
   };
 };
 
@@ -197,6 +204,9 @@ function validateRequest(projected: ProjectedMesh, request: DepthFeatureRequest,
     || request.maximumComponentBytes !== undefined
       && (!Number.isSafeInteger(request.maximumComponentBytes) || request.maximumComponentBytes <= 0
         || request.maximumComponentBytes > MAX_DEPTH_COMPONENT_BYTES)
+    || request.maximumFeaturesPerRole !== undefined
+      && (!Number.isSafeInteger(request.maximumFeaturesPerRole) || request.maximumFeaturesPerRole < 1
+        || request.maximumFeaturesPerRole > 12)
     || !Number.isSafeInteger(totalLayerCount) || totalLayerCount <= 0 || totalLayerCount > request.budgets.maxLayers) {
     throw new RangeError('Depth feature extraction requires finite bounded layer evidence');
   }
@@ -209,6 +219,10 @@ function validateRequest(projected: ProjectedMesh, request: DepthFeatureRequest,
   });
   if (!exteriorValidation.ok) throw new RangeError(`Depth feature extraction requires valid cut geometry: ${exteriorValidation.reasons.join('; ')}`);
   const retainedHole = holeLoop(request);
+  for (const cut of request.protectedCuts ?? []) {
+    const validation = validateDepthFeatureContours({ exterior: cut, clearanceMm: 0, deadline, checkpoint });
+    if (!validation.ok) throw new RangeError(`Depth feature extraction requires valid protected cut geometry: ${validation.reasons.join('; ')}`);
+  }
   const cutClearance = Math.max(request.cellSizeMm, request.planarDiameterMm * 0.001);
   if (retainedHole && !isStrictlyContainedLoop(
     request.exterior, retainedHole, cutClearance, deadline, checkpoint,
@@ -968,12 +982,46 @@ export function simplifyDepthFeatureLoop(
   return undefined;
 }
 
-type DepthFeatureCandidate = {
+type DepthFeatureCandidate = TopFeatureCandidate & {
   readonly contour: FeatureContour;
   readonly evidence: DepthFeatureSourceEvidence;
 };
 
-function greatestValidFeatureFromMask(
+function protectedCell(
+  point: Point2,
+  cuts: readonly (readonly Point2[])[],
+  clearanceMm: number,
+  deadline: number,
+  checkpoint: () => void,
+): boolean {
+  for (const cut of cuts) {
+    if (pointLocation(point, cut, deadline, checkpoint) >= 0
+      || pointBoundaryDistance(point, cut, deadline, checkpoint) <= clearanceMm + 1e-12) return true;
+  }
+  return false;
+}
+
+function maskProtectedCuts(
+  source: Uint8Array,
+  field: DepthField,
+  cuts: readonly (readonly Point2[])[],
+  clearanceMm: number,
+  deadline: number,
+  checkpoint: () => void,
+): void {
+  for (let index = 0; index < source.length; index += 1) {
+    if ((index & 255) === 0) checkRuntime(deadline, checkpoint);
+    if (!source[index]) continue;
+    const x = index % field.width, y = Math.floor(index / field.width);
+    const point: Point2 = [
+      field.origin[0] + (x + 0.5) * field.cellSizeMm,
+      field.origin[1] + (y + 0.5) * field.cellSizeMm,
+    ];
+    if (protectedCell(point, cuts, clearanceMm, deadline, checkpoint)) source[index] = 0;
+  }
+}
+
+function validFeaturesFromMask(
   role: 'DEEP_RED' | 'LIGHT_BLUE',
   mask: Uint8Array,
   field: DepthField,
@@ -983,21 +1031,21 @@ function greatestValidFeatureFromMask(
   checkpoint: () => void,
   retainedExternalBytes: number,
   isValid: (candidate: FeatureContour) => boolean,
-): DepthFeatureCandidate | undefined {
+): readonly DepthFeatureCandidate[] {
   const selected = labelComponents(
     mask, field.width, field.height, minimumCells, deadline, checkpoint, request, retainedExternalBytes,
   );
   const componentByteLimit = request.maximumComponentBytes ?? MAX_DEPTH_COMPONENT_BYTES;
-  let best: DepthFeatureCandidate | undefined;
+  const candidates: DepthFeatureCandidate[] = [];
   for (let orderIndex = 0; orderIndex < selected.order.length; orderIndex += 1) {
     checkRuntime(deadline, checkpoint);
     const component = selected.order[orderIndex];
     const minimumX = selected.minX[component], minimumY = selected.minY[component];
     const maximumX = selected.maxX[component], maximumY = selected.maxY[component];
     const localWidth = maximumX - minimumX + 3, localHeight = maximumY - minimumY + 3;
-    const bestRetainedBytes = (best?.contour.outer.length ?? 0) * ESTIMATED_POINT_BYTES;
+    const retainedPointsBytes = candidates.reduce((total, candidate) => total + candidate.contour.outer.length * ESTIMATED_POINT_BYTES, 0);
     const candidatePeakBytes = selected.workspaceBytes + localWidth * localHeight * 8
-      + retainedExternalBytes + bestRetainedBytes;
+      + retainedExternalBytes + retainedPointsBytes;
     if (candidatePeakBytes > componentByteLimit) {
       observeResources(
         request, 'component-boundary-rejected', candidatePeakBytes, field.valid.length, { minimumX },
@@ -1051,7 +1099,7 @@ function greatestValidFeatureFromMask(
       localOrigin,
       field.cellSizeMm,
       request,
-      selected.workspaceBytes + localMask.length * 2 + retainedExternalBytes + bestRetainedBytes,
+      selected.workspaceBytes + localMask.length * 2 + retainedExternalBytes + retainedPointsBytes,
       minimumX,
       deadline,
       checkpoint,
@@ -1075,7 +1123,7 @@ function greatestValidFeatureFromMask(
     );
     if (!simplified) continue;
     const contour: FeatureContour = {
-        id: `${request.layerId}-${role === 'DEEP_RED' ? 'deep' : 'light'}`,
+        id: `${request.layerId}-${role === 'DEEP_RED' ? 'deep' : 'light'}-${candidates.length}`,
         role,
         outer: simplified,
         boundsMm: contourBounds(simplified, deadline, checkpoint),
@@ -1085,7 +1133,7 @@ function greatestValidFeatureFromMask(
     observeResources(
       request,
       'component-final',
-      selected.workspaceBytes + retainedExternalBytes + bestRetainedBytes
+      selected.workspaceBytes + retainedExternalBytes + retainedPointsBytes
         + contour.outer.length * ESTIMATED_POINT_BYTES,
       field.valid.length,
       { sourceCellCount: selected.counts[component], finalAreaMm2: contour.areaMm2, minimumX },
@@ -1100,30 +1148,27 @@ function greatestValidFeatureFromMask(
         minimumDepthMm,
         maximumDepthMm,
       },
+      contrastMm: maximumDepthMm - minimumDepthMm,
+      ambiguity: contour.outer.length,
     };
-    if (!best || candidate.contour.areaMm2 > best.contour.areaMm2 + 1e-12
-      || Math.abs(candidate.contour.areaMm2 - best.contour.areaMm2) <= 1e-12
-        && (candidate.contour.boundsMm.minX < best.contour.boundsMm.minX
-          || candidate.contour.boundsMm.minX === best.contour.boundsMm.minX
-            && candidate.contour.boundsMm.minY < best.contour.boundsMm.minY)) {
-      best = candidate;
-    }
+    candidates.push(candidate);
+    if (candidates.length >= 64) break;
   }
-  return best;
+  return candidates;
 }
 
 function omission(
   code: DepthFeatureOmissionCode,
   warning: string,
-  diagnostics: Omit<DepthFeatureDiagnostics, 'omissionCode'>,
+  diagnostics: Omit<DepthFeatureDiagnostics, 'omissionCode' | 'retained' | 'omitted'>,
 ): DepthFeatureResult {
   return {
-    red: undefined,
-    blue: undefined,
+    red: [],
+    blue: [],
     warning,
     omissionCode: code,
-    diagnostics: { ...diagnostics, omissionCode: code },
-    evidence: {},
+    diagnostics: { ...diagnostics, retained: { red: 0, blue: 0 }, omitted: { red: 0, blue: 0 }, omissionCode: code },
+    evidence: { red: [], blue: [] },
   };
 }
 
@@ -1152,7 +1197,10 @@ export function extractAdaptiveDepthFeatures(projected: ProjectedMesh, request: 
   });
   const blueThresholdMm = quantile(samples, 0.4), redThresholdMm = quantile(samples, 0.75);
   const contrastMm = redThresholdMm - blueThresholdMm;
-  const diagnostics = { field: undefined, cellSizeMm: field.cellSizeMm, contrastMm, redThresholdMm, blueThresholdMm };
+  const diagnostics = {
+    field: undefined, cellSizeMm: field.cellSizeMm, contrastMm, redThresholdMm, blueThresholdMm,
+    retained: { red: 0, blue: 0 }, omitted: { red: 0, blue: 0 },
+  };
   const { field: _field, ...publicDiagnostics } = diagnostics;
   if (contrastMm + 1e-12 < Math.max(2 * field.cellSizeMm, request.planarDiameterMm * 0.005)) {
     return omission('INSUFFICIENT_CONTRAST', DEPTH_CONTRAST_OMISSION_WARNING, publicDiagnostics);
@@ -1181,7 +1229,20 @@ export function extractAdaptiveDepthFeatures(projected: ProjectedMesh, request: 
   ));
   const clearanceMm = Math.max(field.cellSizeMm, request.planarDiameterMm * 0.001);
   const centralHole = holeLoop(request);
-  const redCandidate = greatestValidFeatureFromMask(
+  const protectedCuts = [...(centralHole ? [centralHole] : []), ...(request.protectedCuts ?? [])];
+  maskProtectedCuts(closedRed, field, protectedCuts, clearanceMm, deadline, checkpoint);
+  maskProtectedCuts(closedBlue, field, protectedCuts, clearanceMm, deadline, checkpoint);
+  const limit = request.maximumFeaturesPerRole ?? 1;
+  const safeFromProtectedCuts = (feature: FeatureContour): boolean => protectedCuts.every((cut) => (
+    feature.role === 'DEEP_RED'
+      ? validateDepthFeatureContours({
+        exterior: request.exterior, centralHole: cut, red: feature, clearanceMm, deadline, checkpoint,
+      }).ok
+      : validateDepthFeatureContours({
+        exterior: request.exterior, centralHole: cut, blue: feature, clearanceMm, deadline, checkpoint,
+      }).ok
+  ));
+  const redCandidates = validFeaturesFromMask(
     'DEEP_RED', closedRed, field, request, minimumCells, deadline, checkpoint,
     0,
     (red) => validateDepthFeatureContours({
@@ -1191,36 +1252,36 @@ export function extractAdaptiveDepthFeatures(projected: ProjectedMesh, request: 
       clearanceMm,
       deadline,
       checkpoint,
-    }).ok,
+    }).ok && safeFromProtectedCuts(red),
   );
-  const red = redCandidate?.contour;
-  const blueCandidate = greatestValidFeatureFromMask(
+  const red = rankTopFeatures(redCandidates, limit, deadline);
+  const blueCandidates = validFeaturesFromMask(
     'LIGHT_BLUE', closedBlue, field, request, minimumCells, deadline, checkpoint,
-    (red?.outer.length ?? 0) * ESTIMATED_POINT_BYTES,
+    red.reduce((total, candidate) => total + candidate.contour.outer.length * ESTIMATED_POINT_BYTES, 0),
     (blue) => validateDepthFeatureContours({
       exterior: request.exterior,
       centralHole,
-      red,
+      red: red.map((candidate) => candidate.contour),
       blue,
       clearanceMm,
       deadline,
       checkpoint,
-    }).ok,
+    }).ok && safeFromProtectedCuts(blue),
   );
-  const blue = blueCandidate?.contour;
+  const blue = rankTopFeatures(blueCandidates, limit, deadline);
   checkRuntime(deadline, checkpoint);
-  const incomplete = !red || !blue;
+  const incomplete = red.length === 0 || blue.length === 0;
   return {
-    red,
-    blue,
+    red: red.map((candidate) => candidate.contour),
+    blue: blue.map((candidate) => candidate.contour),
     warning: incomplete ? DEPTH_GEOMETRY_OMISSION_WARNING : undefined,
     omissionCode: incomplete ? 'UNRELIABLE_DEPTH_GEOMETRY' : undefined,
     diagnostics: incomplete
-      ? { ...publicDiagnostics, omissionCode: 'UNRELIABLE_DEPTH_GEOMETRY' }
-      : publicDiagnostics,
+      ? { ...publicDiagnostics, retained: { red: red.length, blue: blue.length }, omitted: { red: Math.max(0, redCandidates.length - red.length), blue: Math.max(0, blueCandidates.length - blue.length) }, omissionCode: 'UNRELIABLE_DEPTH_GEOMETRY' }
+      : { ...publicDiagnostics, retained: { red: red.length, blue: blue.length }, omitted: { red: Math.max(0, redCandidates.length - red.length), blue: Math.max(0, blueCandidates.length - blue.length) } },
     evidence: {
-      red: red ? redCandidate?.evidence : undefined,
-      blue: blue ? blueCandidate?.evidence : undefined,
+      red: red.map((candidate) => candidate.evidence),
+      blue: blue.map((candidate) => candidate.evidence),
     },
   };
 }

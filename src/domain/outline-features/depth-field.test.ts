@@ -161,8 +161,8 @@ describe('adaptive source-triangle depth features', () => {
     expect(new Set(upperDepths)).toEqual(new Set([2]));
     expect(extractAdaptiveDepthFeatures(surface, lowerRequest).diagnostics.contrastMm).toBeGreaterThan(0);
     expect(extractAdaptiveDepthFeatures(surface, upperRequest)).toMatchObject({
-      red: undefined,
-      blue: undefined,
+      red: [],
+      blue: [],
       omissionCode: 'INSUFFICIENT_CONTRAST',
     });
   });
@@ -245,7 +245,7 @@ describe('adaptive source-triangle depth features', () => {
     expect(limitedEvents.some((event) => (
       event.phase === 'component-boundary' && event.minimumX === rejected!.minimumX
     ))).toBe(false);
-    expect(limited.red).toBeUndefined();
+    expect(limited.red).toEqual([]);
   });
 
   it('rejects before boundary allocation when tracing fits but RDP workspace does not', () => {
@@ -299,7 +299,7 @@ describe('adaptive source-triangle depth features', () => {
     expect(limitedEvents.some((event) => (
       event.phase === 'component-boundary' && event.minimumX === simplification!.minimumX
     ))).toBe(false);
-    expect(limited.red).toBeUndefined();
+    expect(limited.red).toEqual([]);
   });
 
   it('selects the greatest final traced area even when a pre-seam component has more cells', () => {
@@ -337,7 +337,7 @@ describe('adaptive source-triangle depth features', () => {
     expect(features.red).toBeDefined();
     expect(ring?.sourceCellCount).toBeGreaterThan(rectangle!.sourceCellCount!);
     expect(ring?.finalAreaMm2).toBeLessThan(rectangle!.finalAreaMm2!);
-    expect(features.red!.boundsMm.minX).toBeGreaterThan(0);
+    expect(features.red[0]?.boundsMm.minX).toBeGreaterThan(0);
   });
 
   it('honors cancellation from inside topology and per-cell hit sorting', () => {
@@ -361,8 +361,8 @@ describe('adaptive source-triangle depth features', () => {
     ], false);
 
     expect(extractAdaptiveDepthFeatures(openPlanes, request())).toMatchObject({
-      red: undefined,
-      blue: undefined,
+      red: [],
+      blue: [],
       omissionCode: 'INSUFFICIENT_DEPTH_DATA',
       warning: DEPTH_DATA_OMISSION_WARNING,
     });
@@ -371,14 +371,14 @@ describe('adaptive source-triangle depth features', () => {
   it('assigns the smaller deeper band to red and the larger shallower band to blue', () => {
     const features = extractAdaptiveDepthFeatures(steppedSurface(), request());
 
-    expect(features.red?.role).toBe('DEEP_RED');
-    expect(features.blue?.role).toBe('LIGHT_BLUE');
+    expect(features.red[0]?.role).toBe('DEEP_RED');
+    expect(features.blue[0]?.role).toBe('LIGHT_BLUE');
     expect(features.diagnostics.redThresholdMm).toBe(5);
     expect(features.diagnostics.blueThresholdMm).toBe(1);
     expect(features.diagnostics.redThresholdMm).toBeGreaterThan(features.diagnostics.blueThresholdMm);
-    expect(features.red!.areaMm2).toBeLessThan(features.blue!.areaMm2);
-    expect(features.evidence.red?.minimumDepthMm).toBeGreaterThanOrEqual(features.diagnostics.redThresholdMm);
-    expect(features.evidence.blue?.maximumDepthMm).toBeLessThan(features.diagnostics.redThresholdMm);
+    expect(features.red[0]!.areaMm2).toBeLessThan(features.blue[0]!.areaMm2);
+    expect(features.evidence.red[0]?.minimumDepthMm).toBeGreaterThanOrEqual(features.diagnostics.redThresholdMm);
+    expect(features.evidence.blue[0]?.maximumDepthMm).toBeLessThan(features.diagnostics.redThresholdMm);
   });
 
   it('keeps one greatest connected region per role with a deterministic min-X/Y tie break', () => {
@@ -393,9 +393,39 @@ describe('adaptive source-triangle depth features', () => {
     const features = extractAdaptiveDepthFeatures(surface, request());
 
     expect(features.red).toBeDefined();
-    expect(features.red!.boundsMm.maxX).toBeLessThan(0);
-    expect(features.evidence.red?.componentCount).toBe(2);
+    expect(features.red[0]!.boundsMm.maxX).toBeLessThan(0);
+    expect(features.evidence.red[0]?.componentCount).toBe(2);
     expect(features.blue).toBeDefined();
+  });
+
+  it('keeps multiple protected-cut-safe candidates when the caller raises the per-role cap', () => {
+    const patches: Patch[] = [];
+    for (let index = 0; index < 14; index += 1) {
+      const minX = -14 + index * 2;
+      patches.push({ minX, maxX: minX + 1, minY: -2, maxY: -1, depth: 5 });
+      patches.push({ minX, maxX: minX + 1, minY: 1, maxY: 2, depth: 2 });
+    }
+    const protectedCut = [[-0.25, -2.5], [-0.25, -0.5], [0.25, -0.5], [0.25, -2.5]] as const;
+    const features = extractAdaptiveDepthFeatures(patchedSurface(patches), request({
+      exterior: [[-14, -3], [-14, 3], [14, 3], [14, -3]],
+      exteriorAreaMm2: 168,
+      maximumFeaturesPerRole: 12,
+      protectedCuts: [protectedCut],
+    }));
+
+    expect(features.red).toHaveLength(12);
+    expect(features.blue).toHaveLength(12);
+    expect(features.red.map(({ id }) => id)).toEqual([
+      'outline-layer-0-deep-0', 'outline-layer-0-deep-1', 'outline-layer-0-deep-2',
+      'outline-layer-0-deep-3', 'outline-layer-0-deep-4', 'outline-layer-0-deep-5',
+      'outline-layer-0-deep-6', 'outline-layer-0-deep-7', 'outline-layer-0-deep-8',
+      'outline-layer-0-deep-9', 'outline-layer-0-deep-10', 'outline-layer-0-deep-11',
+    ]);
+    for (const feature of [...features.red, ...features.blue]) {
+      expect(boundsOverlap(feature.boundsMm, { minX: -0.75, minY: -3, maxX: 0.75, maxY: 0 })).toBe(false);
+    }
+    expect(features.diagnostics.retained).toEqual({ red: 12, blue: 12 });
+    expect(features.diagnostics.omitted).toEqual({ red: 0, blue: 1 });
   });
 
   it('uses adaptive textured-surface quantiles instead of fixed millimeter levels', () => {
@@ -408,8 +438,8 @@ describe('adaptive source-triangle depth features', () => {
     const features = extractAdaptiveDepthFeatures(textured, request());
 
     expect(features.diagnostics).toMatchObject({ redThresholdMm: 7, blueThresholdMm: 3 });
-    expect(features.red?.role).toBe('DEEP_RED');
-    expect(features.blue?.role).toBe('LIGHT_BLUE');
+    expect(features.red[0]?.role).toBe('DEEP_RED');
+    expect(features.blue[0]?.role).toBe('LIGHT_BLUE');
   });
 
   it('removes isolated noisy cells below the bounded minimum component area', () => {
@@ -422,8 +452,8 @@ describe('adaptive source-triangle depth features', () => {
     const features = extractAdaptiveDepthFeatures(noisy, request());
 
     expect(features.red).toBeDefined();
-    expect(features.red!.boundsMm.maxX).toBeLessThan(0);
-    expect(features.evidence.red?.componentCount).toBe(1);
+    expect(features.red[0]!.boundsMm.maxX).toBeLessThan(0);
+    expect(features.evidence.red[0]?.componentCount).toBe(1);
   });
 
   it('masks the central hole plus cut clearance before tracing feature contours', () => {
@@ -438,8 +468,8 @@ describe('adaptive source-triangle depth features', () => {
 
     expect(features.red).toBeDefined();
     expect(features.blue).toBeDefined();
-    expect(boundsOverlap(features.red!.boundsMm, holeBounds)).toBe(false);
-    expect(features.blue!.boundsMm.minX).toBeGreaterThan(holeBounds.maxX);
+    expect(boundsOverlap(features.red[0]!.boundsMm, holeBounds)).toBe(false);
+    expect(features.blue[0]!.boundsMm.minX).toBeGreaterThan(holeBounds.maxX);
   });
 
   it('is deterministic under source-triangle shuffling', () => {
@@ -455,8 +485,8 @@ describe('adaptive source-triangle depth features', () => {
     const features = extractAdaptiveDepthFeatures(flat, request());
 
     expect(features).toMatchObject({
-      red: undefined,
-      blue: undefined,
+      red: [],
+      blue: [],
       omissionCode: 'INSUFFICIENT_CONTRAST',
       warning: DEPTH_CONTRAST_OMISSION_WARNING,
       diagnostics: { contrastMm: 0, redThresholdMm: 2, blueThresholdMm: 2 },
