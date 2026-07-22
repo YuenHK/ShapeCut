@@ -289,15 +289,19 @@ export function validateDepthFeatureContours(request: DepthFeatureValidationRequ
     return { ok: false, reasons: ['Depth feature central hole must be a finite simple closed contour'] };
   }
   const red = roleFeatures(request.red), blue = roleFeatures(request.blue);
-  if (red.length > 1) reasons.push('At most one DEEP_RED feature is permitted');
-  if (blue.length > 1) reasons.push('At most one LIGHT_BLUE feature is permitted');
+  if (red.length > 12) reasons.push('At most 12 DEEP_RED features are permitted');
+  if (blue.length > 12) reasons.push('At most 12 LIGHT_BLUE features are permitted');
   const candidates: {
     readonly feature: FeatureContour;
     readonly role: 'DEEP_RED' | 'LIGHT_BLUE';
     readonly label: string;
   }[] = [];
-  if (red[0]) candidates.push({ feature: red[0], role: 'DEEP_RED', label: 'Deep feature' });
-  if (blue[0]) candidates.push({ feature: blue[0], role: 'LIGHT_BLUE', label: 'Light feature' });
+  for (const [index, feature] of red.entries()) {
+    candidates.push({ feature, role: 'DEEP_RED', label: `Deep feature ${index + 1}` });
+  }
+  for (const [index, feature] of blue.entries()) {
+    candidates.push({ feature, role: 'LIGHT_BLUE', label: `Light feature ${index + 1}` });
+  }
   const validCandidates: typeof candidates = [];
   for (const candidate of candidates) {
     checkRuntime(deadline, checkpoint);
@@ -318,11 +322,13 @@ export function validateDepthFeatureContours(request: DepthFeatureValidationRequ
       candidate.feature.outer, request.centralHole, request.clearanceMm, deadline, checkpoint,
     )) reasons.push(`${candidate.label} must not overlap or touch the central hole clearance`);
   }
-  const validRed = validCandidates.find((candidate) => candidate.role === 'DEEP_RED');
-  const validBlue = validCandidates.find((candidate) => candidate.role === 'LIGHT_BLUE');
-  if (validRed && validBlue && loopsOverlap(
-    validRed.feature.outer, validBlue.feature.outer, deadline, checkpoint,
-  )) reasons.push('Deep and light features must not overlap');
+  const validRed = validCandidates.filter((candidate) => candidate.role === 'DEEP_RED');
+  const validBlue = validCandidates.filter((candidate) => candidate.role === 'LIGHT_BLUE');
+  for (const redFeature of validRed) for (const blueFeature of validBlue) {
+    if (loopsOverlap(redFeature.feature.outer, blueFeature.feature.outer, deadline, checkpoint)) {
+      reasons.push('Deep and light features must not overlap');
+    }
+  }
   checkRuntime(deadline, checkpoint);
   return { ok: reasons.length === 0, reasons };
 }

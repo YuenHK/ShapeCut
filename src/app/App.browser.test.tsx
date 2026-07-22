@@ -25,6 +25,7 @@ describe('App real browser one-click flow', () => {
         outer: [[0, 0], [10, 0], [10, 5], [0, 5]],
         boundsMm: { minX: 0, minY: 0, maxX: 10, maxY: 5 }, areaMm2: 50,
       },
+      launcherCuts: [], fastenerHoles: [], deepFeatures: [], lightFeatures: [],
       removedComponentCount: 0,
       diagnostics: {
         hole: { status: 'omitted' },

@@ -46,16 +46,18 @@ export function coloredResult(): AutomaticOutlineResult {
       zEnd: index * 2 + 2,
       exterior,
       centralHole,
-      deepFeature: index === 2 ? contour(
+      launcherCuts: [],
+      fastenerHoles: [],
+      deepFeatures: index === 2 ? [contour(
         `layer-${index + 1}-deep`,
         'DEEP_RED',
         [[-8, -8], [-8, -4], [-4, -4], [-4, -8]],
-      ) : undefined,
-      lightFeature: index === 2 ? contour(
+      )] : [],
+      lightFeatures: index === 2 ? [contour(
         `layer-${index + 1}-light`,
         'LIGHT_BLUE',
         [[4, 4], [4, 8], [8, 8], [8, 4]],
-      ) : undefined,
+      )] : [],
       removedComponentCount: 0,
       diagnostics: {
         hole: {
@@ -180,7 +182,9 @@ export function nearLimitColoredResult(pointCount = 512): AutomaticOutlineResult
     const lightFeature = contour(`${id}-light`, 'LIGHT_BLUE', regularLoop(9, 0, 2, pointCount, true));
     return {
       id, index, zStart: index * 2, zEnd: index * 2 + 2,
-      exterior, centralHole, deepFeature, lightFeature,
+      exterior, centralHole,
+      launcherCuts: [], fastenerHoles: [],
+      deepFeatures: [deepFeature], lightFeatures: [lightFeature],
       removedComponentCount: 0,
       diagnostics: {
         hole: {

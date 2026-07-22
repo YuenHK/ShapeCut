@@ -30,8 +30,9 @@ function layer(index: number): ColoredOutlineLayer {
     zEnd: index + 1,
     exterior: contour(`exterior-${index}`, 'CUT_BLACK'),
     centralHole: index === 0 ? contour('hole-0', 'CUT_BLACK', 3) : undefined,
-    deepFeature: index === 1 ? contour('red-1', 'DEEP_RED', 2) : undefined,
-    lightFeature: index === 2 ? contour('blue-2', 'LIGHT_BLUE', 2.5) : undefined,
+    launcherCuts: [], fastenerHoles: [],
+    deepFeatures: index === 1 ? [contour('red-1', 'DEEP_RED', 2)] : [],
+    lightFeatures: index === 2 ? [contour('blue-2', 'LIGHT_BLUE', 2.5)] : [],
     removedComponentCount: 0,
     diagnostics: {
       hole: index === 0
@@ -64,8 +65,8 @@ function blackOnlyPayload(): OutlinePreviewPayload {
     layers: source.layers.map((item) => ({
       ...item,
       centralHole: undefined,
-      deepFeature: undefined,
-      lightFeature: undefined,
+      launcherCuts: [], fastenerHoles: [],
+      deepFeatures: [], lightFeatures: [],
       diagnostics: { ...item.diagnostics, hole: { status: 'omitted' as const } },
     })),
   };
@@ -94,6 +95,7 @@ function alignedPayload(direction: readonly [number, number, number]): OutlinePr
     layers: Array.from({ length: 6 }, (_, index) => ({
       id: `aligned-layer-${index}`, index, zStart: 4.5 + index, zEnd: 5.5 + index,
       exterior: { ...exterior, id: `aligned-exterior-${index}` },
+      launcherCuts: [], fastenerHoles: [], deepFeatures: [], lightFeatures: [],
       removedComponentCount: 0,
       diagnostics: {
         hole: { status: 'omitted' as const },

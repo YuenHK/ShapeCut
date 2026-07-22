@@ -46,6 +46,36 @@ function withColoredLayers(
 }
 
 describe('canonical colored outline document', () => {
+  it('writes bounded multi-contour geometry in canonical cut and engraving order', () => {
+    const result = coloredResult();
+    const layer = result.coloredLayers[5];
+    const featured = result.coloredLayers[2];
+    const launcherCuts = [
+      { ...layer.centralHole!, id: 'launcher-1' },
+      { ...layer.centralHole!, id: 'launcher-2' },
+    ];
+    const fastenerHoles = [
+      { ...layer.centralHole!, id: 'fastener-1' },
+      { ...layer.centralHole!, id: 'fastener-2' },
+    ];
+    const coloredLayers = result.coloredLayers.map((candidate, index) => index === 5
+      ? {
+        ...candidate,
+        launcherCuts,
+        fastenerHoles,
+        deepFeatures: featured.deepFeatures.map((contour) => ({ ...contour, id: 'top-deep-1' })),
+        lightFeatures: featured.lightFeatures.map((contour) => ({ ...contour, id: 'top-light-1' })),
+      }
+      : candidate);
+    const document = createColoredOutlineDocument(withColoredLayers(result, coloredLayers));
+
+    expect(document.layers[5].roles.CUT_BLACK.map(({ id }) => id)).toEqual([
+      'layer-6-exterior', 'layer-6-hole', 'launcher-1', 'launcher-2', 'fastener-1', 'fastener-2',
+    ]);
+    expect(document.layers[5].roles.DEEP_RED.map(({ id }) => id)).toEqual(['top-deep-1']);
+    expect(document.layers[5].roles.LIGHT_BLUE.map(({ id }) => id)).toEqual(['top-light-1']);
+  });
+
   it('preserves ordered physical layers and exact canonical role identity', () => {
     const result = coloredResult();
     const document = createColoredOutlineDocument(result);

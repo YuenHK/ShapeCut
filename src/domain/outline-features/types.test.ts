@@ -5,6 +5,7 @@ import type { AutomaticOutlineResult } from '../pipeline/automatic-outline-pipel
 import { CENTRAL_HOLE_OMISSION_WARNING } from './hole';
 import {
   featureEvidenceFingerprint,
+  migrateColoredOutlineLayer,
   validateAutomaticColoredResult,
   validateColoredLayerShape,
   type ColoredOutlineLayer,
@@ -58,7 +59,8 @@ function coloredLayer(overrides: Partial<ColoredOutlineLayer> = {}): ColoredOutl
   return {
     id: 'outline-layer-0', index: 0, zStart: 0, zEnd: 1,
     exterior: square(20), centralHole: circle(2),
-    deepFeature: rectangle(3, 2), lightFeature: undefined,
+    launcherCuts: [], fastenerHoles: [],
+    deepFeatures: [rectangle(3, 2)], lightFeatures: [],
     removedComponentCount: 1,
     diagnostics: {
       hole: { status: 'retained', equivalentDiameterMm: 4, axisDistanceMm: 0.1 },
@@ -76,7 +78,7 @@ function indexedColoredLayer(index: number): ColoredOutlineLayer {
     zEnd: index + 1,
     exterior: square(20, `layer-${index}-exterior`),
     centralHole: circle(2, `layer-${index}-hole`),
-    deepFeature: rectangle(3, 2, `layer-${index}-deep`),
+    deepFeatures: [rectangle(3, 2, `layer-${index}-deep`)],
   });
 }
 
@@ -158,8 +160,120 @@ function withSharedHoleEvidence(
   return { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
 }
 
+function featureSeries(
+  role: Extract<FeatureRole, 'DEEP_RED' | 'LIGHT_BLUE'>,
+  count: number,
+  prefix: string,
+): readonly FeatureContour[] {
+  return Array.from({ length: count }, (_, index) => contour(`${prefix}-${index}`, role, [
+    [-9 + index * 1.4, -1], [-9 + index * 1.4, 1],
+    [-8 + index * 1.4, 1], [-8 + index * 1.4, -1],
+  ]));
+}
+
+function withFeatureCounts(topDeep: number, lowerDeep: number): AutomaticOutlineResult {
+  const source = automaticResult();
+  const coloredLayers = source.coloredLayers.map((layer, index) => ({
+    ...layer,
+    deepFeatures: index === source.coloredLayers.length - 1
+      ? featureSeries('DEEP_RED', topDeep, `top-deep-${index}`)
+      : index === 0
+        ? featureSeries('DEEP_RED', lowerDeep, `lower-deep-${index}`)
+        : layer.deepFeatures,
+  }));
+  const changed = { ...source, coloredLayers, preview: { ...source.preview, layers: coloredLayers } };
+  return { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
+}
+
 describe('colored outline contracts', () => {
-  it('accepts the exact singular role structure', () => {
+  it('migrates legacy singular colored contours into canonical ordered arrays', () => {
+    const { deepFeatures: _deepFeatures, lightFeatures: _lightFeatures,
+      launcherCuts: _launcherCuts, fastenerHoles: _fastenerHoles, ...legacyBase } = coloredLayer();
+    const legacy = {
+      ...legacyBase,
+      deepFeature: rectangle(3, 2, 'legacy-deep'),
+      lightFeature: contour('legacy-light', 'LIGHT_BLUE', [[3, -1], [3, 1], [5, 1], [5, -1]]),
+    };
+
+    expect(migrateColoredOutlineLayer(legacy)).toMatchObject({
+      deepFeatures: [legacy.deepFeature],
+      lightFeatures: [legacy.lightFeature],
+      launcherCuts: [],
+      fastenerHoles: [],
+    });
+    expect(migrateColoredOutlineLayer(legacy)).not.toHaveProperty('deepFeature');
+    expect(migrateColoredOutlineLayer(legacy)).not.toHaveProperty('lightFeature');
+  });
+
+  it('bounds top and lower engraving arrays independently', () => {
+    expect(() => validateAutomaticColoredResult(withFeatureCounts(13, 1))).toThrow(/12.*deep/i);
+    expect(() => validateAutomaticColoredResult(withFeatureCounts(1, 2))).toThrow(/one.*deep/i);
+  });
+
+  it('rejects a colored layer that mixes legacy and canonical feature fields', () => {
+    const source = automaticResult();
+    const coloredLayers = source.coloredLayers.map((layer, index) => index === 0
+      ? { ...layer, deepFeature: rectangle(1, 1, 'unexpected-legacy-deep') }
+      : layer);
+    const changed = { ...source, coloredLayers, preview: { ...source.preview, layers: coloredLayers } };
+    const forged = { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
+
+    expect(() => validateAutomaticColoredResult(forged)).toThrow(/unexpected|legacy/i);
+  });
+
+  it('bounds black cut arrays, enforces their role, and keeps IDs globally unique', () => {
+    const source = automaticResult();
+    const first = source.coloredLayers[0];
+    const launcherCuts = Array.from({ length: 4 }, (_, index) => circle(0.25, `launcher-${index}`));
+    const fastenerHoles = Array.from({ length: 4 }, (_, index) => ({
+      ...circle(0.25, index === 0 ? 'launcher-0' : `fastener-${index}`),
+      role: index === 0 ? 'LIGHT_BLUE' as const : 'CUT_BLACK' as const,
+    }));
+    const coloredLayers = [{ ...first, launcherCuts, fastenerHoles }, ...source.coloredLayers.slice(1)];
+    const changed = { ...source, coloredLayers, preview: { ...source.preview, layers: coloredLayers } };
+    const forged = { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
+
+    expect(() => validateAutomaticColoredResult(forged)).toThrow(/launcher.*3.*fastener.*3.*CUT_BLACK.*duplicate/i);
+  });
+
+  it('fingerprints ordered multi-contour geometry and requires preview equality', () => {
+    const source = withFeatureCounts(2, 1);
+    const top = source.coloredLayers.at(-1)!;
+    const reordered = { ...top, deepFeatures: [...top.deepFeatures].reverse() };
+    const mismatched = {
+      ...source,
+      coloredLayers: [...source.coloredLayers.slice(0, -1), reordered],
+    };
+    const ordered = {
+      ...mismatched,
+      preview: { ...source.preview, layers: [...source.preview.layers.slice(0, -1), reordered] },
+    };
+    const fingerprint = featureEvidenceFingerprint(ordered);
+    const geometryChanged = {
+      ...ordered,
+      coloredLayers: [...ordered.coloredLayers.slice(0, -1), {
+        ...reordered,
+        deepFeatures: reordered.deepFeatures.map((feature, index) => index === 0
+          ? {
+            ...feature,
+            outer: feature.outer.map(([x, y]) => [x + 0.1, y] as const),
+            boundsMm: { ...feature.boundsMm, minX: feature.boundsMm.minX + 0.1, maxX: feature.boundsMm.maxX + 0.1 },
+          }
+          : feature),
+      }],
+    };
+
+    expect(fingerprint).not.toBe(source.featureEvidenceFingerprint);
+    expect(featureEvidenceFingerprint(geometryChanged)).not.toBe(fingerprint);
+    expect(() => validateAutomaticColoredResult({ ...ordered, featureEvidenceFingerprint: fingerprint })).not.toThrow();
+    expect(() => validateAutomaticColoredResult({
+      ...ordered,
+      featureEvidenceFingerprint: fingerprint,
+      preview: source.preview,
+    })).toThrow(/preview.*match/i);
+  });
+
+  it('accepts the canonical bounded role arrays', () => {
     const layer = coloredLayer();
 
     expect(validateColoredLayerShape(layer)).toEqual({ ok: true, reasons: [] });
@@ -224,7 +338,7 @@ describe('colored outline contracts', () => {
   it('rejects a forged self-intersecting role contour', () => {
     const result = automaticResult();
     const cloned = structuredClone(result);
-    const forgedLayer = { ...cloned.coloredLayers[0], deepFeature: bowTie() };
+    const forgedLayer = { ...cloned.coloredLayers[0], deepFeatures: [bowTie()] };
     const forged = {
       ...cloned,
       coloredLayers: [forgedLayer, ...cloned.coloredLayers.slice(1)],
@@ -245,8 +359,8 @@ describe('colored outline contracts', () => {
     const forgedLayer = coloredLayer({
       exterior: concaveExterior,
       centralHole: crossingHole,
-      deepFeature: undefined,
-      lightFeature: undefined,
+      deepFeatures: [],
+      lightFeatures: [],
       diagnostics: {
         hole: { status: 'retained', equivalentDiameterMm: 2, axisDistanceMm: 4.5 },
         depth: { cellSizeMm: 0.1, contrastMm: 0, redThresholdMm: 0, blueThresholdMm: 0 },
@@ -281,7 +395,7 @@ describe('colored outline contracts', () => {
       index: Number.MAX_SAFE_INTEGER + 1,
       zEnd: Infinity,
       removedComponentCount: -1,
-      deepFeature: { ...rectangle(3, 2), id: 'layer-0-exterior', role: 'LIGHT_BLUE' },
+      deepFeatures: [{ ...rectangle(3, 2), id: 'layer-0-exterior', role: 'LIGHT_BLUE' }],
       diagnostics: {
         hole: { status: 'retained', equivalentDiameterMm: NaN, axisDistanceMm: -1 },
         depth: { cellSizeMm: 0.1, contrastMm: Infinity, redThresholdMm: 0.2, blueThresholdMm: 0.3 },
@@ -302,7 +416,7 @@ describe('colored outline contracts', () => {
       zEnd: 0,
       exterior: square(10, 'layer-1-exterior'),
       centralHole: undefined,
-      deepFeature: undefined,
+      deepFeatures: [],
       diagnostics: {
         hole: { status: 'omitted' },
         depth: { cellSizeMm: 0, contrastMm: 0, redThresholdMm: 0, blueThresholdMm: 0 },
@@ -512,7 +626,7 @@ describe('colored outline contracts', () => {
     const source = structuredClone(automaticResult());
     const omittedLayer = {
       ...source.coloredLayers[0],
-      deepFeature: undefined,
+      deepFeatures: [],
       diagnostics: {
         ...source.coloredLayers[0].diagnostics,
         depth: {

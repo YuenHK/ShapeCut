@@ -72,6 +72,7 @@ function automaticResult(sourceHash: string): AutomaticOutlineResult {
       outer: [[-1, -1], [-1, 1], [1, 1], [1, -1]] as const,
       boundsMm: { minX: -1, minY: -1, maxX: 1, maxY: 1 }, areaMm2: 4,
     },
+    launcherCuts: [], fastenerHoles: [], deepFeatures: [], lightFeatures: [],
     removedComponentCount: 0,
     diagnostics: {
       hole: { status: 'omitted' as const },

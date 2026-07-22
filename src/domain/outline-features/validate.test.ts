@@ -20,6 +20,18 @@ const red = contour('layer-0-deep', 'DEEP_RED', [[-8, -4], [-8, 4], [-3, 4], [-3
 const blue = contour('layer-0-light', 'LIGHT_BLUE', [[3, -4], [3, 4], [8, 4], [8, -4]]);
 
 describe('depth feature cross-role validation', () => {
+  it('accepts up to twelve ordered contours per engraving role and rejects a thirteenth', () => {
+    const deep = Array.from({ length: 12 }, (_, index) => contour(`deep-${index}`, 'DEEP_RED', [
+      [-9 + index * 1.4, -1], [-9 + index * 1.4, 1],
+      [-8 + index * 1.4, 1], [-8 + index * 1.4, -1],
+    ]));
+
+    expect(validateDepthFeatureContours({ exterior, red: deep, clearanceMm: 0.5 }))
+      .toEqual({ ok: true, reasons: [] });
+    expect(validateDepthFeatureContours({ exterior, red: [...deep, deep[0]], clearanceMm: 0.5 }).reasons.join('\n'))
+      .toMatch(/12.*DEEP_RED/i);
+  });
+
   it('accepts one finite, simple and separated contour per engraving role', () => {
     expect(validateDepthFeatureContours({ exterior, centralHole: hole, red, blue, clearanceMm: 0.5 }))
       .toEqual({ ok: true, reasons: [] });

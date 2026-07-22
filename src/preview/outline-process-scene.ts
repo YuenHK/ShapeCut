@@ -276,8 +276,14 @@ function contourLine(
 }
 
 function allContours(layer: ColoredOutlineLayer): readonly FeatureContour[] {
-  return [layer.exterior, layer.centralHole, layer.deepFeature, layer.lightFeature]
-    .filter((contour): contour is FeatureContour => contour !== undefined);
+  return [
+    layer.exterior,
+    ...(layer.centralHole ? [layer.centralHole] : []),
+    ...layer.launcherCuts,
+    ...layer.fastenerHoles,
+    ...layer.deepFeatures,
+    ...layer.lightFeatures,
+  ];
 }
 
 function stageProgress(stage: AutomaticOutlineProgressStage): number {

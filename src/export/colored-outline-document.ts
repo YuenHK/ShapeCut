@@ -109,9 +109,11 @@ function documentFromValidatedResult(
         CUT_BLACK: [
           copyContour(layer.exterior, checkpoint),
           ...(layer.centralHole ? [copyContour(layer.centralHole, checkpoint)] : []),
+          ...layer.launcherCuts.map((contour) => copyContour(contour, checkpoint)),
+          ...layer.fastenerHoles.map((contour) => copyContour(contour, checkpoint)),
         ],
-        DEEP_RED: layer.deepFeature ? [copyContour(layer.deepFeature, checkpoint)] : [],
-        LIGHT_BLUE: layer.lightFeature ? [copyContour(layer.lightFeature, checkpoint)] : [],
+        DEEP_RED: layer.deepFeatures.map((contour) => copyContour(contour, checkpoint)),
+        LIGHT_BLUE: layer.lightFeatures.map((contour) => copyContour(contour, checkpoint)),
       },
     };
   });
@@ -168,9 +170,9 @@ function assertCanonicalShape(
         || layer.zStart < document.layers[position - 1].zEnd)
       || exactRecord(Object.keys(layer.roles)) !== exactRecord(['CUT_BLACK', 'DEEP_RED', 'LIGHT_BLUE'])
       || layer.roles.CUT_BLACK.length < 1
-      || layer.roles.CUT_BLACK.length > 2
-      || layer.roles.DEEP_RED.length > 1
-      || layer.roles.LIGHT_BLUE.length > 1) {
+      || layer.roles.CUT_BLACK.length > 8
+      || layer.roles.DEEP_RED.length > 12
+      || layer.roles.LIGHT_BLUE.length > 12) {
       throw new RangeError('Colored canonical layer identity, order, span, or role cardinality is invalid');
     }
     layerIds.add(layer.id);
@@ -185,7 +187,7 @@ function assertCanonicalShape(
         }
         featureIds.add(contour.id);
         const area = signedArea(contour.outer, checkpoint);
-        const expectedCounterClockwise = role === 'CUT_BLACK' && contourIndex === 1;
+        const expectedCounterClockwise = role === 'CUT_BLACK' && contourIndex > 0;
         if (!Number.isFinite(area) || area === 0
           || (expectedCounterClockwise ? area <= 0 : area >= 0)) {
           throw new RangeError('Colored canonical contour orientation is invalid');

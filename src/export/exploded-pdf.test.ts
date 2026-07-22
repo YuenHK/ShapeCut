@@ -42,8 +42,7 @@ function compactAllLayerHoleOmissionResult() {
         areaMm2: 16,
       },
       centralHole: undefined,
-      deepFeature: undefined,
-      lightFeature: undefined,
+      launcherCuts: [], fastenerHoles: [], deepFeatures: [], lightFeatures: [],
       diagnostics: {
         ...layer.diagnostics,
         hole: { status: 'omitted' as const },

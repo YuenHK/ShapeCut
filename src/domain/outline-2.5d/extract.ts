@@ -122,8 +122,10 @@ export function colorizeExteriorLayers(
       zEnd: layer.zEnd,
       exterior,
       centralHole,
-      deepFeature: depthFeature?.red,
-      lightFeature: depthFeature?.blue,
+      launcherCuts: [],
+      fastenerHoles: [],
+      deepFeatures: depthFeature?.red ? [depthFeature.red] : [],
+      lightFeatures: depthFeature?.blue ? [depthFeature.blue] : [],
       removedComponentCount: layer.removedComponentCount,
       diagnostics: {
         hole: holeSelection?.hole

@@ -128,8 +128,14 @@ function SvgFallback({
     ? meshPoints
     : payload.layers.flatMap((layer, order) => {
       const offset = explodedOffset(order, payload.layers.length, stage);
-      return [layer.exterior, layer.centralHole, layer.deepFeature, layer.lightFeature]
-        .filter((contour): contour is FeatureContour => contour !== undefined)
+      return [
+        layer.exterior,
+        ...(layer.centralHole ? [layer.centralHole] : []),
+        ...layer.launcherCuts,
+        ...layer.fastenerHoles,
+        ...layer.deepFeatures,
+        ...layer.lightFeatures,
+      ]
         .flatMap((contour) => contour.outer.map(([x, y]): FallbackPoint => [x, y + offset]));
     }), [meshPoints, payload.layers, stage]);
   return (
@@ -152,8 +158,14 @@ function SvgFallback({
           opacity={selectedLayerId === undefined || selectedLayerId === layer.id ? 1 : 0.18}
           transform={`translate(0 ${explodedOffset(order, payload.layers.length, stage)})`}
         >
-          {[layer.exterior, layer.centralHole, layer.deepFeature, layer.lightFeature]
-            .filter((contour): contour is FeatureContour => contour !== undefined)
+          {[
+            layer.exterior,
+            ...(layer.centralHole ? [layer.centralHole] : []),
+            ...layer.launcherCuts,
+            ...layer.fastenerHoles,
+            ...layer.deepFeatures,
+            ...layer.lightFeatures,
+          ]
             .map((contour) => (
               <path
                 key={contour.id}

@@ -138,11 +138,11 @@ function translated(mesh: TriangleMesh, x: number, y: number, z: number): Triang
 describe('automatic outline pipeline', () => {
   it('publishes both layer-local depth roles through preview and fingerprint evidence', async () => {
     const result = await convertAutomatically({ bytes: writeBinarySTL(layerLocalSteppedPrism(), 'safe') });
-    const featured = result.coloredLayers.filter((layer) => layer.deepFeature && layer.lightFeature);
+    const featured = result.coloredLayers.filter((layer) => layer.deepFeatures.length > 0 && layer.lightFeatures.length > 0);
 
     expect(featured.length).toBeGreaterThan(0);
-    expect(featured.every((layer) => layer.deepFeature?.role === 'DEEP_RED')).toBe(true);
-    expect(featured.every((layer) => layer.lightFeature?.role === 'LIGHT_BLUE')).toBe(true);
+    expect(featured.every((layer) => layer.deepFeatures.every((feature) => feature.role === 'DEEP_RED'))).toBe(true);
+    expect(featured.every((layer) => layer.lightFeatures.every((feature) => feature.role === 'LIGHT_BLUE'))).toBe(true);
     expect(featured.every((layer) => (
       layer.diagnostics.depth.redThresholdMm > layer.diagnostics.depth.blueThresholdMm
       && layer.diagnostics.depth.redThresholdMm <= layer.zEnd - layer.zStart + 1e-9
@@ -166,10 +166,10 @@ describe('automatic outline pipeline', () => {
       && layer.diagnostics.depth.blueThresholdMm <= layer.zEnd - layer.zStart + 1e-9
     ))).toBe(true);
     expect(result.coloredLayers.every((layer) => (
-      !layer.deepFeature || layer.deepFeature.role === 'DEEP_RED'
+      layer.deepFeatures.every((feature) => feature.role === 'DEEP_RED')
     ))).toBe(true);
     expect(result.coloredLayers.every((layer) => (
-      !layer.lightFeature || layer.lightFeature.role === 'LIGHT_BLUE'
+      layer.lightFeatures.every((feature) => feature.role === 'LIGHT_BLUE')
     ))).toBe(true);
     expect(result.featureEvidenceFingerprint).toMatch(/^[0-9a-f]{32}$/);
   });
@@ -177,7 +177,7 @@ describe('automatic outline pipeline', () => {
   it('locally omits flat depth bands with a sanitized contrast warning and fingerprinted omission code', async () => {
     const result = await convertAutomatically({ bytes: writeBinarySTL(cylinder(), 'safe') });
 
-    expect(result.coloredLayers.every((layer) => !layer.deepFeature && !layer.lightFeature)).toBe(true);
+    expect(result.coloredLayers.every((layer) => layer.deepFeatures.length === 0 && layer.lightFeatures.length === 0)).toBe(true);
     expect(result.coloredLayers.every((layer) => (
       layer.diagnostics.depth.omissionCode === 'INSUFFICIENT_CONTRAST'
     ))).toBe(true);

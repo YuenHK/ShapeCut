@@ -37,8 +37,10 @@ export type ColoredOutlineLayer = {
   readonly zEnd: number;
   readonly exterior: FeatureContour;
   readonly centralHole?: FeatureContour;
-  readonly deepFeature?: FeatureContour;
-  readonly lightFeature?: FeatureContour;
+  readonly launcherCuts: readonly FeatureContour[];
+  readonly fastenerHoles: readonly FeatureContour[];
+  readonly deepFeatures: readonly FeatureContour[];
+  readonly lightFeatures: readonly FeatureContour[];
   readonly removedComponentCount: number;
   readonly diagnostics: LayerFeatureDiagnostics;
 };
@@ -77,13 +79,35 @@ const DEPTH_OMISSION_WARNINGS: Readonly<Record<DepthFeatureOmissionCode, string>
   UNRELIABLE_DEPTH_GEOMETRY: '雕刻特徵不可靠，已局部省略',
 });
 const LAYER_KEYS = new Set([
-  'id', 'index', 'zStart', 'zEnd', 'exterior', 'centralHole', 'deepFeature', 'lightFeature',
+  'id', 'index', 'zStart', 'zEnd', 'exterior', 'centralHole',
+  'launcherCuts', 'fastenerHoles', 'deepFeatures', 'lightFeatures',
   'removedComponentCount', 'diagnostics',
 ]);
 const CONTOUR_KEYS = new Set(['id', 'role', 'outer', 'boundsMm', 'areaMm2']);
 const RUNTIME_REASON = 'Colored feature validation exceeded the runtime budget';
 const DEFAULT_VALIDATION_RUNTIME_MS = 30_000;
 const MAX_SHARED_HOLE_POINT_COUNT = 4096;
+const MAX_ENGRAVING_FEATURES = 12;
+const MAX_BLACK_FEATURES = 3;
+
+/** Explicit structured-clone/import boundary for pre-array colored geometry. */
+export function migrateColoredOutlineLayer(value: unknown): ColoredOutlineLayer {
+  if (!isRecord(value)) throw new RangeError('Legacy colored layer must be an object');
+  const hasLegacyDeep = Object.hasOwn(value, 'deepFeature');
+  const hasLegacyLight = Object.hasOwn(value, 'lightFeature');
+  if ((hasLegacyDeep && Object.hasOwn(value, 'deepFeatures'))
+    || (hasLegacyLight && Object.hasOwn(value, 'lightFeatures'))) {
+    throw new RangeError('Legacy and canonical colored feature fields must not be mixed');
+  }
+  const { deepFeature, lightFeature, ...withoutLegacy } = value;
+  return {
+    ...withoutLegacy,
+    launcherCuts: Array.isArray(withoutLegacy.launcherCuts) ? withoutLegacy.launcherCuts : [],
+    fastenerHoles: Array.isArray(withoutLegacy.fastenerHoles) ? withoutLegacy.fastenerHoles : [],
+    deepFeatures: hasLegacyDeep ? deepFeature === undefined ? [] : [deepFeature] : withoutLegacy.deepFeatures,
+    lightFeatures: hasLegacyLight ? lightFeature === undefined ? [] : [lightFeature] : withoutLegacy.lightFeatures,
+  } as unknown as ColoredOutlineLayer;
+}
 
 function validLayerCount(count: number): boolean {
   return count >= DEFAULT_OUTLINE_BUDGETS.minLayers && count <= DEFAULT_OUTLINE_BUDGETS.maxLayers;
@@ -388,23 +412,45 @@ function validateColoredLayerWithBudget(value: unknown, budget: ValidationBudget
   const roles = [
     ['Exterior', value.exterior, 'CUT_BLACK'],
     ['Central hole', value.centralHole, 'CUT_BLACK'],
-    ['Deep feature', value.deepFeature, 'DEEP_RED'],
-    ['Light feature', value.lightFeature, 'LIGHT_BLUE'],
   ] as const;
   const ids = new Set<string>();
-  let exteriorValid = false, centralHoleValid = false, deepFeatureValid = false, lightFeatureValid = false;
+  let exteriorValid = false, centralHoleValid = false;
   for (const [label, feature, role] of roles) {
     if (feature === undefined && label !== 'Exterior') continue;
     const featureReasons = contourReasons(feature, role, label, budget);
     reasons.push(...featureReasons);
     if (label === 'Exterior') exteriorValid = featureReasons.length === 0;
     if (label === 'Central hole') centralHoleValid = featureReasons.length === 0;
-    if (label === 'Deep feature') deepFeatureValid = featureReasons.length === 0;
-    if (label === 'Light feature') lightFeatureValid = featureReasons.length === 0;
     if (isRecord(feature) && typeof feature.id === 'string') {
       if (ids.has(feature.id)) reasons.push(`Duplicate feature ID ${feature.id}`);
       ids.add(feature.id);
     }
+  }
+  const arrays = [
+    ['Launcher cut', value.launcherCuts, 'CUT_BLACK', MAX_BLACK_FEATURES],
+    ['Fastener hole', value.fastenerHoles, 'CUT_BLACK', MAX_BLACK_FEATURES],
+    ['Deep feature', value.deepFeatures, 'DEEP_RED', MAX_ENGRAVING_FEATURES],
+    ['Light feature', value.lightFeatures, 'LIGHT_BLUE', MAX_ENGRAVING_FEATURES],
+  ] as const;
+  let deepFeaturesValid = false, lightFeaturesValid = false;
+  for (const [label, features, role, maximum] of arrays) {
+    if (!Array.isArray(features)) {
+      reasons.push(`${label} array must be present`);
+      continue;
+    }
+    if (features.length > maximum) reasons.push(`${label} array permits at most ${maximum} contours`);
+    let valid = features.length <= maximum;
+    for (const [index, feature] of features.entries()) {
+      const featureReasons = contourReasons(feature, role, `${label} ${index + 1}`, budget);
+      reasons.push(...featureReasons);
+      valid = valid && featureReasons.length === 0;
+      if (isRecord(feature) && typeof feature.id === 'string') {
+        if (ids.has(feature.id)) reasons.push(`Duplicate feature ID ${feature.id}`);
+        ids.add(feature.id);
+      }
+    }
+    if (label === 'Deep feature') deepFeaturesValid = valid;
+    if (label === 'Light feature') lightFeaturesValid = valid;
   }
   const diagnosticReasons = diagnosticsReasons(value.diagnostics);
   reasons.push(...diagnosticReasons);
@@ -438,9 +484,10 @@ function validateColoredLayerWithBudget(value: unknown, budget: ValidationBudget
     }
   }
   if (exteriorValid && diagnosticReasons.length === 0
-    && (value.deepFeature !== undefined || value.lightFeature !== undefined)
-    && (value.deepFeature === undefined || deepFeatureValid)
-    && (value.lightFeature === undefined || lightFeatureValid)
+    && (Array.isArray(value.deepFeatures) && value.deepFeatures.length > 0
+      || Array.isArray(value.lightFeatures) && value.lightFeatures.length > 0)
+    && deepFeaturesValid
+    && lightFeaturesValid
     && (value.centralHole === undefined || centralHoleValid)
     && isRecord(value.exterior) && Array.isArray(value.exterior.outer)
     && isRecord(value.diagnostics) && isRecord(value.diagnostics.depth)) {
@@ -457,8 +504,8 @@ function validateColoredLayerWithBudget(value: unknown, budget: ValidationBudget
           centralHole: isRecord(value.centralHole) && Array.isArray(value.centralHole.outer)
             ? value.centralHole.outer as readonly Point2[]
             : undefined,
-          red: value.deepFeature as FeatureContour | undefined,
-          blue: value.lightFeature as FeatureContour | undefined,
+          red: value.deepFeatures as readonly FeatureContour[],
+          blue: value.lightFeatures as readonly FeatureContour[],
           clearanceMm,
           deadline: budget.deadline,
           checkpoint: budget.checkpoint,
@@ -511,6 +558,17 @@ function contourRecord(
   };
 }
 
+function contourRecords(
+  contours: readonly FeatureContour[],
+  deadline: number,
+  checkpoint: () => void,
+): readonly unknown[] {
+  return contours.map((contour, index) => {
+    if ((index & 63) === 0) checkRuntimeBudget(deadline, checkpoint);
+    return contourRecord(contour, deadline, checkpoint);
+  });
+}
+
 function orderedLayerRecords(
   layers: readonly ColoredOutlineLayer[],
   deadline: number,
@@ -529,8 +587,10 @@ function orderedLayerRecords(
       roles: [
         ['exterior', contourRecord(layer.exterior, deadline, checkpoint)],
         ['centralHole', contourRecord(layer.centralHole, deadline, checkpoint)],
-        ['deepFeature', contourRecord(layer.deepFeature, deadline, checkpoint)],
-        ['lightFeature', contourRecord(layer.lightFeature, deadline, checkpoint)],
+        ['launcherCuts', contourRecords(layer.launcherCuts, deadline, checkpoint)],
+        ['fastenerHoles', contourRecords(layer.fastenerHoles, deadline, checkpoint)],
+        ['deepFeatures', contourRecords(layer.deepFeatures, deadline, checkpoint)],
+        ['lightFeatures', contourRecords(layer.lightFeatures, deadline, checkpoint)],
       ],
       diagnostics: {
         hole: layer.diagnostics.hole.status === 'retained'
@@ -756,7 +816,7 @@ export function validateAutomaticColoredResult(
   } else {
     const layerIds = new Set<string>(), featureIds = new Set<string>(), allIds = new Set<string>();
     let previous: ColoredOutlineLayer | undefined;
-    for (const candidate of value.coloredLayers) {
+    for (const [layerPosition, candidate] of value.coloredLayers.entries()) {
       const validation = validateLayer(candidate);
       reasons.push(...validation.reasons);
       if (!isRecord(candidate)) continue;
@@ -766,13 +826,32 @@ export function validateAutomaticColoredResult(
         if (allIds.has(candidate.id)) reasons.push(`Duplicate public ID ${candidate.id}`);
         allIds.add(candidate.id);
       }
-      for (const key of ['exterior', 'centralHole', 'deepFeature', 'lightFeature']) {
+      for (const key of ['exterior', 'centralHole'] as const) {
         const feature = candidate[key];
         if (isRecord(feature) && typeof feature.id === 'string') {
           if (featureIds.has(feature.id)) reasons.push(`Duplicate feature ID ${feature.id}`);
           featureIds.add(feature.id);
           if (allIds.has(feature.id)) reasons.push(`Duplicate public ID ${feature.id}`);
           allIds.add(feature.id);
+        }
+      }
+      for (const key of ['launcherCuts', 'fastenerHoles', 'deepFeatures', 'lightFeatures'] as const) {
+        const features = candidate[key];
+        if (!Array.isArray(features)) continue;
+        for (const feature of features) {
+          if (!isRecord(feature) || typeof feature.id !== 'string') continue;
+          if (featureIds.has(feature.id)) reasons.push(`Duplicate feature ID ${feature.id}`);
+          featureIds.add(feature.id);
+          if (allIds.has(feature.id)) reasons.push(`Duplicate public ID ${feature.id}`);
+          allIds.add(feature.id);
+        }
+      }
+      if (layerPosition !== value.coloredLayers.length - 1) {
+        if (Array.isArray(candidate.deepFeatures) && candidate.deepFeatures.length > 1) {
+          reasons.push('Lower layers permit at most one deep feature');
+        }
+        if (Array.isArray(candidate.lightFeatures) && candidate.lightFeatures.length > 1) {
+          reasons.push('Lower layers permit at most one light feature');
         }
       }
       if (previous && (typeof candidate.index !== 'number' || candidate.index <= previous.index

@@ -22,14 +22,15 @@ function browserPayload(): OutlinePreviewPayload {
   const layers: ColoredOutlineLayer[] = Array.from({ length: 6 }, (_, index) => ({
     id: `actual-layer-${index}`, index, zStart: index, zEnd: index + 1,
     exterior: { ...exterior, id: `actual-exterior-${index}` },
-    deepFeature: index === 0 ? {
+    launcherCuts: [], fastenerHoles: [],
+    deepFeatures: index === 0 ? [{
       id: 'actual-red', role: 'DEEP_RED', outer: [[1, 1], [4, 1], [4, 4], [1, 4]],
       boundsMm: { minX: 1, minY: 1, maxX: 4, maxY: 4 }, areaMm2: 9,
-    } : undefined,
-    lightFeature: index === 1 ? {
+    }] : [],
+    lightFeatures: index === 1 ? [{
       id: 'actual-blue', role: 'LIGHT_BLUE', outer: [[6, 6], [9, 6], [9, 9], [6, 9]],
       boundsMm: { minX: 6, minY: 6, maxX: 9, maxY: 9 }, areaMm2: 9,
-    } : undefined,
+    }] : [],
     removedComponentCount: 0,
     diagnostics: {
       hole: { status: 'omitted' },
@@ -290,8 +291,8 @@ describe('OutlineProcessViewport in Chromium', () => {
           id: `maximum-layer-${index}`, index, zStart: index, zEnd: index + 1,
           exterior: feature(`maximum-exterior-${index}`, 'CUT_BLACK'),
           centralHole: feature(`maximum-hole-${index}`, 'CUT_BLACK'),
-          deepFeature: feature(`maximum-red-${index}`, 'DEEP_RED'),
-          lightFeature: feature(`maximum-blue-${index}`, 'LIGHT_BLUE'),
+          deepFeatures: [feature(`maximum-red-${index}`, 'DEEP_RED')],
+          lightFeatures: [feature(`maximum-blue-${index}`, 'LIGHT_BLUE')],
         };
       }),
     };

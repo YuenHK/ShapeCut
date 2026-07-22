@@ -43,7 +43,8 @@ globalThis.addEventListener('message', (event: MessageEvent<unknown>) => {
   if (message?.type === 'SHAPECUT_TEST_NEAR_LIMIT_PACKAGE') {
     nearLimitPackageWorkload = nearLimitColoredResult();
     const contourPoints = nearLimitPackageWorkload.coloredLayers.flatMap((layer) => [
-      layer.exterior, layer.centralHole, layer.deepFeature, layer.lightFeature,
+      layer.exterior, layer.centralHole,
+      ...layer.launcherCuts, ...layer.fastenerHoles, ...layer.deepFeatures, ...layer.lightFeatures,
     ].flatMap((contour) => contour ? [contour.outer.length] : []));
     globalThis.postMessage({
       type: 'SHAPECUT_PACKAGE_WORKLOAD_READY',

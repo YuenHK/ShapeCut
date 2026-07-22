@@ -21,12 +21,18 @@ function payload(suffix = '', count = 6): OutlinePreviewPayload {
     centralHole: index === 0
       ? contour(`hole-${index}${suffix}`, 'CUT_BLACK', [[8, 4], [12, 4], [12, 6], [8, 6]])
       : undefined,
-    deepFeature: index === 1
-      ? contour(`red-${index}${suffix}`, 'DEEP_RED', [[1, 1], [5, 1], [5, 4], [1, 4]])
-      : undefined,
-    lightFeature: index === 2
-      ? contour(`blue-${index}${suffix}`, 'LIGHT_BLUE', [[14, 6], [19, 6], [19, 9], [14, 9]])
-      : undefined,
+    launcherCuts: index === 0
+      ? [contour(`launcher-${index}${suffix}`, 'CUT_BLACK', [[1, 6], [3, 6], [3, 8], [1, 8]])]
+      : [],
+    fastenerHoles: index === 0
+      ? [contour(`fastener-${index}${suffix}`, 'CUT_BLACK', [[16, 1], [18, 1], [18, 3], [16, 3]])]
+      : [],
+    deepFeatures: index === 1
+      ? [contour(`red-${index}${suffix}`, 'DEEP_RED', [[1, 1], [5, 1], [5, 4], [1, 4]])]
+      : [],
+    lightFeatures: index === 2
+      ? [contour(`blue-${index}${suffix}`, 'LIGHT_BLUE', [[14, 6], [19, 6], [19, 9], [14, 9]])]
+      : [],
     removedComponentCount: 0,
     diagnostics: {
       hole: index === 0
@@ -60,8 +66,9 @@ function maximumFallbackPayload(): OutlinePreviewPayload {
       ...item,
       exterior: contour(`maximum-exterior-${index}`, 'CUT_BLACK', outer),
       centralHole: contour(`maximum-hole-${index}`, 'CUT_BLACK', outer),
-      deepFeature: contour(`maximum-red-${index}`, 'DEEP_RED', outer),
-      lightFeature: contour(`maximum-blue-${index}`, 'LIGHT_BLUE', outer),
+      launcherCuts: [], fastenerHoles: [],
+      deepFeatures: [contour(`maximum-red-${index}`, 'DEEP_RED', outer)],
+      lightFeatures: [contour(`maximum-blue-${index}`, 'LIGHT_BLUE', outer)],
     })),
   };
 }
@@ -101,13 +108,15 @@ describe('OutlineProcessViewport', () => {
     expect(scene.dispose).toHaveBeenCalledOnce();
   });
 
-  it('renders exterior, hole, red, and blue actual geometry when WebGL is unavailable', () => {
+  it('renders exterior, central/launcher/fastener cuts, red, and blue actual geometry when WebGL is unavailable', () => {
     render(<OutlineProcessViewport payload={payload()} stage="slicing" reducedMotion />);
 
     const fallback = screen.getByRole('img', { name: /模型分層預覽.*SVG/ });
     expect(fallback).toHaveAttribute('data-layer-count', '6');
     expect(fallback.querySelector('[data-feature-id="exterior-0"]')).toHaveAttribute('stroke', '#000000');
     expect(fallback.querySelector('[data-feature-id="hole-0"]')).toHaveAttribute('stroke', '#000000');
+    expect(fallback.querySelector('[data-feature-id="launcher-0"]')).toHaveAttribute('stroke', '#000000');
+    expect(fallback.querySelector('[data-feature-id="fastener-0"]')).toHaveAttribute('stroke', '#000000');
     expect(fallback.querySelector('[data-feature-id="red-1"]')).toHaveAttribute('stroke', '#E5484D');
     expect(fallback.querySelector('[data-feature-id="blue-2"]')).toHaveAttribute('stroke', '#3A78D4');
     expect(fallback.querySelector('[data-feature-id="exterior-0"]')).toHaveAttribute('d', 'M 0 0 L 20 0 L 20 10 L 0 10 Z');

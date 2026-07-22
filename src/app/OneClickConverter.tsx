@@ -167,8 +167,8 @@ function presentationWarnings(result: AutomaticOutlineResult): readonly string[]
     warnings.push('模型已使用 2.5D 外形簡化；內部結構及細小分離零件不會成為切割線。');
   }
   const missingHole = result.coloredLayers.filter((layer) => !layer.centralHole || layer.diagnostics.hole.status !== 'retained').length;
-  const missingDeep = result.coloredLayers.filter((layer) => !layer.deepFeature).length;
-  const missingLight = result.coloredLayers.filter((layer) => !layer.lightFeature).length;
+  const missingDeep = result.coloredLayers.filter((layer) => layer.deepFeatures.length === 0).length;
+  const missingLight = result.coloredLayers.filter((layer) => layer.lightFeatures.length === 0).length;
   const hole = omittedFeatureMessage('偵測到可靠中央孔；輸出已省略該孔線', missingHole, total);
   const deep = omittedFeatureMessage('保留較深層紅色特徵', missingDeep, total);
   const light = omittedFeatureMessage('保留較淺層藍色特徵', missingLight, total);
@@ -420,10 +420,10 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
       : []
   )));
   const redThreshold = measurementRange(result.coloredLayers.flatMap((layer) => (
-    layer.deepFeature ? [layer.diagnostics.depth.redThresholdMm] : []
+    layer.deepFeatures.length > 0 ? [layer.diagnostics.depth.redThresholdMm] : []
   )));
   const blueThreshold = measurementRange(result.coloredLayers.flatMap((layer) => (
-    layer.lightFeature ? [layer.diagnostics.depth.blueThresholdMm] : []
+    layer.lightFeatures.length > 0 ? [layer.diagnostics.depth.blueThresholdMm] : []
   )));
   return (
     <section className="converter-card result-card" aria-labelledby="result-title">

@@ -26,6 +26,7 @@ const coloredLayer: ColoredOutlineLayer = {
     outer: [[0, 0], [10, 0], [10, 5], [0, 5]],
     boundsMm: { minX: 0, minY: 0, maxX: 10, maxY: 5 }, areaMm2: 50,
   },
+  launcherCuts: [], fastenerHoles: [], deepFeatures: [], lightFeatures: [],
   removedComponentCount: 0,
   diagnostics: {
     hole: { status: 'omitted' },
@@ -318,7 +319,7 @@ describe('OneClickConverter', () => {
     const measuredLayer: ColoredOutlineLayer = {
       ...coloredLayer,
       centralHole: retainedHole,
-      deepFeature,
+      deepFeatures: [deepFeature],
       diagnostics: {
         hole: { status: 'retained', equivalentDiameterMm: 1.6, axisDistanceMm: 0.1 },
         depth: { cellSizeMm: 0.1, contrastMm: 0.9, redThresholdMm: 0.7, blueThresholdMm: 0.3 },
