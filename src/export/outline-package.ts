@@ -739,7 +739,7 @@ function bytesEqual(
 }
 
 const COLORED_ZIP_NAMES = Object.freeze([
-  'cut-and-engrave.dxf', 'cut-and-engrave.svg', 'exploded-view.pdf', 'preview.pdf',
+  'cut-and-engrave.svg', 'cut-and-engrave.dxf', 'preview.pdf', 'exploded-view.pdf',
 ] as const);
 const MAX_COLORED_ZIP_BYTES = 64 * 1024 * 1024;
 const MAX_COLORED_ZIP_UNCOMPRESSED_BYTES = 64 * 1024 * 1024;
@@ -877,8 +877,11 @@ function parseRawColoredZip(bytes: Uint8Array, checkpoint: PackageCheckpoint): R
     cursor += recordLength;
   }
   if (cursor !== centralEnd) throw new RangeError('Colored ZIP central directory record count is inconsistent');
+  if (exactJson(records.map(({ name }) => name)) !== exactJson(COLORED_ZIP_NAMES)) {
+    throw new RangeError('Colored ZIP central directory records must use the exact writer order');
+  }
 
-  const reconciled: RawColoredZipRecord[] = [];
+  const reconciled = new Map<number, RawColoredZipRecord>();
   let expectedLocalOffset = 0;
   for (const record of [...records].sort((left, right) => left.localOffset - right.localOffset)) {
     checkpoint('colored-package:verify-zip-local-record-loop');
@@ -911,13 +914,17 @@ function parseRawColoredZip(bytes: Uint8Array, checkpoint: PackageCheckpoint): R
     if (dataEnd > centralOffset || dataEnd < dataStart) {
       throw new RangeError('Colored ZIP compressed data range is out of bounds');
     }
-    reconciled.push({ ...record, dataStart, dataEnd });
+    reconciled.set(localOffset, { ...record, dataStart, dataEnd });
     expectedLocalOffset = dataEnd;
   }
   if (expectedLocalOffset !== centralOffset) {
     throw new RangeError('Colored ZIP has hidden or trailing local data before the central directory');
   }
-  return reconciled;
+  return records.map((record) => {
+    const reconciledRecord = reconciled.get(record.localOffset);
+    if (!reconciledRecord) throw new RangeError('Colored ZIP local record reconciliation is incomplete');
+    return reconciledRecord;
+  });
 }
 
 function assertColoredPublicText(value: string, label: string): void {
@@ -1017,9 +1024,9 @@ export async function verifyOutlinePackage(
 
   const expectedNames = [...COLORED_ZIP_NAMES];
   const rawRecords = parseRawColoredZip(output.zip, checkpoint);
-  const rawNames = rawRecords.map(({ name }) => name).sort((left, right) => left.localeCompare(right));
+  const rawNames = rawRecords.map(({ name }) => name);
   if (rawRecords.length !== 4 || exactJson(rawNames) !== exactJson(expectedNames)) {
-    throw new RangeError('Colored ZIP must contain exactly four unique central directory records');
+    throw new RangeError('Colored ZIP central directory records must use the exact writer order');
   }
   for (const name of rawNames) assertColoredPublicText(name, 'Colored ZIP raw record name');
 
@@ -1028,7 +1035,7 @@ export async function verifyOutlinePackage(
   checkpoint('colored-package:verify-zip-load:after');
   const entries = Object.entries(zip.files).sort(([left], [right]) => left.localeCompare(right));
   if (entries.length !== 4 || entries.some(([, entry]) => entry.dir)
-    || exactJson(entries.map(([name]) => name)) !== exactJson(expectedNames)) {
+    || exactJson(entries.map(([name]) => name)) !== exactJson([...expectedNames].sort((left, right) => left.localeCompare(right)))) {
     throw new RangeError('Colored ZIP must contain exactly four non-directory records');
   }
   for (const [name, entry] of entries) {

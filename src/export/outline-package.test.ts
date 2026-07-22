@@ -228,6 +228,23 @@ function mutateRawZip(
   return copy;
 }
 
+function reorderCentralDirectoryRecords(bytes: Uint8Array, order: readonly number[]): Uint8Array {
+  const layout = rawZipFixtureLayout(bytes);
+  if (order.length !== layout.records.length || new Set(order).size !== layout.records.length
+    || order.some((index) => index < 0 || index >= layout.records.length)) {
+    throw new Error('Fixture central-directory order is invalid');
+  }
+  const reordered = bytes.slice();
+  let destination = layout.centralOffset;
+  for (const index of order) {
+    const start = layout.records[index].centralOffset;
+    const end = layout.records[index + 1]?.centralOffset ?? layout.eocdOffset;
+    reordered.set(bytes.subarray(start, end), destination);
+    destination += end - start;
+  }
+  return reordered;
+}
+
 const STRICT_RAW_ZIP_MUTATIONS = [
   ['central filename BOM', (bytes: Uint8Array, _view: DataView, layout: ReturnType<typeof rawZipFixtureLayout>) => {
     bytes.set([0xef, 0xbb, 0xbf], layout.records[0].centralOffset + 46);
@@ -341,6 +358,15 @@ describe('material-independent outline package', () => {
 
     await expect(verifyColoredOutlinePackage({ ...output, zip: duplicateZip }, runtime))
       .rejects.toThrow(/four|record|duplicate|central/i);
+  });
+
+  it('rejects central-directory records reordered without changing local records or payloads', async () => {
+    const runtime = coloredResult();
+    const output = await createColoredOutlinePackage(runtime);
+    const reordered = reorderCentralDirectoryRecords(output.zip, [1, 0, 2, 3]);
+
+    await expect(verifyColoredOutlinePackage({ ...output, zip: reordered }, runtime))
+      .rejects.toThrow(/writer|order|central/i);
   });
 
   it.each(STRICT_RAW_ZIP_MUTATIONS)('strictly rejects raw ZIP mutation: %s', async (_label, mutate) => {

@@ -35,3 +35,23 @@
 - Deadline/cancellation, private-output validators, and renderer-pool lifecycle remain covered by the fresh suites.
 - The generic phrase `material test cuts` is narrowly permitted by the artifact text scanner so both PDFs can give the approved safe guidance; actual material profiles, power, speed, passes, and source paths remain rejected.
 - One early full-E2E invocation was interrupted when the command-return boundary stopped its preview server after 30 seconds; its subsequent connection-refused failures were infrastructure-only and were discarded. The recorded full run used a persistent session and passed 15/15.
+
+## ZIP central-directory order final-review fix
+
+### RED evidence
+
+- Added a mutation that swaps only the first two central-directory records, leaving every local record and compressed payload byte unchanged.
+- Before the fix, `npm test -- src/export/outline-package.test.ts` failed at `rejects central-directory records reordered without changing local records or payloads`: `verifyColoredOutlinePackage()` resolved instead of rejecting.
+
+### Fix and GREEN evidence
+
+- The production raw ZIP verifier now retains central-directory encounter order, requires the writer sequence `cut-and-engrave.svg`, `cut-and-engrave.dxf`, `preview.pdf`, `exploded-view.pdf` before its separate local-offset sort, and returns records in that preserved order.
+- The local-offset sort remains solely for the gap/overlap and bounds reconciliation; ZIP payload byte identity, privacy scans, and shared-deadline checkpoints remain unchanged.
+
+| Command | Result |
+| --- | --- |
+| `npm test -- src/export/outline-package.test.ts` (RED) | 418 passed, 1 expected new regression failed because verification resolved |
+| `npm test -- src/export/outline-package.test.ts src/test/e2e-helpers.test.ts` (GREEN) | 460 passed |
+| `npm run typecheck` | passed |
+| `npm test` | 1,096 passed; 1 unrelated pre-existing failure: `Knight Fortress safe repair regression` timed out at Vitest's 5 s limit |
+| `git diff --check` | passed |
