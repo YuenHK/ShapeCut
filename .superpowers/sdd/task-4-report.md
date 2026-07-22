@@ -309,3 +309,31 @@ The synthetic detection arrays expose four evenly spaced points only while the u
 - `git diff --check`: exit 0.
 
 No launcher.ts polling gap, output change, or blocker remains.
+
+---
+
+## Planner checkpoint recovery identity closure (2026-07-22)
+
+### Root cause and RED evidence
+
+`planLauncherClearance` recovered genuine offset failures by matching `RangeError` message prefixes. Its caller checkpoint was invoked directly inside the same recovery boundary, so a caller cancellation such as `RangeError('Offset caller cancellation')` was indistinguishable from an offset-kernel geometry error and was silently converted to the sanitized omitted result.
+
+The public planner RED ran 25 launcher tests: 24 passed and one failed as expected. The checkpoint threw one specific `RangeError` object on call four inside planner recovery; the call returned normally, so the captured exception was `undefined` instead of that object. A companion test proved that a genuine bow-tie offset error was and must remain safely omitted.
+
+### GREEN implementation
+
+- Added an opaque `LauncherPlanningCheckpointInterruption` sentinel around only caller-checkpoint exceptions inside planner recovery.
+- The guarded checkpoint is shared by translation, offset/kernel validation, contour bounds, and area work inside the `try` boundary.
+- The catch block unwraps and rethrows the exact original caller object before applying any geometry type/message recovery.
+- Runtime-budget errors remain directly classified as budget failures, while genuine offset and finished-opening geometry `RangeError` values still produce the sanitized omitted plan.
+
+### Final verification
+
+- Launcher GREEN: 25 / 25 tests passed.
+- Launcher/kernel focused run: 2 files / 31 tests passed.
+- `npx tsc -b --pretty false`: exit 0.
+- `npm run build`: exit 0; Vite transformed 141 modules.
+- Fresh full suite, run once: 50 files / 1,218 tests passed.
+- `git diff --check`: exit 0.
+
+No planner recovery ambiguity or blocker remains.

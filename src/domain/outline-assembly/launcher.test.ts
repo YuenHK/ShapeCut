@@ -3,6 +3,7 @@ import type { Point2 } from '../decomposition/types';
 import type { FeatureContour } from '../outline-features/types';
 import {
   detectLauncherTemplate,
+  LAUNCHER_OMISSION_WARNING,
   planLauncherClearance,
   type LauncherCandidateGroup,
   type LauncherDetection,
@@ -413,6 +414,40 @@ describe('safe two-layer launcher planning', () => {
         if (calls === 4) throw new Error('planner cancelled');
       },
     })).toThrow(/planner cancelled/);
+  });
+
+  it('rethrows the exact caller RangeError when its message resembles offset geometry recovery', () => {
+    const cancellation = new RangeError('Offset caller cancellation');
+    let calls = 0;
+    const thrown = captureThrown(() => planLauncherClearance({
+      detection: detection(), fallback: undefined, axisPoint: [0, 0],
+      topExterior: exterior('top', 20), secondExterior: exterior('second', 20),
+      material: { kerfMm: 0.2, minWebMm: 0.8 },
+      checkpoint: () => {
+        calls += 1;
+        if (calls === 4) throw cancellation;
+      },
+    }));
+    expect(calls).toBe(4);
+    expect(thrown).toBe(cancellation);
+  });
+
+  it('still omits safely when the offset kernel reports genuine invalid geometry', () => {
+    const source = group();
+    const invalidLoop: readonly Point2[] = [[8, -1], [12, 1], [8, 1], [12, -1]];
+    const result = planLauncherClearance({
+      detection: { status: 'omitted', reason: 'no reliable candidates' },
+      fallback: {
+        version: 1,
+        loops: [invalidLoop, source.loops[1].outer, source.loops[2].outer],
+        provenanceHashes: ['a'.repeat(64), 'b'.repeat(64)],
+      },
+      axisPoint: [0, 0],
+      topExterior: exterior('top', 20),
+      secondExterior: exterior('second', 20),
+      material: { kerfMm: 0.2, minWebMm: 0.8 },
+    });
+    expect(result).toEqual({ status: 'omitted', cuts: [], warning: LAUNCHER_OMISSION_WARNING });
   });
 
   it('propagates the exact caller cancellation late inside dense-loop translation', () => {

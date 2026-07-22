@@ -69,6 +69,10 @@ function checkRuntime(deadline: number, checkpoint: () => void): void {
   if (Date.now() > deadline) throw new RangeError('Launcher detection exceeded the runtime budget');
 }
 
+class LauncherPlanningCheckpointInterruption {
+  constructor(readonly original: unknown) {}
+}
+
 function polygonCentroid(
   points: readonly Point2[],
   deadline = Infinity,
@@ -262,14 +266,21 @@ export function planLauncherClearance(request: LauncherClearanceRequest): Launch
   const selection = request.detection.status === 'detected'
     ? { status: 'detected' as const, loops: request.detection.loops }
     : { status: 'fallback' as const, loops: (request.fallback ?? KNIGHT_FORTRESS_LAUNCHER_TEMPLATE).loops };
-  const kernelCheckpoint = (): void => checkRuntime(deadline, checkpoint);
+  const guardedCheckpoint = (): void => {
+    try {
+      checkpoint();
+    } catch (error) {
+      throw new LauncherPlanningCheckpointInterruption(error);
+    }
+  };
+  const kernelCheckpoint = (): void => checkRuntime(deadline, guardedCheckpoint);
   const finishedContours: FeatureContour[] = [];
   const cuts: FeatureContour[] = [];
   try {
     for (let index = 0; index < 3; index += 1) {
-      checkRuntime(deadline, checkpoint);
+      checkRuntime(deadline, guardedCheckpoint);
       const translated = translateLauncherLoop(
-        selection.loops[index], request.axisPoint, deadline, checkpoint,
+        selection.loops[index], request.axisPoint, deadline, guardedCheckpoint,
       );
       const finished = simpleMiterPolygonKernel.offset(
         { points: translated }, LAUNCHER_ASSEMBLY_ALLOWANCE_MM, kernelCheckpoint,
@@ -286,19 +297,20 @@ export function planLauncherClearance(request: LauncherClearanceRequest): Launch
         id: `launcher-finished-envelope-${index + 1}`,
         role: 'CUT_BLACK',
         outer: finishedOuter,
-        boundsMm: contourBounds(finishedOuter, deadline, checkpoint),
-        areaMm2: Math.abs(signedArea(finishedOuter, deadline, checkpoint)),
+        boundsMm: contourBounds(finishedOuter, deadline, guardedCheckpoint),
+        areaMm2: Math.abs(signedArea(finishedOuter, deadline, guardedCheckpoint)),
       });
       const outer = path[0].points;
       cuts.push({
         id: `launcher-clearance-${index + 1}`,
         role: 'CUT_BLACK',
         outer,
-        boundsMm: contourBounds(outer, deadline, checkpoint),
-        areaMm2: Math.abs(signedArea(outer, deadline, checkpoint)),
+        boundsMm: contourBounds(outer, deadline, guardedCheckpoint),
+        areaMm2: Math.abs(signedArea(outer, deadline, guardedCheckpoint)),
       });
     }
   } catch (error) {
+    if (error instanceof LauncherPlanningCheckpointInterruption) throw error.original;
     if (!(error instanceof RangeError)
       || /runtime budget/i.test(error.message)
       || !/^(?:Offset |Built-in offset|Launcher (?:finished opening|toolpath))/.test(error.message)) throw error;
