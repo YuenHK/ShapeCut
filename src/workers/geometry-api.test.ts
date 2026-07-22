@@ -255,6 +255,20 @@ describe('geometry worker client', () => {
     expect(onProgress.mock.calls).toEqual([[{ stage: 'reading' }], [{ stage: 'packaging' }]]);
   });
 
+  it('rejects private material evidence before transfer or remote invocation', async () => {
+    const api = inspectOnly(vi.fn());
+    const transferAutomaticRequest = vi.fn();
+    const client = makeGeometryClient(api, { transferAutomaticRequest });
+
+    await expect(client.convertAutomatically({
+      bytes: new ArrayBuffer(4),
+      material: { ...testMaterial, manufacturer: 'private evidence' },
+    } as unknown as Parameters<typeof client.convertAutomatically>[0])).rejects.toThrow(/unrecognized key/i);
+
+    expect(transferAutomaticRequest).not.toHaveBeenCalled();
+    expect(api.convertAutomatically).not.toHaveBeenCalled();
+  });
+
   it('supersedes an active automatic conversion before starting its replacement', async () => {
     const firstRemote = deferred<AutomaticOutlineResult>();
     const api = inspectOnly(vi.fn());

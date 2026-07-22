@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { finalizer } from 'comlink';
+import { finalizer, releaseProxy, wrap, type Remote } from 'comlink';
 import { writeBinarySTL } from '../domain/mesh/write-stl';
 import {
   removalEvidenceFingerprint,
@@ -17,8 +17,11 @@ import {
 } from '../test/mesh-builders';
 import type { GeometryClient } from './geometry-client';
 import { createGeometryWorkerClient as createActualGeometryWorkerClient } from './geometry-client';
+import type { GeometryApi } from './geometry-api';
 
 const clients: Array<Pick<GeometryClient, 'dispose'>> = [];
+const rawWorkerApis: Array<Remote<GeometryApi>> = [];
+const rawWorkers: Worker[] = [];
 const testMaterial = { id: 'test-material', name: 'Test material', thicknessMm: 3, kerfMm: 0.1, minFeatureMm: 0.8, minWebMm: 0.5, fitAllowanceMm: { loose: 0.2, slip: 0.1, snug: 0, press: -0.1 } } as const;
 type TestGeometryClient = Omit<GeometryClient, 'convertAutomatically'> & {
   convertAutomatically(request: { readonly bytes: ArrayBuffer }, onProgress?: (event: AutomaticOutlineProgressEvent) => void | Promise<void>): ReturnType<GeometryClient['convertAutomatically']>;
@@ -30,6 +33,13 @@ function createGeometryWorkerClient(): TestGeometryClient {
     convertAutomatically: (request, onProgress) => client.convertAutomatically({ ...request, material: testMaterial }, onProgress),
   };
 }
+function createRawGeometryWorkerApi(): Remote<GeometryApi> {
+  const worker = new Worker(new URL('./geometry.worker.ts', import.meta.url), { type: 'module' });
+  const api = wrap<GeometryApi>(worker);
+  rawWorkers.push(worker);
+  rawWorkerApis.push(api);
+  return api;
+}
 const scaledOpenTetrahedron = () => {
   const mesh = openTetrahedron();
   return { ...mesh, positions: new Float64Array(Array.from(mesh.positions, (value) => value * 20)) };
@@ -37,6 +47,8 @@ const scaledOpenTetrahedron = () => {
 
 afterEach(() => {
   for (const client of clients.splice(0)) client.dispose();
+  for (const api of rawWorkerApis.splice(0)) api[releaseProxy]();
+  for (const worker of rawWorkers.splice(0)) worker.terminate();
 });
 
 describe('geometry worker boundary', () => {
@@ -46,16 +58,12 @@ describe('geometry worker boundary', () => {
     ['forbidden private strings', { ...testMaterial, manufacturer: 'private evidence' }, /unrecognized key/i],
     ['over-500-character ID and name bounds', { ...testMaterial, id: 'i'.repeat(501), name: 'n'.repeat(501) }, /500|too big/i],
   ])('rejects %s from a structured-clone material payload in the real worker', async (_label, material, error) => {
-    const client = createActualGeometryWorkerClient();
-    clients.push(client);
-    const unsafeClient = client as unknown as {
-      convertAutomatically(request: { readonly bytes: ArrayBuffer; readonly material: Record<string, unknown> }): Promise<unknown>;
-    };
+    const api = createRawGeometryWorkerApi();
 
-    await expect(unsafeClient.convertAutomatically({
+    await expect(api.convertAutomatically({
       bytes: writeBinarySTL(tetrahedron(), 'safe'),
       material,
-    })).rejects.toThrow(error);
+    } as unknown as Parameters<GeometryApi['convertAutomatically']>[0])).rejects.toThrow(error);
   });
 
   it('proxies automatic progress monotonically across Comlink and transfers the STL bytes', async () => {
