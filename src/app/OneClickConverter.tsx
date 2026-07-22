@@ -9,6 +9,12 @@ import type { OutlinePreviewPayload } from '../domain/outline-features/types';
 import { SupersededError } from '../workers/geometry-client';
 import { OutlineArtifactError, type OutlineArtifactId } from '../workers/geometry-api';
 import { MAX_STL_BYTES } from '../domain/mesh/parse-stl';
+import { DEFAULT_PENDING_MATERIAL_PROFILES } from '../domain/materials/default-profiles';
+import {
+  manufacturingGeometryProfile,
+  type ManufacturingGeometryProfile,
+} from '../domain/materials/manufacturing-profile';
+import { MaterialProfileSchema, type MaterialProfileV1 } from '../domain/materials/schema';
 import { OutlineProcessViewport } from '../preview/OutlineProcessViewport';
 import { shutdownOutlineProcessRendererPool, warmOutlineProcessRenderer } from '../preview/outline-process-scene';
 
@@ -23,6 +29,7 @@ export type OutlineDownloads = {
 
 export type OneClickViewState =
   | { readonly kind: 'upload' }
+  | { readonly kind: 'material'; readonly fileName: string; readonly bytes: ArrayBuffer }
   | { readonly kind: 'processing'; readonly fileName: string; readonly stage: AutomaticOutlineProgressStage; readonly preview?: OutlinePreviewPayload }
   | { readonly kind: 'result'; readonly fileName: string; readonly result: AutomaticOutlineResult; readonly downloads: OutlineDownloads }
   | {
@@ -37,10 +44,13 @@ export type OneClickViewState =
 export type OneClickConverterServices = {
   readonly convert: (
     bytes: ArrayBuffer,
+    material: ManufacturingGeometryProfile,
     onProgress?: (event: AutomaticOutlineProgressEvent) => void | Promise<void>,
   ) => Promise<AutomaticOutlineResult>;
   readonly package: (result: AutomaticOutlineResult, fileName?: string) => Promise<OutlineDownloads>;
   readonly cancel: () => void;
+  /** Saved profiles supplied by the app's material store. Invalid profiles are never displayed. */
+  readonly materialProfiles?: readonly MaterialProfileV1[];
 };
 
 const STAGES: readonly AutomaticOutlineProgressStage[] = ['reading', 'analyzing', 'simplifying', 'slicing', 'packaging'];
@@ -51,6 +61,15 @@ const STAGE_LABELS: Record<AutomaticOutlineProgressStage, string> = {
   slicing: '正在產生切片',
   packaging: '正在準備下載',
 };
+
+function selectableMaterials(savedProfiles: readonly MaterialProfileV1[] = []): readonly ManufacturingGeometryProfile[] {
+  const seen = new Set<string>();
+  return [...DEFAULT_PENDING_MATERIAL_PROFILES, ...savedProfiles].flatMap((profile) => {
+    if (seen.has(profile.id) || !MaterialProfileSchema.safeParse(profile).success) return [];
+    seen.add(profile.id);
+    return [manufacturingGeometryProfile(profile)];
+  });
+}
 
 function failureMessage(error: unknown): string {
   if (error instanceof AutomaticOutlineError) {
@@ -203,6 +222,7 @@ function ModelInput({ compact = false, onFile }: { readonly compact?: boolean; r
 
 export function OneClickConverter({ services }: { readonly services: OneClickConverterServices }) {
   const [view, setView] = useState<OneClickViewState>({ kind: 'upload' });
+  const materials = selectableMaterials(services.materialProfiles);
   const requestId = useRef(0);
   const downloadsRef = useRef<OutlineDownloads | undefined>(undefined);
 
@@ -222,37 +242,30 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
     releaseCurrentDownloads();
   }, [releaseCurrentDownloads, services]);
 
-  const processFile = useCallback(async (file: File) => {
+  const processFile = useCallback(async (fileName: string, bytes: ArrayBuffer, material: ManufacturingGeometryProfile) => {
     const current = ++requestId.current;
-    services.cancel();
     releaseCurrentDownloads();
-    if (file.size > MAX_STL_BYTES) {
-      setView({ kind: 'failure', fileName: file.name, message: failureMessage(new AutomaticOutlineError('RESOURCE_LIMIT', '模型超出安全處理資源上限')) });
-      return;
-    }
-    setView({ kind: 'processing', fileName: file.name, stage: 'reading' });
+    setView({ kind: 'processing', fileName, stage: 'reading' });
     let lastProgressIndex = 0;
     let latestPreview: OutlinePreviewPayload | undefined;
     let completedResult: AutomaticOutlineResult | undefined;
     try {
-      const bytes = await readFile(file);
-      if (current !== requestId.current) return;
-      const result = await services.convert(bytes, (event) => {
+      const result = await services.convert(bytes, material, (event) => {
         const nextProgressIndex = STAGES.indexOf(event.stage);
         if (current !== requestId.current || nextProgressIndex < lastProgressIndex) return;
         lastProgressIndex = nextProgressIndex;
         if ('preview' in event) latestPreview = event.preview;
-        setView({ kind: 'processing', fileName: file.name, stage: event.stage, preview: latestPreview });
+        setView({ kind: 'processing', fileName, stage: event.stage, preview: latestPreview });
       });
       if (current !== requestId.current) return;
       completedResult = result;
-      const downloads = await services.package(result, file.name);
+      const downloads = await services.package(result, fileName);
       if (current !== requestId.current) {
         revokeDownloads(downloads);
         return;
       }
       downloadsRef.current = downloads;
-      setView({ kind: 'result', fileName: file.name, result, downloads });
+      setView({ kind: 'result', fileName, result, downloads });
     } catch (error) {
       if (current !== requestId.current || error instanceof SupersededError) return;
       const artifact = completedResult && error instanceof OutlineArtifactError
@@ -260,7 +273,7 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
         : undefined;
       setView({
         kind: 'failure',
-        fileName: file.name,
+        fileName,
         message: failureMessage(error),
         ...(artifact ? { artifact } : {}),
         ...(completedResult ? {
@@ -270,6 +283,30 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
       });
     }
   }, [releaseCurrentDownloads, services]);
+
+  const selectFile = useCallback(async (file: File) => {
+    const current = ++requestId.current;
+    services.cancel();
+    releaseCurrentDownloads();
+    if (file.size > MAX_STL_BYTES) {
+      setView({ kind: 'failure', fileName: file.name, message: failureMessage(new AutomaticOutlineError('RESOURCE_LIMIT', '模型超出安全處理資源上限')) });
+      return;
+    }
+    try {
+      const bytes = await readFile(file);
+      if (current !== requestId.current) return;
+      setView({ kind: 'material', fileName: file.name, bytes });
+    } catch (error) {
+      if (current !== requestId.current) return;
+      setView({ kind: 'failure', fileName: file.name, message: failureMessage(error) });
+    }
+  }, [releaseCurrentDownloads, services]);
+
+  const selectMaterial = useCallback((id: string) => {
+    if (view.kind !== 'material') return;
+    const material = materials.find((profile) => profile.id === id);
+    if (material) void processFile(view.fileName, view.bytes, material);
+  }, [materials, processFile, view]);
 
   const reset = () => {
     requestId.current += 1;
@@ -285,10 +322,27 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
         <h1 id="converter-title">把 3D 模型變成 Laser Cut 切片</h1>
         <p>放入 STL，ShapeCut 會自動分析、簡化和切片，然後準備好通用外形檔案。</p>
       </div>
-      <ModelInput onFile={(file) => void processFile(file)} />
+      <ModelInput onFile={(file) => void selectFile(file)} />
       <ul className="feature-list" aria-label="處理特點">
         <li>自動保留主要外形</li><li>適合多種材料堆疊</li><li>一次下載所有格式</li>
       </ul>
+    </section>
+  );
+
+  if (view.kind === 'material') return (
+    <section className="converter-card material-card" aria-labelledby="material-title">
+      <p className="eyebrow">選擇製作材料</p>
+      <h1 id="material-title">{view.fileName}</h1>
+      <p>請選擇本次製作的材料，系統只會把所需的幾何資料傳送到處理程序。</p>
+      <label className="material-picker">製作材料
+        <select aria-label="選擇製作材料" defaultValue="" onChange={(event) => selectMaterial(event.target.value)}>
+          <option value="" disabled>選擇製作材料</option>
+          {materials.map((profile) => (
+            <option key={profile.id} value={profile.id}>{profile.name} ({profile.thicknessMm} mm)</option>
+          ))}
+        </select>
+      </label>
+      <ModelInput compact onFile={(file) => void selectFile(file)} />
     </section>
   );
 
@@ -314,7 +368,7 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
             <p className="file-name">{view.fileName}</p>
           </div>
         )}
-        <ModelInput compact onFile={(file) => void processFile(file)} />
+        <ModelInput compact onFile={(file) => void selectFile(file)} />
       </section>
     );
   }
@@ -425,7 +479,7 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
         {warnings.length > 0 ? <ul>{warnings.map((item) => <li key={item}>{item}</li>)}</ul> : <p>沒有額外提示。</p>}
         <p>ZIP 只內含 cut-and-engrave.svg、cut-and-engrave.dxf、preview.pdf 及 exploded-view.pdf 四項檔案。</p>
       </details>
-      <ModelInput compact onFile={(file) => void processFile(file)} />
+      <ModelInput compact onFile={(file) => void selectFile(file)} />
     </section>
   );
 }

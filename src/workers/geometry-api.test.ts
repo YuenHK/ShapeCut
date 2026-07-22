@@ -4,6 +4,7 @@ import type { AutomaticOutlineResult } from '../domain/pipeline/automatic-outlin
 import { featureEvidenceFingerprint, validateAutomaticColoredResult } from '../domain/outline-features/types';
 import { CENTRAL_HOLE_OMISSION_WARNING } from '../domain/outline-features/hole';
 import { tetrahedron } from '../test/mesh-builders';
+import { validateManufacturingGeometryProfile } from '../domain/materials/manufacturing-profile';
 import {
   OUTLINE_ARTIFACT_IDS,
   OutlineArtifactError,
@@ -17,6 +18,11 @@ import {
   makeGeometryClient,
   SupersededError,
 } from './geometry-client';
+
+const testMaterial = { id: 'test-material', name: 'Test material', thicknessMm: 3, kerfMm: 0.1, minFeatureMm: 0.8, minWebMm: 0.5, fitAllowanceMm: { loose: 0.2, slip: 0.1, snug: 0, press: -0.1 } } as const;
+function convertAutomatically(client: ReturnType<typeof makeGeometryClient>, request: { readonly bytes: ArrayBuffer }, onProgress?: Parameters<ReturnType<typeof makeGeometryClient>['convertAutomatically']>[1]) {
+  return client.convertAutomatically({ ...request, material: testMaterial }, onProgress);
+}
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -177,6 +183,15 @@ function importRepairAnalysis(sourceHash: string): ImportRepairAnalysis {
 }
 
 describe('geometry worker client', () => {
+  it.each([
+    ['unknown keys', { id: 'birch', name: 'Birch', thicknessMm: 3, kerfMm: 0.1, minFeatureMm: 0.8, minWebMm: 0.5, fitAllowanceMm: { loose: 0.2, slip: 0.1, snug: 0, press: -0.1 }, operatorName: 'private' }],
+    ['non-finite dimensions', { id: 'birch', name: 'Birch', thicknessMm: Number.NaN, kerfMm: 0.1, minFeatureMm: 0.8, minWebMm: 0.5, fitAllowanceMm: { loose: 0.2, slip: 0.1, snug: 0, press: -0.1 } }],
+    ['forbidden evidence strings', { id: 'birch', name: 'Birch', thicknessMm: 3, kerfMm: 0.1, minFeatureMm: 0.8, minWebMm: 0.5, fitAllowanceMm: { loose: 0.2, slip: 0.1, snug: 0, press: -0.1 }, manufacturer: 'private' }],
+    ['overlong identifiers', { id: 'i'.repeat(501), name: 'n'.repeat(501), thicknessMm: 3, kerfMm: 0.1, minFeatureMm: 0.8, minWebMm: 0.5, fitAllowanceMm: { loose: 0.2, slip: 0.1, snug: 0, press: -0.1 } }],
+  ])('rejects %s from a structured-clone material request', (_reason, material) => {
+    expect(() => validateManufacturingGeometryProfile(structuredClone(material))).toThrow();
+  });
+
   it('accepts only the bounded structured non-timeout artifact error contract', () => {
     expect(OUTLINE_ARTIFACT_IDS).toEqual([
       'colored-outline-document',
@@ -232,9 +247,9 @@ describe('geometry worker client', () => {
     const client = makeGeometryClient(api);
     const bytes = new ArrayBuffer(4);
 
-    await expect(client.convertAutomatically({ bytes }, onProgress)).resolves.toMatchObject({ sourceHash: 'automatic' });
+    await expect(convertAutomatically(client, { bytes }, onProgress)).resolves.toMatchObject({ sourceHash: 'automatic' });
 
-    expect(api.convertAutomatically).toHaveBeenCalledWith({ bytes }, expect.any(Function));
+    expect(api.convertAutomatically).toHaveBeenCalledWith({ bytes, material: testMaterial }, expect.any(Function));
     const forwardedProgress = vi.mocked(api.convertAutomatically).mock.calls[0][1];
     expect((forwardedProgress as typeof forwardedProgress & { [proxyMarker]?: true })?.[proxyMarker]).toBeUndefined();
     expect(onProgress.mock.calls).toEqual([[{ stage: 'reading' }], [{ stage: 'packaging' }]]);
@@ -249,9 +264,9 @@ describe('geometry worker client', () => {
     const abortExecution = vi.fn();
     const client = makeGeometryClient(api, { abortExecution });
 
-    const first = client.convertAutomatically({ bytes: new ArrayBuffer(8) });
+    const first = convertAutomatically(client, { bytes: new ArrayBuffer(8) });
     await Promise.resolve();
-    const second = client.convertAutomatically({ bytes: new ArrayBuffer(8) });
+    const second = convertAutomatically(client, { bytes: new ArrayBuffer(8) });
 
     await expect(first).rejects.toMatchObject({ code: 'SUPERSEDED', jobId: 1 });
     await expect(second).resolves.toMatchObject({ sourceHash: 'replacement' });
@@ -272,9 +287,9 @@ describe('geometry worker client', () => {
     const onProgress = vi.fn();
     const client = makeGeometryClient(api);
 
-    const first = client.convertAutomatically({ bytes: new ArrayBuffer(8) }, onProgress);
+    const first = convertAutomatically(client, { bytes: new ArrayBuffer(8) }, onProgress);
     await Promise.resolve();
-    const second = client.convertAutomatically({ bytes: new ArrayBuffer(8) });
+    const second = convertAutomatically(client, { bytes: new ArrayBuffer(8) });
     await expect(first).rejects.toBeInstanceOf(SupersededError);
     await expect(second).resolves.toMatchObject({ sourceHash: 'replacement' });
 
@@ -448,7 +463,7 @@ describe('geometry worker client', () => {
     const client = makeGeometryClient(api);
 
     const first = client.packageOutline(automaticResult('first'));
-    const replacement = client.convertAutomatically({ bytes: new ArrayBuffer(1) });
+    const replacement = convertAutomatically(client, { bytes: new ArrayBuffer(1) });
 
     await expect(first).rejects.toBeInstanceOf(SupersededError);
     await expect(replacement).resolves.toMatchObject({ sourceHash: 'replacement' });

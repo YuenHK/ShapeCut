@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { createGeometryWorkerClient, type GeometryClient } from '../workers/geometry-client';
+import type { ManufacturingGeometryProfile } from '../domain/materials/manufacturing-profile';
 import { OutlineArtifactError, type OutlineArtifactId } from '../workers/geometry-api';
 import { OneClickConverter, type OneClickConverterServices, type OutlineDownloads } from './OneClickConverter';
 
@@ -47,7 +48,7 @@ export function createOneClickServices(
 ): OneClickConverterServices {
   return {
     cancel,
-    convert: (bytes, onProgress) => getGeometry().convertAutomatically({ bytes }, onProgress),
+    convert: (bytes: ArrayBuffer, material: ManufacturingGeometryProfile, onProgress) => getGeometry().convertAutomatically({ bytes, material }, onProgress),
     package: (result, fileName) => getGeometry().packageOutline(result).then((files) => createDownloadUrls(files, fileName)),
   };
 }

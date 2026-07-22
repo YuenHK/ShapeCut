@@ -3,7 +3,7 @@ import { PDFDocument, StandardFonts } from 'pdf-lib';
 import { describe, expect, it } from 'vitest';
 import type { OutlineLayer } from '../domain/outline-2.5d/extract';
 import type { AutomaticOutlineResult } from '../domain/pipeline/automatic-outline-pipeline';
-import { convertAutomatically, removalEvidenceFingerprint } from '../domain/pipeline/automatic-outline-pipeline';
+import { convertAutomatically as convertAutomaticOutline, removalEvidenceFingerprint } from '../domain/pipeline/automatic-outline-pipeline';
 import { writeBinarySTL } from '../domain/mesh/write-stl';
 import { openTetrahedron, separatedClosedCylinders } from '../test/mesh-builders';
 import type { TriangleMesh } from '../domain/mesh/types';
@@ -25,6 +25,11 @@ import {
 import { writeOutlineProjectJson } from './project-json';
 import { coloredResult } from './colored-outline-test-fixture';
 import { featureEvidenceFingerprint } from '../domain/outline-features/types';
+
+const testMaterial = { id: 'test-material', name: 'Test material', thicknessMm: 3, kerfMm: 0.1, minFeatureMm: 0.8, minWebMm: 0.5, fitAllowanceMm: { loose: 0.2, slip: 0.1, snug: 0, press: -0.1 } } as const;
+function convertAutomatically(request: { readonly bytes: ArrayBuffer }, onProgress?: Parameters<typeof convertAutomaticOutline>[1]) {
+  return convertAutomaticOutline({ ...request, material: testMaterial }, onProgress);
+}
 
 const SOURCE_HASH = '0123456789abcdef'.repeat(2);
 const PROJECTED_WARNINGS = [

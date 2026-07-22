@@ -1,4 +1,5 @@
 import type { Point2 } from '../decomposition/types';
+import type { ManufacturingGeometryProfile } from '../materials/manufacturing-profile';
 import type { OutlineLayer } from '../outline-2.5d/extract';
 import { createOutlineAxisBasis } from '../outline-2.5d/raster';
 import type { Bounds2 } from '../outline-2.5d/simplify';
@@ -571,10 +572,12 @@ export function featureEvidenceFingerprint(
   result: FeatureFingerprintSource,
   deadline = Date.now() + DEFAULT_VALIDATION_RUNTIME_MS,
   checkpoint: () => void = () => undefined,
+  material?: ManufacturingGeometryProfile,
 ): string {
   checkRuntimeBudget(deadline, checkpoint);
   const serialized = JSON.stringify({
     sourceHash: result.sourceHash,
+    ...(material ? { material } : {}),
     mode: result.mode,
     previewAxis: result.preview.axis,
     layers: orderedLayerRecords(result.coloredLayers, deadline, checkpoint),
@@ -695,6 +698,7 @@ export function validateAutomaticColoredResult(
   value: unknown,
   deadline = Date.now() + DEFAULT_VALIDATION_RUNTIME_MS,
   checkpoint: () => void = () => undefined,
+  material?: ManufacturingGeometryProfile,
 ): void {
   checkRuntimeBudget(deadline, checkpoint);
   const reasons: string[] = [];
@@ -890,7 +894,7 @@ export function validateAutomaticColoredResult(
       mode: value.mode,
       coloredLayers,
       preview: { axis: previewAxis },
-    }, deadline, checkpoint)) {
+    }, deadline, checkpoint, material)) {
     reasons.push('Feature evidence fingerprint is inconsistent with ordered role records');
   }
   if (reasons.length > 0) throw new RangeError(`Invalid automatic colored result: ${reasons.join('; ')}`);

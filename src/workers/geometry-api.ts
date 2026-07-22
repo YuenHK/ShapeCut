@@ -1,4 +1,5 @@
 import type { AxisCandidate } from '../domain/axis/find-axis';
+export type { ManufacturingGeometryProfile } from '../domain/materials/manufacturing-profile';
 import type { DecompositionOptions, LathedProfile, MaterialInput, SpinnerKit } from '../domain/decomposition/types';
 import type { EngravingLevelCount, EngravingMap, HeightField } from '../domain/engraving/height-field';
 import type { QuantizeOptions } from '../domain/engraving/quantize';

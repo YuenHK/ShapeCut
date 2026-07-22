@@ -1,5 +1,6 @@
 import { expose, releaseProxy, transfer, wrap, type Remote } from 'comlink';
 import { findAxisCandidates } from '../domain/axis/find-axis';
+import { validateManufacturingGeometryProfile } from '../domain/materials/manufacturing-profile';
 import { generateParts } from '../domain/decomposition/generate-parts';
 import { quantizeHeightField } from '../domain/engraving/quantize';
 import { repairMeshAdvanced } from '../domain/mesh/advanced-repair';
@@ -97,7 +98,10 @@ const geometryApi: GeometryApi = {
       progress = onProgress;
     }
     try {
-      return await convertAutomatically(request, progress);
+      return await convertAutomatically({
+        ...request,
+        material: validateManufacturingGeometryProfile(request.material),
+      }, progress);
     } catch (error) {
       if (error instanceof AutomaticOutlineError) {
         throw { name: error.name, code: error.code, message: error.message };

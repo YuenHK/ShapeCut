@@ -16,9 +16,20 @@ import {
   tetrahedronWithOneReversedFace,
 } from '../test/mesh-builders';
 import type { GeometryClient } from './geometry-client';
-import { createGeometryWorkerClient } from './geometry-client';
+import { createGeometryWorkerClient as createActualGeometryWorkerClient } from './geometry-client';
 
-const clients: GeometryClient[] = [];
+const clients: Array<Pick<GeometryClient, 'dispose'>> = [];
+const testMaterial = { id: 'test-material', name: 'Test material', thicknessMm: 3, kerfMm: 0.1, minFeatureMm: 0.8, minWebMm: 0.5, fitAllowanceMm: { loose: 0.2, slip: 0.1, snug: 0, press: -0.1 } } as const;
+type TestGeometryClient = Omit<GeometryClient, 'convertAutomatically'> & {
+  convertAutomatically(request: { readonly bytes: ArrayBuffer }, onProgress?: (event: AutomaticOutlineProgressEvent) => void | Promise<void>): ReturnType<GeometryClient['convertAutomatically']>;
+};
+function createGeometryWorkerClient(): TestGeometryClient {
+  const client = createActualGeometryWorkerClient();
+  return {
+    ...client,
+    convertAutomatically: (request, onProgress) => client.convertAutomatically({ ...request, material: testMaterial }, onProgress),
+  };
+}
 const scaledOpenTetrahedron = () => {
   const mesh = openTetrahedron();
   return { ...mesh, positions: new Float64Array(Array.from(mesh.positions, (value) => value * 20)) };
@@ -29,6 +40,19 @@ afterEach(() => {
 });
 
 describe('geometry worker boundary', () => {
+  it('rejects a structured-clone material payload with forbidden private fields', async () => {
+    const client = createActualGeometryWorkerClient();
+    clients.push(client);
+    const unsafeClient = client as unknown as {
+      convertAutomatically(request: { readonly bytes: ArrayBuffer; readonly material: Record<string, unknown> }): Promise<unknown>;
+    };
+
+    await expect(unsafeClient.convertAutomatically({
+      bytes: writeBinarySTL(tetrahedron(), 'safe'),
+      material: { ...testMaterial, manufacturer: 'private evidence' },
+    })).rejects.toThrow(/unrecognized key/i);
+  });
+
   it('proxies automatic progress monotonically across Comlink and transfers the STL bytes', async () => {
     const client = createGeometryWorkerClient();
     clients.push(client);

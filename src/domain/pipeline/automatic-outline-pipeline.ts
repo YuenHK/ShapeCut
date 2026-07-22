@@ -1,4 +1,8 @@
 import { findAxisCandidates } from '../axis/find-axis';
+import {
+  validateManufacturingGeometryProfile,
+  type ManufacturingGeometryProfile,
+} from '../materials/manufacturing-profile';
 import { MAX_STL_BYTES, parseSTL } from '../mesh/parse-stl';
 import { analyzeMeshProblems } from '../mesh/problem-report';
 import { repairMeshSafe } from '../mesh/repair-mesh';
@@ -54,7 +58,7 @@ export type AutomaticOutlineDiagnostics = {
   readonly rasterCellSizeMm: number | null;
   readonly layers: readonly { readonly id: string; readonly simplificationToleranceMm: number; readonly boundsDriftRatio: number; readonly areaDriftRatio: number; readonly areaEvidenceBasis: 'exact-slice-pre-simplification' | 'retained-raster-pre-simplification' }[];
 };
-export type AutomaticOutlineRequest = { readonly bytes: ArrayBuffer };
+export type AutomaticOutlineRequest = { readonly bytes: ArrayBuffer; readonly material: ManufacturingGeometryProfile };
 export type AutomaticOutlineProgress = (event: AutomaticOutlineProgressEvent) => void | Promise<void>;
 export type AutomaticOutlineErrorCode = 'INVALID_STL' | 'NO_OUTLINE' | 'RESOURCE_LIMIT' | 'TIME_LIMIT';
 
@@ -173,6 +177,7 @@ function withResultEvidence(
   previewMesh: TriangleMesh,
   deadline: number,
   extraction: Pick<OutlineExtraction, 'holeSelections' | 'depthFeatures' | 'featureWarnings'>,
+  material: ManufacturingGeometryProfile,
 ): AutomaticOutlineResult {
   let coloredLayers: readonly ColoredOutlineLayer[];
   let previewMeshCopy: OutlinePreviewPayload['mesh'];
@@ -209,9 +214,9 @@ function withResultEvidence(
     const complete: AutomaticOutlineResult = {
       ...coloredResult,
       removalEvidenceFingerprint: removalEvidenceFingerprint(result),
-      featureEvidenceFingerprint: featureEvidenceFingerprint(coloredResult, deadline),
+      featureEvidenceFingerprint: featureEvidenceFingerprint(coloredResult, deadline, () => undefined, material),
     };
-    validateAutomaticColoredResult(complete, deadline);
+    validateAutomaticColoredResult(complete, deadline, () => undefined, material);
     return complete;
   } catch (error) {
     throw asAutomaticOutlineError(error, 'NO_OUTLINE');
@@ -256,6 +261,7 @@ export async function convertAutomatically(
   request: AutomaticOutlineRequest,
   onProgress?: AutomaticOutlineProgress,
 ): Promise<AutomaticOutlineResult> {
+  const material = validateManufacturingGeometryProfile(request.material);
   if (request.bytes.byteLength > MAX_STL_BYTES) {
     throw new AutomaticOutlineError('RESOURCE_LIMIT', '模型超出安全處理資源上限');
   }
@@ -356,7 +362,7 @@ export async function convertAutomatically(
         repairAccepted: true,
         removedComponentCount: projectedExtraction.removedComponentCount,
         diagnostics: diagnostics(projectedExtraction, originalReport, true),
-      }, extractionMesh, deadline, projectedExtraction);
+      }, extractionMesh, deadline, projectedExtraction, material);
       await emit({ stage: 'slicing', preview: clonePreviewPayload(result.preview) });
       await emit({ stage: 'packaging' });
       return result;
@@ -372,7 +378,7 @@ export async function convertAutomatically(
       repairAccepted: true,
       removedComponentCount: 0,
       diagnostics: diagnostics(exactExtraction, originalReport, true),
-    }, extractionMesh, deadline, exactExtraction);
+    }, extractionMesh, deadline, exactExtraction, material);
     await emit({ stage: 'slicing', preview: clonePreviewPayload(result.preview) });
     await emit({ stage: 'packaging' });
     return result;
@@ -395,7 +401,7 @@ export async function convertAutomatically(
     repairAccepted: false,
     removedComponentCount: projectedExtraction.removedComponentCount,
     diagnostics: diagnostics(projectedExtraction, originalReport, false),
-  }, originalMesh, deadline, projectedExtraction);
+  }, originalMesh, deadline, projectedExtraction, material);
   await emit({ stage: 'slicing', preview: clonePreviewPayload(result.preview) });
   await emit({ stage: 'packaging' });
   return result;

@@ -9,7 +9,7 @@ import {
 } from '../../test/mesh-builders';
 import {
   AutomaticOutlineError,
-  convertAutomatically,
+  convertAutomatically as convertAutomaticOutline,
   removalEvidenceFingerprint,
   type AutomaticOutlineProgressEvent,
   type AutomaticOutlineProgressStage,
@@ -19,6 +19,11 @@ import { createOutlineAxisBasis } from '../outline-2.5d/raster';
 import * as simplification from '../outline-2.5d/simplify';
 import { MAX_STL_BYTES } from '../mesh/parse-stl';
 import type { OutlinePreviewPayload } from '../outline-features/types';
+
+const testMaterial = { id: 'test-material', name: 'Test material', thicknessMm: 3, kerfMm: 0.1, minFeatureMm: 0.8, minWebMm: 0.5, fitAllowanceMm: { loose: 0.2, slip: 0.1, snug: 0, press: -0.1 } } as const;
+function convertAutomatically(request: { readonly bytes: ArrayBuffer }, onProgress?: Parameters<typeof convertAutomaticOutline>[1]) {
+  return convertAutomaticOutline({ ...request, material: testMaterial }, onProgress);
+}
 
 function cylinder(segments = 32): TriangleMesh {
   const positions: number[] = [0, 0, -1, 0, 0, 1];

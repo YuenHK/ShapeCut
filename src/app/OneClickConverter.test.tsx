@@ -8,6 +8,8 @@ import {
 } from '../domain/pipeline/automatic-outline-pipeline';
 import { featureEvidenceFingerprint, type ColoredOutlineLayer } from '../domain/outline-features/types';
 import { MAX_STL_BYTES } from '../domain/mesh/parse-stl';
+import { manufacturingGeometryProfile } from '../domain/materials/manufacturing-profile';
+import { defaultPendingMaterialProfile } from '../domain/materials/default-profiles';
 import { SupersededError } from '../workers/geometry-client';
 import { OutlineArtifactError } from '../workers/geometry-api';
 import * as outlineProcessScene from '../preview/outline-process-scene';
@@ -95,6 +97,11 @@ function services(overrides: Partial<OneClickConverterServices> = {}): OneClickC
   };
 }
 
+async function uploadAndSelectMaterial(user: ReturnType<typeof userEvent.setup>, file: File): Promise<void> {
+  await user.upload(screen.getByLabelText('選擇 STL 模型'), file);
+  await user.selectOptions(await screen.findByLabelText('選擇製作材料'), 'plywood-3');
+}
+
 describe('OneClickConverter', () => {
   it('drains the idle renderer pool when the application workflow unmounts', () => {
     const shutdown = vi.spyOn(outlineProcessScene, 'shutdownOutlineProcessRendererPool');
@@ -121,34 +128,37 @@ describe('OneClickConverter', () => {
     expect(api.cancel).toHaveBeenCalledOnce();
 
     await user.click(screen.getByRole('button', { name: '選擇另一個模型' }));
-    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['solid model'], 'retry.stl'));
+    await uploadAndSelectMaterial(user, new File(['solid model'], 'retry.stl'));
     await screen.findByRole('heading', { name: '轉換完成' });
     expect(api.convert).toHaveBeenCalledOnce();
   });
-  it('starts the whole workflow immediately after one file selection and exposes no wizard controls', async () => {
+  it('requires material selection before conversion and resets the chooser for a replacement file', async () => {
     const user = userEvent.setup();
     const api = services();
-    const { container } = render(<OneClickConverter services={api} />);
+    render(<OneClickConverter services={api} />);
+    const file = new File(['solid model'], 'spinner.stl', { type: 'model/stl' });
+    const expectedSubset = manufacturingGeometryProfile(defaultPendingMaterialProfile('plywood-3')!);
 
-    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['solid model'], 'spinner.stl', { type: 'model/stl' }));
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), file);
 
     expect(api.cancel).toHaveBeenCalledOnce();
+    expect(api.convert).not.toHaveBeenCalled();
+    await user.selectOptions(await screen.findByLabelText('選擇製作材料'), expectedSubset.id);
     expect(api.convert).toHaveBeenCalledOnce();
+    expect(api.convert).toHaveBeenCalledWith(expect.any(ArrayBuffer), expectedSubset, expect.any(Function));
     await screen.findByRole('heading', { name: '轉換完成' });
-    expect(screen.getAllByRole('status').some((status) => status.textContent?.includes('轉換完成'))).toBe(true);
-    expect(container.querySelector('.result-viewport .outline-process-viewport')).toHaveAttribute('data-stage', 'result');
-    expect(screen.getAllByRole('status').some((status) => status.textContent?.includes('正在準備輸出'))).toBe(false);
-    expect(screen.queryByRole('button', { name: /修復|軸心|下一步|材料|分件|確認輸出/ })).toBeNull();
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['replacement'], 'replacement.stl'));
+    expect(screen.getByLabelText('選擇製作材料')).toHaveValue('');
   });
 
   it('keeps pre-geometry progress neutral, then announces monotonic stages through the preview status', async () => {
     const user = userEvent.setup();
     const conversion = deferred<AutomaticOutlineResult>();
     let report: ((event: AutomaticOutlineProgressEvent) => void) | undefined;
-    const api = services({ convert: vi.fn((_bytes, onProgress) => { report = onProgress; return conversion.promise; }) });
+    const api = services({ convert: vi.fn((_bytes, _material, onProgress) => { report = onProgress; return conversion.promise; }) });
     const { container } = render(<OneClickConverter services={api} />);
 
-    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'busy.stl'));
+    await uploadAndSelectMaterial(user, new File(['mesh'], 'busy.stl'));
     expect(screen.getByRole('heading', { name: '正在讀取模型' })).toBeVisible();
     expect(container.querySelector('.processing-loading-panel')).toHaveAttribute('role', 'status');
     expect(container.querySelector('.processing-loading-panel')).toHaveAttribute('aria-live', 'polite');
@@ -171,10 +181,10 @@ describe('OneClickConverter', () => {
     const user = userEvent.setup();
     const conversion = deferred<AutomaticOutlineResult>();
     let report: ((event: AutomaticOutlineProgressEvent) => void) | undefined;
-    const api = services({ convert: vi.fn((_bytes, onProgress) => { report = onProgress; return conversion.promise; }) });
+    const api = services({ convert: vi.fn((_bytes, _material, onProgress) => { report = onProgress; return conversion.promise; }) });
     const { container } = render(<OneClickConverter services={api} />);
 
-    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'preview.stl'));
+    await uploadAndSelectMaterial(user, new File(['mesh'], 'preview.stl'));
     expect(container.querySelector('.processing-card')).not.toHaveClass('has-preview');
     expect(container.querySelector('.processing-loading-panel')).toBeInTheDocument();
     expect(container.querySelector('.processing-status-overlay')).not.toBeInTheDocument();
@@ -198,15 +208,15 @@ describe('OneClickConverter', () => {
     const conversions = [deferred<AutomaticOutlineResult>(), deferred<AutomaticOutlineResult>()];
     const reports: Array<((event: AutomaticOutlineProgressEvent) => void) | undefined> = [];
     const api = services({
-      convert: vi.fn((_bytes, onProgress) => {
+      convert: vi.fn((_bytes, _material, onProgress) => {
         reports.push(onProgress);
         return conversions[reports.length - 1].promise;
       }),
     });
     render(<OneClickConverter services={api} />);
 
-    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['one'], 'old.stl'));
-    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['two'], 'new.stl'));
+    await uploadAndSelectMaterial(user, new File(['one'], 'old.stl'));
+    await uploadAndSelectMaterial(user, new File(['two'], 'new.stl'));
     reports[0]?.({ stage: 'slicing', preview: result.preview });
     await Promise.resolve();
     expect(screen.queryByRole('img', { name: /模型分層預覽/ })).toBeNull();
@@ -226,9 +236,9 @@ describe('OneClickConverter', () => {
       .mockReturnValueOnce(second.promise);
     const api = services({ convert });
     render(<OneClickConverter services={api} />);
-    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['one'], 'old.stl'));
+    await uploadAndSelectMaterial(user, new File(['one'], 'old.stl'));
     await vi.waitFor(() => expect(convert).toHaveBeenCalledOnce());
-    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['two'], 'new.stl'));
+    await uploadAndSelectMaterial(user, new File(['two'], 'new.stl'));
     second.resolve({ ...result, sourceHash: 'b'.repeat(32) });
     await vi.waitFor(() => expect(screen.getByText('new.stl')).toBeVisible());
     first.resolve(result);
@@ -242,7 +252,7 @@ describe('OneClickConverter', () => {
   it('silently ignores SupersededError from an obsolete request', async () => {
     const user = userEvent.setup();
     render(<OneClickConverter services={services({ convert: vi.fn().mockRejectedValue(new SupersededError(1)) })} />);
-    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'old.stl'));
+    await uploadAndSelectMaterial(user, new File(['mesh'], 'old.stl'));
     await Promise.resolve();
     expect(screen.queryByRole('alert')).toBeNull();
   });
@@ -251,7 +261,7 @@ describe('OneClickConverter', () => {
     const user = userEvent.setup();
     const warning = { ...result, mode: 'outline-2.5d' as const, status: 'warning' as const, warnings: ['已簡化模型'] };
     render(<OneClickConverter services={services({ convert: vi.fn().mockResolvedValue(warning) })} />);
-    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'broken.stl'));
+    await uploadAndSelectMaterial(user, new File(['mesh'], 'broken.stl'));
 
     await screen.findByRole('heading', { name: '轉換完成' });
     expect(screen.getAllByRole('status').some((status) => status.textContent?.includes('需注意'))).toBe(true);
@@ -306,7 +316,7 @@ describe('OneClickConverter', () => {
       ],
     };
     render(<OneClickConverter services={services({ convert: vi.fn().mockResolvedValue(warningResult) })} />);
-    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'features.stl'));
+    await uploadAndSelectMaterial(user, new File(['mesh'], 'features.stl'));
     await screen.findByRole('heading', { name: '轉換完成' });
 
     const warningPanel = screen.getByRole('region', { name: '模型處理提示' });
@@ -322,7 +332,7 @@ describe('OneClickConverter', () => {
   it('omits hole diameter and depth-threshold rows when no corresponding feature was detected', async () => {
     const user = userEvent.setup();
     render(<OneClickConverter services={services()} />);
-    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'plain.stl'));
+    await uploadAndSelectMaterial(user, new File(['mesh'], 'plain.stl'));
     await screen.findByRole('heading', { name: '轉換完成' });
     await user.click(screen.getByText('技術資料'));
 
@@ -336,7 +346,7 @@ describe('OneClickConverter', () => {
     const axisWarning = '未找到可信旋轉軸，已使用模型最短包圍盒軸';
     const exactWarning = { ...result, status: 'warning' as const, warnings: [axisWarning] };
     render(<OneClickConverter services={services({ convert: vi.fn().mockResolvedValue(exactWarning) })} />);
-    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'exact-warning.stl'));
+    await uploadAndSelectMaterial(user, new File(['mesh'], 'exact-warning.stl'));
     await screen.findByRole('heading', { name: '轉換完成' });
 
     expect(screen.queryByText('已簡化模型')).toBeNull();
@@ -348,7 +358,7 @@ describe('OneClickConverter', () => {
     const user = userEvent.setup();
     const warning = { ...result, mode: 'outline-2.5d' as const, status: 'warning' as const, warnings: ['已簡化模型', '正式製作前應先試切少量零件'] };
     render(<OneClickConverter services={services({ convert: vi.fn().mockResolvedValue(warning) })} />);
-    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'private-name.stl'));
+    await uploadAndSelectMaterial(user, new File(['mesh'], 'private-name.stl'));
     await screen.findByRole('heading', { name: '轉換完成' });
 
     const summary = screen.getByText('技術資料');
@@ -370,7 +380,7 @@ describe('OneClickConverter', () => {
     const user = userEvent.setup();
     const firstServices = services();
     const firstRender = render(<OneClickConverter services={firstServices} />);
-    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'wide.stl'));
+    await uploadAndSelectMaterial(user, new File(['mesh'], 'wide.stl'));
     await screen.findByRole('heading', { name: '轉換完成' });
     const firstPath = firstRender.container.querySelector('[data-role="CUT_BLACK"]')?.getAttribute('d');
     firstRender.unmount();
@@ -396,7 +406,7 @@ describe('OneClickConverter', () => {
       preview: { ...result.preview, layers: [changedLayer] },
     };
     render(<OneClickConverter services={services({ convert: vi.fn().mockResolvedValue(changed) })} />);
-    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'tall.stl'));
+    await uploadAndSelectMaterial(user, new File(['mesh'], 'tall.stl'));
     await screen.findByRole('heading', { name: '轉換完成' });
     const secondPath = document.querySelector('[data-role="CUT_BLACK"]')?.getAttribute('d');
 
@@ -410,7 +420,7 @@ describe('OneClickConverter', () => {
     render(<OneClickConverter services={services({
       convert: vi.fn().mockRejectedValue(new AutomaticOutlineError('RESOURCE_LIMIT', 'internal budget details')),
     })} />);
-    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'huge.stl'));
+    await uploadAndSelectMaterial(user, new File(['mesh'], 'huge.stl'));
 
     expect(await screen.findByRole('alert')).toHaveTextContent('模型太複雜，超出這次可處理的上限');
     await user.click(screen.getByRole('button', { name: '選擇另一個模型' }));
@@ -429,7 +439,7 @@ describe('OneClickConverter', () => {
       package: vi.fn().mockRejectedValue(new OutlineArtifactError('preview.pdf')),
     })} />);
 
-    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'omitted-hole.stl'));
+    await uploadAndSelectMaterial(user, new File(['mesh'], 'omitted-hole.stl'));
 
     expect(await screen.findByRole('alert')).toHaveTextContent('preview.pdf');
     expect(screen.getByRole('img', { name: /模型分層預覽/ })).toBeVisible();
@@ -445,7 +455,7 @@ describe('OneClickConverter', () => {
       package: vi.fn().mockRejectedValue(new AutomaticOutlineError('TIME_LIMIT', 'internal package timeout')),
     })} />);
 
-    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'timeout.stl'));
+    await uploadAndSelectMaterial(user, new File(['mesh'], 'timeout.stl'));
 
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('處理時間過長，已安全停止');
@@ -459,9 +469,9 @@ describe('OneClickConverter', () => {
     const revoke = vi.fn();
     Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revoke });
     const { unmount } = render(<OneClickConverter services={services()} />);
-    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['one'], 'one.stl'));
+    await uploadAndSelectMaterial(user, new File(['one'], 'one.stl'));
     await screen.findByText('one.stl');
-    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['two'], 'two.stl'));
+    await uploadAndSelectMaterial(user, new File(['two'], 'two.stl'));
     await screen.findByText('two.stl');
     expect(revoke).toHaveBeenCalledTimes(5);
     unmount();
