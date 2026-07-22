@@ -85,3 +85,59 @@ Result: 52 test files / 1,230 tests passed, zero failures.
 - Confirmed malformed material geometry, nonpositive compensated paths, oversized layer/region/point inputs, expired deadlines, and caller cancellation all fail closed.
 - Confirmed warnings contain no source path, filename, or model metadata.
 - No blocking concern remains. The finite search is intentionally discrete and bounded by the approved brief; Task 6 must apply the returned single ordered hole set to every layer without recomputing it.
+
+---
+
+## Review remediation — search completeness, public IDs, and representable paths
+
+### Root causes
+
+- The original 128 radii were scaled by the most remote exterior vertex. For the review polygon `(-4,-4),(4,-4),(4,-1),(1000,-1),(1000,1),(4,1),(4,4),(-4,4)`, the smallest sample was about 7.81 mm even though a safe three-hole pattern exists near `3.5 / sqrt(3) = 2.02072594 mm`.
+- The original single-hole grid divided the entire AABB into 32 intervals. The same remote tail produced x samples `-4, 27.375, ...`, so it never sampled the local chamber.
+- Shared holes were `FeatureContour` values with fixed `fastener-hole-1..3` IDs. Reusing them on every layer preserved geometry but violated the existing global public-ID contract.
+- A kerf one representable floating value below 3 mm left a formally positive path diameter whose 48 points collapsed at a nonzero large center. The original code returned that zero-area contour without validation.
+
+### Search-completeness RED/GREEN
+
+RED ran the exact review polygon plus equivalent long/narrow two-hole, long-aspect one-hole, and bounded true-zero cases. Results were exactly 0 instead of 3, 0 instead of 2, 0 instead of 1, while the true-zero remained 0.
+
+GREEN defines a 0.25 mm manufacturing search resolution and replaces global-scale-only sampling with:
+
+- the complete feasible low-radius interval beginning at each pattern's pairwise-web minimum;
+- bounded coarse remote coverage plus quantized boundary-point and axis-to-segment critical radii;
+- 48 deterministic rotations at every evaluated radius;
+- Lipschitz-bounded interval subdivision, which proves no higher fixed-rotation candidate exists above the selected radius at the manufacturing resolution;
+- boundary-coordinate candidate points plus longest-axis branch-and-bound cells for the one-hole maximum.
+
+The radial search is capped at 2,048 seeds and 4,096 evaluations; single-hole search is capped at 8,192 cells. If those bounds prevent the resolution criterion from being established, planning throws instead of returning a false zero. The exact 3/2/1 long-tail regressions and true-zero all pass, while count priority remains 3 > 2 > 1 > 0.
+
+### ID contract RED/GREEN
+
+RED proved every shared hole still owned an `id`. GREEN changes `FastenerPlan.holes` to ID-free `FastenerHoleGeometry` and adds `materializeFastenerHoles()`.
+
+Materialization reserves every supplied layer ID and exterior/central/launcher/existing-fastener/deep/light feature ID, rejects pre-existing duplicates, and allocates deterministic collision-free per-layer IDs. It reuses the exact shared path points without recomputation. A six-layer regression deliberately reserves the natural first fastener ID, materializes all layers, verifies all public IDs are unique, and passes `validateAutomaticColoredResult()` after recomputing its feature fingerprint.
+
+### Near-3 mm kerf RED/GREEN
+
+RED used `kerfMm = 3 - 2^-51` and axis `(1000000,-1000000)`. The old planner returned collapsed path loops. GREEN validates every retained 48-point contour before return: all points finite and pairwise distinct, polygon simple, bounds nonzero, and signed area finite and positive. A nonrepresentable positive path now throws a fail-closed `RangeError`; the normal 0.20 mm kerf target remains unchanged.
+
+### Final verification
+
+Focused command:
+
+```sh
+npx vitest run src/domain/outline-assembly/fasteners.test.ts src/domain/outline-assembly/protected-region.test.ts src/domain/outline-features/types.test.ts
+```
+
+Result: 3 files / 57 tests passed.
+
+`npm run typecheck` exited 0. `npm run build` exited 0 and Vite transformed 141 modules.
+
+The full suite was run once after all production/test changes: 52 files / 1,236 tests; 1,235 passed and one unrelated UI test failed. The failure was the previously documented `OneClickConverter > requires material selection before conversion and resets the chooser for a replacement file` race: the test synchronously queried `選擇製作材料` while the replacement UI still showed `正在讀取模型`. Every Task 5, protected-region, and global types/materialization test passed. Per the one-full-suite requirement, it was not rerun and no unrelated UI code/test was changed.
+
+### Self-review and remaining concern
+
+- Search completeness is explicit at 0.25 mm for the fixed 48 rotations rather than implied by remote AABB spacing. Resource caps fail closed instead of silently degrading.
+- Physical 3.00 mm envelopes, material minimum web, kerf loss, shared deadline/cancellation, deterministic ordering, and count priority remain intact.
+- Shared model-space geometry is now cleanly separated from public per-layer identity, ready for Task 6 integration.
+- No Task 5 blocker remains. The only observed concern is the unrelated pre-existing `OneClickConverter` asynchronous replacement race described above.

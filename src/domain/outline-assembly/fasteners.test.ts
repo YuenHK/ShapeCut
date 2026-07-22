@@ -2,10 +2,13 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Point2 } from '../decomposition/types';
 import type { ManufacturingGeometryProfile } from '../materials/manufacturing-profile';
 import type { FeatureContour } from '../outline-features/types';
+import { featureEvidenceFingerprint, validateAutomaticColoredResult } from '../outline-features/types';
+import { coloredResult } from '../../export/colored-outline-test-fixture';
 import {
   FASTENER_ANGULAR_CANDIDATES,
   FASTENER_OMISSION_WARNING,
-  FASTENER_RADIAL_CANDIDATES,
+  FASTENER_SEARCH_RESOLUTION_MM,
+  materializeFastenerHoles,
   planFastenerHoles,
   type FastenerPlanningLayer,
 } from './fasteners';
@@ -24,6 +27,22 @@ function contour(id: string, outer: readonly Point2[]): FeatureContour {
 
 function rectangle(id: string, minX: number, minY: number, maxX: number, maxY: number): FeatureContour {
   return contour(id, [[minX, minY], [maxX, minY], [maxX, maxY], [minX, maxY]]);
+}
+
+function longTail(
+  id: string,
+  minX: number,
+  chamberMaxX: number,
+  chamberHalfHeight: number,
+  neckHalfHeight = 1,
+  tailMaxX = 1_000,
+): FeatureContour {
+  return contour(id, [
+    [minX, -chamberHalfHeight], [chamberMaxX, -chamberHalfHeight],
+    [chamberMaxX, -neckHalfHeight], [tailMaxX, -neckHalfHeight],
+    [tailMaxX, neckHalfHeight], [chamberMaxX, neckHalfHeight],
+    [chamberMaxX, chamberHalfHeight], [minX, chamberHalfHeight],
+  ]);
 }
 
 function layer(id: string, exterior: FeatureContour, options: {
@@ -58,6 +77,89 @@ function protectedLayers(layers: readonly FastenerPlanningLayer[]): readonly Pro
 }
 
 describe('safe degrading fastener planning', () => {
+  it('keeps shared geometry ID-free and materializes collision-free layer IDs without changing any point', () => {
+    const plan = planFastenerHoles({
+      layers: [layer('wide', rectangle('wide-exterior', -12, -12, 12, 12))],
+      axisPoint: [0, 0], material,
+    });
+    expect(plan.count).toBe(3);
+    expect(plan.holes.every((hole) => !Object.hasOwn(hole, 'id'))).toBe(true);
+
+    const seed = coloredResult();
+    const sourceLayers = seed.coloredLayers.map((source, index) => index === 0 ? {
+      ...source,
+      exterior: { ...source.exterior, id: `${source.id}-fastener-hole-1` },
+    } : source);
+    const materialized = materializeFastenerHoles(plan, sourceLayers);
+    expect(materialized).toHaveLength(sourceLayers.length);
+    expect(materialized.every((holes) => holes.length === plan.count)).toBe(true);
+    for (const holes of materialized) {
+      for (let index = 0; index < holes.length; index += 1) {
+        expect(holes[index].outer).toEqual(plan.holes[index].outer);
+      }
+    }
+    const allIds = [
+      ...sourceLayers.flatMap((source) => [
+        source.id, source.exterior.id, source.centralHole?.id,
+        ...source.launcherCuts.map(({ id }) => id),
+        ...source.deepFeatures.map(({ id }) => id),
+        ...source.lightFeatures.map(({ id }) => id),
+      ].filter((id): id is string => id !== undefined)),
+      ...materialized.flatMap((holes) => holes.map(({ id }) => id)),
+    ];
+    expect(new Set(allIds).size).toBe(allIds.length);
+
+    const coloredLayers = sourceLayers.map((source, index) => ({ ...source, fastenerHoles: materialized[index] }));
+    const withLayers = { ...seed, coloredLayers, preview: { ...seed.preview, layers: coloredLayers } };
+    const complete = { ...withLayers, featureEvidenceFingerprint: featureEvidenceFingerprint(withLayers) };
+    expect(() => validateAutomaticColoredResult(complete)).not.toThrow();
+  });
+
+  it('finds the review long-tail three-hole chamber without letting a remote vertex dominate radius resolution', () => {
+    const exterior = contour('review-long-tail', [
+      [-4, -4], [4, -4], [4, -1], [1_000, -1],
+      [1_000, 1], [4, 1], [4, 4], [-4, 4],
+    ]);
+    const result = planFastenerHoles({
+      layers: [layer('review', exterior)], axisPoint: [0, 0], material,
+    });
+    expect(result.count).toBe(3);
+    expect(result.radiusMm).toBeGreaterThanOrEqual(3.5 / Math.sqrt(3) - 1e-12);
+    expect(result.radiusMm).toBeLessThan(3);
+    expect(angleGap(result.centers[0], result.centers[1])).toBeCloseTo(Math.PI * 2 / 3, 10);
+  });
+
+  it('finds a low-radius opposite pair in a long narrow chamber before degrading to one', () => {
+    const result = planFastenerHoles({
+      layers: [layer('long-two', longTail('long-two-exterior', -4, 4, 3))],
+      axisPoint: [0, 0], material,
+    });
+    expect(result.count).toBe(2);
+    expect(result.radiusMm).toBeGreaterThanOrEqual(1.75 - 1e-12);
+    expect(result.radiusMm).toBeLessThan(2.25);
+    expect(angleGap(result.centers[0], result.centers[1])).toBeCloseTo(Math.PI, 10);
+  });
+
+  it('finds one thick long-aspect chamber by local boundary scale instead of global AABB spacing', () => {
+    const result = planFastenerHoles({
+      layers: [layer('long-one', longTail('long-one-exterior', 0, 10, 5))],
+      axisPoint: [0, 0], material,
+    });
+    expect(result.count).toBe(1);
+    expect(result.centers[0][0]).toBeGreaterThan(2);
+    expect(result.centers[0][0]).toBeLessThan(8);
+    expect(Math.abs(result.centers[0][1])).toBeLessThan(4);
+  });
+
+  it('establishes a true zero at manufacturing resolution for a bounded undersized region', () => {
+    const result = planFastenerHoles({
+      layers: [layer('true-zero', rectangle('true-zero-exterior', -2, -2, 2, 2))],
+      axisPoint: [0, 0], material,
+    });
+    expect(result.count).toBe(0);
+    expect(result.warning).toBe(FASTENER_OMISSION_WARNING);
+  });
+
   it('prefers three 120-degree holes at the maximum safe bounded radius with deterministic rotation', () => {
     const layers = [
       layer('top', rectangle('top-exterior', -12, -12, 12, 12)),
@@ -82,8 +184,7 @@ describe('safe degrading fastener planning', () => {
     expect(first.centers.every((center) => isCircleSafeThroughAllLayers({
       center, radiusMm: 1.5, clearanceMm: material.minWebMm + material.kerfMm / 2, layers: common,
     }))).toBe(true);
-    const radialStep = Math.hypot(11, 11) / FASTENER_RADIAL_CANDIDATES;
-    const nextRadius = first.radiusMm! + radialStep;
+    const nextRadius = first.radiusMm! + FASTENER_SEARCH_RESOLUTION_MM;
     const anySaferLargerRotation = Array.from({ length: FASTENER_ANGULAR_CANDIDATES }, (_, index) => (
       index * (Math.PI * 2 / 3) / FASTENER_ANGULAR_CANDIDATES
     )).some((rotation) => [0, 1, 2].every((index) => {
@@ -172,6 +273,18 @@ describe('safe degrading fastener planning', () => {
     const noWeb = planFastenerHoles({ ...request, material: { ...material, minWebMm: 50 } });
     expect(noWeb.count).toBe(0);
     expect(noWeb.warning).toBe(FASTENER_OMISSION_WARNING);
+  });
+
+  it('rejects a positive but numerically nonrepresentable near-3 mm path at a nonzero center', () => {
+    const almostThree = 3 - 2 ** -51;
+    expect(almostThree).toBeLessThan(3);
+    expect(() => planFastenerHoles({
+      layers: [layer('translated', rectangle(
+        'translated-exterior', 999_988, -1_000_012, 1_000_012, -999_988,
+      ))],
+      axisPoint: [1_000_000, -1_000_000],
+      material: { ...material, kerfMm: almostThree },
+    })).toThrow(/representable|distinct|simple|area|contour/i);
   });
 
   it('shares one deadline/checkpoint, propagates cancellation, and keeps candidate work bounded', () => {
