@@ -59,16 +59,12 @@ h1 { margin: 0; color: var(--ink); font-size: clamp(2rem, 5vw, 3.5rem); line-hei
 .processing-viewport { position: absolute; inset: 0; z-index: 0; }
 .processing-viewport .outline-process-viewport { height: 100%; min-height: 100%; border: 0; border-radius: 0; background: linear-gradient(145deg, rgba(244,253,249,.92), rgba(221,248,237,.6)); }
 .processing-viewport .outline-process-webgl, .processing-viewport .outline-process-canvas, .processing-viewport .outline-process-fallback { min-height: 560px; height: 100%; }
-.processing-foreground { position: relative; z-index: 2; width: min(100%, 650px); margin: 0 auto 20px; padding: 24px; border: 1px solid rgba(34,167,125,.18); border-radius: 18px; background: rgba(255,255,255,.9); box-shadow: 0 12px 38px rgba(22,89,73,.12); backdrop-filter: blur(9px); pointer-events: none; }
-.processing-card > .change-file-button { position: relative; z-index: 3; align-self: center; }
-.progress-status { margin-top: 34px; text-align: left; }
-.progress-status > strong { display: block; margin-bottom: 12px; color: var(--mint-700); }
+.processing-status-overlay { position: absolute; top: 18px; left: 18px; z-index: 2; display: grid; width: min(320px, calc(100% - 36px)); gap: 8px; padding: 14px 16px; border: 1px solid rgba(34,167,125,.22); border-radius: 14px; background: rgba(255,255,255,.88); box-shadow: 0 8px 24px rgba(22,89,73,.12); backdrop-filter: blur(6px); text-align: left; pointer-events: none; }
+.processing-status-overlay strong { color: var(--mint-700); }
+.processing-loading-panel { position: relative; z-index: 1; margin: auto; text-align: center; }
+.processing-card > .change-file-button { position: absolute; right: 18px; bottom: 18px; z-index: 3; }
 progress { width: 100%; height: 12px; border: 0; border-radius: 99px; overflow: hidden; background: var(--mint-100); accent-color: var(--mint-700); }
 progress::-webkit-progress-bar { background: var(--mint-100); } progress::-webkit-progress-value { background: var(--mint-700); }
-.stage-list { display: grid; margin: 24px 0 28px; padding: 0; grid-template-columns: repeat(5, 1fr); gap: 10px; color: #92a49f; list-style: none; font-size: .78rem; }
-.stage-list li::before { content: "○"; display: block; margin-bottom: 5px; font-size: 1.4rem; }
-.stage-list .complete { color: var(--mint-700); font-weight: 700; }
-.stage-list .complete::before { content: "●"; }
 .change-file-button { display: inline-flex; min-height: 44px; padding: 0 18px; align-items: center; justify-content: center; border: 1px solid var(--mint-300); border-radius: 13px; color: var(--mint-700); background: white; font-weight: 750; cursor: pointer; }
 
 .result-heading { display: flex; align-items: center; gap: 18px; }
@@ -89,8 +85,6 @@ progress::-webkit-progress-bar { background: var(--mint-100); } progress::-webki
 .outline-process-viewport { position: relative; display: grid; width: 100%; min-height: 320px; margin: 0; overflow: hidden; border: 1px solid rgba(34, 167, 125, .18); border-radius: 18px; background: linear-gradient(145deg, rgba(244,253,249,.96), rgba(221,248,237,.72)); isolation: isolate; }
 .outline-process-webgl, .outline-process-fallback { display: block; width: 100%; min-height: 280px; }
 .outline-process-webgl, .outline-process-fallback { touch-action: pan-y; }
-.outline-process-webgl { cursor: ew-resize; }
-.outline-process-webgl:focus-visible { outline: 3px solid #176ad0; outline-offset: -4px; }
 .outline-process-canvas { display: block; width: 100%; height: 100%; min-height: 280px; }
 .outline-process-fallback { height: 280px; padding: 22px; }
 .outline-process-fallback path { stroke-width: 2; stroke-linejoin: round; }
@@ -132,11 +126,10 @@ progress::-webkit-progress-bar { background: var(--mint-100); } progress::-webki
   .converter-card { padding: 25px 18px; border-radius: 18px; }
   .upload-zone { min-height: 250px; padding: 24px 16px; }
   .feature-list { flex-direction: column; gap: 10px; }
-  .stage-list { grid-template-columns: 1fr 1fr; text-align: center; }
   .result-grid { grid-template-columns: 1fr; }.result-viewport .outline-process-viewport { min-height: 300px; }
   .secondary-downloads { grid-template-columns: 1fr 1fr; }
   .color-legend ul { grid-template-columns: 1fr; gap: 2px; }
-  .processing-card.has-preview { min-height: 680px; }.processing-foreground { padding: 20px 16px; }.processing-viewport .outline-process-webgl, .processing-viewport .outline-process-canvas, .processing-viewport .outline-process-fallback { min-height: 640px; }
+  .processing-card.has-preview { min-height: 680px; }.processing-status-overlay { top: 10px; left: 10px; width: calc(100% - 20px); padding: 12px 14px; }.processing-card > .change-file-button { right: 10px; bottom: 10px; width: auto !important; }.processing-viewport .outline-process-webgl, .processing-viewport .outline-process-canvas, .processing-viewport .outline-process-fallback { min-height: 640px; }
   .outline-process-viewport { min-height: 270px; }.outline-process-webgl, .outline-process-canvas { min-height: 230px; }.outline-process-fallback { height: 230px; }.outline-process-layer-selector { left: 8px; bottom: 38px; min-width: min(200px, calc(100% - 120px)); }
   .primary-button, .change-file-button { width: 100% !important; }
 }

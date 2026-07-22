@@ -261,20 +261,24 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
     const active = STAGES.indexOf(view.stage);
     return (
       <section className={`converter-card processing-card ${view.preview ? 'has-preview' : ''}`} aria-labelledby="processing-title">
-        {view.preview
-          ? <div className="processing-viewport"><OutlineProcessViewport payload={view.preview} stage={view.stage} /></div>
-          : <div className="neutral-loading" aria-hidden="true"><span /><span /><span /></div>}
-        <div className="processing-foreground">
-          <h1 id="processing-title">正在處理你的模型</h1>
-          <p className="file-name">{view.fileName}</p>
-          <div role="status" aria-live="polite" className="progress-status">
-            <strong>{STAGE_LABELS[view.stage]}</strong>
-            <progress value={active + 1} max={STAGES.length} aria-label="轉換進度" />
-            <ol className="stage-list">
-              {STAGES.map((stage, index) => <li key={stage} className={index <= active ? 'complete' : ''}>{STAGE_LABELS[stage]}</li>)}
-            </ol>
+        {view.preview ? (
+          <>
+            <div className="processing-viewport">
+              <OutlineProcessViewport payload={view.preview} stage={view.stage} />
+            </div>
+            <div className="processing-status-overlay" role="status" aria-live="polite">
+              <strong id="processing-title">{STAGE_LABELS[view.stage]}</strong>
+              <span className="file-name">{view.fileName}</span>
+              <progress value={active + 1} max={STAGES.length} aria-label="轉換進度" />
+            </div>
+          </>
+        ) : (
+          <div className="processing-loading-panel" role="status" aria-live="polite">
+            <div className="neutral-loading" aria-hidden="true"><span /><span /><span /></div>
+            <h1 id="processing-title">正在讀取模型</h1>
+            <p className="file-name">{view.fileName}</p>
           </div>
-        </div>
+        )}
         <ModelInput compact onFile={(file) => void processFile(file)} />
       </section>
     );

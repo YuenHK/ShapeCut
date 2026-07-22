@@ -1,13 +1,22 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { page } from '@vitest/browser/context';
 import { describe, expect, it, vi } from 'vitest';
-import type { AutomaticOutlineResult } from '../domain/pipeline/automatic-outline-pipeline';
+import type { AutomaticOutlineProgressEvent, AutomaticOutlineResult } from '../domain/pipeline/automatic-outline-pipeline';
 import { featureEvidenceFingerprint, type ColoredOutlineLayer } from '../domain/outline-features/types';
+import '../styles.css';
 import { App } from './App';
 import type { OneClickConverterServices } from './OneClickConverter';
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((ok) => { resolve = ok; });
+  return { promise, resolve };
+}
+
 describe('App real browser one-click flow', () => {
   it('starts from one keyboard-accessible selection and renders the result downloads', async () => {
+    await page.viewport(1024, 768);
     const user = userEvent.setup();
     const coloredLayer: ColoredOutlineLayer = {
       id: 'layer-0', index: 0, zStart: 0, zEnd: 1,
@@ -86,9 +95,14 @@ describe('App real browser one-click flow', () => {
       removalEvidenceFingerprint: '0'.repeat(32),
       diagnostics: { topology: { triangleCount: 12, boundaryEdgeCount: 0, nonManifoldEdgeCount: 0, degenerateTriangleCount: 0, duplicateTriangleCount: 0, inconsistentWindingEdgeCount: 0, selfIntersectionCount: 0, selfIntersectionAnalysisComplete: true }, repairDecision: 'accepted', rasterCellSizeMm: null, layers: [{ id: 'layer-0', simplificationToleranceMm: 0.01, boundsDriftRatio: 0, areaDriftRatio: 0, areaEvidenceBasis: 'exact-slice-pre-simplification' }] },
     };
+    const conversion = deferred<AutomaticOutlineResult>();
+    let report: ((event: AutomaticOutlineProgressEvent) => void) | undefined;
     const services: OneClickConverterServices = {
       cancel: vi.fn(),
-      convert: vi.fn().mockResolvedValue(result),
+      convert: vi.fn((_bytes, onProgress) => {
+        report = onProgress;
+        return conversion.promise;
+      }),
       package: vi.fn().mockResolvedValue({
         zip: { href: 'blob:zip', fileName: 'shapecut-files.zip' },
         svg: { href: 'blob:svg', fileName: 'cut-and-engrave.svg' },
@@ -102,6 +116,38 @@ describe('App real browser one-click flow', () => {
     const input = screen.getByLabelText('選擇 STL 模型');
     input.focus();
     await user.upload(input, new File(['mesh'], 'keyboard.stl', { type: 'model/stl' }));
+
+    expect(document.querySelector('.processing-loading-panel')).toBeInTheDocument();
+    expect(document.querySelector('.processing-status-overlay')).not.toBeInTheDocument();
+    report?.({ stage: 'analyzing', preview: result.preview });
+    const processingPreview = await screen.findByRole('img', { name: /模型分層預覽/ });
+    const card = document.querySelector<HTMLElement>('.processing-card.has-preview');
+    const overlay = document.querySelector<HTMLElement>('.processing-status-overlay');
+    expect(card && overlay).toBeTruthy();
+    const cardBox = card!.getBoundingClientRect();
+    const overlayBox = overlay!.getBoundingClientRect();
+    expect(overlayBox.x).toBeLessThan(cardBox.x + cardBox.width / 2);
+    expect(overlayBox.y).toBeLessThan(cardBox.y + cardBox.height / 2);
+    expect(overlayBox.width * overlayBox.height).toBeLessThan(cardBox.width * cardBox.height * 0.35);
+    expect(getComputedStyle(processingPreview).cursor).toBe('auto');
+
+    await page.viewport(390, 844);
+    await vi.waitFor(() => expect(window.matchMedia('(max-width: 640px)').matches).toBe(true));
+    const mobileCard = document.querySelector<HTMLElement>('.processing-card.has-preview');
+    const mobileOverlay = document.querySelector<HTMLElement>('.processing-status-overlay');
+    expect(mobileCard && mobileOverlay).toBeTruthy();
+    const mobileCardBox = mobileCard!.getBoundingClientRect();
+    const mobileOverlayBox = mobileOverlay!.getBoundingClientRect();
+    expect(getComputedStyle(mobileOverlay!).top).toBe('10px');
+    expect(getComputedStyle(mobileOverlay!).left).toBe('10px');
+    expect(mobileOverlayBox.width).toBeCloseTo(mobileCardBox.width - 22, 0);
+    expect(mobileOverlayBox.width * mobileOverlayBox.height).toBeLessThan(mobileCardBox.width * mobileCardBox.height * 0.35);
+    const changeFile = document.querySelector<HTMLElement>('.processing-card > .change-file-button');
+    expect(changeFile).toBeVisible();
+    expect(getComputedStyle(changeFile!).zIndex).toBe('3');
+    await page.viewport(1024, 768);
+
+    conversion.resolve(result);
 
     expect(await screen.findByRole('link', { name: '下載 ZIP 製作套件' })).toHaveAttribute('download', 'shapecut-files.zip');
     expect(screen.getByRole('link', { name: /爆炸圖 PDF/ })).toHaveAttribute('download', 'exploded-view.pdf');

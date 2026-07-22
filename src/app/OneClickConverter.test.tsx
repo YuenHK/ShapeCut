@@ -140,7 +140,7 @@ describe('OneClickConverter', () => {
     expect(screen.queryByRole('button', { name: /修復|軸心|下一步|材料|分件|確認輸出/ })).toBeNull();
   });
 
-  it('announces monotonic processing stages through an accessible status', async () => {
+  it('keeps pre-geometry progress neutral, then announces monotonic stages through the preview status', async () => {
     const user = userEvent.setup();
     const conversion = deferred<AutomaticOutlineResult>();
     let report: ((event: AutomaticOutlineProgressEvent) => void) | undefined;
@@ -148,18 +148,22 @@ describe('OneClickConverter', () => {
     const { container } = render(<OneClickConverter services={api} />);
 
     await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'busy.stl'));
-    expect(container.querySelector('.progress-status > strong')).toHaveTextContent('模型已讀取');
+    expect(screen.getByRole('heading', { name: '正在讀取模型' })).toBeVisible();
+    expect(container.querySelector('.processing-loading-panel')).toHaveAttribute('role', 'status');
+    expect(container.querySelector('.processing-loading-panel')).toHaveAttribute('aria-live', 'polite');
+    expect(container.querySelector('.processing-status-overlay')).toBeNull();
     report?.({ stage: 'simplifying' });
-    await vi.waitFor(() => expect(container.querySelector('.progress-status > strong')).toHaveTextContent('正在簡化'));
+    await vi.waitFor(() => expect(screen.getByRole('heading', { name: '正在讀取模型' })).toBeVisible());
+    expect(container.querySelector('.processing-status-overlay')).toBeNull();
     report?.({ stage: 'reading' });
-    await vi.waitFor(() => expect(container.querySelector('.progress-status > strong')).toHaveTextContent('正在簡化'));
+    await vi.waitFor(() => expect(container.querySelector('.processing-status-overlay')).toBeNull());
     report?.({ stage: 'slicing', preview: result.preview });
-    await vi.waitFor(() => expect(container.querySelector('.progress-status > strong')).toHaveTextContent('正在產生切片'));
+    await vi.waitFor(() => expect(container.querySelector('.processing-status-overlay > strong')).toHaveTextContent('正在產生切片'));
+    expect(container.querySelector('.processing-status-overlay')).toHaveAttribute('role', 'status');
+    report?.({ stage: 'analyzing', preview: result.preview });
+    await vi.waitFor(() => expect(container.querySelector('.processing-status-overlay > strong')).toHaveTextContent('正在產生切片'));
     report?.({ stage: 'packaging' });
-    await vi.waitFor(() => expect(container.querySelector('.progress-status > strong')).toHaveTextContent('正在準備下載'));
-    const checklist = container.querySelectorAll('.stage-list li');
-    expect(checklist).toHaveLength(5);
-    expect(checklist.item(4)).toHaveTextContent('正在準備下載');
+    await vi.waitFor(() => expect(container.querySelector('.processing-status-overlay > strong')).toHaveTextContent('正在準備下載'));
   });
 
   it('stays neutral until parsed preview data arrives, then uses the real viewport through packaging', async () => {
@@ -170,11 +174,17 @@ describe('OneClickConverter', () => {
     const { container } = render(<OneClickConverter services={api} />);
 
     await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'preview.stl'));
+    expect(container.querySelector('.processing-card')).not.toHaveClass('has-preview');
+    expect(container.querySelector('.processing-loading-panel')).toBeInTheDocument();
+    expect(container.querySelector('.processing-status-overlay')).not.toBeInTheDocument();
     expect(screen.queryByRole('img', { name: /模型分層預覽/ })).toBeNull();
     expect(container.querySelector('.spinner')).toBeNull();
 
     report?.({ stage: 'analyzing', preview: result.preview });
     const preview = await screen.findByRole('img', { name: /模型分層預覽/ });
+    expect(container.querySelector('.processing-card')).toHaveClass('has-preview');
+    expect(container.querySelector('.processing-status-overlay')).toBeInTheDocument();
+    expect(container.querySelector('.processing-loading-panel')).not.toBeInTheDocument();
     expect(preview.closest('.outline-process-viewport')).toHaveAttribute('data-stage', 'analyzing');
 
     report?.({ stage: 'slicing', preview: result.preview });
