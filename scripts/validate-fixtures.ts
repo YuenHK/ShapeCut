@@ -1,11 +1,20 @@
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import { AUTOMATIC_AXIS_CONFIDENCE_THRESHOLD, findAxisCandidates } from '../src/domain/axis/find-axis';
 import { generateParts } from '../src/domain/decomposition/generate-parts';
 import { sampleLathedProfile } from '../src/domain/decomposition/profile-sampler';
 import { inspectMesh } from '../src/domain/mesh/inspect-mesh';
 import { parseSTL } from '../src/domain/mesh/parse-stl';
 import type { SpinnerKit } from '../src/domain/decomposition/types';
+import {
+  KNIGHT_FORTRESS_LAUNCHER_TEMPLATE,
+  renderLauncherTemplateInitializer,
+} from '../src/domain/outline-assembly/launcher-template';
+
+const execFileAsync = promisify(execFile);
 
 type Entry = { file: string; category: string; expected: 'auto-axis-and-editable-kit' | 'manual-axis-or-block' | 'blocking'; expectedAxis?: [number, number, number] };
 const manifest = JSON.parse(await readFile(new URL('../fixtures/acceptance/manifest.json', import.meta.url), 'utf8')) as { schemaVersion: number; models: Entry[] };
@@ -87,9 +96,34 @@ const automaticOutputs = results.filter((result) => result.geometrySha256 !== un
 const outputComparisonPass = automaticOutputs.length >= 2
   && new Set(automaticOutputs.map(({ geometrySha256 }) => geometrySha256)).size >= 2
   && new Set(automaticOutputs.map(({ dimensionsMm }) => JSON.stringify(dimensionsMm))).size >= 2;
-const summary = { schemaVersion: 1, automaticThreshold: AUTOMATIC_AXIS_CONFIDENCE_THRESHOLD, autoSuccess, total: results.length, outputComparisonPass, results };
+const launcherInputs = [process.env.KNIGHT_FORTRESS_STL, process.env.KNIGHT_FORTRESS_GROUP_STL] as const;
+if (launcherInputs.filter(Boolean).length === 1) {
+  throw new Error('Launcher fixture validation requires both private reference inputs');
+}
+let launcherTemplatePass: boolean | 'not-requested' = 'not-requested';
+if (launcherInputs.every(Boolean)) {
+  let stdout: string;
+  try {
+    ({ stdout } = await execFileAsync(process.execPath, [
+      fileURLToPath(new URL('../node_modules/vite-node/vite-node.mjs', import.meta.url)),
+      fileURLToPath(new URL('./generate-launcher-template.ts', import.meta.url)),
+    ], { env: process.env, maxBuffer: 1024 * 1024, timeout: 120_000 }));
+  } catch {
+    throw new Error('Launcher fixture validation could not regenerate the numeric template');
+  }
+  launcherTemplatePass = stdout === renderLauncherTemplateInitializer(KNIGHT_FORTRESS_LAUNCHER_TEMPLATE);
+}
+const summary = {
+  schemaVersion: 1,
+  automaticThreshold: AUTOMATIC_AXIS_CONFIDENCE_THRESHOLD,
+  autoSuccess,
+  total: results.length,
+  outputComparisonPass,
+  launcherTemplatePass,
+  results,
+};
 console.log(JSON.stringify(summary, null, 2));
-if (autoSuccess !== 8 || !outputComparisonPass || results.some(({ pass }) => !pass)) {
+if (autoSuccess !== 8 || !outputComparisonPass || launcherTemplatePass === false || results.some(({ pass }) => !pass)) {
   throw new Error(`Acceptance failed: ${autoSuccess}/8 automatic models passed; output comparison ${outputComparisonPass ? 'passed' : 'failed'}`);
 }
 
