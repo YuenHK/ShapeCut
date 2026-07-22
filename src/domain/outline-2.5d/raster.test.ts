@@ -3,10 +3,12 @@ import { DEFAULT_OUTLINE_BUDGETS, type OutlineBudgets } from './types';
 import {
   createOutlineAxisBasis,
   markLineSupercover,
+  projectMesh,
   projectPointToOutlineBasis,
   rasterProjectLayer,
   type ProjectedMesh,
 } from './raster';
+import type { TriangleMesh } from '../mesh/types';
 
 describe('deterministic outline axis basis', () => {
   test.each([
@@ -144,5 +146,47 @@ describe('rasterProjectLayer enclosed void evidence', () => {
       projectedFrame(), { index: 0, zStart: -0.5, zMid: 0, zEnd: 0.5 },
       DEFAULT_OUTLINE_BUDGETS, -1,
     )).toThrow(/runtime budget/i);
+  });
+
+  test('propagates the original cancellation from inside mesh projection', () => {
+    const mesh: TriangleMesh = {
+      positions: new Float64Array([0, 0, 0, 2, 0, 0, 0, 2, 0]),
+      indices: new Uint32Array([0, 1, 2]),
+    };
+    const cancellation = new Error('projection cancelled');
+    let calls = 0;
+    let caught: unknown;
+    try {
+      projectMesh(mesh, {
+        axis: { origin: [0, 0, 0], direction: [0, 0, 1], confidence: 1, confirmed: true },
+        source: 'candidate',
+      }, Infinity, () => {
+        calls += 1;
+        if (calls === 2) throw cancellation;
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBe(cancellation);
+    expect(calls).toBe(2);
+  });
+
+  test('propagates the original cancellation from inside raster work', () => {
+    const cancellation = new RangeError('raster cancelled');
+    let calls = 0;
+    let caught: unknown;
+    try {
+      rasterProjectLayer(
+        projectedFrame(), { index: 0, zStart: -0.5, zMid: 0, zEnd: 0.5 },
+        DEFAULT_OUTLINE_BUDGETS, Infinity, () => {
+          calls += 1;
+          if (calls === 4) throw cancellation;
+        },
+      );
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBe(cancellation);
+    expect(calls).toBe(4);
   });
 });

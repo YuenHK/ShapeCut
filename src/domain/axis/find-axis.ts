@@ -21,13 +21,19 @@ function canonical(direction: Vec3): Vec3 {
     : direction;
 }
 
-function eigenvectors(matrix: number[][]): Vec3[] {
+function checkAxisRuntime(deadline: number, checkpoint: () => void): void {
+  checkpoint();
+  if (Date.now() > deadline) throw new RangeError('Axis analysis exceeded the runtime budget');
+}
+
+function eigenvectors(matrix: number[][], deadline: number, checkpoint: () => void): Vec3[] {
   const a = matrix.map((row) => [...row]);
   const vectors = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
   let matrixScale = 0;
   for (const row of a) for (const value of row) matrixScale = Math.max(matrixScale, Math.abs(value));
   if (matrixScale === 0) throw new RangeError('Degenerate surface covariance');
   for (let iteration = 0; iteration < 32; iteration += 1) {
+    checkAxisRuntime(deadline, checkpoint);
     let p = 0;
     let q = 1;
     for (const [row, column] of [[0, 1], [0, 2], [1, 2]] as const) {
@@ -62,11 +68,12 @@ function eigenvectors(matrix: number[][]): Vec3[] {
   ]));
 }
 
-function referencedMesh(mesh: TriangleMesh): TriangleMesh {
+function referencedMesh(mesh: TriangleMesh, deadline: number, checkpoint: () => void): TriangleMesh {
   const mapping = new Map<number, number>();
   const positions: number[] = [];
   const indices = new Uint32Array(mesh.indices.length);
   for (let offset = 0; offset < mesh.indices.length; offset += 1) {
+    if ((offset & 1023) === 0) checkAxisRuntime(deadline, checkpoint);
     const original = mesh.indices[offset];
     let compact = mapping.get(original);
     if (compact === undefined) {
@@ -171,8 +178,15 @@ function heapPushBounded(
 export function selectRadialSurfaceSamples(
   mesh: TriangleMesh,
   sampleCount: number,
-  options: { readonly hashFn?: (geometryKey: string) => number } = {},
+  options: {
+    readonly hashFn?: (geometryKey: string) => number;
+    readonly deadline?: number;
+    readonly checkpoint?: () => void;
+  } = {},
 ): { readonly samples: SurfaceSample[]; readonly selectedTriangleCount: number } {
+  const deadline = options.deadline ?? Infinity;
+  const checkpoint = options.checkpoint ?? (() => undefined);
+  checkAxisRuntime(deadline, checkpoint);
   const pointsPerTriangle = Math.min(3, sampleCount);
   const capacity = Math.max(1, Math.floor(sampleCount / pointsPerTriangle));
   const heap: WeightedTriangle[] = [];
@@ -184,6 +198,7 @@ export function selectRadialSurfaceSamples(
   let maxY = -Infinity;
   let maxZ = -Infinity;
   for (let offset = 0; offset < mesh.indices.length; offset += 3) {
+    if ((offset & 1023) === 0) checkAxisRuntime(deadline, checkpoint);
     const geometry = triangleGeometry(mesh, offset);
     if (!geometry) continue;
     for (const vertex of geometry.vertices) {
@@ -200,6 +215,7 @@ export function selectRadialSurfaceSamples(
   if (!Number.isFinite(hashScale) || hashScale === 0) throw new RangeError('Degenerate mesh surface');
   let totalArea = 0;
   for (let offset = 0; offset < mesh.indices.length; offset += 3) {
+    if ((offset & 1023) === 0) checkAxisRuntime(deadline, checkpoint);
     const geometry = triangleGeometry(mesh, offset);
     if (!geometry) continue;
     totalArea += geometry.area;
@@ -215,7 +231,9 @@ export function selectRadialSurfaceSamples(
   if (heap.length === 0) throw new RangeError('Degenerate mesh surface');
   const representativeWeight = totalArea / heap.length / pointsPerTriangle;
   const samples: SurfaceSample[] = [];
-  for (const { vertices } of heap) {
+  for (let heapIndex = 0; heapIndex < heap.length; heapIndex += 1) {
+    if ((heapIndex & 255) === 0) checkAxisRuntime(deadline, checkpoint);
+    const { vertices } = heap[heapIndex];
     for (let quadratureIndex = 0; quadratureIndex < pointsPerTriangle; quadratureIndex += 1) {
       const barycentric = QUADRATURE[quadratureIndex];
       samples.push({
@@ -231,10 +249,16 @@ export function selectRadialSurfaceSamples(
   return { samples, selectedTriangleCount: heap.length };
 }
 
-function surfaceCovariance(mesh: TriangleMesh, centroid: Vec3): number[][] {
+function surfaceCovariance(
+  mesh: TriangleMesh,
+  centroid: Vec3,
+  deadline: number,
+  checkpoint: () => void,
+): number[][] {
   const covariance = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
   let totalWeight = 0;
   for (let offset = 0; offset < mesh.indices.length; offset += 3) {
+    if ((offset & 1023) === 0) checkAxisRuntime(deadline, checkpoint);
     const geometry = triangleGeometry(mesh, offset);
     if (!geometry) continue;
     for (const barycentric of QUADRATURE) {
@@ -261,30 +285,46 @@ function surfaceCovariance(mesh: TriangleMesh, centroid: Vec3): number[][] {
 
 export function findAxisCandidates(
   mesh: TriangleMesh,
-  options: { readonly sampleCount: number },
+  options: {
+    readonly sampleCount: number;
+    readonly deadline?: number;
+    readonly checkpoint?: () => void;
+  },
 ): AxisCandidate[] {
+  const deadline = options.deadline ?? Infinity;
+  const checkpoint = options.checkpoint ?? (() => undefined);
+  checkAxisRuntime(deadline, checkpoint);
   if (!Number.isInteger(options.sampleCount) || options.sampleCount <= 0 || options.sampleCount > 100_000) {
     throw new RangeError('sampleCount must be a positive integer no greater than 100000');
   }
-  if (mesh.positions.length % 3 !== 0 || mesh.positions.some((value) => !Number.isFinite(value))) {
+  if (mesh.positions.length % 3 !== 0) {
     throw new TypeError('Mesh positions must contain finite xyz coordinates');
+  }
+  for (let index = 0; index < mesh.positions.length; index += 1) {
+    if ((index & 1023) === 0) checkAxisRuntime(deadline, checkpoint);
+    if (!Number.isFinite(mesh.positions[index])) throw new TypeError('Mesh positions must contain finite xyz coordinates');
   }
   const vertexCount = mesh.positions.length / 3;
   if (mesh.indices.length % 3 !== 0) throw new TypeError('Mesh indices must contain complete triangles');
-  if (mesh.indices.some((index) => index >= vertexCount)) {
-    throw new RangeError('Mesh triangle index is outside the vertex buffer');
+  for (let offset = 0; offset < mesh.indices.length; offset += 1) {
+    if ((offset & 1023) === 0) checkAxisRuntime(deadline, checkpoint);
+    if (mesh.indices[offset] >= vertexCount) throw new RangeError('Mesh triangle index is outside the vertex buffer');
   }
-  const referenced = referencedMesh(mesh);
-  const { centroid } = massProperties(referenced);
-  const covariance = surfaceCovariance(referenced, centroid);
-  const { samples } = selectRadialSurfaceSamples(referenced, options.sampleCount);
-  return eigenvectors(covariance).map((direction) => ({
-    origin: centroid,
-    direction,
-    confirmed: false,
-    source: 'inertia' as const,
-    ...radialSymmetry(samples, centroid, direction),
-  })).sort((left, right) =>
+  const referenced = referencedMesh(mesh, deadline, checkpoint);
+  const { centroid } = massProperties(referenced, deadline, checkpoint);
+  const covariance = surfaceCovariance(referenced, centroid, deadline, checkpoint);
+  const { samples } = selectRadialSurfaceSamples(referenced, options.sampleCount, { deadline, checkpoint });
+  const candidates = eigenvectors(covariance, deadline, checkpoint).map((direction) => {
+    checkAxisRuntime(deadline, checkpoint);
+    return {
+      origin: centroid,
+      direction,
+      confirmed: false,
+      source: 'inertia' as const,
+      ...radialSymmetry(samples, centroid, direction, deadline, checkpoint),
+    };
+  });
+  return candidates.sort((left, right) =>
     right.confidence - left.confidence ||
     right.direction[2] - left.direction[2] ||
     right.direction[1] - left.direction[1] ||

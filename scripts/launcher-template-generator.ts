@@ -32,6 +32,10 @@ export type LauncherTemplateGeneratorBudget = {
   readonly checkpoint?: () => void;
 };
 
+class GeneratorCheckpointInterruption {
+  constructor(readonly original: unknown) {}
+}
+
 function checkGeneratorBudget(deadline: number, checkpoint: () => void): void {
   checkpoint();
   if (Date.now() > deadline) throw new RangeError('Launcher template generation exceeded the runtime budget');
@@ -55,9 +59,12 @@ function candidateGroups(
   for (const candidate of ranked) {
     checkGeneratorBudget(deadline, checkpoint);
     try {
-      selected.push({ ...candidate, outer: simplifyClosedLoop(candidate.outer, tolerance, 96, deadline) });
+      selected.push({
+        ...candidate,
+        outer: simplifyClosedLoop(candidate.outer, tolerance, 96, deadline, checkpoint),
+      });
     } catch (error) {
-      if (error instanceof RangeError && /runtime budget/i.test(error.message)) throw error;
+      if (!(error instanceof RangeError) || /runtime budget/i.test(error.message)) throw error;
     }
   }
   const maximumSupport = Math.max(...selected.map(({ occupiedCellCount }) => occupiedCellCount), 1);
@@ -87,13 +94,13 @@ function extractReference(
   checkpoint: () => void,
 ): LauncherReference {
   checkGeneratorBudget(deadline, checkpoint);
-  const axis = findAxisCandidates(input.mesh, { sampleCount: 2_048 })[0];
+  const axis = findAxisCandidates(input.mesh, { sampleCount: 2_048, deadline, checkpoint })[0];
   checkGeneratorBudget(deadline, checkpoint);
   if (!axis) throw new RangeError('Launcher reference did not contain a usable axis');
   const projected = projectMesh(input.mesh, {
     axis: { origin: axis.origin, direction: axis.direction, confidence: axis.confidence, confirmed: true },
     source: 'candidate',
-  }, deadline);
+  }, deadline, checkpoint);
   checkGeneratorBudget(deadline, checkpoint);
   const axialValues = projected.vertices.map(([, , axial]) => axial);
   const minimum = Math.min(...axialValues), maximum = Math.max(...axialValues), span = maximum - minimum;
@@ -110,9 +117,9 @@ function extractReference(
         zStart: zMid - halfSlab,
         zMid,
         zEnd: zMid + halfSlab,
-      }, DEFAULT_OUTLINE_BUDGETS, deadline);
+      }, DEFAULT_OUTLINE_BUDGETS, deadline, checkpoint);
     } catch (error) {
-      if (error instanceof RangeError && /runtime budget/i.test(error.message)) throw error;
+      if (!(error instanceof RangeError) || /runtime budget/i.test(error.message)) throw error;
       continue;
     }
     const groups = candidateGroups(raster.enclosedVoids, cellSize, deadline, checkpoint);
@@ -132,12 +139,24 @@ export function generateLauncherTemplateFromMeshes(
   inputs: readonly LauncherTemplateMeshInput[],
   budget: LauncherTemplateGeneratorBudget,
 ): LauncherTemplate {
-  const checkpoint = budget.checkpoint ?? (() => undefined);
-  checkGeneratorBudget(budget.deadline, checkpoint);
-  if (inputs.length !== 2) throw new RangeError('Launcher template generator requires exactly two references');
-  const references = inputs.map((input) => extractReference(input, budget.deadline, checkpoint));
-  checkGeneratorBudget(budget.deadline, checkpoint);
-  return averageCompatibleLauncherReferences(references, REFERENCE_VERSION, budget.deadline, checkpoint);
+  const callerCheckpoint = budget.checkpoint ?? (() => undefined);
+  const checkpoint = (): void => {
+    try {
+      callerCheckpoint();
+    } catch (error) {
+      throw new GeneratorCheckpointInterruption(error);
+    }
+  };
+  try {
+    checkGeneratorBudget(budget.deadline, checkpoint);
+    if (inputs.length !== 2) throw new RangeError('Launcher template generator requires exactly two references');
+    const references = inputs.map((input) => extractReference(input, budget.deadline, checkpoint));
+    checkGeneratorBudget(budget.deadline, checkpoint);
+    return averageCompatibleLauncherReferences(references, REFERENCE_VERSION, budget.deadline, checkpoint);
+  } catch (error) {
+    if (error instanceof GeneratorCheckpointInterruption) throw error.original;
+    throw error;
+  }
 }
 
 async function loadMesh(

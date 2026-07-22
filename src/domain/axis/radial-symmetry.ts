@@ -15,7 +15,14 @@ export function radialSymmetry(
   samples: readonly SurfaceSample[],
   origin: Vec3,
   direction: Vec3,
+  deadline = Infinity,
+  checkpoint: () => void = () => undefined,
 ): RadialSymmetry {
+  const checkRuntime = (): void => {
+    checkpoint();
+    if (Date.now() > deadline) throw new RangeError('Axis analysis exceeded the runtime budget');
+  };
+  checkRuntime();
   const helper: Vec3 = Math.abs(direction[0]) < 0.8 ? [1, 0, 0] : [0, 1, 0];
   const dot = helper[0] * direction[0] + helper[1] * direction[1] + helper[2] * direction[2];
   const rawU: Vec3 = [helper[0] - dot * direction[0], helper[1] - dot * direction[1], helper[2] - dot * direction[2]];
@@ -26,7 +33,8 @@ export function radialSymmetry(
     direction[2] * u[0] - direction[0] * u[2],
     direction[0] * u[1] - direction[1] * u[0],
   ];
-  const projected = samples.map(({ point: [x, y, z], weight }) => {
+  const projected = samples.map(({ point: [x, y, z], weight }, index) => {
+    if ((index & 255) === 0) checkRuntime();
     const dx = x - origin[0];
     const dy = y - origin[1];
     const dz = z - origin[2];
@@ -39,7 +47,9 @@ export function radialSymmetry(
   let maxAxial = -Infinity;
   let totalWeight = 0;
   let weightedRadiusSquared = 0;
-  for (const point of projected) {
+  for (let index = 0; index < projected.length; index += 1) {
+    if ((index & 255) === 0) checkRuntime();
+    const point = projected[index];
     minAxial = Math.min(minAxial, point.axial);
     maxAxial = Math.max(maxAxial, point.axial);
     totalWeight += point.weight;
@@ -58,7 +68,9 @@ export function radialSymmetry(
   let meanV = 0;
   let varianceU = 0;
   let varianceV = 0;
-  for (const point of projected) {
+  for (let index = 0; index < projected.length; index += 1) {
+    if ((index & 255) === 0) checkRuntime();
+    const point = projected[index];
     const bin = Math.min(binCount - 1, Math.floor((point.axial - minAxial) / axialSpan * binCount));
     weightSums[bin] += point.weight;
     radiusSums[bin] += point.weight * point.radius;
@@ -81,6 +93,7 @@ export function radialSymmetry(
   let angularResidual = 0;
   let angularCount = 0;
   for (let bin = 0; bin < binCount; bin += 1) {
+    checkRuntime();
     if (weightSums[bin] > 0) {
       radialResidual += Math.max(0, radiusSquaredSums[bin] - radiusSums[bin] ** 2 / weightSums[bin]);
     }

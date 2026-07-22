@@ -160,3 +160,48 @@ This follow-up addresses every critical, important, and minor review finding. Th
 - `git diff --check`: exit 0 after removing the generated trailing blank line.
 
 No review-remediation blocker remains. The two private STL inputs remain outside the worktree and are neither staged nor committed.
+
+---
+
+## In-flight cancellation remediation (2026-07-22)
+
+### Root cause
+
+- The launcher generator owned one top-level deadline, but `findAxisCandidates`, `projectMesh`, and `rasterProjectLayer` had no caller-checkpoint API. `simplifyClosedLoop` already accepted a checkpoint, but the generator did not pass it.
+- Axis work could therefore continue through mesh compaction, mass properties, covariance, sample selection, eigensolving, and radial scoring without seeing caller cancellation.
+- Projection and raster helpers checked only wall-clock deadlines. Their vertex, triangle, supercover, morphology, flood-fill, component, boundary, void, hull, and source-evidence loops did not invoke the caller checkpoint.
+- `launcherReferencesAreCompatible` converted every non-budget `RangeError` into `false`, so a caller `RangeError('cancelled')` was indistinguishable from invalid geometry.
+- Generator raster/simplification recovery caught arbitrary exceptions and continued searching; this also converted in-flight checkpoint interruptions into the generic no-reliable-geometry failure.
+
+### TDD RED
+
+The first focused RED command ran axis, raster, simplification, and template compatibility tests. It produced 57 tests: 53 passed and 4 failed exactly at the missing boundaries:
+
+- axis-analysis checkpoint was never invoked;
+- projection checkpoint was never invoked;
+- raster checkpoint was never invoked;
+- compatibility swallowed the exact caller `RangeError` and returned normal incompatibility.
+
+The simplification inner-loop regression was already green because that API had bounded checkpoint support; it established that the missing link was the generator call site.
+
+A second stage-level RED used deterministic generator dependency seams and failed 2/2 cases: both raster and simplify caller cancellations were replaced by `Launcher reference did not contain reliable three-hook geometry`.
+
+### GREEN implementation
+
+- Added optional deadline/checkpoint plumbing to `findAxisCandidates`, radial surface sampling/scoring, and mass-property loops while preserving every existing caller default.
+- Added optional checkpoint plumbing to `projectMesh`, `rasterProjectLayer`, and their meaningful inner loops. Existing deadline messages and geometry outputs remain unchanged.
+- Passed the same generator-owned deadline/checkpoint into axis analysis, projection, every raster slice, simplification, detector work, compatibility, and averaging. No stage resets the deadline.
+- Added opaque caller-interruption sentinels at generator and compatibility boundaries. Geometry recovery catches only genuine geometry `RangeError` values; arbitrary caller errors, including `RangeError`, are unwrapped and rethrown as the original object.
+- Added deterministic prompt-interruption tests with exact checkpoint counts and object-identity assertions inside axis, projection, raster, simplification, compatibility, and generator raster/simplify stages.
+
+Final focused result: 7 files / 80 tests passed.
+
+### Final verification
+
+- `npm run typecheck`: exit 0.
+- `npm run build`: exit 0; Vite transformed 141 modules.
+- Opt-in fixture validation: `autoSuccess: 8`, `outputComparisonPass: true`, `launcherTemplatePass: true`; the published numeric template did not change.
+- Definitive full suite after the stage-level correction: 49 files / 1,203 tests passed.
+- `git diff --check`: exit 0.
+
+No remaining concern or blocker was found. The new parameters are optional, existing callers and output geometry remain compatible, and private STL inputs remain outside the worktree.

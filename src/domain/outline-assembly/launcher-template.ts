@@ -42,6 +42,10 @@ function checkpointRuntime(deadline: number, checkpoint: () => void): void {
   if (Date.now() > deadline) throw new RangeError('Launcher template processing exceeded the runtime budget');
 }
 
+class LauncherCheckpointInterruption {
+  constructor(readonly original: unknown) {}
+}
+
 function signedArea(points: readonly Point2[]): number {
   let twiceArea = 0;
   for (let index = 0; index < points.length; index += 1) {
@@ -262,25 +266,32 @@ export function launcherReferencesAreCompatible(
   deadline = Infinity,
   checkpoint: () => void = () => undefined,
 ): boolean {
-  checkpointRuntime(deadline, checkpoint);
-  if (leftReference.loops.length !== 3 || rightReference.loops.length !== 3) return false;
-  let prepared: PreparedReferences;
+  const guardedCheckpoint = (): void => {
+    try {
+      checkpoint();
+    } catch (error) {
+      throw new LauncherCheckpointInterruption(error);
+    }
+  };
   try {
-    prepared = prepareReferences(leftReference.loops, rightReference.loops, deadline, checkpoint);
+    checkpointRuntime(deadline, guardedCheckpoint);
+    if (leftReference.loops.length !== 3 || rightReference.loops.length !== 3) return false;
+    const prepared = prepareReferences(leftReference.loops, rightReference.loops, deadline, guardedCheckpoint);
+    const leftMetrics = loopMetrics(prepared.sourceLeft), rightMetrics = loopMetrics(prepared.sourceRight);
+    for (let index = 0; index < 3; index += 1) {
+      checkpointRuntime(deadline, guardedCheckpoint);
+      if (relativeDifference(leftMetrics[index].radius, rightMetrics[index].radius) > LAUNCHER_RADIUS_TOLERANCE_RATIO + 1e-9
+        || relativeDifference(leftMetrics[index].area, rightMetrics[index].area) > LAUNCHER_AREA_TOLERANCE_RATIO + 1e-9
+        || meanCorrespondingDistance(
+          prepared.samplesLeft[index], prepared.samplesRight[index], deadline, guardedCheckpoint,
+        ) > LAUNCHER_MEAN_POINT_DISTANCE_TOLERANCE_MM + 1e-9) return false;
+    }
+    return true;
   } catch (error) {
+    if (error instanceof LauncherCheckpointInterruption) throw error.original;
     if (error instanceof RangeError && !/runtime budget/i.test(error.message)) return false;
     throw error;
   }
-  const leftMetrics = loopMetrics(prepared.sourceLeft), rightMetrics = loopMetrics(prepared.sourceRight);
-  for (let index = 0; index < 3; index += 1) {
-    checkpointRuntime(deadline, checkpoint);
-    if (relativeDifference(leftMetrics[index].radius, rightMetrics[index].radius) > LAUNCHER_RADIUS_TOLERANCE_RATIO + 1e-9
-      || relativeDifference(leftMetrics[index].area, rightMetrics[index].area) > LAUNCHER_AREA_TOLERANCE_RATIO + 1e-9
-      || meanCorrespondingDistance(
-        prepared.samplesLeft[index], prepared.samplesRight[index], deadline, checkpoint,
-      ) > LAUNCHER_MEAN_POINT_DISTANCE_TOLERANCE_MM + 1e-9) return false;
-  }
-  return true;
 }
 
 function resampleClosedLoop(points: readonly Point2[], count: number): readonly Point2[] {

@@ -35,6 +35,11 @@ function checkDeadline(deadline: number): void {
   if (Date.now() > deadline) throw new RangeError('Contour extraction exceeded the runtime budget');
 }
 
+function checkRuntime(deadline: number, checkpoint: () => void): void {
+  checkpoint();
+  checkDeadline(deadline);
+}
+
 function normalize(vector: Vec3): Vec3 {
   const length = Math.hypot(...vector);
   if (!Number.isFinite(length) || length === 0) throw new RangeError('Contour extraction requires a finite non-zero axis');
@@ -79,8 +84,13 @@ export function projectPointToOutlineBasis(point: Vec3, basis: OutlineAxisBasis)
   return [dot(relative, basis.planeX), dot(relative, basis.planeY), dot(relative, basis.axial)];
 }
 
-export function projectMesh(mesh: TriangleMesh, selection: OutlineAxisSelection, deadline = Infinity): ProjectedMesh {
-  checkDeadline(deadline);
+export function projectMesh(
+  mesh: TriangleMesh,
+  selection: OutlineAxisSelection,
+  deadline = Infinity,
+  checkpoint: () => void = () => undefined,
+): ProjectedMesh {
+  checkRuntime(deadline, checkpoint);
   if (mesh.positions.length === 0 || mesh.positions.length % 3 !== 0
     || mesh.indices.length === 0 || mesh.indices.length % 3 !== 0
     || selection.axis.origin.some((value) => !Number.isFinite(value))) {
@@ -90,7 +100,7 @@ export function projectMesh(mesh: TriangleMesh, selection: OutlineAxisSelection,
   const vertices: ProjectedVertex[] = [];
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (let index = 0; index < mesh.positions.length; index += 3) {
-    if ((index & 1023) === 0) checkDeadline(deadline);
+    if ((index & 1023) === 0) checkRuntime(deadline, checkpoint);
     const vertex = projectPointToOutlineBasis([
       mesh.positions[index], mesh.positions[index + 1], mesh.positions[index + 2],
     ], basis);
@@ -98,7 +108,7 @@ export function projectMesh(mesh: TriangleMesh, selection: OutlineAxisSelection,
   }
   const triangles: (readonly [number, number, number])[] = [];
   for (let index = 0; index < mesh.indices.length; index += 3) {
-    if ((index & 1023) === 0) checkDeadline(deadline);
+    if ((index & 1023) === 0) checkRuntime(deadline, checkpoint);
     const triangle = [mesh.indices[index], mesh.indices[index + 1], mesh.indices[index + 2]] as const;
     if (triangle.some((vertex) => vertex >= vertices.length)) throw new RangeError('Contour extraction requires valid triangle indices');
     triangles.push(triangle);
@@ -131,28 +141,29 @@ export function markLineSupercover(
   x1: number,
   y1: number,
   deadline: number,
+  checkpoint: () => void = () => undefined,
 ): void {
-  checkDeadline(deadline);
+  checkRuntime(deadline, checkpoint);
   const dx = x1 - x0, dy = y1 - y0;
   const events: number[] = [0, 1];
   if (dx !== 0) {
     const minimum = Math.min(x0, x1), maximum = Math.max(x0, x1);
     for (let boundary = Math.floor(minimum) + 1; boundary < maximum; boundary += 1) {
-      if ((events.length & 255) === 0) checkDeadline(deadline);
+      if ((events.length & 255) === 0) checkRuntime(deadline, checkpoint);
       events.push((boundary - x0) / dx);
     }
   }
   if (dy !== 0) {
     const minimum = Math.min(y0, y1), maximum = Math.max(y0, y1);
     for (let boundary = Math.floor(minimum) + 1; boundary < maximum; boundary += 1) {
-      if ((events.length & 255) === 0) checkDeadline(deadline);
+      if ((events.length & 255) === 0) checkRuntime(deadline, checkpoint);
       events.push((boundary - y0) / dy);
     }
   }
-  events.sort((left, right) => { checkDeadline(deadline); return left - right; });
+  events.sort((left, right) => { checkRuntime(deadline, checkpoint); return left - right; });
   const uniqueEvents: number[] = [];
   for (let index = 0; index < events.length; index += 1) {
-    if ((index & 255) === 0) checkDeadline(deadline);
+    if ((index & 255) === 0) checkRuntime(deadline, checkpoint);
     const event = events[index], prior = uniqueEvents[uniqueEvents.length - 1];
     if (prior === undefined || Math.abs(event - prior) > 64 * Number.EPSILON) uniqueEvents.push(event);
   }
@@ -163,16 +174,24 @@ export function markLineSupercover(
     }
   };
   for (let index = 0; index < uniqueEvents.length; index += 1) {
-    if ((index & 255) === 0) checkDeadline(deadline);
+    if ((index & 255) === 0) checkRuntime(deadline, checkpoint);
     markAt(uniqueEvents[index]);
     if (index + 1 < uniqueEvents.length) markAt((uniqueEvents[index] + uniqueEvents[index + 1]) / 2);
   }
 }
 
-function rasterizeTriangle(mask: Uint8Array, width: number, height: number, points: readonly Point2[], deadline: number): void {
+function rasterizeTriangle(
+  mask: Uint8Array,
+  width: number,
+  height: number,
+  points: readonly Point2[],
+  deadline: number,
+  checkpoint: () => void,
+): void {
+  checkRuntime(deadline, checkpoint);
   for (let edge = 0; edge < 3; edge += 1) {
     const start = points[edge], end = points[(edge + 1) % 3];
-    markLineSupercover(mask, width, height, start[0], start[1], end[0], end[1], deadline);
+    markLineSupercover(mask, width, height, start[0], start[1], end[0], end[1], deadline, checkpoint);
   }
   const cross2 = (a: Point2, b: Point2, c: Point2) => (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
   const area = cross2(points[0], points[1], points[2]);
@@ -182,9 +201,9 @@ function rasterizeTriangle(mask: Uint8Array, width: number, height: number, poin
   const minY = Math.max(0, Math.floor(Math.min(...points.map(([, y]) => y))));
   const maxY = Math.min(height - 1, Math.floor(Math.max(...points.map(([, y]) => y))));
   for (let y = minY; y <= maxY; y += 1) {
-    checkDeadline(deadline);
+    checkRuntime(deadline, checkpoint);
     for (let x = minX; x <= maxX; x += 1) {
-      if ((x & 255) === 0) checkDeadline(deadline);
+      if ((x & 255) === 0) checkRuntime(deadline, checkpoint);
       const point: Point2 = [x + 0.5, y + 0.5];
       const signs = [cross2(points[0], points[1], point), cross2(points[1], points[2], point), cross2(points[2], points[0], point)];
       if (signs.every((value) => value >= 0) || signs.every((value) => value <= 0)) mask[y * width + x] = 1;
@@ -192,10 +211,12 @@ function rasterizeTriangle(mask: Uint8Array, width: number, height: number, poin
   }
 }
 
-function close3x3(source: Uint8Array, width: number, height: number, deadline: number): Uint8Array {
+function close3x3(
+  source: Uint8Array, width: number, height: number, deadline: number, checkpoint: () => void,
+): Uint8Array {
   const dilated = new Uint8Array(source.length), result = new Uint8Array(source.length);
   for (let y = 0; y < height; y += 1) {
-    checkDeadline(deadline);
+    checkRuntime(deadline, checkpoint);
     for (let x = 0; x < width; x += 1) {
       for (let dy = -1; dy <= 1 && dilated[y * width + x] === 0; dy += 1) for (let dx = -1; dx <= 1; dx += 1) {
         const nx = x + dx, ny = y + dy;
@@ -204,7 +225,7 @@ function close3x3(source: Uint8Array, width: number, height: number, deadline: n
     }
   }
   for (let y = 0; y < height; y += 1) {
-    checkDeadline(deadline);
+    checkRuntime(deadline, checkpoint);
     for (let x = 0; x < width; x += 1) {
       let occupied = true;
       for (let dy = -1; dy <= 1 && occupied; dy += 1) for (let dx = -1; dx <= 1; dx += 1) {
@@ -217,14 +238,16 @@ function close3x3(source: Uint8Array, width: number, height: number, deadline: n
   return result;
 }
 
-function exteriorZeroMask(mask: Uint8Array, width: number, height: number, deadline: number): Uint8Array {
+function exteriorZeroMask(
+  mask: Uint8Array, width: number, height: number, deadline: number, checkpoint: () => void,
+): Uint8Array {
   const exterior = new Uint8Array(mask.length), queue = new Int32Array(mask.length);
   let head = 0, tail = 0;
   const enqueue = (index: number) => { if (!mask[index] && !exterior[index]) { exterior[index] = 1; queue[tail++] = index; } };
-  for (let x = 0; x < width; x += 1) { if ((x & 255) === 0) checkDeadline(deadline); enqueue(x); enqueue((height - 1) * width + x); }
-  for (let y = 1; y + 1 < height; y += 1) { if ((y & 255) === 0) checkDeadline(deadline); enqueue(y * width); enqueue(y * width + width - 1); }
+  for (let x = 0; x < width; x += 1) { if ((x & 255) === 0) checkRuntime(deadline, checkpoint); enqueue(x); enqueue((height - 1) * width + x); }
+  for (let y = 1; y + 1 < height; y += 1) { if ((y & 255) === 0) checkRuntime(deadline, checkpoint); enqueue(y * width); enqueue(y * width + width - 1); }
   while (head < tail) {
-    if ((head & 255) === 0) checkDeadline(deadline);
+    if ((head & 255) === 0) checkRuntime(deadline, checkpoint);
     const current = queue[head++], x = current % width, y = Math.floor(current / width);
     if (x > 0) enqueue(current - 1); if (x + 1 < width) enqueue(current + 1);
     if (y > 0) enqueue(current - width); if (y + 1 < height) enqueue(current + width);
@@ -232,23 +255,25 @@ function exteriorZeroMask(mask: Uint8Array, width: number, height: number, deadl
   return exterior;
 }
 
-function fillHoles(mask: Uint8Array, exterior: Uint8Array, deadline: number): void {
+function fillHoles(mask: Uint8Array, exterior: Uint8Array, deadline: number, checkpoint: () => void): void {
   for (let index = 0; index < mask.length; index += 1) {
-    if ((index & 255) === 0) checkDeadline(deadline);
+    if ((index & 255) === 0) checkRuntime(deadline, checkpoint);
     if (!mask[index] && !exterior[index]) mask[index] = 1;
   }
 }
 
-function greatestComponent(mask: Uint8Array, width: number, height: number, deadline: number): { readonly mask: Uint8Array; readonly count: number; readonly components: number } {
+function greatestComponent(
+  mask: Uint8Array, width: number, height: number, deadline: number, checkpoint: () => void,
+): { readonly mask: Uint8Array; readonly count: number; readonly components: number } {
   const visited = new Uint8Array(mask.length), queue = new Int32Array(mask.length);
   let best: number[] = [], bestMinX = Infinity, bestMinY = Infinity, components = 0;
   for (let start = 0; start < mask.length; start += 1) {
-    if ((start & 255) === 0) checkDeadline(deadline);
+    if ((start & 255) === 0) checkRuntime(deadline, checkpoint);
     if (mask[start] && !visited[start]) {
       components += 1; let head = 0, tail = 0, minX = start % width, minY = Math.floor(start / width);
       const cells: number[] = []; visited[start] = 1; queue[tail++] = start;
       while (head < tail) {
-        if ((head & 255) === 0) checkDeadline(deadline);
+        if ((head & 255) === 0) checkRuntime(deadline, checkpoint);
         const current = queue[head++], x = current % width, y = Math.floor(current / width); cells.push(current);
         minX = Math.min(minX, x); minY = Math.min(minY, y);
         for (const next of [x > 0 ? current - 1 : -1, x + 1 < width ? current + 1 : -1, y > 0 ? current - width : -1, y + 1 < height ? current + width : -1]) {
@@ -263,7 +288,7 @@ function greatestComponent(mask: Uint8Array, width: number, height: number, dead
   if (best.length === 0) throw new RangeError('Projected contour raster produced an empty mask');
   const selected = new Uint8Array(mask.length);
   for (let index = 0; index < best.length; index += 1) {
-    if ((index & 255) === 0) checkDeadline(deadline);
+    if ((index & 255) === 0) checkRuntime(deadline, checkpoint);
     selected[best[index]] = 1;
   }
   return { mask: selected, count: best.length, components };
@@ -278,6 +303,7 @@ function traceOuter(
   originY: number,
   cellSize: number,
   deadline: number,
+  checkpoint: () => void,
   requireSingleBoundary: true,
 ): readonly Point2[] | undefined;
 function traceOuter(
@@ -288,6 +314,7 @@ function traceOuter(
   originY: number,
   cellSize: number,
   deadline: number,
+  checkpoint: () => void,
   requireSingleBoundary?: false,
 ): readonly Point2[];
 function traceOuter(
@@ -298,13 +325,14 @@ function traceOuter(
   originY: number,
   cellSize: number,
   deadline: number,
+  checkpoint: () => void,
   requireSingleBoundary?: boolean,
 ): readonly Point2[] | undefined {
   const vertexWidth = width + 1, edges: Edge[] = [];
   const key = (x: number, y: number) => y * vertexWidth + x;
   const empty = (x: number, y: number) => x < 0 || x >= width || y < 0 || y >= height || mask[y * width + x] === 0;
   for (let y = 0; y < height; y += 1) {
-    checkDeadline(deadline);
+    checkRuntime(deadline, checkpoint);
     for (let x = 0; x < width; x += 1) if (mask[y * width + x]) {
       if (empty(x, y - 1)) edges.push([key(x + 1, y), key(x, y)]);
       if (empty(x + 1, y)) edges.push([key(x + 1, y + 1), key(x + 1, y)]);
@@ -312,27 +340,27 @@ function traceOuter(
       if (empty(x - 1, y)) edges.push([key(x, y), key(x, y + 1)]);
     }
   }
-  edges.sort((left, right) => { checkDeadline(deadline); return left[0] - right[0] || left[1] - right[1]; });
+  edges.sort((left, right) => { checkRuntime(deadline, checkpoint); return left[0] - right[0] || left[1] - right[1]; });
   const outgoing = new Map<number, number[]>();
   for (let index = 0; index < edges.length; index += 1) {
-    if ((index & 255) === 0) checkDeadline(deadline);
+    if ((index & 255) === 0) checkRuntime(deadline, checkpoint);
     const [start, end] = edges[index];
     const values = outgoing.get(start);
     if (values) values.push(end); else outgoing.set(start, [end]);
   }
-  for (const values of outgoing.values()) values.sort((left, right) => { checkDeadline(deadline); return left - right; });
+  for (const values of outgoing.values()) values.sort((left, right) => { checkRuntime(deadline, checkpoint); return left - right; });
   const unused = new Set<string>(), loops: number[][] = [];
   for (let index = 0; index < edges.length; index += 1) {
-    if ((index & 255) === 0) checkDeadline(deadline);
+    if ((index & 255) === 0) checkRuntime(deadline, checkpoint);
     unused.add(`${edges[index][0]}:${edges[index][1]}`);
   }
   for (let edgeIndex = 0; edgeIndex < edges.length; edgeIndex += 1) {
-    if ((edgeIndex & 255) === 0) checkDeadline(deadline);
+    if ((edgeIndex & 255) === 0) checkRuntime(deadline, checkpoint);
     const [edgeStart, edgeEnd] = edges[edgeIndex];
     if (!unused.has(`${edgeStart}:${edgeEnd}`)) continue;
     const loop = [edgeStart]; let start = edgeStart, end = edgeEnd;
     for (let guard = 0; guard <= edges.length; guard += 1) {
-      if ((guard & 255) === 0) checkDeadline(deadline);
+      if ((guard & 255) === 0) checkRuntime(deadline, checkpoint);
       unused.delete(`${start}:${end}`); loop.push(end);
       if (end === edgeStart) break;
       const candidates = (outgoing.get(end) ?? []).filter((candidate) => unused.has(`${end}:${candidate}`));
@@ -342,7 +370,7 @@ function traceOuter(
         return toX > fromX ? 0 : toY > fromY ? 1 : toX < fromX ? 2 : 3;
       };
       const incomingDirection = direction(start, end), turnRank = [1, 2, 3, 0];
-      candidates.sort((left, right) => { checkDeadline(deadline); return turnRank[(direction(end, left) - incomingDirection + 4) % 4]
+      candidates.sort((left, right) => { checkRuntime(deadline, checkpoint); return turnRank[(direction(end, left) - incomingDirection + 4) % 4]
         - turnRank[(direction(end, right) - incomingDirection + 4) % 4] || left - right; });
       const next = candidates[0];
       if (next === undefined) throw new RangeError('Projected contour boundary is open');
@@ -354,23 +382,23 @@ function traceOuter(
   if (requireSingleBoundary && loops.length !== 1) return undefined;
   const candidates: { points: Point2[]; area: number; minX: number; minY: number }[] = [];
   for (let loopIndex = 0; loopIndex < loops.length; loopIndex += 1) {
-    checkDeadline(deadline);
+    checkRuntime(deadline, checkpoint);
     const loop = loops[loopIndex], points: Point2[] = [];
     let twiceArea = 0, minX = Infinity, minY = Infinity;
     for (let index = 0; index < loop.length; index += 1) {
-      if ((index & 255) === 0) checkDeadline(deadline);
+      if ((index & 255) === 0) checkRuntime(deadline, checkpoint);
       const vertex = loop[index], x = vertex % vertexWidth, y = Math.floor(vertex / vertexWidth);
       const point: Point2 = [originX + x * cellSize, originY + y * cellSize];
       points.push(point); minX = Math.min(minX, point[0]); minY = Math.min(minY, point[1]);
     }
     for (let index = 0; index < points.length; index += 1) {
-      if ((index & 255) === 0) checkDeadline(deadline);
+      if ((index & 255) === 0) checkRuntime(deadline, checkpoint);
       const point = points[index], next = points[(index + 1) % points.length];
       twiceArea += point[0] * next[1] - next[0] * point[1];
     }
     candidates.push({ points, area: Math.abs(twiceArea / 2), minX, minY });
   }
-  candidates.sort((left, right) => { checkDeadline(deadline); return right.area - left.area || left.minX - right.minX || left.minY - right.minY; });
+  candidates.sort((left, right) => { checkRuntime(deadline, checkpoint); return right.area - left.area || left.minX - right.minX || left.minY - right.minY; });
   const outer = candidates[0]?.points;
   if (!outer) throw new RangeError('Projected contour boundary is empty');
   return outer;
@@ -386,10 +414,11 @@ function enclosedVoidContours(
   originY: number,
   cellSize: number,
   deadline: number,
+  checkpoint: () => void,
 ): RasterContour['enclosedVoids'] {
-  checkDeadline(deadline);
+  checkRuntime(deadline, checkpoint);
   const visited = new Uint8Array(preFillMask.length);
-  checkDeadline(deadline);
+  checkRuntime(deadline, checkpoint);
   const queue = new Int32Array(preFillMask.length);
   const candidates: {
     readonly cells: number[];
@@ -399,14 +428,14 @@ function enclosedVoidContours(
     readonly maxY: number;
   }[] = [];
   for (let start = 0; start < preFillMask.length; start += 1) {
-    if ((start & 255) === 0) checkDeadline(deadline);
+    if ((start & 255) === 0) checkRuntime(deadline, checkpoint);
     if (preFillMask[start] || exteriorZeros[start] || visited[start] || !retainedFilledMask[start]) continue;
     let head = 0, tail = 0, minX = start % width, minY = Math.floor(start / width);
     let maxX = minX, maxY = minY, retained = true;
     const cells: number[] = [];
     visited[start] = 1; queue[tail++] = start;
     while (head < tail) {
-      if ((head & 255) === 0) checkDeadline(deadline);
+      if ((head & 255) === 0) checkRuntime(deadline, checkpoint);
       const current = queue[head++], x = current % width, y = Math.floor(current / width);
       cells.push(current); minX = Math.min(minX, x); minY = Math.min(minY, y);
       maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
@@ -423,18 +452,18 @@ function enclosedVoidContours(
     if (!retained) continue;
     candidates.push({ cells, minX, minY, maxX, maxY });
   }
-  candidates.sort((left, right) => { checkDeadline(deadline); return right.cells.length - left.cells.length
+  candidates.sort((left, right) => { checkRuntime(deadline, checkpoint); return right.cells.length - left.cells.length
     || left.minX - right.minX || left.minY - right.minY; });
   const result: { readonly outer: readonly Point2[]; readonly occupiedCellCount: number }[] = [];
   for (let index = 0; index < Math.min(candidates.length, 64); index += 1) {
-    checkDeadline(deadline);
+    checkRuntime(deadline, checkpoint);
     const candidate = candidates[index];
     const componentWidth = candidate.maxX - candidate.minX + 1;
     const componentHeight = candidate.maxY - candidate.minY + 1;
-    checkDeadline(deadline);
+    checkRuntime(deadline, checkpoint);
     const componentMask = new Uint8Array(componentWidth * componentHeight);
     for (let cellIndex = 0; cellIndex < candidate.cells.length; cellIndex += 1) {
-      if ((cellIndex & 255) === 0) checkDeadline(deadline);
+      if ((cellIndex & 255) === 0) checkRuntime(deadline, checkpoint);
       const cell = candidate.cells[cellIndex], x = cell % width, y = Math.floor(cell / width);
       componentMask[(y - candidate.minY) * componentWidth + x - candidate.minX] = 1;
     }
@@ -446,6 +475,7 @@ function enclosedVoidContours(
       originY + candidate.minY * cellSize,
       cellSize,
       deadline,
+      checkpoint,
       true,
     );
     if (outer) result.push({ outer, occupiedCellCount: candidate.cells.length });
@@ -457,13 +487,16 @@ export function rasterCellSize(projected: ProjectedMesh): number {
   return Math.min(0.5, Math.max(0.05, projected.planarDiameter / 512));
 }
 
-function convexHull(points: readonly Point2[]): Point2[] {
+function convexHull(points: readonly Point2[], deadline: number, checkpoint: () => void): Point2[] {
+  checkRuntime(deadline, checkpoint);
   const sorted = [...new Map(points.map((point) => [`${point[0]},${point[1]}`, point])).values()]
     .sort((a, b) => a[0] - b[0] || a[1] - b[1]);
   const cross = (a: Point2, b: Point2, c: Point2) => (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
   const half = (values: readonly Point2[]) => {
     const result: Point2[] = [];
-    for (const point of values) {
+    for (let index = 0; index < values.length; index += 1) {
+      if ((index & 255) === 0) checkRuntime(deadline, checkpoint);
+      const point = values[index];
       while (result.length >= 2 && cross(result[result.length - 2], result[result.length - 1], point) <= 0) result.pop();
       result.push(point);
     }
@@ -475,11 +508,14 @@ function convexHull(points: readonly Point2[]): Point2[] {
 function selectedSourceEvidence(
   projected: ProjectedMesh, activeTriangles: readonly number[], selected: Uint8Array,
   width: number, height: number, originX: number, originY: number, cellSize: number,
+  deadline: number, checkpoint: () => void,
 ): { readonly bounds: RasterContour['sourceBoundsMm']; readonly area: number } {
+  checkRuntime(deadline, checkpoint);
   const parent = activeTriangles.map((_, index) => index), vertexOwner = new Map<number, number>();
   const find = (value: number): number => parent[value] === value ? value : (parent[value] = find(parent[value]));
   const join = (left: number, right: number) => { const a = find(left), b = find(right); if (a !== b) parent[Math.max(a, b)] = Math.min(a, b); };
   activeTriangles.forEach((triangleIndex, localIndex) => {
+    if ((localIndex & 255) === 0) checkRuntime(deadline, checkpoint);
     for (const vertex of projected.triangles[triangleIndex]) {
       const owner = vertexOwner.get(vertex);
       if (owner === undefined) vertexOwner.set(vertex, localIndex); else join(localIndex, owner);
@@ -487,17 +523,21 @@ function selectedSourceEvidence(
   });
   const groups = new Map<number, Set<number>>();
   activeTriangles.forEach((triangleIndex, localIndex) => {
+    if ((localIndex & 255) === 0) checkRuntime(deadline, checkpoint);
     const vertices = groups.get(find(localIndex)) ?? new Set<number>();
     for (const vertex of projected.triangles[triangleIndex]) vertices.add(vertex);
     groups.set(find(localIndex), vertices);
   });
-  const candidates = [...groups.values()].map((vertices) => {
+  const candidates = [...groups.values()].map((vertices, groupIndex) => {
+    if ((groupIndex & 255) === 0) checkRuntime(deadline, checkpoint);
     const points = [...vertices].map((vertex): Point2 => {
       const [x, y] = projected.vertices[vertex];
       return [x, y];
     });
     let score = 0;
-    for (const [x, y] of points) {
+    for (let pointIndex = 0; pointIndex < points.length; pointIndex += 1) {
+      if ((pointIndex & 255) === 0) checkRuntime(deadline, checkpoint);
+      const [x, y] = points[pointIndex];
       const cellX = Math.floor((x - originX) / cellSize), cellY = Math.floor((y - originY) / cellSize);
       let touches = false;
       for (let dy = -1; dy <= 1 && !touches; dy += 1) for (let dx = -1; dx <= 1; dx += 1) {
@@ -506,12 +546,12 @@ function selectedSourceEvidence(
       }
       if (touches) score += 1;
     }
-    const hull = convexHull(points);
+    const hull = convexHull(points, deadline, checkpoint);
     const area = Math.abs(hull.reduce((sum, point, index) => { const next = hull[(index + 1) % hull.length]; return sum + point[0] * next[1] - next[0] * point[1]; }, 0) / 2);
     return { points, score, area };
   }).sort((a, b) => b.score - a.score || b.area - a.area);
   const sourcePoints = candidates.filter(({ score }) => score > 0).flatMap(({ points }) => points);
-  const hull = convexHull(sourcePoints);
+  const hull = convexHull(sourcePoints, deadline, checkpoint);
   const area = Math.abs(hull.reduce((sum, point, index) => { const next = hull[(index + 1) % hull.length]; return sum + point[0] * next[1] - next[0] * point[1]; }, 0) / 2);
   if (sourcePoints.length === 0 || area <= 0) throw new RangeError('Projected contour cannot identify retained source component');
   const xs = sourcePoints.map(([x]) => x), ys = sourcePoints.map(([, y]) => y);
@@ -523,8 +563,9 @@ export function rasterProjectLayer(
   spec: OutlineLayerSpec,
   budgets: OutlineBudgets,
   deadline: number,
+  checkpoint: () => void = () => undefined,
 ): RasterContour {
-  checkDeadline(deadline);
+  checkRuntime(deadline, checkpoint);
   if (![spec.zStart, spec.zEnd, spec.zMid].every(Number.isFinite) || spec.zEnd <= spec.zStart
     || spec.zMid < spec.zStart || spec.zMid > spec.zEnd) {
     throw new RangeError('Projected contour requires a finite interval containing its midpoint');
@@ -537,27 +578,33 @@ export function rasterProjectLayer(
   const mask = new Uint8Array(width * height);
   const activeTriangles: number[] = [];
   for (let index = 0; index < projected.triangles.length; index += 1) {
-    if ((index & 255) === 0) checkDeadline(deadline);
+    if ((index & 255) === 0) checkRuntime(deadline, checkpoint);
     const triangle = projected.triangles[index], vertices = triangle.map((vertex) => projected.vertices[vertex]);
     const minZ = Math.min(...vertices.map(([, , z]) => z)), maxZ = Math.max(...vertices.map(([, , z]) => z));
     if (maxZ < spec.zStart || minZ > spec.zEnd) continue;
     activeTriangles.push(index);
-    rasterizeTriangle(mask, width, height, vertices.map(([x, y]) => [(x - originX) / cellSize, (y - originY) / cellSize] as const), deadline);
+    rasterizeTriangle(
+      mask, width, height,
+      vertices.map(([x, y]) => [(x - originX) / cellSize, (y - originY) / cellSize] as const),
+      deadline, checkpoint,
+    );
   }
-  const closed = close3x3(mask, width, height, deadline);
-  const exteriorZeros = exteriorZeroMask(closed, width, height, deadline);
-  checkDeadline(deadline);
+  const closed = close3x3(mask, width, height, deadline, checkpoint);
+  const exteriorZeros = exteriorZeroMask(closed, width, height, deadline, checkpoint);
+  checkRuntime(deadline, checkpoint);
   const filled = closed.slice();
-  checkDeadline(deadline);
-  fillHoles(filled, exteriorZeros, deadline);
-  const selected = greatestComponent(filled, width, height, deadline);
-  const source = selectedSourceEvidence(projected, activeTriangles, selected.mask, width, height, originX, originY, cellSize);
+  checkRuntime(deadline, checkpoint);
+  fillHoles(filled, exteriorZeros, deadline, checkpoint);
+  const selected = greatestComponent(filled, width, height, deadline, checkpoint);
+  const source = selectedSourceEvidence(
+    projected, activeTriangles, selected.mask, width, height, originX, originY, cellSize, deadline, checkpoint,
+  );
   return {
-    outer: traceOuter(selected.mask, width, height, originX, originY, cellSize, deadline),
+    outer: traceOuter(selected.mask, width, height, originX, originY, cellSize, deadline, checkpoint),
     occupiedCellCount: selected.count,
     componentCount: selected.components,
     enclosedVoids: enclosedVoidContours(
-      closed, exteriorZeros, selected.mask, width, height, originX, originY, cellSize, deadline,
+      closed, exteriorZeros, selected.mask, width, height, originX, originY, cellSize, deadline, checkpoint,
     ),
     sourceBoundsMm: source.bounds,
     sourceAreaMm2: source.area,

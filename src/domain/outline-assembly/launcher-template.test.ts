@@ -161,6 +161,22 @@ describe('Knight Fortress launcher template compatibility', () => {
     })).toThrow(/template inner-loop checkpoint/);
   });
 
+  it('preserves a caller RangeError cancellation from inside compatibility work', () => {
+    const cancellation = new RangeError('compatibility cancelled');
+    let calls = 0;
+    let caught: unknown;
+    try {
+      launcherReferencesAreCompatible(reference(), reference(), Infinity, () => {
+        calls += 1;
+        if (calls === 5) throw cancellation;
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBe(cancellation);
+    expect(calls).toBe(5);
+  });
+
   it('renders deterministic numeric-only TypeScript without source paths', () => {
     const template = averageCompatibleLauncherReferences([reference(), reference()], 1);
     const first = renderLauncherTemplateInitializer(template);

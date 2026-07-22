@@ -8,13 +8,24 @@ export class MeshVolumeError extends Error {
   }
 }
 
-export function massProperties(mesh: TriangleMesh): MassProperties {
+export function massProperties(
+  mesh: TriangleMesh,
+  deadline = Infinity,
+  checkpoint: () => void = () => undefined,
+): MassProperties {
+  const checkRuntime = (): void => {
+    checkpoint();
+    if (Date.now() > deadline) throw new RangeError('Mass properties exceeded the runtime budget');
+  };
+  checkRuntime();
   const { reference, volumeTolerance } = meshNumerics(mesh);
+  checkRuntime();
   let signedVolume = 0;
   let momentX = 0;
   let momentY = 0;
   let momentZ = 0;
   for (let offset = 0; offset + 2 < mesh.indices.length; offset += 3) {
+    if ((offset & 1023) === 0) checkRuntime();
     const ai = mesh.indices[offset] * 3;
     const bi = mesh.indices[offset + 1] * 3;
     const ci = mesh.indices[offset + 2] * 3;
@@ -33,6 +44,7 @@ export function massProperties(mesh: TriangleMesh): MassProperties {
     momentY += tetraVolume * (ay + by + cy) / 4;
     momentZ += tetraVolume * (az + bz + cz) / 4;
   }
+  checkRuntime();
   if (Math.abs(signedVolume) <= volumeTolerance) throw new MeshVolumeError();
   return {
     volume: Math.abs(signedVolume),

@@ -363,4 +363,24 @@ describe('findAxisCandidates', () => {
       { sampleCount: 10 },
     )).toThrow(TypeError);
   });
+
+  it('propagates the original caller cancellation from inside axis analysis', () => {
+    const cancellation = new Error('axis analysis cancelled');
+    let calls = 0;
+    let caught: unknown;
+    try {
+      findAxisCandidates(lathedSpinner(), {
+        sampleCount: 2_048,
+        deadline: Infinity,
+        checkpoint: () => {
+          calls += 1;
+          if (calls === 5) throw cancellation;
+        },
+      } as Parameters<typeof findAxisCandidates>[1]);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBe(cancellation);
+    expect(calls).toBe(5);
+  });
 });
