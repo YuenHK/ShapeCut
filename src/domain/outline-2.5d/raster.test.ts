@@ -2,6 +2,8 @@ import { describe, expect, test } from 'vitest';
 import { DEFAULT_OUTLINE_BUDGETS, type OutlineBudgets } from './types';
 import {
   createOutlineAxisBasis,
+  extendConvexHullHalf,
+  findAndCompressParent,
   markLineSupercover,
   projectMesh,
   projectPointToOutlineBasis,
@@ -225,6 +227,40 @@ describe('rasterProjectLayer enclosed void evidence', () => {
           if (vertexReads >= firstPassReads + 768) throw cancellation;
         },
       );
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBe(cancellation);
+  });
+});
+
+describe('raster source-evidence inner-loop cancellation', () => {
+  test('polls during one deep convex-hull pop sequence', () => {
+    const result = Array.from({ length: 4_095 }, (_, index): [number, number] => [index, index * index]);
+    const cancellation = new Error('deep hull pop cancelled');
+    let calls = 0;
+    let caught: unknown;
+    try {
+      extendConvexHullHalf(result, [4_095, -1e12], Infinity, () => {
+        calls += 1;
+        if (calls === 10) throw cancellation;
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBe(cancellation);
+  });
+
+  test('polls during deep iterative union-find traversal and compression', () => {
+    const parent = Array.from({ length: 4_096 }, (_, index) => Math.max(0, index - 1));
+    const cancellation = new RangeError('deep parent chain cancelled');
+    let calls = 0;
+    let caught: unknown;
+    try {
+      findAndCompressParent(parent, parent.length - 1, Infinity, () => {
+        calls += 1;
+        if (calls === 10) throw cancellation;
+      });
     } catch (error) {
       caught = error;
     }

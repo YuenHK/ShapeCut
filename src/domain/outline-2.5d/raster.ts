@@ -487,6 +487,24 @@ export function rasterCellSize(projected: ProjectedMesh): number {
   return Math.min(0.5, Math.max(0.05, projected.planarDiameter / 512));
 }
 
+export function extendConvexHullHalf(
+  result: Point2[],
+  point: Point2,
+  deadline = Infinity,
+  checkpoint: () => void = () => undefined,
+): void {
+  checkRuntime(deadline, checkpoint);
+  const cross = (a: Point2, b: Point2, c: Point2) => (
+    (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+  );
+  let popCount = 0;
+  while (result.length >= 2 && cross(result[result.length - 2], result[result.length - 1], point) <= 0) {
+    if ((popCount++ & 255) === 0) checkRuntime(deadline, checkpoint);
+    result.pop();
+  }
+  result.push(point);
+}
+
 function convexHull(points: readonly Point2[], deadline: number, checkpoint: () => void): Point2[] {
   checkRuntime(deadline, checkpoint);
   const unique = new Map<string, Point2>();
@@ -509,14 +527,11 @@ function convexHull(points: readonly Point2[], deadline: number, checkpoint: () 
     return left[0] - right[0] || left[1] - right[1];
   });
   checkRuntime(deadline, checkpoint);
-  const cross = (a: Point2, b: Point2, c: Point2) => (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
   const half = (values: readonly Point2[]) => {
     const result: Point2[] = [];
     for (let index = 0; index < values.length; index += 1) {
       if ((index & 255) === 0) checkRuntime(deadline, checkpoint);
-      const point = values[index];
-      while (result.length >= 2 && cross(result[result.length - 2], result[result.length - 1], point) <= 0) result.pop();
-      result.push(point);
+      extendConvexHullHalf(result, values[index], deadline, checkpoint);
     }
     return result;
   };
@@ -547,6 +562,28 @@ function polygonArea(points: readonly Point2[], deadline: number, checkpoint: ()
   return Math.abs(twiceArea / 2);
 }
 
+export function findAndCompressParent(
+  parent: number[],
+  value: number,
+  deadline = Infinity,
+  checkpoint: () => void = () => undefined,
+): number {
+  checkRuntime(deadline, checkpoint);
+  let root = value, traversed = 0;
+  while (parent[root] !== root) {
+    if ((traversed++ & 255) === 0) checkRuntime(deadline, checkpoint);
+    root = parent[root];
+  }
+  let current = value, compressed = 0;
+  while (parent[current] !== current) {
+    if ((compressed++ & 255) === 0) checkRuntime(deadline, checkpoint);
+    const next = parent[current];
+    parent[current] = root;
+    current = next;
+  }
+  return root;
+}
+
 function selectedSourceEvidence(
   projected: ProjectedMesh, activeTriangles: readonly number[], selected: Uint8Array,
   width: number, height: number, originX: number, originY: number, cellSize: number,
@@ -558,7 +595,7 @@ function selectedSourceEvidence(
     if ((index & 255) === 0) checkRuntime(deadline, checkpoint);
     parent[index] = index;
   }
-  const find = (value: number): number => parent[value] === value ? value : (parent[value] = find(parent[value]));
+  const find = (value: number): number => findAndCompressParent(parent, value, deadline, checkpoint);
   const join = (left: number, right: number) => { const a = find(left), b = find(right); if (a !== b) parent[Math.max(a, b)] = Math.min(a, b); };
   for (let localIndex = 0; localIndex < activeTriangles.length; localIndex += 1) {
     if ((localIndex & 255) === 0) checkRuntime(deadline, checkpoint);

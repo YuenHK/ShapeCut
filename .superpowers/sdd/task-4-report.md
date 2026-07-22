@@ -243,3 +243,35 @@ Final focused result: 8 files / 84 tests passed. The late tests prove exact orig
 - `git diff --check`: exit 0.
 
 No Task 4 blocker remains. The only concern is the unrelated pre-existing UI test race described above.
+
+---
+
+## Residual nested-loop polling remediation (2026-07-22)
+
+### Root cause and RED evidence
+
+- Convex-hull construction polled its outer input loop, but a single point could trigger thousands of consecutive `result.pop()` operations before the next checkpoint.
+- Union-find used a recursive `find`, so a deep parent chain could traverse and compress thousands of entries without polling and also risk stack exhaustion.
+- Launcher-template helpers still had unchecked input-sized passes in `signedArea`, `centroid`, `canonicalLoop`, `compareLoops`, phase copying/alignment, and compatible-loop averaging.
+
+The focused RED command ran 34 tests: 29 passed and 5 failed as expected because the new checkpoint-aware helpers did not yet exist. The regressions force late cancellation inside a 4,095-pop hull operation, a 4,096-entry parent chain, centroid/area work, canonicalization/comparison, and phase-copy/averaging work. Each test asserts that the exact caller error object is rethrown, rather than merely observing a proxy vertex access or an entry checkpoint.
+
+### GREEN implementation
+
+- Convex-hull half construction now polls during consecutive pops at intervals of at most 256 operations, while retaining the existing entry/outer-loop checks and arithmetic order.
+- Union-find root discovery and path compression are iterative and independently poll at most every 256 parent entries. The recursive implementation was removed without changing component results.
+- `signedArea`, `centroid`, `canonicalLoop`, and `compareLoops` now share the caller deadline/checkpoint and poll every 256 loop items or fewer.
+- Cyclic phase copying/alignment and compatible-reference averaging now use checkpoint-aware passes with the same 256-item bound; downstream canonicalization retains the same budget.
+- The cumulative Task 4 raster/template helpers were audited. Remaining native maps/reductions in the template operate only on fixed-size groups of two or three; every pass that can reach the 4,096-point limit now has bounded polling. Raster triangle maps are fixed at three entries, while the other input-sized flood, trace, evidence, hull, and union-find paths are periodically checked.
+
+Final focused result: 5 files / 58 tests passed, including raster, template, launcher, generator, and generator-stage coverage.
+
+### Final verification
+
+- `npx tsc -b --pretty false`: exit 0.
+- `npm run build`: exit 0; Vite transformed 141 modules.
+- Opt-in fixture validation: `autoSuccess: 8`, `outputComparisonPass: true`, `launcherTemplatePass: true`; the regenerated numeric initializer remained byte-identical.
+- Fresh full suite, run once: 50 files / 1,212 tests passed. The unrelated `OneClickConverter` race did not recur.
+- `git diff --check`: exit 0.
+
+No remaining cumulative Task 4 unchecked input-sized helper loop, output change, or blocker was found.

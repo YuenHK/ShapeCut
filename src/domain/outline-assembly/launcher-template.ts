@@ -46,24 +46,37 @@ class LauncherCheckpointInterruption {
   constructor(readonly original: unknown) {}
 }
 
-function signedArea(points: readonly Point2[]): number {
+export function signedArea(
+  points: readonly Point2[],
+  deadline = Infinity,
+  checkpoint: () => void = () => undefined,
+): number {
+  checkpointRuntime(deadline, checkpoint);
   let twiceArea = 0;
   for (let index = 0; index < points.length; index += 1) {
+    if ((index & 255) === 0) checkpointRuntime(deadline, checkpoint);
     const next = points[(index + 1) % points.length];
     twiceArea += points[index][0] * next[1] - next[0] * points[index][1];
   }
+  checkpointRuntime(deadline, checkpoint);
   return twiceArea / 2;
 }
 
-function centroid(points: readonly Point2[]): Point2 {
-  const area = signedArea(points);
+export function centroid(
+  points: readonly Point2[],
+  deadline = Infinity,
+  checkpoint: () => void = () => undefined,
+): Point2 {
+  const area = signedArea(points, deadline, checkpoint);
   let x = 0, y = 0;
   for (let index = 0; index < points.length; index += 1) {
+    if ((index & 255) === 0) checkpointRuntime(deadline, checkpoint);
     const point = points[index], next = points[(index + 1) % points.length];
     const cross = point[0] * next[1] - next[0] * point[1];
     x += (point[0] + next[0]) * cross;
     y += (point[1] + next[1]) * cross;
   }
+  checkpointRuntime(deadline, checkpoint);
   return [x / (6 * area), y / (6 * area)];
 }
 
@@ -82,19 +95,42 @@ function comparePoint(left: Point2, right: Point2): number {
   return left[0] - right[0] || left[1] - right[1];
 }
 
-function canonicalLoop(points: readonly Point2[]): readonly Point2[] {
-  const clockwise = signedArea(points) < 0 ? [...points] : [...points].reverse();
+export function canonicalLoop(
+  points: readonly Point2[],
+  deadline = Infinity,
+  checkpoint: () => void = () => undefined,
+): readonly Point2[] {
+  const alreadyClockwise = signedArea(points, deadline, checkpoint) < 0;
+  const clockwise = new Array<Point2>(points.length);
+  for (let index = 0; index < points.length; index += 1) {
+    if ((index & 255) === 0) checkpointRuntime(deadline, checkpoint);
+    clockwise[index] = points[alreadyClockwise ? index : points.length - 1 - index];
+  }
   let first = 0;
   for (let index = 1; index < clockwise.length; index += 1) {
+    if ((index & 255) === 0) checkpointRuntime(deadline, checkpoint);
     if (comparePoint(clockwise[index], clockwise[first]) < 0) first = index;
   }
-  return Array.from({ length: clockwise.length }, (_, index) => clockwise[(first + index) % clockwise.length]);
+  const output = new Array<Point2>(clockwise.length);
+  for (let index = 0; index < clockwise.length; index += 1) {
+    if ((index & 255) === 0) checkpointRuntime(deadline, checkpoint);
+    output[index] = clockwise[(first + index) % clockwise.length];
+  }
+  checkpointRuntime(deadline, checkpoint);
+  return output;
 }
 
-function compareLoops(left: LauncherLoops, right: LauncherLoops): number {
+export function compareLoops(
+  left: LauncherLoops,
+  right: LauncherLoops,
+  deadline = Infinity,
+  checkpoint: () => void = () => undefined,
+): number {
   for (let loopIndex = 0; loopIndex < 3; loopIndex += 1) {
+    checkpointRuntime(deadline, checkpoint);
     const pointCount = Math.min(left[loopIndex].length, right[loopIndex].length);
     for (let pointIndex = 0; pointIndex < pointCount; pointIndex += 1) {
+      if ((pointIndex & 255) === 0) checkpointRuntime(deadline, checkpoint);
       const comparison = comparePoint(left[loopIndex][pointIndex], right[loopIndex][pointIndex]);
       if (comparison !== 0) return comparison;
     }
@@ -105,14 +141,18 @@ function compareLoops(left: LauncherLoops, right: LauncherLoops): number {
   return 0;
 }
 
-function loopMetrics(loops: readonly (readonly Point2[])[]): readonly LoopMetric[] {
-  const centers = loops.map((loop) => centroid(loop));
+function loopMetrics(
+  loops: readonly (readonly Point2[])[],
+  deadline: number,
+  checkpoint: () => void,
+): readonly LoopMetric[] {
+  const centers = loops.map((loop) => centroid(loop, deadline, checkpoint));
   const groupCenter: Point2 = [
     centers.reduce((sum, point) => sum + point[0], 0) / centers.length,
     centers.reduce((sum, point) => sum + point[1], 0) / centers.length,
   ];
   return loops.map((loop, index) => ({
-    area: Math.abs(signedArea(loop)),
+    area: Math.abs(signedArea(loop, deadline, checkpoint)),
     centroid: centers[index],
     radius: Math.hypot(centers[index][0] - groupCenter[0], centers[index][1] - groupCenter[1]),
   }));
@@ -129,7 +169,7 @@ export function normalizeLauncherLoops(
   if (source.some((loop) => !finiteSimpleLoop(loop, deadline, checkpoint))) {
     throw new RangeError('Launcher template loops must be finite, simple, and within the point budget');
   }
-  const centers = source.map((loop) => centroid(loop));
+  const centers = source.map((loop) => centroid(loop, deadline, checkpoint));
   const groupCenter: Point2 = [
     centers.reduce((sum, point) => sum + point[0], 0) / 3,
     centers.reduce((sum, point) => sum + point[1], 0) / 3,
@@ -149,9 +189,9 @@ export function normalizeLauncherLoops(
         if ((index & 63) === 0) checkpointRuntime(deadline, checkpoint);
         const localX = x - groupCenter[0], localY = y - groupCenter[1];
         return [rounded(localX * cosine - localY * sine), rounded(localX * sine + localY * cosine)];
-      }));
+      }), deadline, checkpoint);
     }) as unknown as LauncherLoops;
-    if (!best || compareLoops(candidate, best) < 0) best = candidate;
+    if (!best || compareLoops(candidate, best, deadline, checkpoint) < 0) best = candidate;
   }
   return best!;
 }
@@ -175,6 +215,21 @@ function meanCorrespondingDistance(
   return sum / left.length;
 }
 
+export function copyLoopPhase(
+  right: readonly Point2[],
+  shift: number,
+  deadline = Infinity,
+  checkpoint: () => void = () => undefined,
+): readonly Point2[] {
+  const output = new Array<Point2>(right.length);
+  for (let index = 0; index < right.length; index += 1) {
+    if ((index & 255) === 0) checkpointRuntime(deadline, checkpoint);
+    output[index] = right[(index + shift) % right.length];
+  }
+  checkpointRuntime(deadline, checkpoint);
+  return output;
+}
+
 function alignLoopPhase(
   left: readonly Point2[],
   right: readonly Point2[],
@@ -196,7 +251,7 @@ function alignLoopPhase(
       bestShift = shift;
     }
   }
-  return Array.from({ length: right.length }, (_, index) => right[(index + bestShift) % right.length]);
+  return copyLoopPhase(right, bestShift, deadline, checkpoint);
 }
 
 type PreparedReferences = {
@@ -212,7 +267,7 @@ function cyclicNormalizedGroups(
   checkpoint: () => void,
 ): readonly LauncherLoops[] {
   const entries = source.map((loop) => {
-    const center = centroid(loop);
+    const center = centroid(loop, deadline, checkpoint);
     return { loop, center, angle: (Math.atan2(center[1], center[0]) + Math.PI * 2) % (Math.PI * 2) };
   }).sort((left, right) => left.angle - right.angle);
   return Array.from({ length: 3 }, (_, start) => {
@@ -223,6 +278,8 @@ function cyclicNormalizedGroups(
         if ((index & 63) === 0) checkpointRuntime(deadline, checkpoint);
         return [rounded(x * cosine - y * sine), rounded(x * sine + y * cosine)];
       }),
+      deadline,
+      checkpoint,
     )) as unknown as LauncherLoops;
   });
 }
@@ -255,7 +312,8 @@ function prepareReferences(
       loop, samplesRight[index], deadline, checkpoint,
     ), 0);
     if (!best || distance < best.distance - 1e-12
-      || Math.abs(distance - best.distance) <= 1e-12 && compareLoops(sourceRight, best.source) < 0) {
+      || Math.abs(distance - best.distance) <= 1e-12
+        && compareLoops(sourceRight, best.source, deadline, checkpoint) < 0) {
       best = { source: sourceRight, samples: samplesRight, distance };
     }
   }
@@ -279,7 +337,8 @@ export function launcherReferencesAreCompatible(
     checkpointRuntime(deadline, guardedCheckpoint);
     if (leftReference.loops.length !== 3 || rightReference.loops.length !== 3) return false;
     const prepared = prepareReferences(leftReference.loops, rightReference.loops, deadline, guardedCheckpoint);
-    const leftMetrics = loopMetrics(prepared.sourceLeft), rightMetrics = loopMetrics(prepared.sourceRight);
+    const leftMetrics = loopMetrics(prepared.sourceLeft, deadline, guardedCheckpoint);
+    const rightMetrics = loopMetrics(prepared.sourceRight, deadline, guardedCheckpoint);
     for (let index = 0; index < 3; index += 1) {
       checkpointRuntime(deadline, guardedCheckpoint);
       if (relativeDifference(leftMetrics[index].radius, rightMetrics[index].radius) > LAUNCHER_RADIUS_TOLERANCE_RATIO + 1e-9
@@ -331,6 +390,31 @@ export function resampleClosedLoop(
   return output;
 }
 
+export function averageLauncherLoops(
+  left: LauncherLoops,
+  right: LauncherLoops,
+  deadline = Infinity,
+  checkpoint: () => void = () => undefined,
+): LauncherLoops {
+  const averaged: Array<readonly Point2[]> = [];
+  for (let loopIndex = 0; loopIndex < 3; loopIndex += 1) {
+    checkpointRuntime(deadline, checkpoint);
+    if (left[loopIndex].length !== right[loopIndex].length) {
+      throw new RangeError('Launcher averaging requires corresponding loop point counts');
+    }
+    const points = new Array<Point2>(left[loopIndex].length);
+    for (let pointIndex = 0; pointIndex < points.length; pointIndex += 1) {
+      if ((pointIndex & 255) === 0) checkpointRuntime(deadline, checkpoint);
+      points[pointIndex] = [
+        rounded((left[loopIndex][pointIndex][0] + right[loopIndex][pointIndex][0]) / 2),
+        rounded((left[loopIndex][pointIndex][1] + right[loopIndex][pointIndex][1]) / 2),
+      ];
+    }
+    averaged.push(canonicalLoop(points, deadline, checkpoint));
+  }
+  return averaged as unknown as LauncherLoops;
+}
+
 export function averageCompatibleLauncherReferences(
   references: readonly LauncherReference[],
   version: number,
@@ -346,13 +430,9 @@ export function averageCompatibleLauncherReferences(
     throw new RangeError('Launcher references are incompatible and cannot be averaged');
   }
   const normalized = prepareReferences(references[0].loops, references[1].loops, deadline, checkpoint);
-  const count = normalized.samplesLeft[0].length;
-  const averaged = [0, 1, 2].map((loopIndex) => {
-    return canonicalLoop(Array.from({ length: count }, (_, pointIndex): Point2 => [
-      rounded((normalized.samplesLeft[loopIndex][pointIndex][0] + normalized.samplesRight[loopIndex][pointIndex][0]) / 2),
-      rounded((normalized.samplesLeft[loopIndex][pointIndex][1] + normalized.samplesRight[loopIndex][pointIndex][1]) / 2),
-    ]));
-  }) as unknown as LauncherLoops;
+  const averaged = averageLauncherLoops(
+    normalized.samplesLeft, normalized.samplesRight, deadline, checkpoint,
+  );
   if (averaged.some((loop) => !finiteSimpleLoop(loop, deadline, checkpoint))) {
     throw new RangeError('Launcher averaged template is invalid after numeric canonicalization');
   }

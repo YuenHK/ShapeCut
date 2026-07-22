@@ -2,6 +2,11 @@ import { describe, expect, it } from 'vitest';
 import type { Point2 } from '../decomposition/types';
 import {
   averageCompatibleLauncherReferences,
+  averageLauncherLoops,
+  canonicalLoop,
+  centroid,
+  compareLoops,
+  copyLoopPhase,
   KNIGHT_FORTRESS_LAUNCHER_TEMPLATE,
   launcherReferencesAreCompatible,
   normalizeLauncherLoops,
@@ -207,6 +212,80 @@ describe('Knight Fortress launcher template compatibility', () => {
       caught = error;
     }
     expect(caught).toBe(cancellation);
+  });
+
+  it('polls late inside signed-area and centroid passes', () => {
+    const loop = subdivide(rectangle([0, 0], 10, 8), 1_024);
+    const cancellation = new Error('centroid pass cancelled');
+    let calls = 0;
+    let caught: unknown;
+    try {
+      centroid(loop, Infinity, () => {
+        calls += 1;
+        if (calls === 25) throw cancellation;
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBe(cancellation);
+  });
+
+  it('polls late inside canonical copy and full-loop comparison passes', () => {
+    const loop = subdivide(rectangle([0, 0], 10, 8), 1_024);
+    const canonicalCancellation = new Error('canonical pass cancelled');
+    let canonicalCalls = 0, caught: unknown;
+    try {
+      canonicalLoop(loop, Infinity, () => {
+        canonicalCalls += 1;
+        if (canonicalCalls === 50) throw canonicalCancellation;
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBe(canonicalCancellation);
+
+    const tuple = [loop, loop, loop] as const;
+    const compareCancellation = new Error('comparison pass cancelled');
+    let compareCalls = 0;
+    caught = undefined;
+    try {
+      compareLoops(tuple, tuple, Infinity, () => {
+        compareCalls += 1;
+        if (compareCalls === 10) throw compareCancellation;
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBe(compareCancellation);
+  });
+
+  it('polls late inside phase-copy and averaging passes', () => {
+    const loop = subdivide(rectangle([0, 0], 10, 8), 1_024);
+    const phaseCancellation = new Error('phase copy cancelled');
+    let phaseCalls = 0, caught: unknown;
+    try {
+      copyLoopPhase(loop, 137, Infinity, () => {
+        phaseCalls += 1;
+        if (phaseCalls === 10) throw phaseCancellation;
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBe(phaseCancellation);
+
+    const tuple = [loop, loop, loop] as const;
+    const averagingCancellation = new RangeError('averaging pass cancelled');
+    let averagingCalls = 0;
+    caught = undefined;
+    try {
+      averageLauncherLoops(tuple, tuple, Infinity, () => {
+        averagingCalls += 1;
+        if (averagingCalls === 10) throw averagingCancellation;
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBe(averagingCancellation);
   });
 
   it('renders deterministic numeric-only TypeScript without source paths', () => {
