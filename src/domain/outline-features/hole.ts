@@ -224,10 +224,14 @@ function omission(): CentralHoleSelection {
   };
 }
 
-export function selectCentralHole(request: CentralHoleRequest): CentralHoleSelection {
-  const deadline = request.deadline ?? Infinity;
-  checkDeadline(deadline);
+function minimumClearance(request: CentralHoleRequest): number {
   const planarDiameterMm = request.planarDiameterMm ?? request.layerWidthMm;
+  return Math.max(request.cellSizeMm, planarDiameterMm * 0.001);
+}
+
+function validateRequest(request: CentralHoleRequest, deadline: number): void {
+  const planarDiameterMm = request.planarDiameterMm ?? request.layerWidthMm;
+  checkDeadline(deadline);
   if (!Number.isFinite(request.layerWidthMm) || request.layerWidthMm <= 0
     || !Number.isFinite(planarDiameterMm) || planarDiameterMm <= 0
     || !Number.isFinite(request.cellSizeMm) || request.cellSizeMm < 0
@@ -236,8 +240,11 @@ export function selectCentralHole(request: CentralHoleRequest): CentralHoleSelec
     || !isFiniteSimpleLoop(request.exterior, deadline)) {
     throw new RangeError('Central hole selection requires finite bounded exterior evidence');
   }
+}
+
+function qualifyCandidates(request: CentralHoleRequest, deadline: number): QualifiedCandidate[] {
+  validateRequest(request, deadline);
   const minimumDiameter = Math.max(0.5, request.layerWidthMm * 0.01);
-  const minimumClearance = Math.max(request.cellSizeMm, planarDiameterMm * 0.001);
   const qualified: QualifiedCandidate[] = [];
   for (let candidateIndex = 0; candidateIndex < request.candidates.length; candidateIndex += 1) {
     checkDeadline(deadline);
@@ -246,7 +253,7 @@ export function selectCentralHole(request: CentralHoleRequest): CentralHoleSelec
       || candidate.occupiedCellCount !== undefined
         && (!Number.isSafeInteger(candidate.occupiedCellCount) || candidate.occupiedCellCount <= 0)) continue;
     if (!isStrictlyContainedLoop(
-      request.exterior, candidate.outer, minimumClearance, deadline,
+      request.exterior, candidate.outer, minimumClearance(request), deadline,
     )) continue;
     const area = signedArea(candidate.outer, deadline), areaMm2 = Math.abs(area);
     const evidenceArea = candidate.occupiedCellCount === undefined
@@ -268,17 +275,72 @@ export function selectCentralHole(request: CentralHoleRequest): CentralHoleSelec
       minimum: [candidateBounds.minX, candidateBounds.minY],
     });
   }
+  return qualified;
+}
+
+function compareQualifiedCandidates(left: QualifiedCandidate, right: QualifiedCandidate): number {
+  const areaDifference = right.areaMm2 - left.areaMm2;
+  const areaTolerance = Math.max(left.areaMm2, right.areaMm2) * 1e-12;
+  return Math.abs(areaDifference) > areaTolerance ? areaDifference
+    : left.minimum[0] - right.minimum[0] || left.minimum[1] - right.minimum[1];
+}
+
+function withoutPrivateSortEvidence(candidate: QualifiedCandidate): SelectedCentralHole {
+  const { minimum: _minimum, ...hole } = candidate;
+  return hole;
+}
+
+function contourKey(points: readonly Point2[], deadline: number): string {
+  const coordinate = (point: Point2): string => `${point[0]}:${point[1]}`;
+  let start = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    if ((index & 63) === 0) checkDeadline(deadline);
+    if (coordinate(points[index]) < coordinate(points[start])) start = index;
+  }
+  return Array.from({ length: points.length }, (_, index) => {
+    if ((index & 63) === 0) checkDeadline(deadline);
+    return coordinate(points[(start + index) % points.length]);
+  }).join('|');
+}
+
+export function selectCentralHole(request: CentralHoleRequest): CentralHoleSelection {
+  const deadline = request.deadline ?? Infinity;
+  const qualified = qualifyCandidates(request, deadline);
   if (qualified.length === 0) return omission();
   const nearest = Math.min(...qualified.map((candidate) => candidate.axisDistanceMm));
   const centralBand = Math.max(0.5, request.layerWidthMm * 0.02);
   const central = qualified.filter((candidate) => candidate.axisDistanceMm <= nearest + centralBand + 1e-12);
-  central.sort((left, right) => {
-    const areaDifference = right.areaMm2 - left.areaMm2;
-    const areaTolerance = Math.max(left.areaMm2, right.areaMm2) * 1e-12;
-    return Math.abs(areaDifference) > areaTolerance ? areaDifference
-      : left.minimum[0] - right.minimum[0] || left.minimum[1] - right.minimum[1];
-  });
-  const { minimum: _minimum, ...hole } = central[0];
+  central.sort(compareQualifiedCandidates);
   checkDeadline(deadline);
-  return { hole };
+  return { hole: withoutPrivateSortEvidence(central[0]) };
+}
+
+export function selectSharedCentralHole(
+  requests: readonly CentralHoleRequest[],
+): readonly CentralHoleSelection[] {
+  if (requests.length === 0 || requests.length > 24) {
+    throw new RangeError('Shared central hole selection requires between one and twenty-four layers');
+  }
+  const deadline = Math.min(...requests.map((request) => request.deadline ?? Infinity));
+  const candidates = requests.flatMap((request) => qualifyCandidates(request, deadline));
+  candidates.sort(compareQualifiedCandidates);
+  const contourKeys = new Set<string>();
+  const uniqueCandidates = candidates.filter((candidate) => {
+    checkDeadline(deadline);
+    const key = contourKey(candidate.outer, deadline);
+    if (contourKeys.has(key)) return false;
+    contourKeys.add(key);
+    return true;
+  });
+  const shared = uniqueCandidates.find((candidate) => requests.every((request) =>
+    isStrictlyContainedLoop(
+      request.exterior,
+      candidate.outer,
+      minimumClearance(request),
+      deadline,
+    )));
+  const selection: CentralHoleSelection = shared
+    ? { hole: withoutPrivateSortEvidence(shared) }
+    : omission();
+  return requests.map(() => selection);
 }

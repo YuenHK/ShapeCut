@@ -1,6 +1,12 @@
 import { describe, expect, test } from 'vitest';
 import type { Point2 } from '../decomposition/types';
-import { selectCentralHole, type CentralHoleCandidate } from './hole';
+import {
+  CENTRAL_HOLE_OMISSION_WARNING,
+  selectCentralHole,
+  selectSharedCentralHole,
+  type CentralHoleCandidate,
+  type CentralHoleRequest,
+} from './hole';
 
 function square(size: number, cx = 0, cy = 0): readonly Point2[] {
   const half = size / 2;
@@ -19,6 +25,18 @@ function circularHole(diameter: number, axisDistance: number, y = 0): CentralHol
     }),
   };
 }
+
+const request = (
+  exterior: readonly Point2[],
+  candidates: readonly CentralHoleCandidate[],
+): CentralHoleRequest => ({
+  exterior,
+  candidates,
+  axisPoint: [0, 0],
+  layerWidthMm: 20,
+  planarDiameterMm: 20,
+  cellSizeMm: 0.1,
+});
 
 describe('selectCentralHole', () => {
   test('chooses the greatest-area near-axis hole and ignores a remote larger decoration', () => {
@@ -144,5 +162,46 @@ describe('selectCentralHole', () => {
       omissionReason: 'NO_RELIABLE_CENTRAL_HOLE',
       warning: 'No reliable central axle hole was found; the hole was omitted.',
     });
+  });
+});
+
+describe('selectSharedCentralHole', () => {
+  test('copies the exact largest globally safe contour to every layer', () => {
+    const outer = [[-10, -10], [10, -10], [10, 10], [-10, 10]] as const;
+    const large = { outer: [[-3, -3], [3, -3], [3, 3], [-3, 3]] as const };
+    const small = { outer: [[-1, -1], [1, -1], [1, 1], [-1, 1]] as const };
+    const result = selectSharedCentralHole([
+      request(outer, [small, large]),
+      request(outer, [large]),
+    ]);
+    expect(result).toHaveLength(2);
+    expect(result[0].hole?.outer).toEqual(large.outer);
+    expect(result[1]).toEqual(result[0]);
+  });
+
+  test('rejects a larger candidate that cannot fit every layer', () => {
+    const wide = [[-10, -10], [10, -10], [10, 10], [-10, 10]] as const;
+    const narrow = [[-2, -2], [2, -2], [2, 2], [-2, 2]] as const;
+    const large = { outer: [[-3, -3], [3, -3], [3, 3], [-3, 3]] as const };
+    const common = { outer: [[-1, -1], [1, -1], [1, 1], [-1, 1]] as const };
+    const result = selectSharedCentralHole([
+      request(wide, [large, common]),
+      request(narrow, [common]),
+    ]);
+    expect(result.every((selection) => selection.hole?.outer === result[0].hole?.outer)).toBe(true);
+    expect(result[0].hole?.outer).toEqual(common.outer);
+  });
+
+  test('omits the central cut from every layer when no shared candidate is safe', () => {
+    const wide = [[-10, -10], [10, -10], [10, 10], [-10, 10]] as const;
+    const narrow = [[-1, -1], [1, -1], [1, 1], [-1, 1]] as const;
+    const candidate = { outer: [[-2, -2], [2, -2], [2, 2], [-2, 2]] as const };
+    expect(selectSharedCentralHole([
+      request(wide, [candidate]),
+      request(narrow, []),
+    ])).toEqual([
+      { hole: undefined, omissionReason: 'NO_RELIABLE_CENTRAL_HOLE', warning: CENTRAL_HOLE_OMISSION_WARNING },
+      { hole: undefined, omissionReason: 'NO_RELIABLE_CENTRAL_HOLE', warning: CENTRAL_HOLE_OMISSION_WARNING },
+    ]);
   });
 });
