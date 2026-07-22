@@ -4,6 +4,7 @@ import type { TriangleMesh } from '../src/domain/mesh/types';
 import {
   downloadAndInspectOutline,
   expectFiniteClosedSingleContours,
+  expectReleaseAssemblyGeometry,
   expectResult,
   expectSharedCentralHoleGeometry,
   installWorkerResultProbe,
@@ -56,25 +57,31 @@ const syntheticFixture = {
 };
 
 test('one selection converts the safe single-loop model with real wireframe and exploded layers', async ({ page }) => {
+  await installWorkerResultProbe(page);
   await page.goto('/');
   await expect(page.locator('link[rel="manifest"]')).toHaveAttribute('href', '/manifest.webmanifest');
+  const selectedAt = Date.now();
   await selectModel(page, 'fixtures/acceptance/symmetric-smooth.stl');
   await expect(page.locator('.outline-process-webgl canvas')).toBeVisible({ timeout: 30_000 });
   await expectResult(page, '需注意', '精確切片');
+  expect(Date.now() - selectedAt).toBeGreaterThanOrEqual(8_000);
   const viewport = page.getByRole('img', { name: /真實網格和爆炸圖/ });
   await expect(viewport).toHaveAttribute('data-layer-count', '8');
   const output = await downloadAndInspectOutline(page);
+  const runtime = await readLatestWorkerResultSummary(page);
+  expectReleaseAssemblyGeometry(runtime, output);
   expect(output.layers).toHaveLength(8);
-  expect(output.entityCounts.CUT_BLACK).toBe(8);
-  expect(output.entityCounts.DEEP_RED).toBeLessThanOrEqual(output.layers.length);
-  expect(output.entityCounts.LIGHT_BLUE).toBeLessThanOrEqual(output.layers.length);
-  expect(output.layers.every((layer) => output.entities.filter((entity) => (
+  const expectedBlackByLayer = runtime.coloredLayers.map((layer) => (
+    1 + Number(layer.hole.status === 'retained') + layer.launcherCuts!.length + layer.fastenerHoles!.length
+  ));
+  expect(output.entityCounts.CUT_BLACK).toBe(expectedBlackByLayer.reduce((sum, count) => sum + count, 0));
+  expect(output.layers.map((layer) => output.entities.filter((entity) => (
     entity.physicalLayerId === layer.id && entity.role === 'CUT_BLACK'
-  )).length === 1)).toBe(true);
+  )).length)).toEqual(expectedBlackByLayer);
   expectFiniteClosedSingleContours(output);
 });
 
-test('synthetic holed and stepped geometry reconciles black, red, and blue roles with reduced motion', async ({ page }) => {
+test('synthetic holed and stepped geometry reconciles assembly and retained roles with reduced motion', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.addInitScript(() => {
     const original = window.requestAnimationFrame.bind(window);
@@ -95,13 +102,22 @@ test('synthetic holed and stepped geometry reconciles black, red, and blue roles
   const runtime = await readLatestWorkerResultSummary(page);
   expect(output.layers).toHaveLength(6);
   expectSharedCentralHoleGeometry(runtime);
+  expectReleaseAssemblyGeometry(runtime, output);
+  await expect(page.locator('.result-summary div').filter({ hasText: '製作材料' }))
+    .toContainText(`${runtime.material!.thicknessMm} mm`);
+  await expect(page.locator('.result-summary div').filter({ hasText: '發射器相容性' })).toBeVisible();
+  await expect(page.locator('.result-summary div').filter({ hasText: '固定螺絲孔' }))
+    .toContainText(runtime.assembly!.fastener.count === 0 ? '已安全省略' : `${runtime.assembly!.fastener.count} 個`);
   const blackByLayer = output.layers.map((layer) => output.entities.filter((entity) => (
     entity.physicalLayerId === layer.id && entity.role === 'CUT_BLACK'
   )).length);
-  expect(blackByLayer).toEqual(Array.from({ length: 6 }, () => 2));
-  expect(output.entityCounts.CUT_BLACK).toBe(12);
-  expect(output.entityCounts.DEEP_RED).toBeGreaterThanOrEqual(1);
-  expect(output.entityCounts.LIGHT_BLUE).toBeGreaterThanOrEqual(1);
+  const expectedBlackByLayer = runtime.coloredLayers.map((layer) => (
+    1 + Number(layer.hole.status === 'retained') + layer.launcherCuts!.length + layer.fastenerHoles!.length
+  ));
+  expect(blackByLayer).toEqual(expectedBlackByLayer);
+  expect(output.entityCounts.CUT_BLACK).toBe(expectedBlackByLayer.reduce((sum, count) => sum + count, 0));
+  expect(output.entityCounts.DEEP_RED).toBe(runtime.coloredLayers.reduce((sum, layer) => sum + layer.deepFeatures!.length, 0));
+  expect(output.entityCounts.LIGHT_BLUE).toBe(runtime.coloredLayers.reduce((sum, layer) => sum + layer.lightFeatures!.length, 0));
   expect(output.previewPdf.geometryRecords.map(({ role }) => role))
     .toEqual(output.entities.flatMap((entity) => Array.from({ length: entity.points.length }, () => entity.role)));
 });
@@ -111,14 +127,23 @@ test('synthetic holed and stepped geometry has an actual no-WebGL SVG fallback',
     Object.defineProperty(window, 'WebGLRenderingContext', { configurable: true, value: undefined });
     Object.defineProperty(window, 'WebGL2RenderingContext', { configurable: true, value: undefined });
   });
+  await installWorkerResultProbe(page);
   await page.goto('/');
   await selectModel(page, syntheticFixture);
   await expectResult(page, '需注意', '精確切片');
   const fallback = page.getByRole('img', { name: /SVG fallback/ });
   await expect(fallback).toBeVisible();
-  await expect(fallback.locator('path[data-role="CUT_BLACK"]')).toHaveCount(12);
-  await expect(fallback.locator('path[data-role="DEEP_RED"]')).not.toHaveCount(0);
-  await expect(fallback.locator('path[data-role="LIGHT_BLUE"]')).not.toHaveCount(0);
+  const runtime = await readLatestWorkerResultSummary(page);
+  const expectedBlackCount = runtime.coloredLayers.reduce((sum, layer) => (
+    sum + 1 + Number(layer.hole.status === 'retained') + layer.launcherCuts!.length + layer.fastenerHoles!.length
+  ), 0);
+  await expect(fallback.locator('path[data-role="CUT_BLACK"]')).toHaveCount(expectedBlackCount);
+  await expect(fallback.locator('path[data-role="DEEP_RED"]')).toHaveCount(
+    runtime.coloredLayers.reduce((sum, layer) => sum + layer.deepFeatures!.length, 0),
+  );
+  await expect(fallback.locator('path[data-role="LIGHT_BLUE"]')).toHaveCount(
+    runtime.coloredLayers.reduce((sum, layer) => sum + layer.lightFeatures!.length, 0),
+  );
 });
 
 test('reload returns to a private upload state without retaining the STL', async ({ page }) => {

@@ -238,6 +238,10 @@ export function nearLimitColoredResult(pointCount = 512): AutomaticOutlineResult
     },
     layers,
     coloredLayers,
+    assembly: {
+      ...seed.assembly,
+      topFeatures: { retained: { red: 1, blue: 1 }, omitted: { red: 0, blue: 0 } },
+    },
     preview: {
       ...seed.preview,
       axis: { ...seed.preview.axis, origin: [0, 0, 0] as const },

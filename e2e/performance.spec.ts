@@ -155,7 +155,11 @@ test('feature-rich PDF packaging is terminated and replaced by a second complete
   expect(probe.replacementTriggered).toBe(1);
   expect(probe.terminated).toBeGreaterThanOrEqual(1);
   expect(probe.created).toBeGreaterThanOrEqual(2);
-  expect(probe.results[0].coloredLayers.some(({ hasDeep, hasLight }) => hasDeep || hasLight)).toBe(true);
+  const initialTop = probe.results[0].coloredLayers.at(-1)!;
+  expect(probe.results[0].assembly!.topFeatures.retained).toEqual({
+    red: initialTop.deepFeatures!.length,
+    blue: initialTop.lightFeatures!.length,
+  });
   expect(probe.results.at(-1)).toMatchObject({ mode: 'exact' });
   expect(probe.packageWorkloads).toEqual(armed.packageWorkloads);
 });

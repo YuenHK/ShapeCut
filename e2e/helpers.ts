@@ -18,6 +18,8 @@ import { expect, type Download, type Page } from '@playwright/test';
 import {
   publicSafetyNotes,
 } from '../src/export/safety-notes';
+import { FASTENER_OMISSION_WARNING } from '../src/domain/outline-assembly/fasteners';
+import { LAUNCHER_OMISSION_WARNING } from '../src/domain/outline-assembly/launcher';
 
 export const COLORED_ROLES = ['CUT_BLACK', 'DEEP_RED', 'LIGHT_BLUE'] as const;
 export type ColoredRole = typeof COLORED_ROLES[number];
@@ -161,6 +163,33 @@ export type WorkerResultSummary = {
   readonly status: 'success' | 'warning';
   readonly removedComponentCount: number;
   readonly featureWarnings: readonly string[];
+  readonly material?: {
+    readonly id: string;
+    readonly name: string;
+    readonly thicknessMm: number;
+    readonly kerfMm: number;
+    readonly minFeatureMm: number;
+    readonly minWebMm: number;
+    readonly fitAllowanceMm: Readonly<Record<'loose' | 'slip' | 'snug' | 'press', number>>;
+  };
+  readonly assembly?: {
+    readonly material: WorkerResultSummary['material'];
+    readonly launcher:
+      | { readonly status: 'detected' | 'fallback'; readonly cutCount: 3; readonly assemblyAllowanceMm: 0.2 }
+      | { readonly status: 'omitted'; readonly cutCount: 0 };
+    readonly fastener: {
+      readonly count: 0 | 1 | 2 | 3;
+      readonly centers: readonly Point2[];
+      readonly finishedDiameterMm: 3;
+      readonly pathDiameterMm: number;
+      readonly radiusMm?: number;
+      readonly rotationRad?: number;
+    };
+    readonly topFeatures: {
+      readonly retained: { readonly red: number; readonly blue: number };
+      readonly omitted: { readonly red: number; readonly blue: number };
+    };
+  };
   readonly coloredLayers: readonly {
     readonly id: string;
     readonly widthMm: number;
@@ -177,6 +206,10 @@ export type WorkerResultSummary = {
     };
     readonly hasDeep: boolean;
     readonly hasLight: boolean;
+    readonly launcherCuts?: readonly (readonly Point2[])[];
+    readonly fastenerHoles?: readonly (readonly Point2[])[];
+    readonly deepFeatures?: readonly (readonly Point2[])[];
+    readonly lightFeatures?: readonly (readonly Point2[])[];
   }[];
 };
 
@@ -388,6 +421,151 @@ export function validateColoredEntityRecords(entities: readonly ColoredEntityRec
     || launcherCounts.slice(0, -2).some((count) => count !== 0)) {
     throw new Error(`${label} shared central, top-two launcher, or all-layer fastener arrays do not reconcile`);
   }
+}
+
+function releaseContourSignature(points: readonly Point2[], label: string): string {
+  if (points.length < 3 || points.length > MAX_SHARED_HOLE_POINT_COUNT
+    || points.some((point) => point.length !== 2 || !point.every(Number.isFinite))) {
+    throw new Error(`${label} exceeds the bounded release geometry contract`);
+  }
+  return points.map(([x, y]) => `${x.toFixed(9)},${y.toFixed(9)}`).join(';');
+}
+
+function assertTranslatedReleaseContours(
+  modelContours: readonly (readonly Point2[])[],
+  exportedContours: readonly ColoredEntityRecord[],
+  translation: Point2,
+  label: string,
+): void {
+  if (modelContours.length !== exportedContours.length) {
+    throw new Error(`${label} runtime and artifact cardinality does not reconcile`);
+  }
+  modelContours.forEach((contour, contourIndex) => {
+    releaseContourSignature(contour, label);
+    const exported = exportedContours[contourIndex].points;
+    if (exported.length !== contour.length || exported.some((point, pointIndex) => (
+      !nearlyEqual(point[0], contour[pointIndex][0] + translation[0])
+      || !nearlyEqual(point[1], contour[pointIndex][1] + translation[1])
+    ))) throw new Error(`${label} does not use the canonical sheet-space translation`);
+  });
+}
+
+/** Reconciles the bounded worker assembly evidence with every parsed release artifact. */
+export function expectReleaseAssemblyGeometry(
+  summary: WorkerResultSummary,
+  output: DownloadedOutline,
+): void {
+  const { material, assembly, coloredLayers } = summary;
+  if (!material || !assembly || coloredLayers.length < 2 || coloredLayers.length > MAX_SHARED_HOLE_LAYER_COUNT) {
+    throw new Error('Release assembly evidence is missing or outside the bounded layer contract');
+  }
+  const materialKeys = ['fitAllowanceMm', 'id', 'kerfMm', 'minFeatureMm', 'minWebMm', 'name', 'thicknessMm'];
+  const fitKeys = ['loose', 'press', 'slip', 'snug'];
+  if (exact(Object.keys(material).sort()) !== exact(materialKeys)
+    || exact(Object.keys(material.fitAllowanceMm).sort()) !== exact(fitKeys)
+    || typeof material.id !== 'string' || material.id.length < 1 || material.id.length > 500
+    || typeof material.name !== 'string' || material.name.length < 1 || material.name.length > 500
+    || ![material.thicknessMm, material.kerfMm, material.minFeatureMm, material.minWebMm,
+      ...Object.values(material.fitAllowanceMm)].every(Number.isFinite)
+    || material.thicknessMm <= 0 || material.kerfMm < 0 || material.minFeatureMm <= 0 || material.minWebMm <= 0
+    || exact(assembly.material) !== exact(material)) {
+    throw new Error('Release material evidence is not the strict manufacturing geometry subset');
+  }
+  if (summary.featureWarnings.length > MAX_FEATURE_WARNING_COUNT
+    || summary.featureWarnings.some((warning) => warning.length < 1 || warning.length > MAX_FEATURE_WARNING_LENGTH
+      || /[\u0000-\u001f\u007f]/.test(warning))) {
+    throw new Error('Release warning provenance is outside the bounded public contract');
+  }
+
+  const launcherActive = assembly.launcher.status === 'detected' || assembly.launcher.status === 'fallback';
+  if (!launcherActive && assembly.launcher.status !== 'omitted') throw new Error('Release launcher status is invalid');
+  if (launcherActive
+    ? assembly.launcher.cutCount !== 3 || assembly.launcher.assemblyAllowanceMm !== 0.2
+    : assembly.launcher.cutCount !== 0) throw new Error('Release launcher target metadata is invalid');
+  if (summary.featureWarnings.includes(LAUNCHER_OMISSION_WARNING) !== !launcherActive) {
+    throw new Error('Release launcher omission warning provenance is inconsistent');
+  }
+
+  const fastener = assembly.fastener;
+  if (![0, 1, 2, 3].includes(fastener.count) || fastener.centers.length !== fastener.count
+    || fastener.centers.some((center) => center.length !== 2 || !center.every(Number.isFinite))
+    || fastener.finishedDiameterMm !== 3 || !Number.isFinite(fastener.pathDiameterMm)
+    || fastener.pathDiameterMm <= 0 || !nearlyEqual(fastener.pathDiameterMm, 3 - material.kerfMm)
+    || fastener.count === 0 && (fastener.radiusMm !== undefined || fastener.rotationRad !== undefined)
+    || fastener.count > 0 && (!Number.isFinite(fastener.radiusMm) || !Number.isFinite(fastener.rotationRad))) {
+    throw new Error('Release fastener 3.00 mm target or material compensation metadata is invalid');
+  }
+  if (summary.featureWarnings.includes(FASTENER_OMISSION_WARNING) !== (fastener.count === 0)) {
+    throw new Error('Release fastener omission warning provenance is inconsistent');
+  }
+
+  const launcherCounts: number[] = [], fastenerCounts: number[] = [];
+  coloredLayers.forEach((layer, layerIndex) => {
+    const launcher = layer.launcherCuts, holes = layer.fastenerHoles;
+    const deep = layer.deepFeatures, light = layer.lightFeatures;
+    if (!launcher || !holes || !deep || !light) throw new Error('Release layer array evidence is missing');
+    launcherCounts.push(launcher.length);
+    fastenerCounts.push(holes.length);
+    const top = layerIndex === coloredLayers.length - 1;
+    if (deep.length > (top ? 12 : 1) || light.length > (top ? 12 : 1)) {
+      throw new Error('Release top/lower feature array cap is exceeded');
+    }
+    [...launcher, ...holes, ...deep, ...light].forEach((contour) => releaseContourSignature(contour, 'Release feature'));
+
+    const outputLayer = output.layers[layerIndex];
+    if (!outputLayer || outputLayer.id !== layer.id) throw new Error('Release runtime and artifact layer order does not reconcile');
+    const exported = output.entities.filter(({ physicalLayerId }) => physicalLayerId === layer.id);
+    const exterior = exported.find(({ role, id }) => role === 'CUT_BLACK'
+      && !id.endsWith('-hole') && !id.includes('-launcher-clearance-') && !id.includes('-fastener-hole-'));
+    if (!exterior || exterior.points.length !== layer.exteriorPoints.length) {
+      throw new Error('Release exterior runtime and artifact geometry does not reconcile');
+    }
+    const translation: Point2 = [
+      exterior.points[0][0] - layer.exteriorPoints[0][0],
+      exterior.points[0][1] - layer.exteriorPoints[0][1],
+    ];
+    assertTranslatedReleaseContours(layer.exteriorPoints.length > 0 ? [layer.exteriorPoints] : [], [exterior], translation, 'Release exterior');
+    assertTranslatedReleaseContours(launcher, exported.filter(({ id }) => id.includes('-launcher-clearance-')), translation, 'Release launcher');
+    assertTranslatedReleaseContours(holes, exported.filter(({ id }) => id.includes('-fastener-hole-')), translation, 'Release fastener');
+    assertTranslatedReleaseContours(deep, exported.filter(({ role }) => role === 'DEEP_RED'), translation, 'Release deep feature');
+    assertTranslatedReleaseContours(light, exported.filter(({ role }) => role === 'LIGHT_BLUE'), translation, 'Release light feature');
+  });
+  const expectedLauncherCounts = coloredLayers.map((_layer, index) => (
+    launcherActive && index >= coloredLayers.length - 2 ? 3 : 0
+  ));
+  if (exact(launcherCounts) !== exact(expectedLauncherCounts)) {
+    throw new Error('Release launcher must be all-or-none on exactly the top two layers');
+  }
+  if (launcherActive) for (let index = 0; index < 3; index += 1) {
+    if (releaseContourSignature(coloredLayers.at(-2)!.launcherCuts![index], 'Release launcher')
+      !== releaseContourSignature(coloredLayers.at(-1)!.launcherCuts![index], 'Release launcher')) {
+      throw new Error('Release launcher geometry must be identical on the top two layers');
+    }
+  }
+  if (fastenerCounts.some((count) => count !== fastener.count)) {
+    throw new Error('Release fastener count must be shared by every layer');
+  }
+  if (fastener.count > 0) for (let layerIndex = 1; layerIndex < coloredLayers.length; layerIndex += 1) {
+    for (let index = 0; index < fastener.count; index += 1) {
+      if (releaseContourSignature(coloredLayers[0].fastenerHoles![index], 'Release fastener')
+        !== releaseContourSignature(coloredLayers[layerIndex].fastenerHoles![index], 'Release fastener')) {
+        throw new Error('Release fastener centers and geometry must be identical on every layer');
+      }
+    }
+  }
+  for (let index = 0; index < fastener.count; index += 1) {
+    const center = polygonCentroid(coloredLayers[0].fastenerHoles![index]).centroid;
+    if (!nearlyEqual(center[0], fastener.centers[index][0])
+      || !nearlyEqual(center[1], fastener.centers[index][1])) {
+      throw new Error('Release fastener center metadata does not reconcile with the shared contour geometry');
+    }
+  }
+  const top = coloredLayers.at(-1)!;
+  if (assembly.topFeatures.retained.red !== top.deepFeatures!.length
+    || assembly.topFeatures.retained.blue !== top.lightFeatures!.length
+    || ![assembly.topFeatures.omitted.red, assembly.topFeatures.omitted.blue].every((count) => (
+      Number.isSafeInteger(count) && count >= 0
+    ))) throw new Error('Release top-feature retained/omitted summary does not reconcile');
 }
 
 function canonicalColoredDocumentExtents(
@@ -1576,6 +1754,7 @@ export async function inspectColoredArtifacts(payloads: ColoredArtifactPayloads)
 export async function selectModel(page: Page, fixture: string | { name: string; mimeType: string; buffer: Buffer }, beforeSetInput?: () => Promise<void>) {
   await beforeSetInput?.();
   await page.getByLabel('選擇 STL 模型').setInputFiles(fixture);
+  await page.getByLabel('選擇製作材料').selectOption({ index: 1 });
 }
 
 export async function installWorkerResultProbe(page: Page): Promise<void> {
@@ -1585,6 +1764,8 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
       status: 'success' | 'warning';
       removedComponentCount: number;
       featureWarnings: string[];
+      material: NonNullable<WorkerResultSummary['material']>;
+      assembly: NonNullable<WorkerResultSummary['assembly']>;
       coloredLayers: Array<{
         id: string;
         widthMm: number;
@@ -1601,6 +1782,10 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
         };
         hasDeep: boolean;
         hasLight: boolean;
+        launcherCuts: Array<Array<[number, number]>>;
+        fastenerHoles: Array<Array<[number, number]>>;
+        deepFeatures: Array<Array<[number, number]>>;
+        lightFeatures: Array<Array<[number, number]>>;
       }>;
     };
     type ProbeState = {
@@ -1642,6 +1827,82 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
             && warning.length > 0 && warning.length <= 200)
           ? value.featureWarnings as string[]
           : undefined;
+        const record = (candidate: unknown): candidate is Record<string, unknown> => (
+          typeof candidate === 'object' && candidate !== null && !Array.isArray(candidate)
+        );
+        const exactKeys = (candidate: Record<string, unknown>, expected: readonly string[]): boolean => (
+          JSON.stringify(Object.keys(candidate).sort()) === JSON.stringify([...expected].sort())
+        );
+        const materialValue = value.material;
+        const fitValue = record(materialValue) ? materialValue.fitAllowanceMm : undefined;
+        const finite = (candidate: unknown): candidate is number => typeof candidate === 'number' && Number.isFinite(candidate);
+        const validMaterial = record(materialValue) && record(fitValue)
+          && exactKeys(materialValue, ['id', 'name', 'thicknessMm', 'kerfMm', 'minFeatureMm', 'minWebMm', 'fitAllowanceMm'])
+          && exactKeys(fitValue, ['loose', 'slip', 'snug', 'press'])
+          && typeof materialValue.id === 'string' && materialValue.id.length >= 1 && materialValue.id.length <= 500
+          && typeof materialValue.name === 'string' && materialValue.name.length >= 1 && materialValue.name.length <= 500
+          && [materialValue.thicknessMm, materialValue.kerfMm, materialValue.minFeatureMm, materialValue.minWebMm,
+            fitValue.loose, fitValue.slip, fitValue.snug, fitValue.press].every(finite);
+        const material: ProbeSummary['material'] | undefined = validMaterial ? {
+          id: materialValue.id as string,
+          name: materialValue.name as string,
+          thicknessMm: materialValue.thicknessMm as number,
+          kerfMm: materialValue.kerfMm as number,
+          minFeatureMm: materialValue.minFeatureMm as number,
+          minWebMm: materialValue.minWebMm as number,
+          fitAllowanceMm: {
+            loose: fitValue.loose as number, slip: fitValue.slip as number,
+            snug: fitValue.snug as number, press: fitValue.press as number,
+          },
+        } : undefined;
+        const assemblyValue = value.assembly;
+        const launcherValue = record(assemblyValue) ? assemblyValue.launcher : undefined;
+        const fastenerValue = record(assemblyValue) ? assemblyValue.fastener : undefined;
+        const topValue = record(assemblyValue) ? assemblyValue.topFeatures : undefined;
+        const retainedValue = record(topValue) ? topValue.retained : undefined;
+        const omittedValue = record(topValue) ? topValue.omitted : undefined;
+        const validLauncher = record(launcherValue)
+          && (launcherValue.status === 'omitted'
+            ? exactKeys(launcherValue, ['status', 'cutCount']) && launcherValue.cutCount === 0
+            : (launcherValue.status === 'detected' || launcherValue.status === 'fallback')
+              && exactKeys(launcherValue, ['status', 'cutCount', 'assemblyAllowanceMm'])
+              && launcherValue.cutCount === 3 && launcherValue.assemblyAllowanceMm === 0.2);
+        const validCenters = record(fastenerValue) && Array.isArray(fastenerValue.centers)
+          && fastenerValue.centers.length <= 3
+          && fastenerValue.centers.every((center) => Array.isArray(center) && center.length === 2 && center.every(finite));
+        const validFastener = record(fastenerValue) && exactKeys(fastenerValue, [
+          'count', 'centers', 'finishedDiameterMm', 'pathDiameterMm',
+          ...(fastenerValue.count === 0 ? [] : ['radiusMm', 'rotationRad']),
+        ]) && [0, 1, 2, 3].includes(fastenerValue.count as number)
+          && validCenters && (fastenerValue.centers as unknown[]).length === fastenerValue.count
+          && fastenerValue.finishedDiameterMm === 3 && finite(fastenerValue.pathDiameterMm)
+          && (fastenerValue.count === 0 || finite(fastenerValue.radiusMm) && finite(fastenerValue.rotationRad));
+        const validTop = record(topValue) && exactKeys(topValue, ['retained', 'omitted'])
+          && record(retainedValue) && exactKeys(retainedValue, ['red', 'blue'])
+          && record(omittedValue) && exactKeys(omittedValue, ['red', 'blue'])
+          && [retainedValue.red, retainedValue.blue, omittedValue.red, omittedValue.blue]
+            .every((count) => Number.isSafeInteger(count) && (count as number) >= 0);
+        const assembly: ProbeSummary['assembly'] | undefined = material && record(assemblyValue)
+          && exactKeys(assemblyValue, ['material', 'launcher', 'fastener', 'topFeatures'])
+          && JSON.stringify(assemblyValue.material) === JSON.stringify(material)
+          && validLauncher && validFastener && validTop ? {
+            material,
+            launcher: { ...launcherValue } as ProbeSummary['assembly']['launcher'],
+            fastener: {
+              count: fastenerValue.count as 0 | 1 | 2 | 3,
+              centers: (fastenerValue.centers as Array<[number, number]>).map(([x, y]) => [x, y]),
+              finishedDiameterMm: 3,
+              pathDiameterMm: fastenerValue.pathDiameterMm as number,
+              ...(fastenerValue.count === 0 ? {} : {
+                radiusMm: fastenerValue.radiusMm as number,
+                rotationRad: fastenerValue.rotationRad as number,
+              }),
+            },
+            topFeatures: {
+              retained: { red: retainedValue.red as number, blue: retainedValue.blue as number },
+              omitted: { red: omittedValue.red as number, blue: omittedValue.blue as number },
+            },
+          } : undefined;
         const layers = value.coloredLayers.flatMap((item): ProbeSummary['coloredLayers'] => {
           if (typeof item !== 'object' || item === null) return [];
           const layer = item as Record<string, unknown>;
@@ -1658,11 +1919,22 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
           const validPoints = (points: unknown): points is Array<[number, number]> => Array.isArray(points)
             && points.length >= 3
             && points.every((point) => Array.isArray(point) && point.length === 2 && point.every(Number.isFinite));
+          const contours = (candidate: unknown, maximum: number): Array<Array<[number, number]>> | undefined => (
+            Array.isArray(candidate) && candidate.length <= maximum
+              && candidate.every((contour) => record(contour) && validPoints(contour.outer))
+              ? candidate.map((contour) => (contour as { outer: Array<[number, number]> }).outer.map(([x, y]) => [x, y]))
+              : undefined
+          );
+          const launcherCuts = contours(layer.launcherCuts, 3);
+          const fastenerHoles = contours(layer.fastenerHoles, 3);
+          const deepFeatures = contours(layer.deepFeatures, 12);
+          const lightFeatures = contours(layer.lightFeatures, 12);
           if (typeof layer.id !== 'string' || !hole || (hole.status !== 'retained' && hole.status !== 'omitted')
             || typeof exterior?.boundsMm?.minX !== 'number' || typeof exterior.boundsMm.minY !== 'number'
             || typeof exterior.boundsMm.maxX !== 'number' || typeof exterior.boundsMm.maxY !== 'number'
             || !validPoints(exterior.outer) || typeof diagnostics?.depth?.cellSizeMm !== 'number'
-            || hole.status === 'retained' && (!validPoints(centralHole?.outer) || typeof centralHole?.areaMm2 !== 'number')) return [];
+            || hole.status === 'retained' && (!validPoints(centralHole?.outer) || typeof centralHole?.areaMm2 !== 'number')
+            || !launcherCuts || !fastenerHoles || !deepFeatures || !lightFeatures) return [];
           return [{
             id: layer.id,
             widthMm: exterior.boundsMm.maxX - exterior.boundsMm.minX,
@@ -1679,15 +1951,21 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
               ...(typeof hole.axisDistanceMm === 'number' ? { axisDistanceMm: hole.axisDistanceMm } : {}),
               ...(hole.status === 'retained' ? { areaMm2: centralHole!.areaMm2 as number, points: centralHole!.outer as Array<[number, number]> } : {}),
             },
-            hasDeep: typeof layer.deepFeature === 'object' && layer.deepFeature !== null,
-            hasLight: typeof layer.lightFeature === 'object' && layer.lightFeature !== null,
+            hasDeep: deepFeatures.length > 0,
+            hasLight: lightFeatures.length > 0,
+            launcherCuts,
+            fastenerHoles,
+            deepFeatures,
+            lightFeatures,
           }];
         });
-        if (featureWarnings && layers.length === value.coloredLayers.length) state.results.push({
+        if (featureWarnings && material && assembly && layers.length === value.coloredLayers.length) state.results.push({
           mode: value.mode,
           status: value.status,
           removedComponentCount: value.removedComponentCount as number,
           featureWarnings: [...featureWarnings],
+          material,
+          assembly,
           coloredLayers: layers,
         });
         return;
@@ -1707,6 +1985,19 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
         files.items.add(new File([Uint8Array.from(replacement.bytes)], replacement.name, { type: replacement.mimeType }));
         input.files = files.files;
         input.dispatchEvent(new Event('change', { bubbles: true }));
+        const chooseMaterial = (): boolean => {
+          const material = document.querySelector<HTMLSelectElement>('select[aria-label="選擇製作材料"]');
+          if (!material || material.options.length < 2) return false;
+          material.selectedIndex = 1;
+          material.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        };
+        if (!chooseMaterial()) {
+          const observer = new MutationObserver(() => {
+            if (chooseMaterial()) observer.disconnect();
+          });
+          observer.observe(document.body, { childList: true, subtree: true });
+        }
       });
     };
     const NativeWorker = window.Worker;

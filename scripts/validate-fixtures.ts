@@ -101,17 +101,20 @@ if (launcherInputs.filter(Boolean).length === 1) {
   throw new Error('Launcher fixture validation requires both private reference inputs');
 }
 let launcherTemplatePass: boolean | 'not-requested' = 'not-requested';
+let launcherTemplateDeterministic: boolean | 'not-requested' = 'not-requested';
 if (launcherInputs.every(Boolean)) {
-  let stdout: string;
+  let first: string, second: string;
   try {
-    ({ stdout } = await execFileAsync(process.execPath, [
-      fileURLToPath(new URL('../node_modules/vite-node/vite-node.mjs', import.meta.url)),
-      fileURLToPath(new URL('./generate-launcher-template.ts', import.meta.url)),
-    ], { env: process.env, maxBuffer: 1024 * 1024, timeout: 120_000 }));
+    const generate = async (): Promise<string> => (await execFileAsync(process.execPath, [
+        fileURLToPath(new URL('../node_modules/vite-node/vite-node.mjs', import.meta.url)),
+        fileURLToPath(new URL('./generate-launcher-template.ts', import.meta.url)),
+      ], { env: process.env, maxBuffer: 1024 * 1024, timeout: 120_000 })).stdout;
+    [first, second] = [await generate(), await generate()];
   } catch {
     throw new Error('Launcher fixture validation could not regenerate the numeric template');
   }
-  launcherTemplatePass = stdout === renderLauncherTemplateInitializer(KNIGHT_FORTRESS_LAUNCHER_TEMPLATE);
+  launcherTemplatePass = first === renderLauncherTemplateInitializer(KNIGHT_FORTRESS_LAUNCHER_TEMPLATE);
+  launcherTemplateDeterministic = first === second;
 }
 const summary = {
   schemaVersion: 1,
@@ -120,10 +123,12 @@ const summary = {
   total: results.length,
   outputComparisonPass,
   launcherTemplatePass,
+  launcherTemplateDeterministic,
   results,
 };
 console.log(JSON.stringify(summary, null, 2));
-if (autoSuccess !== 8 || !outputComparisonPass || launcherTemplatePass === false || results.some(({ pass }) => !pass)) {
+if (autoSuccess !== 8 || !outputComparisonPass || launcherTemplatePass === false
+  || launcherTemplateDeterministic === false || results.some(({ pass }) => !pass)) {
   throw new Error(`Acceptance failed: ${autoSuccess}/8 automatic models passed; output comparison ${outputComparisonPass ? 'passed' : 'failed'}`);
 }
 

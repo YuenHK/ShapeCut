@@ -2,6 +2,7 @@ import JSZip from 'jszip';
 import { decodePDFRawStream, PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFNumber, PDFRawStream, PDFRef, PDFString, rgb } from 'pdf-lib';
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
+  expectReleaseAssemblyGeometry,
   expectSharedCentralHoleGeometry,
   inspectColoredArtifacts,
   parseColoredOutlineDxfArtifact,
@@ -13,10 +14,11 @@ import {
   type ColoredEntityRecord,
   type WorkerResultSummary,
 } from '../../e2e/helpers';
-import { coloredResult } from '../export/colored-outline-test-fixture';
+import { coloredResult, nearLimitColoredResult } from '../export/colored-outline-test-fixture';
 import { createOutlinePackage, type ColoredOutlinePackage } from '../export/outline-package';
 import { featureEvidenceFingerprint } from '../domain/outline-features/types';
 import { convertAutomatically } from '../domain/pipeline/automatic-outline-pipeline';
+import type { AutomaticOutlineResult } from '../domain/pipeline/automatic-outline-pipeline';
 import { writeBinarySTL } from '../domain/mesh/write-stl';
 import type { TriangleMesh } from '../domain/mesh/types';
 
@@ -45,6 +47,44 @@ function assemblyCylinder(segments = 32): TriangleMesh {
     indices.push(bottom, top, nextTop, bottom, nextTop, nextBottom);
   }
   return { positions: new Float64Array(positions), indices: new Uint32Array(indices) };
+}
+
+function releaseSummary(result: AutomaticOutlineResult): WorkerResultSummary {
+  if (result.status !== 'success' && result.status !== 'warning') {
+    throw new Error('Release fixture must produce a downloadable result');
+  }
+  return {
+    mode: result.mode,
+    status: result.status,
+    removedComponentCount: result.removedComponentCount,
+    featureWarnings: [...result.featureWarnings],
+    material: structuredClone(result.material),
+    assembly: structuredClone(result.assembly),
+    coloredLayers: result.coloredLayers.map((layer) => ({
+      id: layer.id,
+      widthMm: layer.exterior.boundsMm.maxX - layer.exterior.boundsMm.minX,
+      planarDiameterMm: Math.hypot(
+        layer.exterior.boundsMm.maxX - layer.exterior.boundsMm.minX,
+        layer.exterior.boundsMm.maxY - layer.exterior.boundsMm.minY,
+      ),
+      cellSizeMm: layer.diagnostics.depth.cellSizeMm,
+      exteriorPoints: layer.exterior.outer,
+      hole: layer.centralHole && layer.diagnostics.hole.status === 'retained' ? {
+        status: 'retained',
+        id: layer.centralHole.id,
+        equivalentDiameterMm: layer.diagnostics.hole.equivalentDiameterMm,
+        axisDistanceMm: layer.diagnostics.hole.axisDistanceMm,
+        areaMm2: layer.centralHole.areaMm2,
+        points: layer.centralHole.outer,
+      } : { status: 'omitted' },
+      launcherCuts: layer.launcherCuts.map(({ outer }) => outer),
+      fastenerHoles: layer.fastenerHoles.map(({ outer }) => outer),
+      deepFeatures: layer.deepFeatures.map(({ outer }) => outer),
+      lightFeatures: layer.lightFeatures.map(({ outer }) => outer),
+      hasDeep: layer.deepFeatures.length > 0,
+      hasLight: layer.lightFeatures.length > 0,
+    })),
+  };
 }
 
 beforeAll(async () => {
@@ -278,6 +318,15 @@ function sharedHoleSummary(): WorkerResultSummary {
 }
 
 describe('release E2E colored artifact parsers', () => {
+  it('keeps the near-limit fixture assembly summary aligned with its top feature arrays', () => {
+    const result = nearLimitColoredResult();
+    const top = result.coloredLayers.at(-1)!;
+    expect(result.assembly.topFeatures.retained).toEqual({
+      red: top.deepFeatures.length,
+      blue: top.lightFeatures.length,
+    });
+  });
+
   it('accepts exact maximum canonical role arrays and rejects lower/top overflow or black subrole reordering', () => {
     const polygon = [[0, 0], [1, 0], [1, 1]] as const;
     const record = (layer: number, role: ColoredEntityRecord['role'], id: string): ColoredEntityRecord => ({
@@ -331,6 +380,21 @@ describe('release E2E colored artifact parsers', () => {
       previewPdf: packaged.previewPdf,
       explodedPdf: packaged.explodedViewPdf,
     });
+    const summary = releaseSummary(result);
+    expect(() => expectReleaseAssemblyGeometry(summary, inspected)).not.toThrow();
+    const shiftedCenter: WorkerResultSummary = {
+      ...summary,
+      assembly: {
+        ...summary.assembly!,
+        fastener: {
+          ...summary.assembly!.fastener,
+          centers: summary.assembly!.fastener.centers.map(([x, y], index) => (
+            index === 0 ? [x + 0.5, y] as const : [x, y] as const
+          )),
+        },
+      },
+    };
+    expect(() => expectReleaseAssemblyGeometry(shiftedCenter, inspected)).toThrow(/fastener.*center/i);
     expect(inspected.entities.filter(({ id }) => id.includes('-launcher-clearance-'))).toHaveLength(6);
     expect(inspected.entities.filter(({ id }) => id.includes('-fastener-hole-'))).toHaveLength(18);
   });
