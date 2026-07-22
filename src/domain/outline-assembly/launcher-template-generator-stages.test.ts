@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Point2 } from '../decomposition/types';
 import type { TriangleMesh } from '../mesh/types';
 
-const stage = vi.hoisted(() => ({ current: '', inside: false }));
+const stage = vi.hoisted(() => ({ current: '', inside: false, axialReads: 0, lastAxialReads: 0 }));
 
 vi.mock('../axis/find-axis', () => ({
   findAxisCandidates: () => [{
@@ -18,10 +18,23 @@ const rectangles: readonly (readonly Point2[])[] = [
 ];
 
 vi.mock('../outline-2.5d/raster', () => ({
-  projectMesh: () => ({
-    vertices: [[0, 0, -1], [1, 0, 1], [0, 1, 0]], triangles: [[0, 1, 2]],
-    minX: 0, minY: 0, maxX: 1, maxY: 1, planarDiameter: Math.SQRT2,
-  }),
+  projectMesh: () => {
+    const source = stage.current === 'axial'
+      ? Array.from({ length: 4_096 }, (_, index) => [index % 2, index % 3, index] as const)
+      : [[0, 0, -1], [1, 0, 1], [0, 1, 0]];
+    const vertices = new Proxy(source, {
+      get(target, property, receiver) {
+        if (stage.current === 'axial' && typeof property === 'string' && /^\d+$/.test(property)) {
+          stage.axialReads += 1;
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    return {
+      vertices, triangles: [[0, 1, 2]],
+      minX: 0, minY: 0, maxX: 1, maxY: 1, planarDiameter: Math.SQRT2,
+    };
+  },
   rasterCellSize: () => 0.1,
   rasterProjectLayer: (
     _projected: unknown, _spec: unknown, _budgets: unknown, _deadline: number, checkpoint: () => void,
@@ -71,6 +84,33 @@ describe('launcher generator in-flight cancellation', () => {
         deadline: Infinity,
         checkpoint: () => {
           if (stage.inside) throw cancellation;
+        },
+      });
+    } catch (error) {
+      caught = error;
+    } finally {
+      stage.current = '';
+    }
+    expect(caught).toBe(cancellation);
+  });
+
+  it('polls during the late projected axial-value scan with bounded latency', () => {
+    const cancellation = new Error('axial scan cancelled');
+    stage.current = 'axial';
+    stage.axialReads = 0;
+    stage.lastAxialReads = 0;
+    let caught: unknown;
+    try {
+      generateLauncherTemplateFromMeshes([
+        { mesh, provenanceHash: 'a'.repeat(64) },
+        { mesh, provenanceHash: 'b'.repeat(64) },
+      ], {
+        deadline: Infinity,
+        checkpoint: () => {
+          const interval = stage.axialReads - stage.lastAxialReads;
+          if (interval > 256) throw new Error(`axial checkpoint interval ${interval}`);
+          stage.lastAxialReads = stage.axialReads;
+          if (stage.axialReads >= 2_048) throw cancellation;
         },
       });
     } catch (error) {

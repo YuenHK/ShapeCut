@@ -489,8 +489,26 @@ export function rasterCellSize(projected: ProjectedMesh): number {
 
 function convexHull(points: readonly Point2[], deadline: number, checkpoint: () => void): Point2[] {
   checkRuntime(deadline, checkpoint);
-  const sorted = [...new Map(points.map((point) => [`${point[0]},${point[1]}`, point])).values()]
-    .sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const unique = new Map<string, Point2>();
+  for (let index = 0; index < points.length; index += 1) {
+    if ((index & 255) === 0) checkRuntime(deadline, checkpoint);
+    const point = points[index];
+    unique.set(`${point[0]},${point[1]}`, point);
+  }
+  const sorted: Point2[] = [];
+  let preparationIndex = 0;
+  for (const point of unique.values()) {
+    if ((preparationIndex & 255) === 0) checkRuntime(deadline, checkpoint);
+    sorted.push(point);
+    preparationIndex += 1;
+  }
+  checkRuntime(deadline, checkpoint);
+  let sortComparisons = 0;
+  sorted.sort((left, right) => {
+    if ((sortComparisons++ & 255) === 0) checkRuntime(deadline, checkpoint);
+    return left[0] - right[0] || left[1] - right[1];
+  });
+  checkRuntime(deadline, checkpoint);
   const cross = (a: Point2, b: Point2, c: Point2) => (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
   const half = (values: readonly Point2[]) => {
     const result: Point2[] = [];
@@ -502,7 +520,31 @@ function convexHull(points: readonly Point2[], deadline: number, checkpoint: () 
     }
     return result;
   };
-  return [...half(sorted).slice(0, -1), ...half([...sorted].reverse()).slice(0, -1)];
+  const reversed = new Array<Point2>(sorted.length);
+  for (let index = 0; index < sorted.length; index += 1) {
+    if ((index & 255) === 0) checkRuntime(deadline, checkpoint);
+    reversed[index] = sorted[sorted.length - 1 - index];
+  }
+  const lower = half(sorted), upper = half(reversed), output: Point2[] = [];
+  for (let index = 0; index + 1 < lower.length; index += 1) {
+    if ((index & 255) === 0) checkRuntime(deadline, checkpoint);
+    output.push(lower[index]);
+  }
+  for (let index = 0; index + 1 < upper.length; index += 1) {
+    if ((index & 255) === 0) checkRuntime(deadline, checkpoint);
+    output.push(upper[index]);
+  }
+  return output;
+}
+
+function polygonArea(points: readonly Point2[], deadline: number, checkpoint: () => void): number {
+  let twiceArea = 0;
+  for (let index = 0; index < points.length; index += 1) {
+    if ((index & 255) === 0) checkRuntime(deadline, checkpoint);
+    const point = points[index], next = points[(index + 1) % points.length];
+    twiceArea += point[0] * next[1] - next[0] * point[1];
+  }
+  return Math.abs(twiceArea / 2);
 }
 
 function selectedSourceEvidence(
@@ -511,29 +553,41 @@ function selectedSourceEvidence(
   deadline: number, checkpoint: () => void,
 ): { readonly bounds: RasterContour['sourceBoundsMm']; readonly area: number } {
   checkRuntime(deadline, checkpoint);
-  const parent = activeTriangles.map((_, index) => index), vertexOwner = new Map<number, number>();
+  const parent = new Array<number>(activeTriangles.length), vertexOwner = new Map<number, number>();
+  for (let index = 0; index < activeTriangles.length; index += 1) {
+    if ((index & 255) === 0) checkRuntime(deadline, checkpoint);
+    parent[index] = index;
+  }
   const find = (value: number): number => parent[value] === value ? value : (parent[value] = find(parent[value]));
   const join = (left: number, right: number) => { const a = find(left), b = find(right); if (a !== b) parent[Math.max(a, b)] = Math.min(a, b); };
-  activeTriangles.forEach((triangleIndex, localIndex) => {
+  for (let localIndex = 0; localIndex < activeTriangles.length; localIndex += 1) {
     if ((localIndex & 255) === 0) checkRuntime(deadline, checkpoint);
+    const triangleIndex = activeTriangles[localIndex];
     for (const vertex of projected.triangles[triangleIndex]) {
       const owner = vertexOwner.get(vertex);
       if (owner === undefined) vertexOwner.set(vertex, localIndex); else join(localIndex, owner);
     }
-  });
+  }
   const groups = new Map<number, Set<number>>();
-  activeTriangles.forEach((triangleIndex, localIndex) => {
+  for (let localIndex = 0; localIndex < activeTriangles.length; localIndex += 1) {
     if ((localIndex & 255) === 0) checkRuntime(deadline, checkpoint);
+    const triangleIndex = activeTriangles[localIndex];
     const vertices = groups.get(find(localIndex)) ?? new Set<number>();
     for (const vertex of projected.triangles[triangleIndex]) vertices.add(vertex);
     groups.set(find(localIndex), vertices);
-  });
-  const candidates = [...groups.values()].map((vertices, groupIndex) => {
+  }
+  const candidates: { readonly points: Point2[]; readonly score: number; readonly area: number }[] = [];
+  let groupIndex = 0;
+  for (const vertices of groups.values()) {
     if ((groupIndex & 255) === 0) checkRuntime(deadline, checkpoint);
-    const points = [...vertices].map((vertex): Point2 => {
+    const points: Point2[] = [];
+    let vertexIndex = 0;
+    for (const vertex of vertices) {
+      if ((vertexIndex & 255) === 0) checkRuntime(deadline, checkpoint);
       const [x, y] = projected.vertices[vertex];
-      return [x, y];
-    });
+      points.push([x, y]);
+      vertexIndex += 1;
+    }
     let score = 0;
     for (let pointIndex = 0; pointIndex < points.length; pointIndex += 1) {
       if ((pointIndex & 255) === 0) checkRuntime(deadline, checkpoint);
@@ -547,15 +601,38 @@ function selectedSourceEvidence(
       if (touches) score += 1;
     }
     const hull = convexHull(points, deadline, checkpoint);
-    const area = Math.abs(hull.reduce((sum, point, index) => { const next = hull[(index + 1) % hull.length]; return sum + point[0] * next[1] - next[0] * point[1]; }, 0) / 2);
-    return { points, score, area };
-  }).sort((a, b) => b.score - a.score || b.area - a.area);
-  const sourcePoints = candidates.filter(({ score }) => score > 0).flatMap(({ points }) => points);
+    candidates.push({ points, score, area: polygonArea(hull, deadline, checkpoint) });
+    groupIndex += 1;
+  }
+  checkRuntime(deadline, checkpoint);
+  let candidateComparisons = 0;
+  candidates.sort((left, right) => {
+    if ((candidateComparisons++ & 255) === 0) checkRuntime(deadline, checkpoint);
+    return right.score - left.score || right.area - left.area;
+  });
+  checkRuntime(deadline, checkpoint);
+  const sourcePoints: Point2[] = [];
+  for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex += 1) {
+    if ((candidateIndex & 255) === 0) checkRuntime(deadline, checkpoint);
+    const candidate = candidates[candidateIndex];
+    if (candidate.score <= 0) continue;
+    for (let pointIndex = 0; pointIndex < candidate.points.length; pointIndex += 1) {
+      if ((pointIndex & 255) === 0) checkRuntime(deadline, checkpoint);
+      sourcePoints.push(candidate.points[pointIndex]);
+    }
+  }
   const hull = convexHull(sourcePoints, deadline, checkpoint);
-  const area = Math.abs(hull.reduce((sum, point, index) => { const next = hull[(index + 1) % hull.length]; return sum + point[0] * next[1] - next[0] * point[1]; }, 0) / 2);
+  const area = polygonArea(hull, deadline, checkpoint);
   if (sourcePoints.length === 0 || area <= 0) throw new RangeError('Projected contour cannot identify retained source component');
-  const xs = sourcePoints.map(([x]) => x), ys = sourcePoints.map(([, y]) => y);
-  return { bounds: { minX: Math.min(...xs), minY: Math.min(...ys), maxX: Math.max(...xs), maxY: Math.max(...ys) }, area };
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (let index = 0; index < sourcePoints.length; index += 1) {
+    if ((index & 255) === 0) checkRuntime(deadline, checkpoint);
+    const [x, y] = sourcePoints[index];
+    minX = Math.min(minX, x); minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
+  }
+  checkRuntime(deadline, checkpoint);
+  return { bounds: { minX, minY, maxX, maxY }, area };
 }
 
 export function rasterProjectLayer(

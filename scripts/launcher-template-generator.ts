@@ -102,8 +102,15 @@ function extractReference(
     source: 'candidate',
   }, deadline, checkpoint);
   checkGeneratorBudget(deadline, checkpoint);
-  const axialValues = projected.vertices.map(([, , axial]) => axial);
-  const minimum = Math.min(...axialValues), maximum = Math.max(...axialValues), span = maximum - minimum;
+  let minimum = Infinity, maximum = -Infinity;
+  for (let index = 0; index < projected.vertices.length; index += 1) {
+    if ((index & 255) === 0) checkGeneratorBudget(deadline, checkpoint);
+    const axial = projected.vertices[index][2];
+    minimum = Math.min(minimum, axial);
+    maximum = Math.max(maximum, axial);
+  }
+  checkGeneratorBudget(deadline, checkpoint);
+  const span = maximum - minimum;
   const cellSize = rasterCellSize(projected);
   const halfSlab = Math.max(cellSize / 4, span / 2_000);
   let best: { readonly loops: LauncherReference['loops']; readonly score: number; readonly level: number } | undefined;

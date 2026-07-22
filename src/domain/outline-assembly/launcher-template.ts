@@ -242,12 +242,14 @@ function prepareReferences(
     ...rightCandidates[0].map((loop) => loop.length),
   );
   if (count > LAUNCHER_TEMPLATE_MAX_POINTS) throw new RangeError('Launcher template exceeds the point budget');
-  const samplesLeft = sourceLeft.map((loop) => resampleClosedLoop(loop, count)) as unknown as LauncherLoops;
+  const samplesLeft = sourceLeft.map((loop) => (
+    resampleClosedLoop(loop, count, deadline, checkpoint)
+  )) as unknown as LauncherLoops;
   let best: { readonly source: LauncherLoops; readonly samples: LauncherLoops; readonly distance: number } | undefined;
   for (const sourceRight of rightCandidates) {
     checkpointRuntime(deadline, checkpoint);
     const samplesRight = sourceRight.map((loop, index) => alignLoopPhase(
-      samplesLeft[index], resampleClosedLoop(loop, count), deadline, checkpoint,
+      samplesLeft[index], resampleClosedLoop(loop, count, deadline, checkpoint), deadline, checkpoint,
     )) as unknown as LauncherLoops;
     const distance = samplesLeft.reduce((sum, loop, index) => sum + meanCorrespondingDistance(
       loop, samplesRight[index], deadline, checkpoint,
@@ -294,23 +296,38 @@ export function launcherReferencesAreCompatible(
   }
 }
 
-function resampleClosedLoop(points: readonly Point2[], count: number): readonly Point2[] {
-  const lengths = points.map((point, index) => Math.hypot(
-    points[(index + 1) % points.length][0] - point[0],
-    points[(index + 1) % points.length][1] - point[1],
-  ));
-  const perimeter = lengths.reduce((sum, length) => sum + length, 0);
+export function resampleClosedLoop(
+  points: readonly Point2[],
+  count: number,
+  deadline = Infinity,
+  checkpoint: () => void = () => undefined,
+): readonly Point2[] {
+  checkpointRuntime(deadline, checkpoint);
+  const lengths = new Array<number>(points.length);
+  for (let index = 0; index < points.length; index += 1) {
+    if ((index & 255) === 0) checkpointRuntime(deadline, checkpoint);
+    const point = points[index], next = points[(index + 1) % points.length];
+    lengths[index] = Math.hypot(next[0] - point[0], next[1] - point[1]);
+  }
+  let perimeter = 0;
+  for (let index = 0; index < lengths.length; index += 1) {
+    if ((index & 255) === 0) checkpointRuntime(deadline, checkpoint);
+    perimeter += lengths[index];
+  }
   const output: Point2[] = [];
   let segment = 0, startDistance = 0;
   for (let index = 0; index < count; index += 1) {
+    if ((index & 255) === 0) checkpointRuntime(deadline, checkpoint);
     const target = perimeter * index / count;
     while (segment + 1 < lengths.length && startDistance + lengths[segment] < target) {
+      if ((segment & 255) === 0) checkpointRuntime(deadline, checkpoint);
       startDistance += lengths[segment++];
     }
     const start = points[segment], end = points[(segment + 1) % points.length];
     const ratio = lengths[segment] === 0 ? 0 : (target - startDistance) / lengths[segment];
     output.push([rounded(start[0] + (end[0] - start[0]) * ratio), rounded(start[1] + (end[1] - start[1]) * ratio)]);
   }
+  checkpointRuntime(deadline, checkpoint);
   return output;
 }
 

@@ -18,7 +18,7 @@ export function massProperties(
     if (Date.now() > deadline) throw new RangeError('Mass properties exceeded the runtime budget');
   };
   checkRuntime();
-  const { reference, volumeTolerance } = meshNumerics(mesh);
+  const { reference, volumeTolerance } = meshNumerics(mesh, deadline, checkpoint);
   checkRuntime();
   let signedVolume = 0;
   let momentX = 0;

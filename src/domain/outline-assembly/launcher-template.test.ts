@@ -5,6 +5,7 @@ import {
   KNIGHT_FORTRESS_LAUNCHER_TEMPLATE,
   launcherReferencesAreCompatible,
   normalizeLauncherLoops,
+  resampleClosedLoop,
   renderLauncherTemplateInitializer,
   type LauncherReference,
 } from './launcher-template';
@@ -175,6 +176,37 @@ describe('Knight Fortress launcher template compatibility', () => {
     }
     expect(caught).toBe(cancellation);
     expect(calls).toBe(5);
+  });
+
+  it('polls through late resampling output with a bounded point interval', () => {
+    const pointCount = 4_096;
+    const raw = Array.from({ length: pointCount }, (_, index): Point2 => {
+      const angle = index * Math.PI * 2 / pointCount;
+      return [Math.cos(angle) * 10, Math.sin(angle) * 10];
+    });
+    let reads = 0;
+    const points = new Proxy(raw, {
+      get(target, property, receiver) {
+        if (typeof property === 'string' && /^\d+$/.test(property)) reads += 1;
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const cancellation = new Error('resample output cancelled');
+    let lastReads = 0;
+    let calls = 0;
+    let caught: unknown;
+    try {
+      resampleClosedLoop(points, pointCount, Infinity, () => {
+        calls += 1;
+        const interval = reads - lastReads;
+        if (interval > 768) throw new Error(`resample checkpoint interval ${interval}`);
+        lastReads = reads;
+        if (calls >= 40) throw cancellation;
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBe(cancellation);
   });
 
   it('renders deterministic numeric-only TypeScript without source paths', () => {

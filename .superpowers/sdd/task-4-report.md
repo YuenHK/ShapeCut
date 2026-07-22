@@ -205,3 +205,41 @@ Final focused result: 7 files / 80 tests passed.
 - `git diff --check`: exit 0.
 
 No remaining concern or blocker was found. The new parameters are optional, existing callers and output geometry remain compatible, and private STL inputs remain outside the worktree.
+
+---
+
+## Input-sized checkpoint latency remediation (2026-07-22)
+
+### Root cause and RED evidence
+
+The remaining review found several paths where a checkpoint existed at the surrounding stage but input-sized array work could complete before the next poll. Four bounded synthetic regressions failed as expected in the initial 33-test RED run:
+
+- `meshNumerics` scanned 12,000 coordinate values without invoking its optional caller checkpoint; the expected late cancellation never occurred.
+- The generator's projected axial extraction used one native `map` followed by spread `Math.min`/`Math.max`; the test observed a single unchecked 4,096-vertex interval instead of the required maximum 256 vertices.
+- Raster source-evidence point conversion used a full spread/map before its next checkpoint; the test observed a 1,025-point interval instead of at most 256 points.
+- `resampleClosedLoop` had no deadline/checkpoint API, so its 4,096-point length, reduction, and output work could not be interrupted.
+
+All four failures asserted the same caller cancellation object by identity. The interval-specific failures returned diagnostic interval errors rather than the expected cancellation, proving that the tests exercised late loop latency rather than only an entry checkpoint.
+
+### GREEN implementation
+
+- `meshNumerics` now accepts optional deadline/checkpoint parameters and polls at most every 256 vertices (768 coordinate reads), including before and after the scan. `massProperties`, and therefore the axis caller, forwards the same deadline/checkpoint. Existing callers retain `Infinity`/no-op defaults.
+- The generator computes projected minimum/maximum axial values in one deterministic loop, polling at most every 256 vertices. It no longer allocates an unchecked axial-value array or spreads it into native extrema calls.
+- Raster source evidence now polls throughout parent initialization, triangle ownership/group setup, group extraction, evidence-point conversion, scoring, hull preparation, area calculation, candidate collection/sorting/flattening, and final bounds accumulation.
+- Convex-hull deduplication/preparation is manual and periodic. Unavoidable native sorts poll immediately before and after, plus every 256 comparator calls. Reverse preparation and both hull halves are also periodically checked.
+- Source-evidence area reductions and final bounds no longer use unchecked native reductions/maps/spread extrema.
+- `resampleClosedLoop` now has optional deadline/checkpoint parameters. Length scanning, perimeter reduction, advancing segments, and output sampling poll at most every 256 iterations, and every compatibility/averaging call passes the existing caller budget through.
+- All geometry arithmetic and iteration order were preserved; no template number or fixture geometry changed.
+
+Final focused result: 8 files / 84 tests passed. The late tests prove exact original-error identity and maximum intervals of 256 items, or 768 coordinate reads for xyz vertex scanning.
+
+### Final verification
+
+- `npm run typecheck`: exit 0.
+- `npm run build`: exit 0; Vite transformed 141 modules.
+- Opt-in fixture validation: `autoSuccess: 8`, `outputComparisonPass: true`, `launcherTemplatePass: true`.
+- Full suite, run once: 50 files / 1,207 tests; 1,206 passed and 1 unrelated test failed. Every Task 4, numerics, axis, raster, simplification, template, and generator test passed.
+- The sole failure was the previously documented `OneClickConverter > requires material selection before conversion and resets the chooser for a replacement file` race: the test synchronously queried `選擇製作材料` while the replacement UI was still in `正在讀取模型`. No UI or unrelated test was changed, and the full suite was not rerun.
+- `git diff --check`: exit 0.
+
+No Task 4 blocker remains. The only concern is the unrelated pre-existing UI test race described above.

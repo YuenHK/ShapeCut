@@ -10,7 +10,16 @@ export type MeshNumerics = {
   readonly volumeTolerance: number;
 };
 
-export function meshNumerics(mesh: TriangleMesh): MeshNumerics {
+export function meshNumerics(
+  mesh: TriangleMesh,
+  deadline = Infinity,
+  checkpoint: () => void = () => undefined,
+): MeshNumerics {
+  const checkRuntime = (): void => {
+    checkpoint();
+    if (Date.now() > deadline) throw new RangeError('Mesh numerics exceeded the runtime budget');
+  };
+  checkRuntime();
   if (mesh.positions.length < 3) {
     return { reference: [0, 0, 0], areaToleranceSquared: Number.MIN_VALUE, volumeTolerance: Number.MIN_VALUE };
   }
@@ -21,6 +30,7 @@ export function meshNumerics(mesh: TriangleMesh): MeshNumerics {
   let maxY = -Infinity;
   let maxZ = -Infinity;
   for (let offset = 0; offset + 2 < mesh.positions.length; offset += 3) {
+    if (offset % 768 === 0) checkRuntime();
     const x = mesh.positions[offset];
     const y = mesh.positions[offset + 1];
     const z = mesh.positions[offset + 2];
@@ -31,6 +41,7 @@ export function meshNumerics(mesh: TriangleMesh): MeshNumerics {
     maxY = Math.max(maxY, y);
     maxZ = Math.max(maxZ, z);
   }
+  checkRuntime();
   const dx = maxX - minX;
   const dy = maxY - minY;
   const dz = maxZ - minZ;

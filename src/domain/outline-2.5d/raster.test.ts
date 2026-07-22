@@ -189,4 +189,45 @@ describe('rasterProjectLayer enclosed void evidence', () => {
     expect(caught).toBe(cancellation);
     expect(calls).toBe(4);
   });
+
+  test('bounds polling through late source-evidence point preparation', () => {
+    const segmentCount = 1_024;
+    const rawVertices: [number, number, number][] = [[0, 0, 0]];
+    for (let index = 0; index < segmentCount; index += 1) {
+      const angle = index * Math.PI * 2 / segmentCount;
+      rawVertices.push([Math.cos(angle) * 10, Math.sin(angle) * 10, 0]);
+    }
+    const triangles = Array.from({ length: segmentCount }, (_, index) => [
+      0, index + 1, (index + 1) % segmentCount + 1,
+    ] as const);
+    let vertexReads = 0;
+    const vertices = new Proxy(rawVertices, {
+      get(target, property, receiver) {
+        if (typeof property === 'string' && /^\d+$/.test(property)) vertexReads += 1;
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const projected: ProjectedMesh = {
+      vertices, triangles, minX: -10, minY: -10, maxX: 10, maxY: 10, planarDiameter: Math.hypot(20, 20),
+    };
+    const firstPassReads = segmentCount * 3;
+    let lastEvidenceReads = firstPassReads;
+    const cancellation = new Error('source evidence cancelled');
+    let caught: unknown;
+    try {
+      rasterProjectLayer(
+        projected, { index: 0, zStart: -0.5, zMid: 0, zEnd: 0.5 },
+        DEFAULT_OUTLINE_BUDGETS, Infinity, () => {
+          if (vertexReads <= firstPassReads) return;
+          const interval = vertexReads - lastEvidenceReads;
+          if (interval > 256) throw new Error(`source evidence checkpoint interval ${interval}`);
+          lastEvidenceReads = vertexReads;
+          if (vertexReads >= firstPassReads + 768) throw cancellation;
+        },
+      );
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBe(cancellation);
+  });
 });
