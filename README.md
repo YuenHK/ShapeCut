@@ -36,11 +36,13 @@ npm run dev
 npm test
 npm run test:browser
 npm run test:e2e
-npm run validate:fixtures
+npm run validate:fixtures:public
 npm run test:performance
 npm run typecheck
 npm run build
 ```
+
+`validate:fixtures` 是發佈用 gate，必須同時提供兩個外部驗收輸入；本機日常開發只驗證公開 fixtures 時，請使用上述獨立的 `validate:fixtures:public` 命令。
 
 Production build 位於 `dist/`。應用包含 Web App Manifest 與只快取同源靜態 shell 的 service worker；使用者選取的 STL 不會進入離線 cache。
 

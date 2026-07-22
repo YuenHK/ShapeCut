@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import {
+  compareDownloadedOutlineBytes,
   downloadAndInspectOutline,
   expectFiniteClosedSingleContours,
   expectRetainedHoleGeometry,
@@ -8,6 +9,7 @@ import {
   expectResult,
   expectSharedCentralHoleGeometry,
   installWorkerResultProbe,
+  measureCompleteReleaseRun,
   readLatestWorkerResultSummary,
   readWorkerProbeState,
   selectModel,
@@ -18,19 +20,12 @@ const fixtures = [
   { env: 'KNIGHT_FORTRESS_GROUP_STL', path: process.env.KNIGHT_FORTRESS_GROUP_STL, label: 'Supplied model B', caseId: 'reference-b' },
 ] as const;
 
-for (const fixture of fixtures) {
-  test(`${fixture.label} completes warning-mode output with five reconciled downloads`, async ({ page }, testInfo) => {
-    expect(fixture.path, `${fixture.env} must point to the external local acceptance fixture`).toBeTruthy();
-    expect(existsSync(fixture.path!), `${fixture.env} must point to a readable file`).toBe(true);
-    test.setTimeout(120_000);
-    await installWorkerResultProbe(page);
-    await page.goto('/');
-    const selectedAt = Date.now();
+type ReleaseFixture = typeof fixtures[number];
+
+async function captureCompleteReleaseRun(page: Page, fixture: ReleaseFixture) {
+  return measureCompleteReleaseRun(async () => {
     await selectModel(page, fixture.path!);
     await expectResult(page, '需注意', '2.5D 外形');
-    const firstDurationMs = Date.now() - selectedAt;
-    expect(firstDurationMs).toBeGreaterThanOrEqual(8_000);
-    expect(firstDurationMs).toBeLessThan(60_000);
     await expect(page.getByRole('region', { name: '模型處理提示' }))
       .toContainText('模型已使用 2.5D 外形簡化');
     const viewport = page.getByRole('img', { name: /真實網格和爆炸圖/ });
@@ -77,37 +72,55 @@ for (const fixture of fixtures) {
     });
     expect(output.entityCounts.DEEP_RED).toBe(runtime.coloredLayers.reduce((sum, layer) => sum + layer.deepFeatures!.length, 0));
     expect(output.entityCounts.LIGHT_BLUE).toBe(runtime.coloredLayers.reduce((sum, layer) => sum + layer.lightFeatures!.length, 0));
+    return { runtime, output, retainedHoleCount: retainedHoles.length };
+  });
+}
+
+function expectFullRunDuration(durationMs: number): void {
+  expect(durationMs).toBeGreaterThanOrEqual(8_000);
+  expect(durationMs).toBeLessThan(60_000);
+}
+
+for (const fixture of fixtures) {
+  test(`${fixture.label} completes warning-mode output with five reconciled downloads`, async ({ page }, testInfo) => {
+    expect(fixture.path, `${fixture.env} must point to the external local acceptance fixture`).toBeTruthy();
+    expect(existsSync(fixture.path!), `${fixture.env} must point to a readable file`).toBe(true);
+    test.setTimeout(120_000);
+    await installWorkerResultProbe(page);
+    await page.goto('/');
+    const first = await captureCompleteReleaseRun(page, fixture);
+    expectFullRunDuration(first.durationMs);
 
     await page.reload();
-    const repeatedAt = Date.now();
-    await selectModel(page, fixture.path!);
-    await expectResult(page, '需注意', '2.5D 外形');
-    const repeatedRuntime = await readLatestWorkerResultSummary(page);
-    const repeatedOutput = await downloadAndInspectOutline(page);
-    const repeatedDurationMs = Date.now() - repeatedAt;
-    expect(repeatedDurationMs).toBeGreaterThanOrEqual(8_000);
-    expect(repeatedDurationMs).toBeLessThan(60_000);
-    expectReleaseAssemblyGeometry(repeatedRuntime, repeatedOutput);
-    expect(repeatedRuntime).toEqual(runtime);
-    expect(repeatedOutput.sha256).toBe(output.sha256);
+    const repeated = await captureCompleteReleaseRun(page, fixture);
+    expectFullRunDuration(repeated.durationMs);
+    expect(repeated.value.runtime).toEqual(first.value.runtime);
+    const byteComparison = compareDownloadedOutlineBytes(first.value.output, repeated.value.output);
 
     await testInfo.attach(`${fixture.caseId}-result.json`, {
       body: JSON.stringify({
-        mode: runtime.mode,
-        layers: output.layers.length,
-        removedComponentCount: runtime.removedComponentCount,
-        retainedHoleCount: retainedHoles.length,
-        deepFeatureCount: output.entityCounts.DEEP_RED,
-        lightFeatureCount: output.entityCounts.LIGHT_BLUE,
-        launcherStatus: runtime.assembly!.launcher.status,
-        fastenerCount: runtime.assembly!.fastener.count,
-        finishedFastenerDiameterMm: runtime.assembly!.fastener.finishedDiameterMm,
-        compensatedFastenerPathDiameterMm: runtime.assembly!.fastener.pathDiameterMm,
-        topFeatures: runtime.assembly!.topFeatures,
-        warningCount: runtime.featureWarnings.length,
-        zipEntryCount: output.zipRecords.length,
-        deterministic: repeatedOutput.sha256 === output.sha256,
-        timing: { firstDurationMs, repeatedDurationMs },
+        mode: first.value.runtime.mode,
+        layers: first.value.output.layers.length,
+        removedComponentCount: first.value.runtime.removedComponentCount,
+        retainedHoleCount: first.value.retainedHoleCount,
+        deepFeatureCount: first.value.output.entityCounts.DEEP_RED,
+        lightFeatureCount: first.value.output.entityCounts.LIGHT_BLUE,
+        launcherStatus: first.value.runtime.assembly!.launcher.status,
+        fastenerCount: first.value.runtime.assembly!.fastener.count,
+        finishedFastenerDiameterMm: first.value.runtime.assembly!.fastener.finishedDiameterMm,
+        compensatedFastenerPathDiameterMm: first.value.runtime.assembly!.fastener.pathDiameterMm,
+        topFeatures: first.value.runtime.assembly!.topFeatures,
+        warningCount: first.value.runtime.featureWarnings.length,
+        zipEntryCount: first.value.output.zipRecords.length,
+        deterministic: byteComparison.byteIdentical,
+        comparedArtifactCount: byteComparison.comparedArtifactCount,
+        comparedByteCount: Object.values(byteComparison.byteLengths).reduce((sum, count) => sum + count, 0),
+        diagnosticSha256Equal: byteComparison.diagnosticSha256.first === byteComparison.diagnosticSha256.repeated,
+        timing: {
+          interval: 'upload-to-reconciled-five-downloads',
+          firstFullRunDurationMs: first.durationMs,
+          repeatedFullRunDurationMs: repeated.durationMs,
+        },
       }),
       contentType: 'application/json',
     });

@@ -15,6 +15,19 @@ import {
 } from '../src/domain/outline-assembly/launcher-template';
 
 const execFileAsync = promisify(execFile);
+const arguments_ = process.argv.slice(2);
+if (arguments_.some((argument) => argument !== '--public-only')
+  || arguments_.filter((argument) => argument === '--public-only').length > 1) {
+  throw new Error('Usage: validate-fixtures.ts [--public-only]');
+}
+const publicOnly = arguments_.includes('--public-only');
+const launcherInputs = [process.env.KNIGHT_FORTRESS_STL, process.env.KNIGHT_FORTRESS_GROUP_STL] as const;
+if (publicOnly && launcherInputs.some(Boolean)) {
+  throw new Error('Public-only fixture validation does not accept private reference inputs');
+}
+if (!publicOnly && (!launcherInputs[0] || !launcherInputs[1])) {
+  throw new Error('Launcher fixture validation requires both private reference inputs');
+}
 
 type Entry = { file: string; category: string; expected: 'auto-axis-and-editable-kit' | 'manual-axis-or-block' | 'blocking'; expectedAxis?: [number, number, number] };
 const manifest = JSON.parse(await readFile(new URL('../fixtures/acceptance/manifest.json', import.meta.url), 'utf8')) as { schemaVersion: number; models: Entry[] };
@@ -96,13 +109,9 @@ const automaticOutputs = results.filter((result) => result.geometrySha256 !== un
 const outputComparisonPass = automaticOutputs.length >= 2
   && new Set(automaticOutputs.map(({ geometrySha256 }) => geometrySha256)).size >= 2
   && new Set(automaticOutputs.map(({ dimensionsMm }) => JSON.stringify(dimensionsMm))).size >= 2;
-const launcherInputs = [process.env.KNIGHT_FORTRESS_STL, process.env.KNIGHT_FORTRESS_GROUP_STL] as const;
-if (launcherInputs.filter(Boolean).length === 1) {
-  throw new Error('Launcher fixture validation requires both private reference inputs');
-}
 let launcherTemplatePass: boolean | 'not-requested' = 'not-requested';
 let launcherTemplateDeterministic: boolean | 'not-requested' = 'not-requested';
-if (launcherInputs.every(Boolean)) {
+if (!publicOnly) {
   let first: string, second: string;
   try {
     const generate = async (): Promise<string> => (await execFileAsync(process.execPath, [

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import JSZip from 'jszip';
 import {
   decodePDFRawStream,
@@ -141,6 +141,16 @@ export type ColoredArtifactPayloads = {
   readonly dxf: string;
   readonly previewPdf: Uint8Array;
   readonly explodedPdf: Uint8Array;
+  readonly rawSvg?: Uint8Array;
+  readonly rawDxf?: Uint8Array;
+};
+
+export type BoundedDownloadBytes = {
+  readonly zip: Uint8Array;
+  readonly svg: Uint8Array;
+  readonly dxf: Uint8Array;
+  readonly previewPdf: Uint8Array;
+  readonly explodedPdf: Uint8Array;
 };
 
 export type ParsedColoredZipRecord = {
@@ -155,6 +165,7 @@ export type DownloadedOutline = ColoredFingerprints & {
   readonly previewPdf: ParsedColoredPdf;
   readonly explodedPdf: ParsedColoredPdf;
   readonly zipRecords: readonly (ParsedColoredZipRecord & { readonly byteIdentical: boolean })[];
+  readonly downloadBytes: BoundedDownloadBytes;
   readonly sha256: string;
 };
 
@@ -1459,6 +1470,74 @@ function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
+const DOWNLOAD_BYTE_KEYS = ['zip', 'svg', 'dxf', 'previewPdf', 'explodedPdf'] as const;
+const DOWNLOAD_BYTE_LABELS: Readonly<Record<typeof DOWNLOAD_BYTE_KEYS[number], string>> = Object.freeze({
+  zip: 'ZIP',
+  svg: 'SVG',
+  dxf: 'DXF',
+  previewPdf: 'preview PDF',
+  explodedPdf: 'exploded PDF',
+});
+const MAX_INDIVIDUAL_DOWNLOAD_BYTES = 16 * 1024 * 1024;
+const MAX_TOTAL_DOWNLOAD_BYTES = 64 * 1024 * 1024;
+
+function assertBoundedDownloadBytes(bytes: BoundedDownloadBytes): void {
+  let total = 0;
+  for (const key of DOWNLOAD_BYTE_KEYS) {
+    const payload = bytes[key];
+    if (payload.byteLength > MAX_INDIVIDUAL_DOWNLOAD_BYTES) {
+      throw new Error(`${DOWNLOAD_BYTE_LABELS[key]} download exceeds the bounded release evidence limit`);
+    }
+    total += payload.byteLength;
+    if (total > MAX_TOTAL_DOWNLOAD_BYTES) throw new Error('Combined downloads exceed the bounded release evidence limit');
+  }
+}
+
+function retainBoundedDownloadBytes(bytes: BoundedDownloadBytes): BoundedDownloadBytes {
+  assertBoundedDownloadBytes(bytes);
+  const retained = {} as Record<typeof DOWNLOAD_BYTE_KEYS[number], Uint8Array>;
+  for (const key of DOWNLOAD_BYTE_KEYS) retained[key] = bytes[key].slice();
+  return retained;
+}
+
+export function compareDownloadedOutlineBytes(
+  first: Pick<DownloadedOutline, 'downloadBytes' | 'sha256'>,
+  repeated: Pick<DownloadedOutline, 'downloadBytes' | 'sha256'>,
+): {
+  readonly byteIdentical: true;
+  readonly comparedArtifactCount: 5;
+  readonly byteLengths: Readonly<Record<typeof DOWNLOAD_BYTE_KEYS[number], number>>;
+  readonly diagnosticSha256: { readonly first: string; readonly repeated: string };
+} {
+  assertBoundedDownloadBytes(first.downloadBytes);
+  assertBoundedDownloadBytes(repeated.downloadBytes);
+  for (const key of DOWNLOAD_BYTE_KEYS) {
+    if (!bytesEqual(first.downloadBytes[key], repeated.downloadBytes[key])) {
+      throw new Error(`${DOWNLOAD_BYTE_LABELS[key]} repeated download differs at byte level`);
+    }
+  }
+  return {
+    byteIdentical: true,
+    comparedArtifactCount: 5,
+    byteLengths: Object.fromEntries(DOWNLOAD_BYTE_KEYS.map((key) => [key, first.downloadBytes[key].byteLength])) as Record<typeof DOWNLOAD_BYTE_KEYS[number], number>,
+    diagnosticSha256: { first: first.sha256, repeated: repeated.sha256 },
+  };
+}
+
+export async function measureCompleteReleaseRun<T>(
+  run: () => Promise<T>,
+  now: () => number = Date.now,
+): Promise<{ readonly value: T; readonly durationMs: number }> {
+  const startedAt = now();
+  const value = await run();
+  const completedAt = now();
+  const durationMs = completedAt - startedAt;
+  if (!Number.isFinite(startedAt) || !Number.isFinite(completedAt) || durationMs < 0) {
+    throw new Error('Complete release timing interval is invalid');
+  }
+  return { value, durationMs };
+}
+
 function exteriorForLayer(entities: readonly ColoredEntityRecord[], layer: ColoredLayerRecord): ColoredEntityRecord {
   const exterior = entities.find((entity) => entity.physicalLayerId === layer.id && entity.role === 'CUT_BLACK');
   if (!exterior) throw new Error('Colored artifact layer has no black exterior');
@@ -1696,6 +1775,19 @@ function assertPublicText(value: string, label: string): void {
 }
 
 export async function inspectColoredArtifacts(payloads: ColoredArtifactPayloads): Promise<DownloadedOutline> {
+  const encodedSvg = new TextEncoder().encode(payloads.svg);
+  const encodedDxf = new TextEncoder().encode(payloads.dxf);
+  if ((payloads.rawSvg && !bytesEqual(payloads.rawSvg, encodedSvg))
+    || (payloads.rawDxf && !bytesEqual(payloads.rawDxf, encodedDxf))) {
+    throw new Error('Decoded text artifacts do not exactly round-trip to their captured download bytes');
+  }
+  const downloadBytes = retainBoundedDownloadBytes({
+    zip: payloads.zip,
+    svg: payloads.rawSvg ?? encodedSvg,
+    dxf: payloads.rawDxf ?? encodedDxf,
+    previewPdf: payloads.previewPdf,
+    explodedPdf: payloads.explodedPdf,
+  });
   const svg = parseColoredOutlineSvgArtifact(payloads.svg);
   const dxf = parseColoredOutlineDxfArtifact(payloads.dxf);
   const entityTuple = (entity: ColoredEntityRecord) => [
@@ -1747,6 +1839,7 @@ export async function inspectColoredArtifacts(payloads: ColoredArtifactPayloads)
     previewPdf,
     explodedPdf,
     zipRecords: reconciledZip,
+    downloadBytes,
     sha256: createHash('sha256').update(payloads.zip).digest('hex'),
   };
 }
@@ -2126,7 +2219,13 @@ async function captureDownload(page: Page, linkName: string, expectedFileName: s
   expect(download.suggestedFilename()).toBe(expectedFileName);
   const path = await download.path();
   expect(path).not.toBeNull();
-  return new Uint8Array(await readFile(path!));
+  const size = (await stat(path!)).size;
+  if (size > MAX_INDIVIDUAL_DOWNLOAD_BYTES) {
+    throw new Error(`${expectedFileName} exceeds the bounded release evidence limit`);
+  }
+  const bytes = new Uint8Array(await readFile(path!));
+  if (bytes.byteLength !== size) throw new Error(`${expectedFileName} changed while release evidence was captured`);
+  return bytes;
 }
 
 export async function downloadAndInspectOutline(page: Page): Promise<DownloadedOutline> {
@@ -2149,6 +2248,8 @@ export async function downloadAndInspectOutline(page: Page): Promise<DownloadedO
     dxf: decode('cut-and-engrave.dxf'),
     previewPdf: downloads.get('preview.pdf')!,
     explodedPdf: downloads.get('exploded-view.pdf')!,
+    rawSvg: downloads.get('cut-and-engrave.svg')!,
+    rawDxf: downloads.get('cut-and-engrave.dxf')!,
   });
 }
 

@@ -12,6 +12,7 @@
     "test:e2e": "playwright test",
     "test:performance": "playwright test e2e/performance.spec.ts --workers=1",
     "validate:fixtures": "vite-node scripts/validate-fixtures.ts",
+    "validate:fixtures:public": "vite-node scripts/validate-fixtures.ts --public-only",
     "generate:coupons": "vite-node scripts/generate-material-coupons.ts"
   },
   "dependencies": {

@@ -2,9 +2,11 @@ import JSZip from 'jszip';
 import { decodePDFRawStream, PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFNumber, PDFRawStream, PDFRef, PDFString, rgb } from 'pdf-lib';
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
+  compareDownloadedOutlineBytes,
   expectReleaseAssemblyGeometry,
   expectSharedCentralHoleGeometry,
   inspectColoredArtifacts,
+  measureCompleteReleaseRun,
   parseColoredOutlineDxfArtifact,
   parseColoredOutlinePdf,
   parseColoredOutlineSvgArtifact,
@@ -535,6 +537,52 @@ describe('release E2E colored artifact parsers', () => {
     const inspected = await inspectColoredArtifacts(artifacts);
     expect(inspected.entities).toEqual(parseColoredOutlineSvgArtifact(output.cutSvg).entities);
     expect(inspected.zipRecords.every(({ byteIdentical }) => byteIdentical)).toBe(true);
+  });
+
+  it('compares all five bounded downloads from bytes rather than trusting equal diagnostic digests', () => {
+    type ByteEvidence = {
+      readonly sha256: string;
+      readonly downloadBytes: Readonly<Record<'zip' | 'svg' | 'dxf' | 'previewPdf' | 'explodedPdf', Uint8Array>>;
+    };
+    const bytes = {
+      zip: Uint8Array.of(1, 2, 3),
+      svg: Uint8Array.of(4),
+      dxf: Uint8Array.of(5),
+      previewPdf: Uint8Array.of(6),
+      explodedPdf: Uint8Array.of(7),
+    } as const;
+    const first = { sha256: 'same-reported-digest', downloadBytes: bytes };
+    const copied = Object.fromEntries(Object.entries(bytes).map(([name, payload]) => [name, payload.slice()])) as ByteEvidence['downloadBytes'];
+    expect(compareDownloadedOutlineBytes(first, { sha256: 'same-reported-digest', downloadBytes: copied })).toMatchObject({
+      byteIdentical: true,
+      comparedArtifactCount: 5,
+    });
+    expect(() => compareDownloadedOutlineBytes(first, {
+      sha256: 'same-reported-digest',
+      downloadBytes: { ...bytes, zip: Uint8Array.of(1, 2, 4) },
+    })).toThrow(/ZIP.*byte/i);
+    for (const name of ['svg', 'dxf', 'previewPdf', 'explodedPdf'] as const) {
+      expect(() => compareDownloadedOutlineBytes(first, {
+        sha256: 'same-reported-digest',
+        downloadBytes: { ...bytes, [name]: Uint8Array.of(255) },
+      })).toThrow(/byte/i);
+    }
+    expect(() => compareDownloadedOutlineBytes(first, {
+      sha256: 'same-reported-digest',
+      downloadBytes: { ...bytes, zip: new Uint8Array(16 * 1024 * 1024 + 1) },
+    })).toThrow(/bounded release evidence limit/i);
+  });
+
+  it('measures a complete release callback over one equivalent start-to-finish interval', async () => {
+    const clock = [1_000, 1_275];
+    const stages: string[] = [];
+    const measured = await measureCompleteReleaseRun(async () => {
+      stages.push('upload', 'result', 'probe', 'downloads', 'parse', 'reconcile');
+      return 'complete';
+    }, () => clock.shift()!);
+    expect(measured).toEqual({ value: 'complete', durationMs: 275 });
+    expect(stages).toEqual(['upload', 'result', 'probe', 'downloads', 'parse', 'reconcile']);
+    expect(clock).toEqual([]);
   });
 
   it.each([
