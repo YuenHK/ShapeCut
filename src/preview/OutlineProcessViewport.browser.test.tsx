@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { WebGLRenderer } from 'three';
+import { Line, type BufferGeometry, type LineBasicMaterial, type WebGLRenderer } from 'three';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ColoredOutlineLayer, OutlinePreviewPayload } from '../domain/outline-features/types';
 import { OutlineProcessViewport } from './OutlineProcessViewport';
@@ -147,6 +147,32 @@ describe('OutlineProcessViewport in Chromium', () => {
     expect(dispose).toHaveBeenCalledOnce();
   });
 
+  it('selects an ordered result layer with keyboard-accessible opacity highlighting', async () => {
+    let scene: OutlineProcessScene | undefined;
+    const view = render(
+      <OutlineProcessViewport
+        payload={browserPayload()}
+        stage="result"
+        reducedMotion
+        createScene={(host, payload, options) => {
+          scene = createOutlineProcessScene(host, payload, options);
+          return scene;
+        }}
+      />,
+    );
+
+    await waitFor(() => expect(scene).toBeDefined());
+    const selector = screen.getByRole('combobox', { name: '選擇預覽切片' });
+    expect(getComputedStyle(selector).minHeight).toBe('44px');
+    await userEvent.selectOptions(selector, 'actual-layer-2');
+    expect(scene!.layerGroups[2].userData.selected).toBe(true);
+    expect(scene!.layerGroups[0].userData.selected).toBe(false);
+    const dimmed = scene!.layerGroups[0].children[0] as Line<BufferGeometry, LineBasicMaterial>;
+    const selected = scene!.layerGroups[2].children[0] as Line<BufferGeometry, LineBasicMaterial>;
+    expect(dimmed.material.opacity).toBeLessThan(selected.material.opacity);
+    view.unmount();
+  });
+
   it('contains warmup failure and disposes the partially initialized renderer exactly once', () => {
     disposeOutlineProcessRendererPool();
     const canvas = document.createElement('canvas');
@@ -283,7 +309,7 @@ describe('OutlineProcessViewport in Chromium', () => {
     );
 
     const fallback = await screen.findByRole('img', { name: /SVG/ });
-    expect(getComputedStyle(fallback).touchAction).toBe('auto');
+    expect(getComputedStyle(fallback).touchAction).toBe('pan-y');
     expect(fallback.querySelectorAll('path')).toHaveLength(24 * 4);
     expect(screen.queryByRole('group', { name: '模型預覽控制' })).not.toBeInTheDocument();
   });

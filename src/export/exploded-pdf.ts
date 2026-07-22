@@ -5,6 +5,7 @@ import {
   type ColoredOutlineDocument,
   type ColoredOutlineRole,
 } from './colored-outline-document';
+import { createColoredExportLayout } from './package';
 
 const MM_TO_POINTS = 72 / 25.4;
 const FIXED_DATE = new Date('2000-01-01T00:00:00.000Z');
@@ -13,6 +14,9 @@ const ROLE_RGB = Object.freeze({
   DEEP_RED: rgb(0xe5 / 255, 0x48 / 255, 0x4d / 255),
   LIGHT_BLUE: rgb(0x3a / 255, 0x78 / 255, 0xd4 / 255),
 });
+const ROLE_LEGEND_LABEL = 'BLACK CUT | RED DEEP | BLUE LIGHT';
+const RELATIVE_LEVEL_GUIDANCE = 'Red and blue are relative processing levels, not literal machine settings.';
+const TEST_CUT_GUIDANCE = 'Assign machine-specific settings after material test cuts.';
 
 function configure(pdf: PDFDocument, title: string, keywords: readonly string[]): void {
   pdf.setTitle(title);
@@ -91,38 +95,39 @@ export async function writeColoredPreviewPdf(
     roleKeyword,
     'scale:1:1',
     'disclaimer:verify-fit-before-fabrication',
+    'levels:relative-machine-settings-after-test-cuts',
     ...document.layers.map((layer) => `layer:${layer.order}:${layer.id}`),
   ], (pdf, font, drawCheckpoint) => {
-    const maximumWidth = Math.max(...document.layers.map((layer) => {
-      const box = layer.roles.CUT_BLACK[0].boundsMm;
-      return box.maxX - box.minX;
-    }));
-    const totalHeight = document.layers.reduce((sum, layer) => {
-      const box = layer.roles.CUT_BLACK[0].boundsMm;
-      return sum + box.maxY - box.minY + 12;
-    }, 16);
-    const page = pdf.addPage([(maximumWidth + 34) * MM_TO_POINTS, totalHeight * MM_TO_POINTS]);
-    let cursorY = page.getHeight() - 12 * MM_TO_POINTS;
-    for (const layer of document.layers) {
-      drawCheckpoint('pdf:preview-layer-loop');
-      const exterior = layer.roles.CUT_BLACK[0], box = exterior.boundsMm;
-      const height = box.maxY - box.minY;
-      const originX = 12 * MM_TO_POINTS, originY = cursorY - height * MM_TO_POINTS;
-      page.drawText(`${layer.order}. ${layer.id}  1:1`, {
-        x: originX, y: cursorY + 2 * MM_TO_POINTS, size: 8, font,
-      });
-      for (const role of Object.keys(COLORED_ROLE_COLORS) as ColoredOutlineRole[]) {
-        for (const contour of layer.roles[role]) drawLoop(
-          page,
-          contour.outer,
-          ([x, y]) => [originX + (x - box.minX) * MM_TO_POINTS, originY + (y - box.minY) * MM_TO_POINTS],
-          role,
-          drawCheckpoint,
-        );
-      }
-      cursorY = originY - 12 * MM_TO_POINTS;
+    const layout = createColoredExportLayout(document, drawCheckpoint);
+    const page = pdf.addPage([layout.width * MM_TO_POINTS, (layout.height + 24) * MM_TO_POINTS]);
+    const map = ([x, y]: readonly [number, number]) => [x * MM_TO_POINTS, y * MM_TO_POINTS] as const;
+    const layerLabels = document.layers.map((layer) => {
+      const exterior = layout.entities.find((entity) => entity.physicalLayerId === layer.id && entity.role === 'CUT_BLACK');
+      if (!exterior) throw new RangeError('Canonical fabrication layout is missing a layer exterior');
+      const xs = exterior.points.map(([x]) => x), ys = exterior.points.map(([, y]) => y);
+      return {
+        layer,
+        x: (Math.min(...xs) + 1) * MM_TO_POINTS,
+        y: (Math.max(...ys) - 3) * MM_TO_POINTS,
+      };
+    });
+    for (const entity of layout.entities) {
+      drawCheckpoint('pdf:preview-entity-loop');
+      drawLoop(page, entity.points, map, entity.role, drawCheckpoint);
     }
-    page.drawText('Verify fit and dimensions before fabrication.', { x: 12 * MM_TO_POINTS, y: 5 * MM_TO_POINTS, size: 7, font });
+    for (const { layer, x, y } of layerLabels) {
+      page.drawText(`Layer ${layer.order}`, { x, y, size: 7, font });
+    }
+    const guidanceY = layout.height * MM_TO_POINTS;
+    page.drawText(`Scale 1:1 | ${ROLE_LEGEND_LABEL}`, {
+      x: 5 * MM_TO_POINTS, y: guidanceY + 17 * MM_TO_POINTS, size: 8, font,
+    });
+    page.drawText(RELATIVE_LEVEL_GUIDANCE, {
+      x: 5 * MM_TO_POINTS, y: guidanceY + 11 * MM_TO_POINTS, size: 7, font,
+    });
+    page.drawText(TEST_CUT_GUIDANCE, {
+      x: 5 * MM_TO_POINTS, y: guidanceY + 5 * MM_TO_POINTS, size: 7, font,
+    });
   }, checkpoint);
 }
 
@@ -137,6 +142,7 @@ export async function writeExplodedViewPdf(
     'view:isometric-exploded',
     'axis:central',
     'legend:CUT_BLACK:#000000,DEEP_RED:#E5484D,LIGHT_BLUE:#3A78D4',
+    'levels:relative-machine-settings-after-test-cuts',
     ...document.layers.map(layerDimensionKeyword),
   ], (pdf, font, drawCheckpoint) => {
     const page = pdf.addPage([297 * MM_TO_POINTS, 210 * MM_TO_POINTS]);
@@ -192,5 +198,7 @@ export async function writeExplodedViewPdf(
       });
       page.drawText(`${role} ${hex}`, { x: 31 * MM_TO_POINTS, y: (192 - index * 7) * MM_TO_POINTS - 3, size: 7, font });
     }
+    page.drawText(RELATIVE_LEVEL_GUIDANCE, { x: 18 * MM_TO_POINTS, y: 19 * MM_TO_POINTS, size: 7, font });
+    page.drawText(TEST_CUT_GUIDANCE, { x: 18 * MM_TO_POINTS, y: 12 * MM_TO_POINTS, size: 7, font });
   }, checkpoint);
 }

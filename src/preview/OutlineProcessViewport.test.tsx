@@ -69,7 +69,7 @@ function maximumFallbackPayload(): OutlinePreviewPayload {
 function fakeScene(): OutlineProcessScene {
   return {
     setPayload: vi.fn(), setStage: vi.fn(), setReducedMotion: vi.fn(), setVisible: vi.fn(),
-    rotateBy: vi.fn(), zoomBy: vi.fn(), resetView: vi.fn(), dispose: vi.fn(),
+    setHighlightedLayer: vi.fn(), rotateBy: vi.fn(), zoomBy: vi.fn(), resetView: vi.fn(), dispose: vi.fn(),
   } as unknown as OutlineProcessScene;
 }
 
@@ -181,6 +181,42 @@ describe('OutlineProcessViewport', () => {
     const transforms = Array.from(fallback.querySelectorAll('[data-layer-id]'), (group) => group.getAttribute('transform'));
     expect(new Set(transforms).size).toBe(3);
     expect(transforms).toEqual(['translate(0 -6)', 'translate(0 0)', 'translate(0 6)']);
+  });
+
+  it('lists ordered layers and highlights one layer in both the scene and SVG fallback', async () => {
+    const user = userEvent.setup();
+    const scene = fakeScene();
+    const { rerender } = render(
+      <OutlineProcessViewport payload={payload('', 3)} stage="result" reducedMotion createScene={() => scene} />,
+    );
+
+    const selector = screen.getByRole('combobox', { name: '選擇預覽切片' });
+    expect(selector).toHaveValue('layer-0');
+    expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual([
+      '第 1 層：layer-0', '第 2 層：layer-1', '第 3 層：layer-2',
+    ]);
+    await user.selectOptions(selector, 'layer-2');
+    expect(scene.setHighlightedLayer).toHaveBeenLastCalledWith('layer-2');
+
+    rerender(<OutlineProcessViewport payload={payload('', 3)} stage="result" reducedMotion />);
+    const fallback = screen.getByRole('img', { name: /SVG/ });
+    expect(fallback.querySelector('[data-layer-id="layer-2"]')).toHaveAttribute('data-selected', 'true');
+    expect(fallback.querySelector('[data-layer-id="layer-0"]')).toHaveAttribute('data-selected', 'false');
+  });
+
+  it('clears a selected layer when a replacement payload no longer contains it', async () => {
+    const user = userEvent.setup();
+    const scene = fakeScene();
+    const view = render(
+      <OutlineProcessViewport payload={payload('', 3)} stage="result" reducedMotion createScene={() => scene} />,
+    );
+
+    await user.selectOptions(screen.getByRole('combobox', { name: '選擇預覽切片' }), 'layer-2');
+    view.rerender(
+      <OutlineProcessViewport payload={payload('-replacement', 2)} stage="result" reducedMotion createScene={() => scene} />,
+    );
+    expect(screen.getByRole('combobox', { name: '選擇預覽切片' })).toHaveValue('layer-0-replacement');
+    expect(scene.setHighlightedLayer).toHaveBeenLastCalledWith('layer-0-replacement');
   });
 
   it('renders the legal maximum fallback geometry without spreading the full point set', () => {

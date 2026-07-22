@@ -37,7 +37,7 @@ type ColoredExportEntity = {
   readonly points: readonly (readonly [number, number])[];
 };
 
-type ColoredExportLayout = {
+export type ColoredExportLayout = {
   readonly width: number;
   readonly height: number;
   readonly entities: readonly ColoredExportEntity[];
@@ -66,7 +66,7 @@ function dxfComment(value: string): string {
   return value.replace(/[\r\n]/g, ' ');
 }
 
-function coloredLayout(
+export function createColoredExportLayout(
   document: ColoredOutlineDocument,
   checkpoint: ColoredDocumentCheckpoint,
 ): ColoredExportLayout {
@@ -124,14 +124,14 @@ export function coloredOutlineEntityRecords(
   document: ColoredOutlineDocument,
   checkpoint: ColoredDocumentCheckpoint = () => undefined,
 ): ColoredOutlineEntityRecord[] {
-  return entityRecords(coloredLayout(document, checkpoint));
+  return entityRecords(createColoredExportLayout(document, checkpoint));
 }
 
 export function writeColoredOutlineSvg(
   document: ColoredOutlineDocument,
   checkpoint: ColoredDocumentCheckpoint = () => undefined,
 ): string {
-  const layout = coloredLayout(document, checkpoint), counts = coloredEntityCounts(layout);
+  const layout = createColoredExportLayout(document, checkpoint), counts = coloredEntityCounts(layout);
   const physicalGroups = document.layers.map((layer) => {
     checkpoint('svg:physical-layer-loop');
     const roleGroups = COLORED_ROLES.map((role) => {
@@ -184,7 +184,7 @@ export function writeColoredOutlineDxf(
   document: ColoredOutlineDocument,
   checkpoint: ColoredDocumentCheckpoint = () => undefined,
 ): string {
-  const layout = coloredLayout(document, checkpoint), counts = coloredEntityCounts(layout);
+  const layout = createColoredExportLayout(document, checkpoint), counts = coloredEntityCounts(layout);
   const layerTable = COLORED_ROLES.map((role) => `0\nLAYER\n2\n${role}\n70\n0\n62\n${COLORED_ACI[role]}\n420\n${COLORED_TRUE_COLOR[role]}\n6\nCONTINUOUS\n`).join('');
   const entities = layout.entities.map((entity) => {
     checkpoint('dxf:entity-loop');

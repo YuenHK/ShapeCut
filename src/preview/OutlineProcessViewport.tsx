@@ -113,7 +113,15 @@ function fallbackViewBox(points: readonly FallbackPoint[]): string {
   return `${minX - padding} ${minY - padding} ${width + padding * 2} ${height + padding * 2}`;
 }
 
-function SvgFallback({ payload, stage }: { readonly payload: OutlinePreviewPayload; readonly stage: OutlineProcessViewportStage }) {
+function SvgFallback({
+  payload,
+  stage,
+  selectedLayerId,
+}: {
+  readonly payload: OutlinePreviewPayload;
+  readonly stage: OutlineProcessViewportStage;
+  readonly selectedLayerId: string | undefined;
+}) {
   const meshPoints = useMemo(() => projectedMeshPoints(payload), [payload]);
   const meshD = useMemo(() => meshPath(payload, meshPoints), [payload, meshPoints]);
   const points = useMemo(() => payload.layers.length === 0
@@ -140,6 +148,8 @@ function SvgFallback({ payload, stage }: { readonly payload: OutlinePreviewPaylo
         <g
           key={layer.id}
           data-layer-id={layer.id}
+          data-selected={selectedLayerId === layer.id ? 'true' : 'false'}
+          opacity={selectedLayerId === undefined || selectedLayerId === layer.id ? 1 : 0.18}
           transform={`translate(0 ${explodedOffset(order, payload.layers.length, stage)})`}
         >
           {[layer.exterior, layer.centralHole, layer.deepFeature, layer.lightFeature]
@@ -180,7 +190,14 @@ export function OutlineProcessViewport({
   const hasInjectedFactory = createScene !== undefined || webglFactory !== undefined;
   const canUseWebGL = webGLIsAvailable(hasInjectedFactory);
   const [fallback, setFallback] = useState(!canUseWebGL);
+  const [selectedLayerId, setSelectedLayerId] = useState<string | undefined>(() => payload.layers[0]?.id);
   const renderedSceneStage = sceneStage(stage);
+
+  useEffect(() => {
+    setSelectedLayerId((current) => payload.layers.some((layer) => layer.id === current)
+      ? current
+      : payload.layers[0]?.id);
+  }, [payload]);
 
   useEffect(() => {
     if (!hostRef.current || !canUseWebGL) {
@@ -228,6 +245,9 @@ export function OutlineProcessViewport({
   }, [payload, canUseWebGL, createScene, webglFactory]);
   useEffect(() => { sceneRef.current?.setStage(renderedSceneStage); }, [renderedSceneStage, canUseWebGL, createScene, webglFactory]);
   useEffect(() => { sceneRef.current?.setReducedMotion(reducedMotion); }, [reducedMotion, canUseWebGL, createScene, webglFactory]);
+  useEffect(() => {
+    sceneRef.current?.setHighlightedLayer(stage === 'result' ? selectedLayerId : undefined);
+  }, [selectedLayerId, stage, canUseWebGL, createScene, webglFactory]);
 
   const rotate = (amount: number): void => sceneRef.current?.rotateBy(amount);
   const zoom = (amount: number): void => sceneRef.current?.zoomBy(amount);
@@ -265,10 +285,11 @@ export function OutlineProcessViewport({
   };
 
   const descriptionId = useId();
+  const showLayerSelector = stage === 'result' && payload.layers.length > 0;
   return (
     <figure className="outline-process-viewport" data-stage={stage}>
       {fallback ? (
-        <SvgFallback payload={payload} stage={stage} />
+        <SvgFallback payload={payload} stage={stage} selectedLayerId={showLayerSelector ? selectedLayerId : undefined} />
       ) : (
         <div
           ref={hostRef}
@@ -302,6 +323,20 @@ export function OutlineProcessViewport({
           <button type="button" onClick={() => zoom(0.2)} aria-label="放大模型">+</button>
           <button type="button" onClick={reset} aria-label="重設視角">重設</button>
         </div>
+      )}
+      {showLayerSelector && (
+        <label className="outline-process-layer-selector">
+          <span>預覽切片</span>
+          <select
+            aria-label="選擇預覽切片"
+            value={selectedLayerId ?? ''}
+            onChange={(event) => setSelectedLayerId(event.currentTarget.value || undefined)}
+          >
+            {payload.layers.map((layer, index) => (
+              <option key={layer.id} value={layer.id}>第 {index + 1} 層：{layer.id}</option>
+            ))}
+          </select>
+        </label>
       )}
     </figure>
   );

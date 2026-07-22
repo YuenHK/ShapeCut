@@ -43,6 +43,9 @@ const EXPECTED_ZIP_NAMES = Object.freeze([
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$/;
 const HASH = /^[0-9a-f]{32}$/i;
 const MM_TO_POINTS = 72 / 25.4;
+const ROLE_LEGEND_LABEL = 'BLACK CUT | RED DEEP | BLUE LIGHT';
+const RELATIVE_LEVEL_GUIDANCE = 'Red and blue are relative processing levels, not literal machine settings.';
+const TEST_CUT_GUIDANCE = 'Assign machine-specific settings after material test cuts.';
 
 export type ColoredEntityRecord = {
   readonly physicalLayerId: string;
@@ -1047,8 +1050,8 @@ export async function parseColoredOutlinePdf(
     throw new Error(`Colored ${kind} PDF layer record cardinality or order is invalid`);
   }
   const fixedTokens = kind === 'preview'
-    ? ['scale:1:1', 'disclaimer:verify-fit-before-fabrication']
-    : ['view:isometric-exploded', 'axis:central'];
+    ? ['scale:1:1', 'disclaimer:verify-fit-before-fabrication', 'levels:relative-machine-settings-after-test-cuts']
+    : ['view:isometric-exploded', 'axis:central', 'levels:relative-machine-settings-after-test-cuts'];
   for (const token of fixedTokens) {
     if (keywords.filter((candidate) => candidate === token).length !== 1) {
       throw new Error(`Colored ${kind} PDF is missing canonical ${token} metadata`);
@@ -1273,44 +1276,37 @@ function reconcilePdf(
     throw new Error(`Colored ${pdf.kind} PDF layer metadata does not reconcile with SVG`);
   }
   if (pdf.kind === 'preview') {
-    const exteriors = svg.layers.map((layer) => exteriorForLayer(svg.entities, layer));
-    const maximumWidth = Math.max(...exteriors.map((entity) => {
-      const bounds = entityBounds(entity);
-      return bounds.maxX - bounds.minX;
-    }));
-    const totalHeight = exteriors.reduce((sum, entity) => {
-      const bounds = entityBounds(entity);
-      return sum + bounds.maxY - bounds.minY + 12;
-    }, 16);
-    const expectedPageSize: readonly [number, number] = [(maximumWidth + 34) * MM_TO_POINTS, totalHeight * MM_TO_POINTS];
+    const extents = canonicalColoredDocumentExtents(svg.entities, 'Colored SVG');
+    const expectedPageSize: readonly [number, number] = [
+      extents.width * MM_TO_POINTS,
+      (extents.height + 24) * MM_TO_POINTS,
+    ];
     if (!nearlyEqual(pdf.pageSize[0], expectedPageSize[0]) || !nearlyEqual(pdf.pageSize[1], expectedPageSize[1])
-      || pdf.textBlockCount !== svg.layers.length + 1) {
+      || pdf.textBlockCount !== svg.layers.length + 3) {
       throw new Error('Colored preview PDF page dimensions or label cardinality do not reconcile with SVG');
     }
     const expectedStrokes: PdfStrokeRecord[] = [];
     const expectedTexts: PdfTextRecord[] = [];
-    let cursorY = expectedPageSize[1] - 12 * MM_TO_POINTS;
-    for (const [layerIndex, layer] of svg.layers.entries()) {
-      const bounds = entityBounds(exteriors[layerIndex]);
-      const height = bounds.maxY - bounds.minY;
-      const originX = 12 * MM_TO_POINTS, originY = cursorY - height * MM_TO_POINTS;
-      expectedTexts.push({ text: `${layer.order}. ${layer.id}  1:1`, size: 8, x: originX, y: cursorY + 2 * MM_TO_POINTS });
-      for (const entity of svg.entities.filter(({ physicalLayerId }) => physicalLayerId === layer.id)) {
-        entity.points.forEach((point, index) => {
-          const next = entity.points[(index + 1) % entity.points.length];
-          expectedStrokes.push(roleStroke(
-            entity.role,
-            [originX + (point[0] - bounds.minX) * MM_TO_POINTS, originY + (point[1] - bounds.minY) * MM_TO_POINTS],
-            [originX + (next[0] - bounds.minX) * MM_TO_POINTS, originY + (next[1] - bounds.minY) * MM_TO_POINTS],
-          ));
-        });
-      }
-      cursorY = originY - 12 * MM_TO_POINTS;
+    for (const entity of svg.entities) {
+      entity.points.forEach((point, index) => {
+        const next = entity.points[(index + 1) % entity.points.length];
+        expectedStrokes.push(roleStroke(
+          entity.role,
+          [point[0] * MM_TO_POINTS, point[1] * MM_TO_POINTS],
+          [next[0] * MM_TO_POINTS, next[1] * MM_TO_POINTS],
+        ));
+      });
     }
-    expectedTexts.push({
-      text: 'Verify fit and dimensions before fabrication.', size: 7,
-      x: 12 * MM_TO_POINTS, y: 5 * MM_TO_POINTS,
-    });
+    for (const layer of svg.layers) {
+      const bounds = entityBounds(exteriorForLayer(svg.entities, layer));
+      expectedTexts.push({
+        text: `Layer ${layer.order}`, size: 7,
+        x: (bounds.minX + 1) * MM_TO_POINTS, y: (bounds.maxY - 3) * MM_TO_POINTS,
+      });
+    }
+    expectedTexts.push({ text: `Scale 1:1 | ${ROLE_LEGEND_LABEL}`, size: 8, x: 5 * MM_TO_POINTS, y: (extents.height + 17) * MM_TO_POINTS });
+    expectedTexts.push({ text: RELATIVE_LEVEL_GUIDANCE, size: 7, x: 5 * MM_TO_POINTS, y: (extents.height + 11) * MM_TO_POINTS });
+    expectedTexts.push({ text: TEST_CUT_GUIDANCE, size: 7, x: 5 * MM_TO_POINTS, y: (extents.height + 5) * MM_TO_POINTS });
     assertPdfTextRecords(pdf.textRecords, expectedTexts, 'preview');
     assertPdfStrokeRecords(pdf.strokeRecords, expectedStrokes, 'preview');
     return;
@@ -1330,7 +1326,7 @@ function reconcilePdf(
   });
   const expectedPageSize: readonly [number, number] = [297 * MM_TO_POINTS, 210 * MM_TO_POINTS];
   if (!nearlyEqual(pdf.pageSize[0], expectedPageSize[0]) || !nearlyEqual(pdf.pageSize[1], expectedPageSize[1])
-    || pdf.textBlockCount !== svg.layers.length + 4) {
+    || pdf.textBlockCount !== svg.layers.length + 6) {
     throw new Error('Colored exploded PDF page dimensions or label cardinality do not reconcile with SVG');
   }
   const centerX = 120 * MM_TO_POINTS, baseY = 36 * MM_TO_POINTS;
@@ -1383,6 +1379,8 @@ function reconcilePdf(
     text: `${role} ${ROLE_COLORS[role]}`, size: 7,
     x: 31 * MM_TO_POINTS, y: (192 - index * 7) * MM_TO_POINTS - 3,
   }));
+  expectedTexts.push({ text: RELATIVE_LEVEL_GUIDANCE, size: 7, x: 18 * MM_TO_POINTS, y: 19 * MM_TO_POINTS });
+  expectedTexts.push({ text: TEST_CUT_GUIDANCE, size: 7, x: 18 * MM_TO_POINTS, y: 12 * MM_TO_POINTS });
   assertPdfTextRecords(pdf.textRecords, expectedTexts, 'exploded');
   assertPdfStrokeRecords(pdf.strokeRecords, expectedStrokes, 'exploded');
 }
@@ -1395,13 +1393,14 @@ function assertPublicText(value: string, label: string): void {
     throw new Error(`${label} contains malformed percent encoding`);
   }
   const pathScanText = decoded.replace(/<\/[A-Za-z][A-Za-z0-9:._-]*\s*>/g, '');
+  const machineText = decoded.normalize('NFKC').replaceAll('material test cuts', '');
   const checks = [
     ['percent encoding', /%[0-9a-f]{2}/i, decoded],
     ['email', /\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b/, decoded],
     ['file URI', /\bfile:\/\//i, decoded],
     ['private POSIX path', /(?:^|[^\p{L}\p{N}_/])\/(?![/>])/u, pathScanText],
     ['private Windows path', /(?:^|[^\p{L}\p{N}_\\/])(?:[A-Za-z]:[\\/]|\\{2,}(?!\\)[^\\\s"'<>]+\\+(?!\\)[^\\\s"'<>]+)/u, pathScanText],
-    ['machine or source claim', /80\s*%|40\s*%|\bpower\b|\bspeed\b|\bpasses?\b|\bmaterial\b|\.stl\b|\.json\b|manifest/i, decoded.normalize('NFKC')],
+    ['machine or source claim', /80\s*%|40\s*%|\bpower\b|\bspeed\b|\bpasses?\b|\bmaterial\b|\.stl\b|\.json\b|manifest/i, machineText],
   ] as const;
   const failed = checks.find(([, pattern, candidate]) => pattern.test(candidate));
   if (failed) {

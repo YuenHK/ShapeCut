@@ -18,7 +18,7 @@ Preserve more useful geometry from an uploaded STL without returning to an engin
 - The central hole is the largest enclosed hole nearest the selected rotational axis. Its position may vary slightly by layer.
 - A hole is retained only when its equivalent diameter is at least `max(0.5 mm, 1% of the layer model width)`.
 - Red and blue features come from an adaptive per-layer surface-depth map. Depth, not area order alone, chooses red versus blue.
-- The processing visualization uses the approved centered exploded-view direction: transparent wireframe, horizontal rotation, axial layer expansion, and real colored feature overlays.
+- The processing visualization uses the approved centered exploded-view direction: transparent wireframe, horizontal rotation, axial layer expansion, and real colored feature overlays in a consistent reflected display frame.
 - The exploded-view PDF includes layer order, thickness, X/Y dimensions, central-hole diameter, central axis, and a color legend.
 - Downloads are SVG, DXF, preview PDF, exploded-view PDF, and a ZIP containing exactly those four files.
 

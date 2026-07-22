@@ -228,6 +228,7 @@ export interface OutlineProcessScene {
   setStage(stage: AutomaticOutlineProgressStage): void;
   setReducedMotion(reduced: boolean): void;
   setVisible(visible: boolean): void;
+  setHighlightedLayer(layerId: string | undefined): void;
   rotateBy(radians: number): void;
   zoomBy(amount: number): void;
   resetView(): void;
@@ -244,7 +245,7 @@ type PayloadResources = {
   readonly centralAxis: Line<BufferGeometry, LineBasicMaterial>;
   readonly axialRange: readonly [number, number];
   readonly geometries: ReadonlySet<BufferGeometry>;
-  readonly materials: ReadonlySet<Material>;
+  readonly materials: Set<Material>;
   disposed: boolean;
 };
 
@@ -449,6 +450,36 @@ function disposePayloadResources(resources: PayloadResources): void {
   disposeOwnedResources(resources.root, resources.geometries, resources.materials);
 }
 
+function applyLayerHighlight(resources: PayloadResources, selectedLayerId: string | undefined): void {
+  for (const group of resources.layerGroups) {
+    if (selectedLayerId === undefined) {
+      group.userData.selected = false;
+      group.traverse((object) => {
+        if (!(object instanceof Line) || !(object.material instanceof LineBasicMaterial)) return;
+        const baseOpacity = object.userData.baseOpacity;
+        if (typeof baseOpacity === 'number') object.material.opacity = baseOpacity;
+      });
+      continue;
+    }
+    const selected = selectedLayerId === undefined || group.name === selectedLayerId;
+    group.userData.selected = selectedLayerId !== undefined && selected;
+    group.traverse((object) => {
+      if (!(object instanceof Line) || !(object.material instanceof LineBasicMaterial)) return;
+      const line = object as Line<BufferGeometry, LineBasicMaterial>;
+      let material = line.userData.highlightMaterial as LineBasicMaterial | undefined;
+      if (!material) {
+        material = line.material.clone();
+        line.userData.highlightMaterial = material;
+        line.userData.baseOpacity = line.material.opacity;
+        line.material = material;
+        resources.materials.add(material);
+      }
+      const baseOpacity = typeof line.userData.baseOpacity === 'number' ? line.userData.baseOpacity : material.opacity;
+      material.opacity = selected ? baseOpacity : Math.min(baseOpacity, 0.18);
+    });
+  }
+}
+
 export function createOutlineProcessScene(
   host: HTMLElement,
   initialPayload: OutlinePreviewPayload,
@@ -477,6 +508,7 @@ export function createOutlineProcessScene(
   let stage = options.stage ?? 'analyzing';
   let explosionAmount = reducedMotion ? explosionForStage(stage) : 0;
   let lastFrameTime: number | undefined;
+  let selectedLayerId: string | undefined;
   const usesDefaultRenderer = options.createRenderer === undefined;
 
   const render = (): void => renderer?.render(scene, camera);
@@ -608,6 +640,10 @@ export function createOutlineProcessScene(
       resources = replacement;
       rotatingGroup.add(replacement.root);
       disposePayloadResources(previous);
+      if (selectedLayerId && !replacement.layerGroups.some((group) => group.name === selectedLayerId)) {
+        selectedLayerId = undefined;
+      }
+      applyLayerHighlight(replacement, selectedLayerId);
       explosionAmount = reducedMotion ? explosionForStage(stage) : 0;
       frame();
       render();
@@ -633,6 +669,14 @@ export function createOutlineProcessScene(
       manualVisible = visible;
       refreshAnimation();
       if (visible) render();
+    },
+    setHighlightedLayer(layerId) {
+      if (disposed) return;
+      selectedLayerId = layerId && resources!.layerGroups.some((group) => group.name === layerId)
+        ? layerId
+        : undefined;
+      applyLayerHighlight(resources!, selectedLayerId);
+      render();
     },
     rotateBy(radians) {
       if (disposed || !Number.isFinite(radians)) return;

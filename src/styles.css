@@ -88,8 +88,7 @@ progress::-webkit-progress-bar { background: var(--mint-100); } progress::-webki
 .result-viewport .outline-process-viewport { height: 100%; min-height: 360px; }
 .outline-process-viewport { position: relative; display: grid; width: 100%; min-height: 320px; margin: 0; overflow: hidden; border: 1px solid rgba(34, 167, 125, .18); border-radius: 18px; background: linear-gradient(145deg, rgba(244,253,249,.96), rgba(221,248,237,.72)); isolation: isolate; }
 .outline-process-webgl, .outline-process-fallback { display: block; width: 100%; min-height: 280px; }
-.outline-process-webgl { touch-action: pan-y; }
-.outline-process-fallback { touch-action: auto; }
+.outline-process-webgl, .outline-process-fallback { touch-action: pan-y; }
 .outline-process-webgl { cursor: ew-resize; }
 .outline-process-webgl:focus-visible { outline: 3px solid #176ad0; outline-offset: -4px; }
 .outline-process-canvas { display: block; width: 100%; height: 100%; min-height: 280px; }
@@ -100,6 +99,9 @@ progress::-webkit-progress-bar { background: var(--mint-100); } progress::-webki
 .outline-process-controls { position: absolute; right: 12px; bottom: 40px; z-index: 1; display: flex; gap: 6px; padding: 6px; border: 1px solid rgba(8,116,90,.14); border-radius: 12px; background: rgba(255,255,255,.9); box-shadow: 0 7px 22px rgba(22,89,73,.1); backdrop-filter: blur(8px); }
 .outline-process-controls button { min-width: 44px; min-height: 44px; padding: 0 9px; border: 1px solid var(--mint-300); border-radius: 9px; color: var(--mint-700); background: white; font-weight: 800; cursor: pointer; }
 .outline-process-controls button:hover { background: var(--mint-100); }
+.outline-process-layer-selector { position: absolute; left: 12px; bottom: 40px; z-index: 1; display: grid; min-width: min(230px, calc(100% - 126px)); gap: 3px; color: var(--mint-700); font-size: .72rem; font-weight: 800; }
+.outline-process-layer-selector select { min-height: 44px; padding: 0 10px; border: 1px solid var(--mint-300); border-radius: 9px; color: var(--ink); background: rgba(255,255,255,.94); font-weight: 700; box-shadow: 0 7px 22px rgba(22,89,73,.1); }
+.outline-process-layer-selector select:focus-visible { outline: 3px solid #176ad0; outline-offset: 2px; }
 .result-summary { display: grid; margin: 0; align-content: center; gap: 1px; overflow: hidden; border: 1px solid var(--mint-100); border-radius: 16px; background: var(--mint-100); }
 .result-summary div { display: flex; min-height: 62px; padding: 12px 18px; align-items: center; justify-content: space-between; gap: 18px; background: white; }
 .result-summary dt { color: var(--muted); }.result-summary dd { margin: 0; font-weight: 800; text-align: right; }
@@ -138,6 +140,6 @@ progress::-webkit-progress-bar { background: var(--mint-100); } progress::-webki
   .secondary-downloads { grid-template-columns: 1fr 1fr; }
   .color-legend ul { grid-template-columns: 1fr; gap: 2px; }
   .processing-card.has-preview { min-height: 680px; }.processing-foreground { padding: 20px 16px; }.processing-viewport .outline-process-webgl, .processing-viewport .outline-process-canvas, .processing-viewport .outline-process-fallback { min-height: 640px; }
-  .outline-process-viewport { min-height: 270px; }.outline-process-webgl, .outline-process-canvas { min-height: 230px; }.outline-process-fallback { height: 230px; }.outline-process-controls { right: 8px; bottom: 38px; }
+  .outline-process-viewport { min-height: 270px; }.outline-process-webgl, .outline-process-canvas { min-height: 230px; }.outline-process-fallback { height: 230px; }.outline-process-controls { right: 8px; bottom: 38px; }.outline-process-layer-selector { left: 8px; bottom: 38px; min-width: min(200px, calc(100% - 120px)); }
   .primary-button, .change-file-button { width: 100% !important; }
 }

@@ -259,6 +259,26 @@ describe('OutlineProcessScene', () => {
     view.dispose();
   });
 
+  it('dims unselected layers without changing their contour geometry', () => {
+    globalThis.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+    const view = createOutlineProcessScene(document.createElement('div'), payload(), {
+      stage: 'packaging', reducedMotion: true, createRenderer: renderer,
+    });
+    const firstLine = view.layerGroups[0].children[0] as Line<BufferGeometry, LineBasicMaterial>;
+    const selectedLine = view.layerGroups[2].children[0] as Line<BufferGeometry, LineBasicMaterial>;
+    const firstGeometry = firstLine.geometry;
+
+    view.setHighlightedLayer('layer-2');
+    expect(view.layerGroups[2].userData.selected).toBe(true);
+    expect(view.layerGroups[0].userData.selected).toBe(false);
+    expect(firstLine.geometry).toBe(firstGeometry);
+    expect(firstLine.material.opacity).toBeLessThan(selectedLine.material.opacity);
+
+    view.setHighlightedLayer(undefined);
+    expect(firstLine.material.opacity).toBe(selectedLine.material.opacity);
+    view.dispose();
+  });
+
   it('runs animation frames only while visible and motion is allowed', () => {
     globalThis.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
     globalThis.IntersectionObserver = IntersectionObserverStub as unknown as typeof IntersectionObserver;

@@ -244,6 +244,15 @@ describe('release E2E colored artifact parsers', () => {
     expect(preview.geometryRecords).toHaveLength(svg.entities.reduce((sum, entity) => sum + entity.points.length, 0));
     expect(exploded.geometryRecords).toHaveLength(preview.geometryRecords.length + 3);
     expect(preview.fingerprints).toEqual(exploded.fingerprints);
+    for (const pdf of [preview, exploded]) {
+      expect(pdf.textRecords.map(({ text }) => text)).toEqual(expect.arrayContaining([
+        'Red and blue are relative processing levels, not literal machine settings.',
+        'Assign machine-specific settings after material test cuts.',
+      ]));
+    }
+    expect(preview.textRecords.map(({ text }) => text)).toEqual(expect.arrayContaining([
+      'Scale 1:1 | BLACK CUT | RED DEEP | BLUE LIGHT', 'Layer 3',
+    ]));
   });
 
   it('enumerates the exact four ZIP records in encounter order and reconciles byte identity', async () => {
