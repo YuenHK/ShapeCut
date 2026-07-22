@@ -2,6 +2,7 @@ import type { Point2 } from '../decomposition/types';
 import type { TriangleMesh } from '../mesh/types';
 import type { ColoredOutlineLayer, FeatureContour } from '../outline-features/types';
 import type { LauncherCandidateGroup } from '../outline-assembly/launcher';
+import type { PhysicalCutProtection } from '../outline-assembly/physical-cut-envelope';
 import {
   CENTRAL_HOLE_OMISSION_WARNING,
   selectSharedCentralHole,
@@ -15,7 +16,7 @@ import {
 } from '../outline-features/depth-field';
 import { projectMesh, rasterCellSize, rasterProjectLayer, type ProjectedMesh } from './raster';
 import { contourBounds, signedArea, simplifyClosedLoop, type Bounds2 } from './simplify';
-import type { OutlineAxisSelection, OutlineBudgets, OutlineLayerSpec } from './types';
+import { DEFAULT_OUTLINE_BUDGETS, type OutlineAxisSelection, type OutlineBudgets, type OutlineLayerSpec } from './types';
 import { validateOutlineLayer } from './validate';
 
 export type OutlineLayer = {
@@ -44,6 +45,8 @@ export type OutlineExtraction = {
 export type ExistingBlackCuts = {
   readonly launcherCuts: readonly FeatureContour[];
   readonly fastenerHoles: readonly FeatureContour[];
+  /** Production-only material-aware envelopes used before engraving retention. */
+  readonly engravingProtection?: PhysicalCutProtection;
 };
 export type OutlineFeatureExtractionOptions = {
   readonly existingBlackCuts?: readonly ExistingBlackCuts[];
@@ -229,10 +232,13 @@ function boundedBlackCutsForLayers(
   });
 }
 
-function launcherCandidateGroups(
+export function launcherCandidateGroupsFromHoleCandidates(
   candidates: readonly CentralHoleCandidate[],
-  deadline: number,
+  deadline = Date.now() + DEFAULT_OUTLINE_BUDGETS.maxRuntimeMs,
+  checkpoint: () => void = () => undefined,
 ): readonly LauncherCandidateGroup[] {
+  checkpoint();
+  checkDeadline(deadline);
   const ranked = candidates.filter(({ outer, closed }) => closed !== false && outer.length >= 3 && outer.length <= 4096)
     .map((candidate) => ({
       candidate,
@@ -246,6 +252,7 @@ function launcherCandidateGroups(
   for (let first = 0; first + 2 < ranked.length && groups.length < 64; first += 1) {
     for (let second = first + 1; second + 1 < ranked.length && groups.length < 64; second += 1) {
       for (let third = second + 1; third < ranked.length && groups.length < 64; third += 1) {
+        checkpoint();
         checkDeadline(deadline);
         const loops = [ranked[first], ranked[second], ranked[third]].map(({ candidate, evidence }) => ({
           outer: candidate.outer,
@@ -381,7 +388,7 @@ export function extractProjectedContours(
   const blackCutPlan = resolveBlackCuts(options, {
     layers,
     holeSelections,
-    launcherCandidates: launcherCandidateGroups(holeRequests.at(-1)?.candidates ?? [], deadline),
+    launcherCandidates: launcherCandidateGroupsFromHoleCandidates(holeRequests.at(-1)?.candidates ?? [], deadline),
     cellSizeMm,
     deadline,
   });
@@ -397,7 +404,10 @@ export function extractProjectedContours(
       budgets,
       totalLayerCount: specs.length,
       maximumFeaturesPerRole: index === layers.length - 1 ? 12 : 1,
-      protectedCuts: [...blackCuts[index].launcherCuts, ...blackCuts[index].fastenerHoles].map(({ outer }) => outer),
+      protectedCuts: blackCuts[index].engravingProtection?.removalEnvelopes
+        ?? [...blackCuts[index].launcherCuts, ...blackCuts[index].fastenerHoles].map(({ outer }) => outer),
+      exteriorClearanceMm: blackCuts[index].engravingProtection?.exteriorClearanceMm,
+      protectedCutClearanceMm: blackCuts[index].engravingProtection?.requiredClearanceMm,
       deadline,
     }));
   const featureWarnings = new Set<string>();
@@ -702,7 +712,7 @@ export function extractExactContours(
   const blackCutPlan = resolveBlackCuts(options, {
     layers,
     holeSelections,
-    launcherCandidates: launcherCandidateGroups(holeRequests.at(-1)?.candidates ?? [], deadline),
+    launcherCandidates: launcherCandidateGroupsFromHoleCandidates(holeRequests.at(-1)?.candidates ?? [], deadline),
     cellSizeMm,
     deadline,
   });
@@ -718,7 +728,10 @@ export function extractExactContours(
       budgets,
       totalLayerCount: specs.length,
       maximumFeaturesPerRole: index === layers.length - 1 ? 12 : 1,
-      protectedCuts: [...blackCuts[index].launcherCuts, ...blackCuts[index].fastenerHoles].map(({ outer }) => outer),
+      protectedCuts: blackCuts[index].engravingProtection?.removalEnvelopes
+        ?? [...blackCuts[index].launcherCuts, ...blackCuts[index].fastenerHoles].map(({ outer }) => outer),
+      exteriorClearanceMm: blackCuts[index].engravingProtection?.exteriorClearanceMm,
+      protectedCutClearanceMm: blackCuts[index].engravingProtection?.requiredClearanceMm,
       deadline,
     }));
   const featureWarnings = new Set<string>();

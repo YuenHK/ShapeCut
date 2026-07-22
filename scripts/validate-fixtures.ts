@@ -13,6 +13,22 @@ import {
   KNIGHT_FORTRESS_LAUNCHER_TEMPLATE,
   renderLauncherTemplateInitializer,
 } from '../src/domain/outline-assembly/launcher-template';
+import { classifyMaterialReadiness } from '../src/domain/materials/schema';
+import { manufacturingGeometryProfile } from '../src/domain/materials/manufacturing-profile';
+import {
+  convertAutomatically,
+  type AutomaticOutlineResult,
+} from '../src/domain/pipeline/automatic-outline-pipeline';
+import {
+  setHoleCandidateProbeForTesting,
+  type HoleCandidateProbeEvidence,
+} from '../src/domain/outline-2.5d/extract';
+import { createOutlinePackage } from '../src/export/outline-package';
+import { READY_TEST_MATERIAL } from '../src/test/ready-material';
+import {
+  validateLauncherRuntimeGeometry,
+  type LauncherRuntimeValidation,
+} from './launcher-runtime-validation';
 
 const execFileAsync = promisify(execFile);
 const arguments_ = process.argv.slice(2);
@@ -111,6 +127,7 @@ const outputComparisonPass = automaticOutputs.length >= 2
   && new Set(automaticOutputs.map(({ dimensionsMm }) => JSON.stringify(dimensionsMm))).size >= 2;
 let launcherTemplatePass: boolean | 'not-requested' = 'not-requested';
 let launcherTemplateDeterministic: boolean | 'not-requested' = 'not-requested';
+let launcherRuntimeValidation: readonly LauncherRuntimeValidation[] | 'not-requested' = 'not-requested';
 if (!publicOnly) {
   let first: string, second: string;
   try {
@@ -124,6 +141,44 @@ if (!publicOnly) {
   }
   launcherTemplatePass = first === renderLauncherTemplateInitializer(KNIGHT_FORTRESS_LAUNCHER_TEMPLATE);
   launcherTemplateDeterministic = first === second;
+  if (classifyMaterialReadiness(READY_TEST_MATERIAL).status !== 'ready') {
+    throw new Error('Private launcher validation material is not release-ready');
+  }
+  const material = manufacturingGeometryProfile(READY_TEST_MATERIAL);
+  const validations: LauncherRuntimeValidation[] = [];
+  for (let index = 0; index < launcherInputs.length; index += 1) {
+    const caseId = index === 0 ? 'reference-a' : 'reference-b';
+    try {
+      const bytes = await readFile(launcherInputs[index]!);
+      const source = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      const evidence: HoleCandidateProbeEvidence[] = [];
+      let runtime: AutomaticOutlineResult;
+      setHoleCandidateProbeForTesting((item) => { evidence.push(item); });
+      try {
+        runtime = await convertAutomatically({ bytes: source, material });
+      } finally {
+        setHoleCandidateProbeForTesting(undefined);
+      }
+      const packaged = await createOutlinePackage(runtime);
+      const artifactLauncherCutCount = packaged.cutSvg.match(/-launcher-clearance-/g)?.length ?? 0;
+      validations.push(validateLauncherRuntimeGeometry({
+        caseId,
+        runtime: {
+          mode: runtime.mode,
+          material: runtime.material,
+          launcher: runtime.assembly.launcher,
+          layers: runtime.coloredLayers.map(({ id, exterior, centralHole, launcherCuts }) => ({
+            id, exterior, centralHole, launcherCuts,
+          })),
+        },
+        evidence,
+        artifactLauncherCutCount,
+      }));
+    } catch {
+      throw new Error(`Private launcher runtime validation failed for ${caseId}`);
+    }
+  }
+  launcherRuntimeValidation = validations;
 }
 const summary = {
   schemaVersion: 1,
@@ -133,11 +188,13 @@ const summary = {
   outputComparisonPass,
   launcherTemplatePass,
   launcherTemplateDeterministic,
+  launcherRuntimeValidation,
   results,
 };
 console.log(JSON.stringify(summary, null, 2));
 if (autoSuccess !== 8 || !outputComparisonPass || launcherTemplatePass === false
-  || launcherTemplateDeterministic === false || results.some(({ pass }) => !pass)) {
+  || launcherTemplateDeterministic === false || (launcherRuntimeValidation !== 'not-requested'
+    && launcherRuntimeValidation.length !== 2) || results.some(({ pass }) => !pass)) {
   throw new Error(`Acceptance failed: ${autoSuccess}/8 automatic models passed; output comparison ${outputComparisonPass ? 'passed' : 'failed'}`);
 }
 

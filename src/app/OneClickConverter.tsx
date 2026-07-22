@@ -14,7 +14,7 @@ import {
   manufacturingGeometryProfile,
   type ManufacturingGeometryProfile,
 } from '../domain/materials/manufacturing-profile';
-import { MaterialProfileSchema, type MaterialProfileV1 } from '../domain/materials/schema';
+import { classifyMaterialReadiness, type MaterialProfileV1 } from '../domain/materials/schema';
 import { OutlineProcessViewport } from '../preview/OutlineProcessViewport';
 import { shutdownOutlineProcessRendererPool, warmOutlineProcessRenderer } from '../preview/outline-process-scene';
 import {
@@ -73,8 +73,9 @@ const STAGE_LABELS: Record<AutomaticOutlineProgressStage, string> = {
 function selectableMaterials(savedProfiles: readonly MaterialProfileV1[] = []): readonly ManufacturingGeometryProfile[] {
   const seen = new Set<string>();
   return [...DEFAULT_PENDING_MATERIAL_PROFILES, ...savedProfiles].flatMap((profile) => {
-    if (seen.has(profile.id) || !MaterialProfileSchema.safeParse(profile).success) return [];
+    if (seen.has(profile.id)) return [];
     seen.add(profile.id);
+    if (classifyMaterialReadiness(profile).status !== 'ready') return [];
     return [manufacturingGeometryProfile(profile)];
   });
 }
@@ -333,6 +334,10 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
     timelineRef.current = undefined;
     services.cancel();
     releaseCurrentDownloads();
+    if (!/\.stl$/iu.test(file.name)) {
+      setView({ kind: 'failure', message: '只支援 STL 檔案，請選擇副檔名為 .stl 的模型。' });
+      return;
+    }
     if (file.size > MAX_STL_BYTES) {
       setView({ kind: 'failure', fileName: file.name, message: failureMessage(new AutomaticOutlineError('RESOURCE_LIMIT', '模型超出安全處理資源上限')) });
       return;

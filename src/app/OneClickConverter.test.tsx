@@ -13,6 +13,7 @@ import { defaultPendingMaterialProfile } from '../domain/materials/default-profi
 import { SupersededError } from '../workers/geometry-client';
 import { OutlineArtifactError } from '../workers/geometry-api';
 import * as outlineProcessScene from '../preview/outline-process-scene';
+import { BLOCKED_TEST_MATERIAL, READY_TEST_MATERIAL } from '../test/ready-material';
 import {
   OneClickConverter,
   type OneClickConverterServices,
@@ -125,13 +126,14 @@ function services(overrides: Partial<OneClickConverterServices> = {}): OneClickC
         cancel: vi.fn(),
       };
     },
+    materialProfiles: [READY_TEST_MATERIAL],
     ...overrides,
   };
 }
 
 async function uploadAndSelectMaterial(user: ReturnType<typeof userEvent.setup>, file: File): Promise<void> {
   await user.upload(screen.getByLabelText('選擇 STL 模型'), file);
-  await user.selectOptions(await screen.findByLabelText('選擇製作材料'), 'plywood-3');
+  await user.selectOptions(await screen.findByLabelText('選擇製作材料'), READY_TEST_MATERIAL.id);
 }
 
 describe('OneClickConverter', () => {
@@ -156,7 +158,7 @@ describe('OneClickConverter', () => {
       const file = new File(['mesh'], 'fast.stl');
       Object.defineProperty(file, 'arrayBuffer', { value: vi.fn().mockResolvedValue(new ArrayBuffer(4)) });
       await act(async () => { fireEvent.change(screen.getByLabelText('選擇 STL 模型'), { target: { files: [file] } }); });
-      await act(async () => { fireEvent.change(screen.getByLabelText('選擇製作材料'), { target: { value: 'plywood-3' } }); });
+      await act(async () => { fireEvent.change(screen.getByLabelText('選擇製作材料'), { target: { value: READY_TEST_MATERIAL.id } }); });
       await act(async () => { await Promise.resolve(); });
       await vi.advanceTimersByTimeAsync(7_999);
       expect(screen.queryByRole('heading', { name: '轉換完成' })).toBeNull();
@@ -192,7 +194,7 @@ describe('OneClickConverter', () => {
       Object.defineProperty(first, 'arrayBuffer', { value: vi.fn().mockResolvedValue(new ArrayBuffer(4)) });
       Object.defineProperty(replacement, 'arrayBuffer', { value: vi.fn().mockResolvedValue(new ArrayBuffer(4)) });
       await act(async () => { fireEvent.change(screen.getByLabelText('選擇 STL 模型'), { target: { files: [first] } }); });
-      await act(async () => { fireEvent.change(screen.getByLabelText('選擇製作材料'), { target: { value: 'plywood-3' } }); });
+      await act(async () => { fireEvent.change(screen.getByLabelText('選擇製作材料'), { target: { value: READY_TEST_MATERIAL.id } }); });
       await act(async () => { await Promise.resolve(); });
       packaged.resolve(packageDownloads('held'));
       await act(async () => { await Promise.resolve(); });
@@ -223,7 +225,7 @@ describe('OneClickConverter', () => {
       Object.defineProperty(first, 'arrayBuffer', { value: vi.fn().mockResolvedValue(new ArrayBuffer(4)) });
       Object.defineProperty(replacement, 'arrayBuffer', { value: vi.fn().mockResolvedValue(new ArrayBuffer(4)) });
       await act(async () => { fireEvent.change(screen.getByLabelText('選擇 STL 模型'), { target: { files: [first] } }); });
-      await act(async () => { fireEvent.change(screen.getByLabelText('選擇製作材料'), { target: { value: 'plywood-3' } }); });
+      await act(async () => { fireEvent.change(screen.getByLabelText('選擇製作材料'), { target: { value: READY_TEST_MATERIAL.id } }); });
       await act(async () => { await Promise.resolve(); });
       await act(async () => { fireEvent.change(screen.getByLabelText('選擇 STL 模型'), { target: { files: [replacement] } }); });
       packaged.resolve(packageDownloads('late'));
@@ -250,7 +252,7 @@ describe('OneClickConverter', () => {
       const file = new File(['mesh'], 'unmount-held.stl');
       Object.defineProperty(file, 'arrayBuffer', { value: vi.fn().mockResolvedValue(new ArrayBuffer(4)) });
       await act(async () => { fireEvent.change(screen.getByLabelText('選擇 STL 模型'), { target: { files: [file] } }); });
-      await act(async () => { fireEvent.change(screen.getByLabelText('選擇製作材料'), { target: { value: 'plywood-3' } }); });
+      await act(async () => { fireEvent.change(screen.getByLabelText('選擇製作材料'), { target: { value: READY_TEST_MATERIAL.id } }); });
       await act(async () => { await Promise.resolve(); });
       packaged.resolve(packageDownloads('unmount-held'));
       await act(async () => { await Promise.resolve(); });
@@ -281,7 +283,7 @@ describe('OneClickConverter', () => {
       const file = new File(['mesh'], 'late-progress.stl');
       Object.defineProperty(file, 'arrayBuffer', { value: vi.fn().mockResolvedValue(new ArrayBuffer(4)) });
       await act(async () => { fireEvent.change(screen.getByLabelText('選擇 STL 模型'), { target: { files: [file] } }); });
-      await act(async () => { fireEvent.change(screen.getByLabelText('選擇製作材料'), { target: { value: 'plywood-3' } }); });
+      await act(async () => { fireEvent.change(screen.getByLabelText('選擇製作材料'), { target: { value: READY_TEST_MATERIAL.id } }); });
       await act(async () => { await Promise.resolve(); });
       report?.({ stage: 'analyzing', preview: result.preview });
       await vi.advanceTimersByTimeAsync(8_000);
@@ -355,7 +357,7 @@ describe('OneClickConverter', () => {
     const api = services();
     render(<OneClickConverter services={api} />);
     const file = new File(['solid model'], 'spinner.stl', { type: 'model/stl' });
-    const expectedSubset = manufacturingGeometryProfile(defaultPendingMaterialProfile('plywood-3')!);
+    const expectedSubset = manufacturingGeometryProfile(READY_TEST_MATERIAL);
 
     await user.upload(screen.getByLabelText('選擇 STL 模型'), file);
 
@@ -388,9 +390,63 @@ describe('OneClickConverter', () => {
     expect(screen.queryByLabelText('選擇製作材料')).toBeNull();
     expect(api.convert).not.toHaveBeenCalled();
     replacementRead.resolve(replacementBytes);
-    await user.selectOptions(await screen.findByLabelText('選擇製作材料'), 'plywood-3');
+    await user.selectOptions(await screen.findByLabelText('選擇製作材料'), READY_TEST_MATERIAL.id);
 
     expect(api.convert).toHaveBeenCalledWith(replacementBytes, expect.any(Object), expect.any(Function));
+  });
+
+  it('only exposes profiles classified ready and never starts from pending or blocked material evidence', async () => {
+    const user = userEvent.setup();
+    const api = services({
+      materialProfiles: [
+        defaultPendingMaterialProfile('cardboard-2')!,
+        BLOCKED_TEST_MATERIAL,
+        READY_TEST_MATERIAL,
+      ],
+    });
+    render(<OneClickConverter services={api} />);
+
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'ready-only.stl'));
+    const picker = await screen.findByLabelText('選擇製作材料');
+
+    expect(screen.queryByRole('option', { name: /pending/i })).toBeNull();
+    expect(screen.queryByRole('option', { name: /unknown composition/i })).toBeNull();
+    expect(screen.getByRole('option', { name: /TEST ONLY ready birch plywood/ })).toBeVisible();
+    expect(api.convert).not.toHaveBeenCalled();
+
+    await user.selectOptions(picker, READY_TEST_MATERIAL.id);
+    expect(api.convert).toHaveBeenCalledWith(
+      expect.any(ArrayBuffer), manufacturingGeometryProfile(READY_TEST_MATERIAL), expect.any(Function),
+    );
+  });
+
+  it.each([
+    ['file input', async (file: File) => userEvent.setup().upload(screen.getByLabelText('選擇 STL 模型'), file)],
+    ['drag and drop', async (file: File) => fireEvent.drop(screen.getByText('拖放 STL 到這裏').closest('label')!, {
+      dataTransfer: { files: [file] },
+    })],
+  ])('rejects a non-STL filename case-insensitively before read or material selection via %s', async (_label, submit) => {
+    const api = services();
+    const file = new File(['private'], 'private-model.obj', { type: 'model/stl' });
+    const read = vi.fn().mockResolvedValue(new ArrayBuffer(4));
+    Object.defineProperty(file, 'arrayBuffer', { value: read });
+    render(<OneClickConverter services={api} />);
+
+    await submit(file);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('只支援 STL 檔案');
+    expect(screen.queryByLabelText('選擇製作材料')).toBeNull();
+    expect(read).not.toHaveBeenCalled();
+    expect(api.convert).not.toHaveBeenCalled();
+  });
+
+  it('accepts an uppercase .STL filename and reaches the ready-material chooser', async () => {
+    const user = userEvent.setup();
+    render(<OneClickConverter services={services()} />);
+
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'MODEL.STL'));
+
+    expect(await screen.findByLabelText('選擇製作材料')).toBeVisible();
   });
 
   it('cancels the presentation hold before the worker when a replacement returns to material selection', async () => {

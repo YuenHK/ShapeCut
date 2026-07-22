@@ -1,8 +1,11 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createGeometryWorkerClient, type GeometryClient } from '../workers/geometry-client';
 import type { ManufacturingGeometryProfile } from '../domain/materials/manufacturing-profile';
 import { OutlineArtifactError, type OutlineArtifactId } from '../workers/geometry-api';
 import { OneClickConverter, type OneClickConverterServices, type OutlineDownloads } from './OneClickConverter';
+import { listMaterialCatalog, type MaterialRepositoryPort } from './material-catalog';
+import { MaterialRepository } from '../persistence/material-repository';
+import type { MaterialProfileV1 } from '../domain/materials/schema';
 
 function objectUrl(content: BlobPart, type: string, fileName: string) {
   return { href: URL.createObjectURL(new Blob([content], { type })), fileName };
@@ -53,17 +56,52 @@ export function createOneClickServices(
   };
 }
 
-export function App({ services: suppliedServices }: { readonly services?: OneClickConverterServices }) {
+export function App({
+  services: suppliedServices,
+  materialRepository: suppliedMaterialRepository,
+}: {
+  readonly services?: OneClickConverterServices;
+  readonly materialRepository?: MaterialRepositoryPort;
+}) {
   const geometryRef = useRef<GeometryClient | undefined>(undefined);
   const services = useMemo(() => suppliedServices ?? createOneClickServices(
     () => geometryRef.current ??= createGeometryWorkerClient(),
     () => geometryRef.current?.cancelActive(),
   ), [suppliedServices]);
+  const materialRepository = useMemo(
+    () => suppliedMaterialRepository ?? new MaterialRepository(),
+    [suppliedMaterialRepository],
+  );
+  const [storedProfiles, setStoredProfiles] = useState<readonly MaterialProfileV1[]>([]);
+  const [materialLoadFailed, setMaterialLoadFailed] = useState(false);
+  useEffect(() => {
+    let active = true;
+    setStoredProfiles([]);
+    setMaterialLoadFailed(false);
+    void listMaterialCatalog(materialRepository).then((catalog) => {
+      if (!active) return;
+      setStoredProfiles(catalog.flatMap((entry) => (
+        entry.source === 'stored' && entry.readiness.status === 'ready' ? [entry.profile] : []
+      )));
+    }).catch(() => {
+      if (!active) return;
+      setStoredProfiles([]);
+      setMaterialLoadFailed(true);
+    });
+    return () => { active = false; };
+  }, [materialRepository]);
+  const oneClickServices = useMemo<OneClickConverterServices>(() => ({
+    ...services,
+    materialProfiles: [...(services.materialProfiles ?? []), ...storedProfiles],
+  }), [services, storedProfiles]);
   useEffect(() => () => geometryRef.current?.dispose(), []);
   return (
     <div className="app-shell">
       <header className="site-header"><a className="brand" href="./" aria-label="ShapeCut 首頁"><span aria-hidden="true">S</span>ShapeCut</a><p>私隱優先 · 本機處理</p></header>
-      <main><OneClickConverter services={services} /></main>
+      <main>
+        {materialLoadFailed && <p role="alert">已儲存的材料設定檔未能載入；請稍後重試。</p>}
+        <OneClickConverter services={oneClickServices} />
+      </main>
       <footer>輸出為通用外形，不包含雷射功率或速度。正式製作前請先試切。</footer>
     </div>
   );

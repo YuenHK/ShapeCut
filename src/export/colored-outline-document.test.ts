@@ -4,6 +4,7 @@ import { CENTRAL_HOLE_OMISSION_WARNING } from '../domain/outline-features/hole';
 import { featureEvidenceFingerprint } from '../domain/outline-features/types';
 import type { Point2 } from '../domain/decomposition/types';
 import type { FeatureContour } from '../domain/outline-features/types';
+import { planLauncherClearance } from '../domain/outline-assembly/launcher';
 import {
   createColoredOutlineDocument,
   validateColoredOutlineDocument,
@@ -66,11 +67,23 @@ function withColoredLayers(
 function activeAssemblyResult() {
   const result = coloredResult();
   const layer = result.coloredLayers[5], featured = result.coloredLayers[2];
-  const fastenerCenters = [[5, 0], [-5, 0]] as const;
+  const launcherLoops = [
+    [[3.5, -0.5], [4.5, -0.5], [4.5, 0.5], [3.5, 0.5]],
+    [[-2.5, 2.9641016151], [-1.5, 2.9641016151], [-1.5, 3.9641016151], [-2.5, 3.9641016151]],
+    [[-2.5, -3.9641016151], [-1.5, -3.9641016151], [-1.5, -2.9641016151], [-2.5, -2.9641016151]],
+  ] as const;
+  const launcher = planLauncherClearance({
+    detection: { status: 'detected', loops: launcherLoops, score: 1, sourceCandidateIndex: 0 },
+    axisPoint: [0, 0], topExterior: layer.exterior, secondExterior: result.coloredLayers[4].exterior,
+    topCentralHole: layer.centralHole, secondCentralHole: result.coloredLayers[4].centralHole,
+    material: result.assembly.material,
+  });
+  if (launcher.status === 'omitted') throw new Error('Canonical test launcher geometry must be safe');
+  const fastenerCenters = [[7, 0], [-7, 0]] as const;
   const coloredLayers = result.coloredLayers.map((candidate, index) => ({
     ...candidate,
-    launcherCuts: index < 4 ? [] : [1, 2, 3].map((number) => ({
-      ...layer.centralHole!, id: `${candidate.id}-launcher-${number}`,
+    launcherCuts: index < 4 ? [] : launcher.cuts.map((cut, cutIndex) => ({
+      ...cut, id: `${candidate.id}-launcher-${cutIndex + 1}`,
     })),
     fastenerHoles: fastenerCenters.map((center, fastenerIndex) => (
       circle48(center, 2.85 / 2, `${candidate.id}-fastener-${fastenerIndex + 1}`)
@@ -91,7 +104,7 @@ function activeAssemblyResult() {
       launcher: { status: 'detected' as const, cutCount: 3 as const, assemblyAllowanceMm: 0.2 as const },
       fastener: {
         count: 2 as const, centers: fastenerCenters, finishedDiameterMm: 3 as const,
-        pathDiameterMm: 2.85, radiusMm: 5, rotationRad: 0,
+        pathDiameterMm: 2.85, radiusMm: 7, rotationRad: 0,
       },
       topFeatures: { retained: { red: 1, blue: 1 }, omitted: { red: 0, blue: 0 } },
     },

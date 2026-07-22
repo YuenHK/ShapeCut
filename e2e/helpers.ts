@@ -20,6 +20,7 @@ import {
 } from '../src/export/safety-notes';
 import { FASTENER_OMISSION_WARNING } from '../src/domain/outline-assembly/fasteners';
 import { LAUNCHER_OMISSION_WARNING } from '../src/domain/outline-assembly/launcher';
+import { READY_TEST_MATERIAL } from '../src/test/ready-material';
 
 export const COLORED_ROLES = ['CUT_BLACK', 'DEEP_RED', 'LIGHT_BLUE'] as const;
 export type ColoredRole = typeof COLORED_ROLES[number];
@@ -1845,9 +1846,22 @@ export async function inspectColoredArtifacts(payloads: ColoredArtifactPayloads)
 }
 
 export async function selectModel(page: Page, fixture: string | { name: string; mimeType: string; buffer: Buffer }, beforeSetInput?: () => Promise<void>) {
+  await page.evaluate((profile) => new Promise<void>((resolve, reject) => {
+    const open = indexedDB.open('spinner-laser-kit');
+    open.onerror = () => reject(open.error ?? new Error('Failed to open the test material database'));
+    open.onsuccess = () => {
+      const database = open.result;
+      const transaction = database.transaction('materials', 'readwrite');
+      transaction.objectStore('materials').put({ ...profile, calibrationStatus: 'ready' });
+      transaction.oncomplete = () => { database.close(); resolve(); };
+      transaction.onerror = () => reject(transaction.error ?? new Error('Failed to seed the ready material profile'));
+      transaction.onabort = () => reject(transaction.error ?? new Error('Ready material profile transaction aborted'));
+    };
+  }), READY_TEST_MATERIAL);
+  await page.reload();
   await beforeSetInput?.();
   await page.getByLabel('選擇 STL 模型').setInputFiles(fixture);
-  await page.getByLabel('選擇製作材料').selectOption({ index: 1 });
+  await page.getByLabel('選擇製作材料').selectOption(READY_TEST_MATERIAL.id);
 }
 
 export async function installWorkerResultProbe(page: Page): Promise<void> {

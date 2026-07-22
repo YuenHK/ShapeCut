@@ -343,26 +343,18 @@ describe('automatic outline pipeline', () => {
     expect(packaged.cutSvg.match(/-fastener-hole-/g) ?? []).toHaveLength(count * result.coloredLayers.length);
   }, 20_000);
 
-  it('publishes both layer-local depth roles through preview and fingerprint evidence', async () => {
+  it('gives exact-mode fastener removal envelopes priority over colliding layer-local engraving', async () => {
     const result = await convertAutomaticOutline({
       bytes: writeBinarySTL(layerLocalSteppedPrism(), 'safe'),
-      material: { ...testMaterial, minWebMm: 100 },
+      material: testMaterial,
     });
-    expect(result.assembly.launcher.status).toBe('omitted');
-    expect(result.assembly.fastener.count).toBe(0);
-    expect(result.featureWarnings).toEqual(expect.arrayContaining([
-      '無法安全保留原裝發射器相容性，已省略三個發射器開孔',
-      '無法安全配置 3 mm 固定螺絲孔，已省略螺絲孔',
-    ]));
-    const featured = result.coloredLayers.filter((layer) => layer.deepFeatures.length > 0 && layer.lightFeatures.length > 0);
-
-    expect(featured.length).toBeGreaterThan(0);
-    expect(featured.every((layer) => layer.deepFeatures.every((feature) => feature.role === 'DEEP_RED'))).toBe(true);
-    expect(featured.every((layer) => layer.lightFeatures.every((feature) => feature.role === 'LIGHT_BLUE'))).toBe(true);
-    expect(featured.every((layer) => (
-      layer.diagnostics.depth.redThresholdMm > layer.diagnostics.depth.blueThresholdMm
-      && layer.diagnostics.depth.redThresholdMm <= layer.zEnd - layer.zStart + 1e-9
-    ))).toBe(true);
+    expect(result.mode).toBe('exact');
+    expect(result.assembly.fastener.count).toBe(3);
+    const top = result.coloredLayers.at(-1)!;
+    expect(top.deepFeatures).toEqual([]);
+    expect(top.lightFeatures).toEqual([]);
+    expect(top.diagnostics.depth.omissionCode).toBe('UNRELIABLE_DEPTH_GEOMETRY');
+    expect(result.featureWarnings).toContain('雕刻特徵不可靠，已局部省略');
     expect(result.preview.layers).toEqual(result.coloredLayers);
     const expectedBasis = createOutlineAxisBasis(result.axis.axis);
     expect(result.preview.axis).toEqual({

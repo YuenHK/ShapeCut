@@ -12,6 +12,7 @@ import {
   type LauncherLoops,
   type LauncherTemplate,
 } from './launcher-template';
+import { finishedRemovalEnvelope } from './physical-cut-envelope';
 
 export const LAUNCHER_ASSEMBLY_ALLOWANCE_MM = 0.2 as const;
 export const LAUNCHER_OMISSION_WARNING = '無法安全保留原裝發射器相容性，已省略三個發射器開孔';
@@ -62,6 +63,14 @@ export type LauncherClearanceRequest = {
   readonly material: Pick<ManufacturingGeometryProfile, 'kerfMm' | 'minWebMm'>;
   readonly deadline?: number;
   readonly checkpoint?: () => void;
+};
+export type LauncherPhysicalSafetyRequest = {
+  readonly cuts: readonly FeatureContour[];
+  readonly top: LauncherPlanningLayer;
+  readonly second: LauncherPlanningLayer;
+  readonly material: Pick<ManufacturingGeometryProfile, 'kerfMm' | 'minWebMm'>;
+  readonly deadline?: number;
+  readonly checkpoint?: (label?: string) => void;
 };
 
 function checkRuntime(deadline: number, checkpoint: () => void): void {
@@ -252,6 +261,35 @@ function cutsAreSafe(
     }
   }
   return true;
+}
+
+/** Independently revalidates canonical launcher toolpaths as finished laser-removal openings. */
+export function launcherCutsArePhysicallySafe(request: LauncherPhysicalSafetyRequest): boolean {
+  const deadline = request.deadline ?? Infinity;
+  const checkpoint = request.checkpoint ?? (() => undefined);
+  checkRuntime(deadline, checkpoint);
+  if (request.cuts.length !== 3
+    || !Number.isFinite(request.material.kerfMm) || request.material.kerfMm < 0
+    || !Number.isFinite(request.material.minWebMm) || request.material.minWebMm < 0) return false;
+  const finished: FeatureContour[] = [];
+  for (let index = 0; index < request.cuts.length; index += 1) {
+    checkRuntime(deadline, checkpoint);
+    const outer = finishedRemovalEnvelope(
+      request.cuts[index].outer,
+      request.material.kerfMm,
+      deadline,
+      checkpoint,
+    );
+    finished.push({
+      id: `validated-launcher-finished-${index + 1}`,
+      role: 'CUT_BLACK',
+      outer,
+      boundsMm: contourBounds(outer, deadline, checkpoint),
+      areaMm2: Math.abs(signedArea(outer, deadline, checkpoint)),
+    });
+  }
+  return cutsAreSafe(finished, request.top, request.material.minWebMm, deadline, checkpoint)
+    && cutsAreSafe(finished, request.second, request.material.minWebMm, deadline, checkpoint);
 }
 
 export function planLauncherClearance(request: LauncherClearanceRequest): LauncherPlan {

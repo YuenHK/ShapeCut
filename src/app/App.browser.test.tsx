@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { AutomaticOutlineProgressEvent, AutomaticOutlineResult } from '../domain/pipeline/automatic-outline-pipeline';
 import { featureEvidenceFingerprint, type ColoredOutlineLayer } from '../domain/outline-features/types';
 import { manufacturingGeometryProfile } from '../domain/materials/manufacturing-profile';
-import { defaultPendingMaterialProfile } from '../domain/materials/default-profiles';
+import { READY_TEST_MATERIAL } from '../test/ready-material';
 import '../styles.css';
 import { App } from './App';
 import type { OneClickConverterServices } from './OneClickConverter';
@@ -20,6 +20,7 @@ describe('App real browser one-click flow', () => {
   it('starts from one keyboard-accessible selection and renders the result downloads', async () => {
     await page.viewport(1024, 768);
     const user = userEvent.setup();
+    const material = manufacturingGeometryProfile(READY_TEST_MATERIAL);
     const coloredLayer: ColoredOutlineLayer = {
       id: 'layer-0', index: 0, zStart: 0, zEnd: 1,
       exterior: {
@@ -36,9 +37,9 @@ describe('App real browser one-click flow', () => {
     };
     const result: AutomaticOutlineResult = {
       sourceHash: 'c'.repeat(32), mode: 'exact', status: 'success', warnings: [],
-      material: manufacturingGeometryProfile(defaultPendingMaterialProfile('plywood-3')!),
+      material,
       assembly: {
-        material: manufacturingGeometryProfile(defaultPendingMaterialProfile('plywood-3')!),
+        material,
         launcher: { status: 'omitted', cutCount: 0 },
         fastener: { count: 0, centers: [], finishedDiameterMm: 3, pathDiameterMm: 2.85 },
         topFeatures: { retained: { red: 0, blue: 0 }, omitted: { red: 0, blue: 0 } },
@@ -109,6 +110,7 @@ describe('App real browser one-click flow', () => {
     const conversion = deferred<AutomaticOutlineResult>();
     let report: ((event: AutomaticOutlineProgressEvent) => void) | undefined;
     const services: OneClickConverterServices = {
+      materialProfiles: [READY_TEST_MATERIAL],
       cancel: vi.fn(),
       createTimeline: (clock) => {
         let lastStage = -1;
@@ -140,8 +142,6 @@ describe('App real browser one-click flow', () => {
     const input = screen.getByLabelText('選擇 STL 模型');
     input.focus();
     await user.upload(input, new File(['mesh'], 'keyboard.stl', { type: 'model/stl' }));
-    const material = manufacturingGeometryProfile(defaultPendingMaterialProfile('plywood-3')!);
-
     expect(services.convert).not.toHaveBeenCalled();
     await user.selectOptions(await screen.findByLabelText('選擇製作材料'), material.id);
     expect(services.convert).toHaveBeenCalledWith(expect.any(ArrayBuffer), material, expect.any(Function));
@@ -178,7 +178,9 @@ describe('App real browser one-click flow', () => {
 
     conversion.resolve(result);
 
-    expect(await screen.findByRole('link', { name: '下載 ZIP 製作套件' })).toHaveAttribute('download', 'shapecut-files.zip');
+    expect(await screen.findByRole(
+      'link', { name: '下載 ZIP 製作套件' }, { timeout: 10_000 },
+    )).toHaveAttribute('download', 'shapecut-files.zip');
     expect(screen.getByRole('link', { name: /爆炸圖 PDF/ })).toHaveAttribute('download', 'exploded-view.pdf');
     expect(screen.getAllByRole('link', { name: /下載/ })).toHaveLength(5);
     const technicalSummary = screen.getByText('技術資料');

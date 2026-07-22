@@ -27,6 +27,7 @@ import {
   planFastenerHoles,
   type FastenerPlan,
 } from '../outline-assembly/fasteners';
+import { createPhysicalCutProtection } from '../outline-assembly/physical-cut-envelope';
 import { createOutlineAxisBasis } from '../outline-2.5d/raster';
 import { scheduleOutlineLayers } from '../outline-2.5d/layer-schedule';
 import {
@@ -319,6 +320,14 @@ function planAssemblyBlackCuts(
   const cuts = bareLayers.map((_, index) => ({
     launcherCuts: launcherByLayer[index],
     fastenerHoles: fastenerByLayer[index],
+    engravingProtection: createPhysicalCutProtection({
+      centralHole: bareLayers[index].centralHole,
+      launcherCuts: launcherByLayer[index],
+      fastenerHoles: fastenerByLayer[index],
+      material,
+      deadline: context.deadline,
+      checkpoint,
+    }),
   }));
   const warnings = [
     ...(launcher.status === 'omitted' ? [launcher.warning] : []),

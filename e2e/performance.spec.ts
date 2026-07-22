@@ -69,8 +69,10 @@ test.describe.configure({ mode: 'serial' });
 test('safe conversion has no 100 ms main-thread task through preview, explosion, both PDFs, and URLs', async ({ page }, testInfo) => {
   test.setTimeout(45_000);
   await page.goto('/');
-  await installLongTaskObserver(page);
-  await selectModel(page, 'fixtures/acceptance/symmetric-smooth.stl', () => mark(page, 'selectedAt'));
+  await selectModel(page, 'fixtures/acceptance/symmetric-smooth.stl', async () => {
+    await installLongTaskObserver(page);
+    await mark(page, 'selectedAt');
+  });
   await expect(page.locator('.outline-process-webgl canvas')).toBeVisible({ timeout: 30_000 });
   await mark(page, 'previewAt');
   await expectResult(page, '需注意', '精確切片');
@@ -92,11 +94,13 @@ test('100k triangle selection stays off the main thread and reaches a bounded re
   test.setTimeout(45_000);
   await installWorkerResultProbe(page);
   await page.goto('/');
-  await installLongTaskObserver(page);
   const fixturePath = testInfo.outputPath('100k.stl');
   await writeFile(fixturePath, binaryTetrahedra(100_000));
   const started = Date.now();
-  await selectModel(page, fixturePath, () => mark(page, 'selectedAt'));
+  await selectModel(page, fixturePath, async () => {
+    await installLongTaskObserver(page);
+    await mark(page, 'selectedAt');
+  });
   const alert = page.getByRole('alert');
   await expect(alert).toBeVisible({ timeout: 35_000 });
   await expect(alert).toContainText(/模型太複雜|處理時間過長/);
@@ -132,12 +136,15 @@ test('feature-rich PDF packaging is terminated and replaced by a second complete
   test.setTimeout(60_000);
   await installWorkerResultProbe(page);
   await page.goto('/');
-  await armWorkerPackageReplacement(page, {
+  const replacement = {
     name: 'replacement-safe.stl',
     mimeType: 'model/stl',
     buffer: await readFile('fixtures/acceptance/symmetric-smooth.stl'),
-  });
-  await selectModel(page, 'fixtures/acceptance/symmetric-textured.stl');
+  };
+  await selectModel(
+    page, 'fixtures/acceptance/symmetric-textured.stl',
+    () => armWorkerPackageReplacement(page, replacement),
+  );
   const expectedWorkload = [{
     layers: 24, contoursPerLayer: 4,
     minimumPointsPerContour: 512, maximumPointsPerContour: 512, totalPoints: 49_152,

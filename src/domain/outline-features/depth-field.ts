@@ -50,6 +50,10 @@ export type DepthFeatureRequest = {
   readonly maximumFeaturesPerRole?: number;
   /** Black-cut polygons which engraving must not enter, including the normal cut clearance. */
   readonly protectedCuts?: readonly (readonly Point2[])[];
+  /** Material-aware clearance from the exterior laser-removal edge. */
+  readonly exteriorClearanceMm?: number;
+  /** Required web outside already-finished internal removal envelopes. */
+  readonly protectedCutClearanceMm?: number;
   readonly resourceObserver?: (event: DepthFeatureResourceEvent) => void;
 };
 
@@ -210,6 +214,10 @@ function validateRequest(projected: ProjectedMesh, request: DepthFeatureRequest,
     || request.maximumFeaturesPerRole !== undefined
       && (!Number.isSafeInteger(request.maximumFeaturesPerRole) || request.maximumFeaturesPerRole < 1
         || request.maximumFeaturesPerRole > 12)
+    || request.exteriorClearanceMm !== undefined
+      && (!Number.isFinite(request.exteriorClearanceMm) || request.exteriorClearanceMm < 0)
+    || request.protectedCutClearanceMm !== undefined
+      && (!Number.isFinite(request.protectedCutClearanceMm) || request.protectedCutClearanceMm < 0)
     || !Number.isSafeInteger(totalLayerCount) || totalLayerCount <= 0 || totalLayerCount > request.budgets.maxLayers) {
     throw new RangeError('Depth feature extraction requires finite bounded layer evidence');
   }
@@ -1265,18 +1273,20 @@ export function extractAdaptiveDepthFeatures(projected: ProjectedMesh, request: 
     request.exteriorAreaMm2 * 0.001 / (field.cellSizeMm * field.cellSizeMm),
   ));
   const clearanceMm = Math.max(field.cellSizeMm, request.planarDiameterMm * 0.001);
+  const exteriorClearanceMm = request.exteriorClearanceMm ?? clearanceMm;
+  const protectedCutClearanceMm = request.protectedCutClearanceMm ?? clearanceMm;
   const centralHole = holeLoop(request);
   const protectedCuts = [...(centralHole ? [centralHole] : []), ...(request.protectedCuts ?? [])];
-  maskProtectedCuts(closedRed, field, protectedCuts, clearanceMm, deadline, checkpoint);
-  maskProtectedCuts(closedBlue, field, protectedCuts, clearanceMm, deadline, checkpoint);
+  maskProtectedCuts(closedRed, field, protectedCuts, protectedCutClearanceMm, deadline, checkpoint);
+  maskProtectedCuts(closedBlue, field, protectedCuts, protectedCutClearanceMm, deadline, checkpoint);
   const limit = request.maximumFeaturesPerRole ?? 1;
   const safeFromProtectedCuts = (feature: FeatureContour): boolean => protectedCuts.every((cut) => (
     feature.role === 'DEEP_RED'
       ? validateDepthFeatureContours({
-        exterior: request.exterior, centralHole: cut, red: feature, clearanceMm, deadline, checkpoint,
+        exterior: request.exterior, centralHole: cut, red: feature, clearanceMm: protectedCutClearanceMm, deadline, checkpoint,
       }).ok
       : validateDepthFeatureContours({
-        exterior: request.exterior, centralHole: cut, blue: feature, clearanceMm, deadline, checkpoint,
+        exterior: request.exterior, centralHole: cut, blue: feature, clearanceMm: protectedCutClearanceMm, deadline, checkpoint,
       }).ok
   ));
   const redCandidates = validFeaturesFromMask(
@@ -1286,7 +1296,7 @@ export function extractAdaptiveDepthFeatures(projected: ProjectedMesh, request: 
       exterior: request.exterior,
       centralHole,
       red,
-      clearanceMm,
+      clearanceMm: exteriorClearanceMm,
       deadline,
       checkpoint,
     }).ok && safeFromProtectedCuts(red),
@@ -1300,7 +1310,7 @@ export function extractAdaptiveDepthFeatures(projected: ProjectedMesh, request: 
       centralHole,
       red: red.map((candidate) => candidate.contour),
       blue,
-      clearanceMm,
+      clearanceMm: exteriorClearanceMm,
       deadline,
       checkpoint,
     }).ok && safeFromProtectedCuts(blue),

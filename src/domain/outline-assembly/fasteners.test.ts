@@ -106,9 +106,9 @@ describe('safe degrading fastener planning', () => {
   it('keeps shared geometry ID-free and materializes collision-free layer IDs without changing any point', () => {
     const seed = coloredResult();
     const sourceLayers = seed.coloredLayers.map((source, index) => index === 0 ? {
-      ...source,
+      ...source, deepFeatures: [], lightFeatures: [],
       exterior: { ...source.exterior, id: `${source.id}-fastener-hole-1` },
-    } : source);
+    } : { ...source, deepFeatures: [], lightFeatures: [] });
     const plan = planFastenerHoles({
       layers: sourceLayers.map((source) => layer(source.id, source.exterior, {
         centralHole: source.centralHole,

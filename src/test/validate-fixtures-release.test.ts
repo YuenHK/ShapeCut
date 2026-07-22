@@ -61,6 +61,7 @@ describe.sequential('release fixture validation command', () => {
       outputComparisonPass: true,
       launcherTemplatePass: 'not-requested',
       launcherTemplateDeterministic: 'not-requested',
+      launcherRuntimeValidation: 'not-requested',
     });
   }, 30_000);
 
@@ -77,6 +78,17 @@ describe.sequential('release fixture validation command', () => {
         launcherTemplatePass: true,
         launcherTemplateDeterministic: true,
       });
+      expect(summary.launcherRuntimeValidation).toEqual([
+        expect.objectContaining({
+          caseId: 'reference-a', runtimeStatus: 'omitted', safePlanCount: 0,
+          artifactCutCount: 0,
+        }),
+        expect.objectContaining({
+          caseId: 'reference-b', runtimeStatus: 'omitted', safePlanCount: 0,
+          artifactCutCount: 0,
+        }),
+      ]);
+      expect(JSON.stringify(summary.launcherRuntimeValidation)).not.toMatch(/Knight|Fortress|\.stl|\//i);
     },
     180_000,
   );

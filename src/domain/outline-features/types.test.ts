@@ -319,6 +319,56 @@ function overlapLauncherWithFasteners(source: AutomaticOutlineResult): Automatic
   return { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
 }
 
+function engravingBox(id: string, minX: number, maxX: number, minY: number, maxY: number): FeatureContour {
+  return contour(id, 'DEEP_RED', [
+    [minX, minY], [minX, maxY], [maxX, maxY], [maxX, minY],
+  ]);
+}
+
+function replaceLayerEngraving(
+  source: AutomaticOutlineResult,
+  layerIndex: number,
+  feature: FeatureContour,
+): AutomaticOutlineResult {
+  const coloredLayers = source.coloredLayers.map((layer, index) => index === layerIndex
+    ? { ...layer, deepFeatures: [{ ...feature, id: `${layer.id}-${feature.id}` }] }
+    : layer);
+  const changed = {
+    ...source,
+    coloredLayers,
+    preview: { ...source.preview, layers: coloredLayers },
+  };
+  return { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
+}
+
+function withLauncherCenters(centers: readonly Point2[]): AutomaticOutlineResult {
+  const source = automaticResult();
+  const topStart = source.coloredLayers.length - 2;
+  const coloredLayers = source.coloredLayers.map((layer, layerIndex) => ({
+    ...layer,
+    launcherCuts: layerIndex < topStart ? [] : centers.map((center, index) => (
+      circle48At(center, 0.4, `${layer.id}-launcher-clearance-${index + 1}`)
+    )),
+  }));
+  const changed = {
+    ...source,
+    assembly: {
+      ...source.assembly,
+      launcher: { status: 'fallback' as const, cutCount: 3 as const, assemblyAllowanceMm: 0.2 as const },
+    },
+    coloredLayers,
+    featureWarnings: source.featureWarnings.filter((warning) => warning !== LAUNCHER_OMISSION_WARNING),
+    preview: { ...source.preview, layers: coloredLayers },
+  };
+  return { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
+}
+
+function safeLauncherResult(): AutomaticOutlineResult {
+  return withLauncherCenters([
+    [5, 0], [-2.5, 4.330127018922193], [-2.5, -4.330127018922193],
+  ]);
+}
+
 describe('colored outline contracts', () => {
   function legacyLayerBase(): Record<string, unknown> {
     const { deepFeatures: _deepFeatures, lightFeatures: _lightFeatures,
@@ -914,5 +964,52 @@ describe('colored outline contracts', () => {
       if (label === 'assembly:fastener-protected-region-loop' && ++safetyPolls === 2) throw cancellation;
     }, result.material)).toThrow(cancellation);
     expect(safetyPolls).toBe(2);
+  });
+
+  it('accepts independently revalidated generated-safe launcher and engraving geometry', () => {
+    const result = safeLauncherResult();
+
+    expect(() => validateAutomaticColoredResult(result, Infinity, () => undefined, result.material))
+      .not.toThrow();
+  });
+
+  it.each([
+    ['exterior removal envelope', () => replaceLayerEngraving(
+      automaticResult(), 0, engravingBox('near-exterior', -9.8, -8.8, 6, 7),
+    )],
+    ['central-hole removal envelope', () => replaceLayerEngraving(
+      automaticResult(), 0, engravingBox('near-central', 2.2, 3.2, -0.25, 0.25),
+    )],
+    ['launcher finished envelope', () => replaceLayerEngraving(
+      safeLauncherResult(), 4, engravingBox('near-launcher', 5.65, 6.65, -0.2, 0.2),
+    )],
+    ['fastener finished envelope', () => replaceLayerEngraving(
+      withThreeFasteners(), 0, engravingBox('near-fastener', 6.65, 7.65, -0.2, 0.2),
+    )],
+  ])('rejects a self-consistent recomputed exact-mode engraving forgery intersecting the %s', (_label, forge) => {
+    const forged = forge();
+    expect(forged.mode).toBe('exact');
+    expect(forged.featureEvidenceFingerprint).toBe(featureEvidenceFingerprint(forged));
+    expect(() => validateAutomaticColoredResult(forged, Infinity, () => undefined, forged.material))
+      .toThrow(/engraving.*physical cut|physical.*engraving|clearance/i);
+  });
+
+  it.each([
+    ['exterior containment and minimum web', [[9.1, 0], [-2.5, 4.330127018922193], [-2.5, -4.330127018922193]] as const],
+    ['central-hole minimum web', [[2.7, 0], [-5, 4], [-5, -4]] as const],
+    ['inter-hook minimum web', [[5, 0], [5.7, 0], [-5, 0]] as const],
+  ])('rejects recomputed active launcher geometry violating %s', (_label, centers) => {
+    const forged = withLauncherCenters(centers);
+    expect(forged.featureEvidenceFingerprint).toBe(featureEvidenceFingerprint(forged));
+    expect(() => validateAutomaticColoredResult(forged, Infinity, () => undefined, forged.material))
+      .toThrow(/launcher.*physical safety|containment|minimum web/i);
+  });
+
+  it('polls launcher and engraving physical reconciliation and preserves exact cancellation identity', () => {
+    const result = safeLauncherResult();
+    const cancellation = new Error('cancel physical cut envelope validation');
+    expect(() => validateAutomaticColoredResult(result, Infinity, (label?: string) => {
+      if (label === 'assembly:physical-cut-envelope-loop') throw cancellation;
+    }, result.material)).toThrow(cancellation);
   });
 });

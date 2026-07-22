@@ -10,6 +10,8 @@ import {
   areFinishedCirclesPairwiseSeparated,
   isCircleSafeThroughAllLayers,
 } from '../outline-assembly/protected-region';
+import { launcherCutsArePhysicallySafe } from '../outline-assembly/launcher';
+import { createPhysicalCutProtection } from '../outline-assembly/physical-cut-envelope';
 import type { Vec3 } from '../types';
 import { CENTRAL_HOLE_OMISSION_WARNING, isStrictlyContainedLoop } from './hole';
 import type { DepthFeatureOmissionCode } from './depth-field';
@@ -859,6 +861,55 @@ function validFastenerContour(
     && nearlyEqual(contour.areaMm2, area);
 }
 
+function physicalEngravingReasons(
+  layers: readonly ColoredOutlineLayer[],
+  material: ManufacturingGeometryProfile,
+  deadline: number,
+  checkpoint: (label?: string) => void,
+): string[] {
+  const reasons: string[] = [];
+  for (const layer of layers) {
+    checkRuntimeBudget(deadline, checkpoint, 'assembly:physical-cut-envelope-loop');
+    if (layer.deepFeatures.length === 0 && layer.lightFeatures.length === 0) continue;
+    const protection = createPhysicalCutProtection({
+      centralHole: layer.centralHole,
+      launcherCuts: layer.launcherCuts,
+      fastenerHoles: layer.fastenerHoles,
+      material,
+      deadline,
+      checkpoint,
+    });
+    const exteriorValidation = validateDepthFeatureContours({
+      exterior: layer.exterior.outer,
+      red: layer.deepFeatures,
+      blue: layer.lightFeatures,
+      clearanceMm: protection.exteriorClearanceMm,
+      deadline,
+      checkpoint,
+    });
+    if (!exteriorValidation.ok) {
+      reasons.push(`Layer ${layer.id} engraving intersects the exterior physical cut envelope or clearance`);
+    }
+    for (const envelope of protection.removalEnvelopes) {
+      checkRuntimeBudget(deadline, checkpoint, 'assembly:physical-cut-envelope-loop');
+      const cutValidation = validateDepthFeatureContours({
+        exterior: layer.exterior.outer,
+        centralHole: envelope,
+        red: layer.deepFeatures,
+        blue: layer.lightFeatures,
+        clearanceMm: protection.requiredClearanceMm,
+        deadline,
+        checkpoint,
+      });
+      if (!cutValidation.ok) {
+        reasons.push(`Layer ${layer.id} engraving intersects an internal physical cut envelope or clearance`);
+        break;
+      }
+    }
+  }
+  return reasons;
+}
+
 function assemblyReasons(
   value: unknown,
   layers: readonly ColoredOutlineLayer[],
@@ -904,6 +955,17 @@ function assemblyReasons(
     }
     if (featureWarnings.includes(LAUNCHER_OMISSION_WARNING_TEXT) !== omitted) {
       reasons.push('Automatic assembly launcher omission warning provenance is inconsistent');
+    }
+    if (active && material && layers.length >= 2 && layers.at(-1)!.launcherCuts.length === 3
+      && !launcherCutsArePhysicallySafe({
+        cuts: layers.at(-1)!.launcherCuts,
+        top: { exterior: layers.at(-1)!.exterior, centralHole: layers.at(-1)!.centralHole },
+        second: { exterior: layers.at(-2)!.exterior, centralHole: layers.at(-2)!.centralHole },
+        material,
+        deadline,
+        checkpoint,
+      })) {
+      reasons.push('Automatic assembly launcher physical safety must preserve containment and minimum web');
     }
   }
   const fastener = value.fastener;
@@ -1144,6 +1206,11 @@ export function validateAutomaticColoredResult(
     reasons.push(...assemblyReasons(
       value.assembly, coloredLayers, featureWarnings, validatedMaterial, deadline, checkpoint,
     ));
+    if (validatedMaterial) {
+      reasons.push(...physicalEngravingReasons(
+        coloredLayers, validatedMaterial, deadline, checkpoint,
+      ));
+    }
   }
   if (coloredLayersValid && featureWarnings) {
     try {
