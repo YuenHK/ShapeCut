@@ -1,6 +1,5 @@
 import { expose, finalizer, proxy, releaseProxy, transfer, wrap, type Remote } from 'comlink';
 import type { AxisCandidate } from '../domain/axis/find-axis';
-import { validateManufacturingGeometryProfile } from '../domain/materials/manufacturing-profile';
 import type { SpinnerKit } from '../domain/decomposition/types';
 import type { EngravingMap } from '../domain/engraving/height-field';
 import type { MeshRepairResult } from '../domain/mesh/types';
@@ -114,10 +113,6 @@ export function makeGeometryClient(api: GeometryApi, options: GeometryClientOpti
     get latestJobId() { return latestJobId; },
     analyze: (input) => run(() => api.inspect(options.transferInput?.(input) ?? input)),
     convertAutomatically: (request, onProgress) => run((job) => {
-      const validatedRequest: AutomaticOutlineRequest = {
-        ...request,
-        material: validateManufacturingGeometryProfile(request.material),
-      };
       let gatedProgress: AutomaticOutlineProgress | undefined;
       if (onProgress) {
         gatedProgress = async (stage) => {
@@ -128,7 +123,7 @@ export function makeGeometryClient(api: GeometryApi, options: GeometryClientOpti
         if (onFinalize) Object.assign(gatedProgress, { [finalizer]: onFinalize });
       }
       return api.convertAutomatically(
-        options.transferAutomaticRequest?.(validatedRequest) ?? validatedRequest,
+        options.transferAutomaticRequest?.(request) ?? request,
         gatedProgress,
       );
     }),

@@ -37,6 +37,8 @@ export type AutomaticOutlineProgressEvent =
   | { readonly stage: 'analyzing' | 'slicing'; readonly preview: OutlinePreviewPayload };
 export type AutomaticOutlineResult = {
   readonly sourceHash: string;
+  /** Bounded material evidence required to verify the feature fingerprint during packaging. */
+  readonly material?: ManufacturingGeometryProfile;
   readonly mode: OutlineMode;
   readonly status: OutlineResultStatus;
   readonly axis: OutlineAxisSelection;
@@ -213,6 +215,7 @@ function withResultEvidence(
   try {
     const complete: AutomaticOutlineResult = {
       ...coloredResult,
+      material,
       removalEvidenceFingerprint: removalEvidenceFingerprint(result),
       featureEvidenceFingerprint: featureEvidenceFingerprint(coloredResult, deadline, () => undefined, material),
     };

@@ -151,6 +151,30 @@ describe('OneClickConverter', () => {
     expect(screen.getByLabelText('選擇製作材料')).toHaveValue('');
   });
 
+  it('does not leave an old material selection actionable while a replacement file is still reading', async () => {
+    const user = userEvent.setup();
+    const replacementRead = deferred<ArrayBuffer>();
+    const oldBytes = new ArrayBuffer(3);
+    const replacementBytes = new ArrayBuffer(4);
+    const oldFile = new File(['old'], 'old.stl');
+    const replacement = new File(['replacement'], 'replacement.stl');
+    Object.defineProperty(oldFile, 'arrayBuffer', { value: vi.fn().mockResolvedValue(oldBytes) });
+    Object.defineProperty(replacement, 'arrayBuffer', { value: vi.fn(() => replacementRead.promise) });
+    const api = services();
+    render(<OneClickConverter services={api} />);
+
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), oldFile);
+    await screen.findByLabelText('選擇製作材料');
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), replacement);
+
+    expect(screen.queryByLabelText('選擇製作材料')).toBeNull();
+    expect(api.convert).not.toHaveBeenCalled();
+    replacementRead.resolve(replacementBytes);
+    await user.selectOptions(await screen.findByLabelText('選擇製作材料'), 'plywood-3');
+
+    expect(api.convert).toHaveBeenCalledWith(replacementBytes, expect.any(Object), expect.any(Function));
+  });
+
   it('keeps pre-geometry progress neutral, then announces monotonic stages through the preview status', async () => {
     const user = userEvent.setup();
     const conversion = deferred<AutomaticOutlineResult>();

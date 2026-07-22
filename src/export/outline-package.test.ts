@@ -328,6 +328,15 @@ const STRICT_RAW_ZIP_MUTATIONS = [
 ] as const;
 
 describe('material-independent outline package', () => {
+  it('packages a real material-bound pipeline result', async () => {
+    const runtime = await convertAutomatically({ bytes: writeBinarySTL(separatedClosedCylinders(), 'safe') });
+
+    await expect(createColoredOutlinePackage(runtime)).resolves.toMatchObject({
+      cutSvg: expect.stringContaining('<svg'),
+      cutDxf: expect.stringContaining('SECTION'),
+    });
+  });
+
   it('returns and verifies exactly four byte-identical canonical colored files', async () => {
     const runtime = coloredResult();
     const output = await createColoredOutlinePackage(runtime);

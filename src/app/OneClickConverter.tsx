@@ -29,6 +29,7 @@ export type OutlineDownloads = {
 
 export type OneClickViewState =
   | { readonly kind: 'upload' }
+  | { readonly kind: 'reading'; readonly fileName: string }
   | { readonly kind: 'material'; readonly fileName: string; readonly bytes: ArrayBuffer }
   | { readonly kind: 'processing'; readonly fileName: string; readonly stage: AutomaticOutlineProgressStage; readonly preview?: OutlinePreviewPayload }
   | { readonly kind: 'result'; readonly fileName: string; readonly result: AutomaticOutlineResult; readonly downloads: OutlineDownloads }
@@ -292,6 +293,7 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
       setView({ kind: 'failure', fileName: file.name, message: failureMessage(new AutomaticOutlineError('RESOURCE_LIMIT', '模型超出安全處理資源上限')) });
       return;
     }
+    setView({ kind: 'reading', fileName: file.name });
     try {
       const bytes = await readFile(file);
       if (current !== requestId.current) return;
@@ -342,6 +344,17 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
           ))}
         </select>
       </label>
+      <ModelInput compact onFile={(file) => void selectFile(file)} />
+    </section>
+  );
+
+  if (view.kind === 'reading') return (
+    <section className="converter-card processing-card" aria-labelledby="reading-title">
+      <div className="processing-loading-panel" role="status" aria-live="polite">
+        <div className="neutral-loading" aria-hidden="true"><span /><span /><span /></div>
+        <h1 id="reading-title">正在讀取模型</h1>
+        <p className="file-name">{view.fileName}</p>
+      </div>
       <ModelInput compact onFile={(file) => void selectFile(file)} />
     </section>
   );

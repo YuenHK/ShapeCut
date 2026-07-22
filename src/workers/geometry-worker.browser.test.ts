@@ -40,7 +40,12 @@ afterEach(() => {
 });
 
 describe('geometry worker boundary', () => {
-  it('rejects a structured-clone material payload with forbidden private fields', async () => {
+  it.each([
+    ['unknown keys', { ...testMaterial, operatorName: 'private operator' }, /unrecognized key/i],
+    ['non-finite values', { ...testMaterial, kerfMm: Infinity }, /number|NaN/i],
+    ['forbidden private strings', { ...testMaterial, manufacturer: 'private evidence' }, /unrecognized key/i],
+    ['over-500-character ID and name bounds', { ...testMaterial, id: 'i'.repeat(501), name: 'n'.repeat(501) }, /500|too big/i],
+  ])('rejects %s from a structured-clone material payload in the real worker', async (_label, material, error) => {
     const client = createActualGeometryWorkerClient();
     clients.push(client);
     const unsafeClient = client as unknown as {
@@ -49,8 +54,8 @@ describe('geometry worker boundary', () => {
 
     await expect(unsafeClient.convertAutomatically({
       bytes: writeBinarySTL(tetrahedron(), 'safe'),
-      material: { ...testMaterial, manufacturer: 'private evidence' },
-    })).rejects.toThrow(/unrecognized key/i);
+      material,
+    })).rejects.toThrow(error);
   });
 
   it('proxies automatic progress monotonically across Comlink and transfers the STL bytes', async () => {

@@ -1,4 +1,5 @@
 import type { FeatureContour } from '../domain/outline-features/types';
+import { validateManufacturingGeometryProfile } from '../domain/materials/manufacturing-profile';
 import {
   validateAutomaticColoredResult,
   validateSharedCentralHoleDecision,
@@ -209,7 +210,10 @@ function runColoredResultValidation(
 ): void {
   checkpoint('canonical:result-validation:before');
   // Test clocks are injected through checkpoint; production keeps the same absolute Date.now deadline.
-  validateAutomaticColoredResult(result, options.now ? Infinity : deadline, () => checkpoint('canonical:result-validation-loop'));
+  const material = result.material === undefined
+    ? undefined
+    : validateManufacturingGeometryProfile(result.material);
+  validateAutomaticColoredResult(result, options.now ? Infinity : deadline, () => checkpoint('canonical:result-validation-loop'), material);
   const inspection = result.originalReport.inspection;
   const expectedTopology = {
     triangleCount: inspection.triangleCount,
