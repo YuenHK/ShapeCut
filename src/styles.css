@@ -96,9 +96,6 @@ progress::-webkit-progress-bar { background: var(--mint-100); } progress::-webki
 .outline-process-fallback path { stroke-width: 2; stroke-linejoin: round; }
 .outline-process-fallback [data-role="DEEP_RED"], .outline-process-fallback [data-role="LIGHT_BLUE"] { stroke-width: 2.5; }
 .outline-process-caption { min-height: 30px; padding: 5px 14px 9px; color: var(--muted); font-size: .8rem; text-align: center; }
-.outline-process-controls { position: absolute; right: 12px; bottom: 40px; z-index: 1; display: flex; gap: 6px; padding: 6px; border: 1px solid rgba(8,116,90,.14); border-radius: 12px; background: rgba(255,255,255,.9); box-shadow: 0 7px 22px rgba(22,89,73,.1); backdrop-filter: blur(8px); }
-.outline-process-controls button { min-width: 44px; min-height: 44px; padding: 0 9px; border: 1px solid var(--mint-300); border-radius: 9px; color: var(--mint-700); background: white; font-weight: 800; cursor: pointer; }
-.outline-process-controls button:hover { background: var(--mint-100); }
 .outline-process-layer-selector { position: absolute; left: 12px; bottom: 40px; z-index: 1; display: grid; min-width: min(230px, calc(100% - 126px)); gap: 3px; color: var(--mint-700); font-size: .72rem; font-weight: 800; }
 .outline-process-layer-selector select { min-height: 44px; padding: 0 10px; border: 1px solid var(--mint-300); border-radius: 9px; color: var(--ink); background: rgba(255,255,255,.94); font-weight: 700; box-shadow: 0 7px 22px rgba(22,89,73,.1); }
 .outline-process-layer-selector select:focus-visible { outline: 3px solid #176ad0; outline-offset: 2px; }
@@ -140,6 +137,6 @@ progress::-webkit-progress-bar { background: var(--mint-100); } progress::-webki
   .secondary-downloads { grid-template-columns: 1fr 1fr; }
   .color-legend ul { grid-template-columns: 1fr; gap: 2px; }
   .processing-card.has-preview { min-height: 680px; }.processing-foreground { padding: 20px 16px; }.processing-viewport .outline-process-webgl, .processing-viewport .outline-process-canvas, .processing-viewport .outline-process-fallback { min-height: 640px; }
-  .outline-process-viewport { min-height: 270px; }.outline-process-webgl, .outline-process-canvas { min-height: 230px; }.outline-process-fallback { height: 230px; }.outline-process-controls { right: 8px; bottom: 38px; }.outline-process-layer-selector { left: 8px; bottom: 38px; min-width: min(200px, calc(100% - 120px)); }
+  .outline-process-viewport { min-height: 270px; }.outline-process-webgl, .outline-process-canvas { min-height: 230px; }.outline-process-fallback { height: 230px; }.outline-process-layer-selector { left: 8px; bottom: 38px; min-width: min(200px, calc(100% - 120px)); }
   .primary-button, .change-file-button { width: 100% !important; }
 }

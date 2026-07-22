@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { AutomaticOutlineProgressStage } from '../domain/pipeline/automatic-outline-pipeline';
 import type { FeatureContour, OutlinePreviewPayload } from '../domain/outline-features/types';
 import {
@@ -185,7 +185,6 @@ export function OutlineProcessViewport({
   const hostRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<OutlineProcessScene | undefined>(undefined);
   const appliedPayloadRef = useRef<OutlinePreviewPayload | undefined>(undefined);
-  const dragRef = useRef<{ readonly pointerId: number; x: number } | undefined>(undefined);
   const reducedMotion = useReducedMotion(reducedMotionOverride);
   const hasInjectedFactory = createScene !== undefined || webglFactory !== undefined;
   const canUseWebGL = webGLIsAvailable(hasInjectedFactory);
@@ -249,41 +248,6 @@ export function OutlineProcessViewport({
     sceneRef.current?.setHighlightedLayer(stage === 'result' ? selectedLayerId : undefined);
   }, [selectedLayerId, stage, canUseWebGL, createScene, webglFactory]);
 
-  const rotate = (amount: number): void => sceneRef.current?.rotateBy(amount);
-  const zoom = (amount: number): void => sceneRef.current?.zoomBy(amount);
-  const reset = (): void => sceneRef.current?.resetView();
-  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
-    switch (event.key) {
-      case 'ArrowLeft': rotate(-Math.PI / 24); break;
-      case 'ArrowRight': rotate(Math.PI / 24); break;
-      case '+':
-      case '=': zoom(0.1); break;
-      case '-':
-      case '_': zoom(-0.1); break;
-      case 'Home':
-      case 'r':
-      case 'R': reset(); break;
-      default: return;
-    }
-    event.preventDefault();
-  };
-  const onPointerDown = (event: PointerEvent<HTMLDivElement>): void => {
-    dragRef.current = { pointerId: event.pointerId, x: event.clientX };
-    try { event.currentTarget.setPointerCapture?.(event.pointerId); } catch { /* Browser may reject synthetic capture. */ }
-  };
-  const onPointerMove = (event: PointerEvent<HTMLDivElement>): void => {
-    const drag = dragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    const delta = event.clientX - drag.x;
-    drag.x = event.clientX;
-    rotate(delta * 0.01);
-  };
-  const onPointerEnd = (event: PointerEvent<HTMLDivElement>): void => {
-    if (dragRef.current?.pointerId !== event.pointerId) return;
-    dragRef.current = undefined;
-    try { event.currentTarget.releasePointerCapture?.(event.pointerId); } catch { /* Browser may reject synthetic capture. */ }
-  };
-
   const descriptionId = useId();
   const showLayerSelector = stage === 'result' && payload.layers.length > 0;
   return (
@@ -298,12 +262,6 @@ export function OutlineProcessViewport({
           aria-label="模型分層預覽：可水平旋轉的真實網格和爆炸圖"
           aria-describedby={descriptionId}
           data-layer-count={payload.layers.length}
-          tabIndex={0}
-          onKeyDown={onKeyDown}
-          onPointerDown={onPointerDown}
-          onPointerMove={onPointerMove}
-          onPointerUp={onPointerEnd}
-          onPointerCancel={onPointerEnd}
         />
       )}
       <figcaption id={descriptionId} className="outline-process-caption" role="status" aria-live="polite">
@@ -315,15 +273,6 @@ export function OutlineProcessViewport({
               : 'WebGL 不可用，現以實際分層輪廓 SVG 顯示。'
           : STAGE_LABELS[stage]}
       </figcaption>
-      {!fallback && (
-        <div className="outline-process-controls" role="group" aria-label="模型預覽控制">
-          <button type="button" onClick={() => rotate(-Math.PI / 12)} aria-label="向左旋轉">↶</button>
-          <button type="button" onClick={() => rotate(Math.PI / 12)} aria-label="向右旋轉">↷</button>
-          <button type="button" onClick={() => zoom(-0.2)} aria-label="縮小模型">−</button>
-          <button type="button" onClick={() => zoom(0.2)} aria-label="放大模型">+</button>
-          <button type="button" onClick={reset} aria-label="重設視角">重設</button>
-        </div>
-      )}
       {showLayerSelector && (
         <label className="outline-process-layer-selector">
           <span>預覽切片</span>

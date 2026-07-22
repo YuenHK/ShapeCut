@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Line, type BufferGeometry, type LineBasicMaterial, type WebGLRenderer } from 'three';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -115,7 +115,7 @@ describe('OutlineProcessViewport in Chromium', () => {
     await waitFor(() => expect(context!.isContextLost()).toBe(true));
   });
 
-  it('constructs real WebGL geometry, responds to controls, and disposes on unmount', async () => {
+  it('constructs real WebGL geometry without manual controls and disposes on unmount', async () => {
     let scene: OutlineProcessScene | undefined;
     const createScene = vi.fn((host, payload, options) => {
       scene = createOutlineProcessScene(host, payload, options);
@@ -133,14 +133,8 @@ describe('OutlineProcessViewport in Chromium', () => {
     expect(scene!.layerGroups).toHaveLength(6);
     expect(scene!.layerGroups[0].position.y).not.toBe(scene!.layerGroups[5].position.y);
 
-    const previousRotation = scene!.rotatingGroup.rotation.y;
-    fireEvent.pointerDown(viewport, { pointerId: 7, clientX: 10 });
-    fireEvent.pointerMove(viewport, { pointerId: 7, clientX: 30 });
-    fireEvent.pointerUp(viewport, { pointerId: 7, clientX: 30 });
-    expect(scene!.rotatingGroup.rotation.y).toBeGreaterThan(previousRotation);
-    const afterPointerRotation = scene!.rotatingGroup.rotation.y;
-    await userEvent.click(screen.getByRole('button', { name: '向右旋轉' }));
-    expect(scene!.rotatingGroup.rotation.y).toBeGreaterThan(afterPointerRotation);
+    expect(screen.queryByRole('group', { name: '模型預覽控制' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /旋轉|縮小|放大|重設/ })).not.toBeInTheDocument();
 
     const dispose = vi.spyOn(scene!, 'dispose');
     view.unmount();
@@ -163,6 +157,8 @@ describe('OutlineProcessViewport in Chromium', () => {
 
     await waitFor(() => expect(scene).toBeDefined());
     const selector = screen.getByRole('combobox', { name: '選擇預覽切片' });
+    expect(screen.queryByRole('group', { name: '模型預覽控制' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /旋轉|縮小|放大|重設/ })).not.toBeInTheDocument();
     expect(getComputedStyle(selector).minHeight).toBe('44px');
     await userEvent.selectOptions(selector, 'actual-layer-2');
     expect(scene!.layerGroups[2].userData.selected).toBe(true);

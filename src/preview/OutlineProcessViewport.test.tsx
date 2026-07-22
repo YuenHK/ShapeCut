@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { ColoredOutlineLayer, FeatureContour, OutlinePreviewPayload } from '../domain/outline-features/types';
@@ -73,18 +73,8 @@ function fakeScene(): OutlineProcessScene {
   } as unknown as OutlineProcessScene;
 }
 
-function pointerEvent(type: string, pointerId: number, clientX: number): Event {
-  const event = new Event(type, { bubbles: true });
-  Object.defineProperties(event, {
-    pointerId: { value: pointerId },
-    clientX: { value: clientX },
-  });
-  return event;
-}
-
 describe('OutlineProcessViewport', () => {
-  it('hydrates, controls, replaces, and disposes the scene through an accessible boundary', async () => {
-    const user = userEvent.setup();
+  it('hydrates, replaces, and disposes the scene through an accessible boundary', () => {
     const scene = fakeScene();
     const createScene = vi.fn<OutlineProcessSceneFactory>(() => scene);
     const first = payload();
@@ -97,29 +87,6 @@ describe('OutlineProcessViewport', () => {
     expect(scene.setPayload).not.toHaveBeenCalled();
     expect(scene.setStage).toHaveBeenCalledWith('slicing');
     expect(scene.setReducedMotion).toHaveBeenCalledWith(true);
-
-    await user.click(screen.getByRole('button', { name: '向左旋轉' }));
-    await user.click(screen.getByRole('button', { name: '向右旋轉' }));
-    await user.click(screen.getByRole('button', { name: '放大模型' }));
-    await user.click(screen.getByRole('button', { name: '縮小模型' }));
-    await user.click(screen.getByRole('button', { name: '重設視角' }));
-    expect(scene.rotateBy).toHaveBeenNthCalledWith(1, -Math.PI / 12);
-    expect(scene.rotateBy).toHaveBeenNthCalledWith(2, Math.PI / 12);
-    expect(scene.zoomBy).toHaveBeenNthCalledWith(1, 0.2);
-    expect(scene.zoomBy).toHaveBeenNthCalledWith(2, -0.2);
-    expect(scene.resetView).toHaveBeenCalledOnce();
-
-    fireEvent.keyDown(viewport, { key: 'ArrowLeft' });
-    fireEvent.keyDown(viewport, { key: '+' });
-    fireEvent.keyDown(viewport, { key: 'Home' });
-    expect(scene.rotateBy).toHaveBeenLastCalledWith(-Math.PI / 24);
-    expect(scene.zoomBy).toHaveBeenLastCalledWith(0.1);
-    expect(scene.resetView).toHaveBeenCalledTimes(2);
-
-    fireEvent(viewport, pointerEvent('pointerdown', 1, 20));
-    fireEvent(viewport, pointerEvent('pointermove', 1, 42));
-    fireEvent(viewport, pointerEvent('pointerup', 1, 42));
-    expect(scene.rotateBy).toHaveBeenLastCalledWith(0.22);
 
     const replacement = payload('-new', 7);
     view.rerender(
@@ -160,7 +127,7 @@ describe('OutlineProcessViewport', () => {
     expect(screen.getByRole('status')).not.toHaveTextContent('實際輪廓');
   });
 
-  it('announces a completed result while retaining the exploded interactive scene state', () => {
+  it('announces a completed result without manual controls while retaining the layer selector', () => {
     const scene = fakeScene();
     const createScene = vi.fn<OutlineProcessSceneFactory>(() => scene);
     const { container } = render(
@@ -169,7 +136,9 @@ describe('OutlineProcessViewport', () => {
 
     expect(container.querySelector('.outline-process-viewport')).toHaveAttribute('data-stage', 'result');
     expect(screen.getByRole('status')).toHaveTextContent(/轉換完成.*模型分層預覽/);
-    expect(screen.getByRole('group', { name: '模型預覽控制' })).toBeVisible();
+    expect(screen.queryByRole('group', { name: '模型預覽控制' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /旋轉|縮小|放大|重設/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: '選擇預覽切片' })).toBeInTheDocument();
     expect(createScene.mock.calls[0][2]).toMatchObject({ stage: 'packaging' });
     expect(scene.setStage).toHaveBeenLastCalledWith('packaging');
   });
