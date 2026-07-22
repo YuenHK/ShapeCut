@@ -17,6 +17,11 @@ import {
 import { MaterialProfileSchema, type MaterialProfileV1 } from '../domain/materials/schema';
 import { OutlineProcessViewport } from '../preview/OutlineProcessViewport';
 import { shutdownOutlineProcessRendererPool, warmOutlineProcessRenderer } from '../preview/outline-process-scene';
+import {
+  createProcessingTimeline,
+  type ProcessingTimeline,
+  type ProcessingTimelineClock,
+} from './processing-timeline';
 
 export type DownloadFile = { readonly href: string; readonly fileName: string };
 export type OutlineDownloads = {
@@ -50,6 +55,8 @@ export type OneClickConverterServices = {
   ) => Promise<AutomaticOutlineResult>;
   readonly package: (result: AutomaticOutlineResult, fileName?: string) => Promise<OutlineDownloads>;
   readonly cancel: () => void;
+  /** Test seam; production uses the cancellable wall-clock presentation timeline. */
+  readonly createTimeline?: (clock: ProcessingTimelineClock<number>) => ProcessingTimeline;
   /** Saved profiles supplied by the app's material store. Invalid profiles are never displayed. */
   readonly materialProfiles?: readonly MaterialProfileV1[];
 };
@@ -232,6 +239,7 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
   const materials = selectableMaterials(services.materialProfiles);
   const requestId = useRef(0);
   const downloadsRef = useRef<OutlineDownloads | undefined>(undefined);
+  const timelineRef = useRef<ProcessingTimeline | undefined>(undefined);
 
   useEffect(() => {
     warmOutlineProcessRenderer();
@@ -245,36 +253,51 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
 
   useEffect(() => () => {
     requestId.current += 1;
+    timelineRef.current?.cancel();
+    timelineRef.current = undefined;
     services.cancel();
     releaseCurrentDownloads();
   }, [releaseCurrentDownloads, services]);
 
   const processFile = useCallback(async (fileName: string, bytes: ArrayBuffer, material: ManufacturingGeometryProfile) => {
     const current = ++requestId.current;
+    timelineRef.current?.cancel();
     releaseCurrentDownloads();
-    setView({ kind: 'processing', fileName, stage: 'reading' });
-    let lastProgressIndex = 0;
     let latestPreview: OutlinePreviewPayload | undefined;
     let completedResult: AutomaticOutlineResult | undefined;
+    const timeline = (services.createTimeline ?? createProcessingTimeline)({
+      now: () => Date.now(),
+      setTimeout: (callback, delay) => window.setTimeout(callback, delay),
+      clearTimeout: (timer) => window.clearTimeout(timer as number),
+      onStage: (stage, preview) => {
+        if (current !== requestId.current) return;
+        setView({ kind: 'processing', fileName, stage, ...(preview ? { preview } : {}) });
+      },
+    });
+    timelineRef.current = timeline;
+    timeline.advance('reading');
     try {
       const result = await services.convert(bytes, material, (event) => {
-        const nextProgressIndex = STAGES.indexOf(event.stage);
-        if (current !== requestId.current || nextProgressIndex < lastProgressIndex) return;
-        lastProgressIndex = nextProgressIndex;
+        if (current !== requestId.current) return;
         if ('preview' in event) latestPreview = event.preview;
-        setView({ kind: 'processing', fileName, stage: event.stage, preview: latestPreview });
+        timeline.advance(event.stage, latestPreview);
       });
       if (current !== requestId.current) return;
       completedResult = result;
-      const downloads = await services.package(result, fileName);
+      const [, downloads] = await Promise.all([timeline.finish(), services.package(result, fileName)]);
       if (current !== requestId.current) {
         revokeDownloads(downloads);
         return;
       }
       downloadsRef.current = downloads;
+      if (timelineRef.current === timeline) timelineRef.current = undefined;
       setView({ kind: 'result', fileName, result, downloads });
     } catch (error) {
       if (current !== requestId.current || error instanceof SupersededError) return;
+      if (timelineRef.current === timeline) {
+        timeline.cancel();
+        timelineRef.current = undefined;
+      }
       const artifact = completedResult && error instanceof OutlineArtifactError
         ? error.artifact
         : undefined;
@@ -293,6 +316,8 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
 
   const selectFile = useCallback(async (file: File) => {
     const current = ++requestId.current;
+    timelineRef.current?.cancel();
+    timelineRef.current = undefined;
     services.cancel();
     releaseCurrentDownloads();
     if (file.size > MAX_STL_BYTES) {
@@ -318,6 +343,8 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
 
   const reset = () => {
     requestId.current += 1;
+    timelineRef.current?.cancel();
+    timelineRef.current = undefined;
     services.cancel();
     releaseCurrentDownloads();
     setView({ kind: 'upload' });

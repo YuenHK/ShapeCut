@@ -110,6 +110,19 @@ describe('App real browser one-click flow', () => {
     let report: ((event: AutomaticOutlineProgressEvent) => void) | undefined;
     const services: OneClickConverterServices = {
       cancel: vi.fn(),
+      createTimeline: (clock) => {
+        let lastStage = -1;
+        return {
+          advance: (stage, preview) => {
+            const nextStage = ['reading', 'analyzing', 'simplifying', 'slicing', 'packaging'].indexOf(stage);
+            if (nextStage <= lastStage) return;
+            lastStage = nextStage;
+            clock.onStage(stage, preview);
+          },
+          finish: () => Promise.resolve(),
+          cancel: vi.fn(),
+        };
+      },
       convert: vi.fn((_bytes, _material, onProgress) => {
         report = onProgress;
         return conversion.promise;

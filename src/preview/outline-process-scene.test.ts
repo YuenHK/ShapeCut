@@ -303,6 +303,13 @@ describe('OutlineProcessScene', () => {
       { target: host, isIntersecting: true } as unknown as IntersectionObserverEntry,
     ], observer as unknown as IntersectionObserver);
     expect(callbacks.size).toBe(1);
+    const firstFrame = callbacks.values().next().value as FrameRequestCallback;
+    callbacks.clear();
+    firstFrame(0);
+    const secondFrame = callbacks.values().next().value as FrameRequestCallback;
+    callbacks.clear();
+    secondFrame(64);
+    expect(view.rotatingGroup.rotation.y).toBeCloseTo(0.00576);
     view.setVisible(false);
     expect(callbacks.size).toBe(0);
     expect(cancel).toHaveBeenCalled();

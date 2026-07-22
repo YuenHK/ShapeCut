@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -102,6 +102,19 @@ function services(overrides: Partial<OneClickConverterServices> = {}): OneClickC
     convert: vi.fn().mockResolvedValue(result),
     package: vi.fn().mockResolvedValue(downloads),
     cancel: vi.fn(),
+    createTimeline: (clock) => {
+      let lastStage = -1;
+      return {
+        advance: (stage, preview) => {
+          const nextStage = ['reading', 'analyzing', 'simplifying', 'slicing', 'packaging'].indexOf(stage);
+          if (nextStage <= lastStage) return;
+          lastStage = nextStage;
+          clock.onStage(stage, preview);
+        },
+        finish: () => Promise.resolve(),
+        cancel: vi.fn(),
+      };
+    },
     ...overrides,
   };
 }
@@ -112,6 +125,39 @@ async function uploadAndSelectMaterial(user: ReturnType<typeof userEvent.setup>,
 }
 
 describe('OneClickConverter', () => {
+  it('holds a fast completed conversion behind the five-stage eight-second presentation', async () => {
+    vi.useFakeTimers();
+    try {
+      let report: ((event: AutomaticOutlineProgressEvent) => void) | undefined;
+      const api = services({
+        createTimeline: undefined,
+        convert: vi.fn((_bytes, _material, onProgress) => {
+          report = onProgress;
+          report?.({ stage: 'reading' });
+          report?.({ stage: 'analyzing', preview: result.preview });
+          report?.({ stage: 'simplifying' });
+          report?.({ stage: 'slicing', preview: result.preview });
+          report?.({ stage: 'packaging' });
+          return Promise.resolve(result);
+        }),
+      });
+      render(<OneClickConverter services={api} />);
+
+      const file = new File(['mesh'], 'fast.stl');
+      Object.defineProperty(file, 'arrayBuffer', { value: vi.fn().mockResolvedValue(new ArrayBuffer(4)) });
+      await act(async () => { fireEvent.change(screen.getByLabelText('選擇 STL 模型'), { target: { files: [file] } }); });
+      await act(async () => { fireEvent.change(screen.getByLabelText('選擇製作材料'), { target: { value: 'plywood-3' } }); });
+      await act(async () => { await Promise.resolve(); });
+      await vi.advanceTimersByTimeAsync(7_999);
+      expect(screen.queryByRole('heading', { name: '轉換完成' })).toBeNull();
+      await vi.advanceTimersByTimeAsync(1);
+      await act(async () => { await Promise.resolve(); });
+      expect(screen.getByRole('heading', { name: '轉換完成' })).toBeVisible();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('shows the material, launcher, fastener, and top-feature assembly summary without adding downloads', async () => {
     const user = userEvent.setup();
     const assemblyResult = {
@@ -209,6 +255,32 @@ describe('OneClickConverter', () => {
     await user.selectOptions(await screen.findByLabelText('選擇製作材料'), 'plywood-3');
 
     expect(api.convert).toHaveBeenCalledWith(replacementBytes, expect.any(Object), expect.any(Function));
+  });
+
+  it('cancels the presentation hold before the worker when a replacement returns to material selection', async () => {
+    const user = userEvent.setup();
+    const conversion = deferred<AutomaticOutlineResult>();
+    const trace: string[] = [];
+    const api = services({
+      convert: vi.fn().mockReturnValue(conversion.promise),
+      cancel: vi.fn(() => trace.push('worker')),
+      createTimeline: (clock) => ({
+        advance: (stage, preview) => clock.onStage(stage, preview),
+        finish: () => Promise.resolve(),
+        cancel: () => { trace.push('timeline'); },
+      }),
+    });
+    const replacement = new File(['replacement'], 'replacement.stl');
+    Object.defineProperty(replacement, 'arrayBuffer', { value: vi.fn().mockResolvedValue(new ArrayBuffer(4)) });
+    render(<OneClickConverter services={api} />);
+
+    await uploadAndSelectMaterial(user, new File(['old'], 'old.stl'));
+    trace.length = 0;
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), replacement);
+
+    expect(trace).toEqual(['timeline', 'worker']);
+    expect(await screen.findByLabelText('選擇製作材料')).toBeVisible();
+    conversion.resolve(result);
   });
 
   it('keeps pre-geometry progress neutral, then announces monotonic stages through the preview status', async () => {
