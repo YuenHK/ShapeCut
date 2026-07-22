@@ -1,90 +1,162 @@
-# Task 4 Report — Colored ShapeCut Artifact Set
+# Task 4 report: Three-hook detection and versioned Knight fallback
 
-## Status
+## Status and commit
 
-Complete on base `8f0b4ee`. Commit subject: `feat: export colored ShapeCut artifact set`; the resulting hash is reported in the handoff.
+- Completed and committed as `e0b96ca` (`feat: detect launcher clearance with safe fallback`).
+- Base was `d354020`.
+- The two supplied STL files remained outside this worktree and were never staged, modified, or committed.
 
-## Implemented
+## Implementation
 
-- Added schema-v2 `ColoredOutlineDocument` creation and validation from the validated runtime `AutomaticOutlineResult`. It reconciles source, feature-evidence, removal-evidence, and diagnostics fingerprints; ordered layer identity/Z spans; role cardinality; contour IDs/orientation/containment; and direct diagnostics evidence.
-- Enforced the exact physical roles `CUT_BLACK`, `DEEP_RED`, and `LIGHT_BLUE`. Each layer has one black exterior, at most one black central hole, and at most one red/blue feature.
-- Added one shared ordered entity stream used by SVG and DXF. SVG emits exact `#000000`, `#E5484D`, and `#3A78D4`; DXF emits ACI `7`, `1`, and `5` plus matching true-color group `420` values.
-- Added deterministic `preview.pdf` with flat 1:1 sheet layout, role colors, layer labels, scale, and disclaimer.
-- Added deterministic `exploded-view.pdf` with one-page isometric separation, central axis, increasing layer order, thickness, X/Y dimensions, equivalent central-hole diameter (or `—`), and legend. Both PDFs use fixed fonts and fixed creation/modification dates.
-- Replaced the colored public package contract with exactly five payload keys: SVG, DXF, preview PDF, exploded PDF, and ZIP. The ZIP contains exactly `cut-and-engrave.svg`, `cut-and-engrave.dxf`, `preview.pdf`, and `exploded-view.pdf`; no JSON or manifest is returned or zipped.
-- Verification regenerates and parses canonical SVG/DXF, regenerates and loads both PDFs, scans public names/text/metadata, enumerates raw ZIP central-directory records and JSZip original/sanitized names, reads all four entries, and requires byte identity with the four individual downloads.
-- Preserved the one caller-owned absolute deadline through document validation, entity traversal, SVG/DXF parse loops, both PDF save/load phases, ZIP generation/raw enumeration/load/read, byte comparison, and final return checkpoints.
-- Updated worker transfer shape and transfer list for ZIP plus both PDF buffers. Browser coverage supersedes worst-case packaging, proves `SupersededError`, terminates/recreates the worker, and completes a replacement request.
+- Added bounded `detectLauncherTemplate()` for projected three-loop candidate groups. It requires finite simple closed loops, at most 4,096 points per loop, successive inclusive 112--128 degree center gaps, a common radial band, finite support, and a shared deadline/checkpoint. It scores central alignment, threefold gap quality, radial consistency, and source support, then chooses the strongest candidate deterministically.
+- Added rigid normalization that translates to the common center, rotates one deterministic first hook to +X, sorts hook order, canonicalizes winding/vertex rotation, and never scales.
+- Added `planLauncherClearance()` with detected-first/versioned-fallback selection, existing inside-cut kerf compensation plus the fixed 0.20 mm radial assembly allowance, three `CUT_BLACK` contours, and all-or-none validation against both top and second layer exteriors, central holes, inter-hook clearance, and minimum web. One tuple is returned for identical use on both layers.
+- Added strict two-reference fallback compatibility: exactly three loops, at most 5% corresponding center-radius difference, at most 10% corresponding area difference, and at most 0.50 mm symmetric mean point distance. Any incompatible reference fails before averaging.
+- Added deterministic common-count arc-length resampling and pointwise averaging. The published V1 fallback has three 96-point normalized numeric loops and two SHA-256 provenance hashes only.
+- Added `scripts/generate-launcher-template.ts`. It reads only the two opt-in environment paths, projects using the existing outline basis, searches 48 bounded axial slabs for reliable three-loop void evidence, simplifies each candidate once, generates the compatible numeric template, and prints no source path or metadata.
+- Extended `scripts/validate-fixtures.ts` so supplying both environment variables regenerates the fallback in a bounded child process and requires byte-for-byte equality with the committed numeric initializer. Supplying only one input fails closed.
 
-## TDD Evidence
+## TDD evidence
 
-- Initial RED: the new canonical/PDF suites failed because `colored-outline-document` and `exploded-pdf` did not exist; package tests also exposed the legacy one-role, five-record JSON/manifest output and rejected central-hole semantics.
-- Canonical GREEN expanded through role/cardinality, identity/order, diagnostics/removal fingerprint, direct-span, containment/orientation, privacy, mutation, and deadline regressions.
-- Worker RED received the obsolete `manifestJson` field instead of `explodedViewPdf`; GREEN transfers the exact new shape and all three binary buffers.
-- Parser/deadline RED exposed missing loop checkpoints in SVG/DXF parsing and output byte comparisons; GREEN checks the shared deadline inside those loops.
-- Exploded-PDF RED exposed an average-bounds hole diameter; GREEN reports the area-equivalent diameter `2 * sqrt(area / pi)`, rounded to 3 decimals.
-- Review RED proved a forged fifth duplicate ZIP central-directory record was accepted because JSZip collapses duplicate names. GREEN directly parses the raw central directory, retains duplicate records, requires exactly four unique records, and shares the package deadline while scanning.
+### Initial detector/template RED
 
-## Final Verification
+Command:
 
-- Focused unit/UI suite: 6 files, 438/438 tests passed.
-- Chromium worker suite: 1 file, 16/16 tests passed.
-- Full suite (run once after all fixes): 40 files, 1020/1020 tests passed.
-- `npm run typecheck`: exit 0, no diagnostics.
-- `git diff --check`: exit 0, no whitespace errors.
-- Hygiene check found no `__screenshots__` directory or generated user output under `src`.
+```sh
+npx vitest run src/domain/outline-assembly/launcher.test.ts src/domain/outline-assembly/launcher-template.test.ts
+```
 
-## File-map Notes
+Observed expected failure: both suites failed import resolution because `launcher.ts` and `launcher-template.ts` did not exist.
 
-- Added `src/export/colored-outline-test-fixture.ts` to share one authentic, validated colored runtime fixture across the new export/PDF tests.
-- The parent authorized the minimum UI contract ripple in `App`, `OneClickConverter`, and their tests: remove JSON, rename the existing PDF download to preview, add exploded PDF, use the exact artifact filenames, and clean up both PDF URLs. No Task 5 viewport or Task 6 visual/warning work was included.
-- `src/workers/geometry-client.ts` required no edit: its generic `GeometryApi` typing automatically adopts `OutlinePackageTransfer`, and its existing hard-cancellation/recreate behavior is exercised by the updated browser test.
-- Legacy `OutlinePackage` helpers remain exported only for the pre-existing safety/privacy regression suite; the worker and UI use the exact colored package and expose no legacy JSON/manifest payload.
+The first implementation run then exposed four meaningful geometry mismatches in the new tests. Root-cause analysis corrected percent-denominator semantics and floating tolerances, preserved already-common point samples, and changed the rotated-rectangle allowance assertion from an axis-aligned bounding width to invariant area. This was not treated as completion until the focused suite passed.
 
-## Independent Review and Self-review
+### Generator RED
 
-- Independent review reported one important finding and no critical/minor findings: duplicate ZIP central-directory records could be hidden by JSZip's name-keyed object. The raw central-directory verifier and regression above remediate it.
-- Self-review also added deadline-aware byte comparison, moved exploded-view bounds to trusted contours, tightened large-layer page scaling, confirmed fixed PDF metadata dates are inspected without load-time mutation, and removed an unused import.
-- Confirmed all public artifact text rejects machine power/speed/pass settings, material/production claims, source STL/JSON/manifest names, private paths, and email addresses.
+Adding the numeric-only renderer test failed because `scripts/generate-launcher-template.ts` did not exist. After the initial script was created, the first real fixture command exited 0 with empty stdout because vite-node entry-module detection did not execute `main`. A regression proved the path heuristic issue; the design was simplified so the CLI file is an unconditional executable entry while the pure renderer remains in the tested template module.
 
-## Concerns
+### Runtime-bound RED
 
-- None blocking. The exporter intentionally fails closed on malformed, drifted, privacy-bearing, oversized, or deadline-exhausted input instead of emitting a partial package.
+The first real mesh search was stopped manually with exit 130 after it exceeded its intended deadline and had produced no output. Investigation showed O(n^2) polygon validation was not receiving the detector checkpoint and raster loops were being revalidated across combinations.
+
+New tests then failed as expected:
+
+- detector inner-loop checkpoint: expected `mid-loop checkpoint`, but the invalid candidate returned omitted;
+- template inner-loop checkpoint: expected `template inner-loop checkpoint`, but validation returned the generic invalid-loop error.
+
+GREEN propagates the same deadline/checkpoint through detector and template polygon validation, symmetric point distance, planner offset/containment/clearance loops, caches detector loop validity, and simplifies each real-fixture void once to at most 96 points. Real generation then completed in seconds rather than running past the budget.
+
+### Common-point-count RED
+
+The published-template regression initially received loop counts `{96, 87, 86}` instead of one common count. Averaging now chooses one bounded maximum across all six reference loops, producing three 96-point loops.
+
+## Fresh focused and build verification
+
+Final focused command:
+
+```sh
+npx vitest run src/domain/outline-assembly/launcher.test.ts src/domain/outline-assembly/launcher-template.test.ts
+```
+
+Result: 2 files passed, 21 tests passed.
+
+```sh
+npm run typecheck
+npm run build
+```
+
+Result: both exited 0; Vite transformed 141 modules and completed the production build.
+
+`git diff --check` and the staged diff check both exited 0 before commit.
+
+## Deterministic generator and real-fixture evidence
+
+Both final runs used the brief's source-root pattern:
+
+```sh
+source_fixture_root=$(git -C "$(git rev-parse --git-common-dir)/.." rev-parse --show-toplevel)
+KNIGHT_FORTRESS_STL="$source_fixture_root/Copy of Beyblade X Knight Fortress.stl" \
+KNIGHT_FORTRESS_GROUP_STL="$source_fixture_root/Copy of Beyblade X Knight Fortress Group.stl" \
+npx vite-node scripts/generate-launcher-template.ts
+```
+
+The two complete stdout files compared byte-for-byte equal. Both SHA-256 values were:
+
+```text
+a62907554809ab8554c57cc2716908c6f00ac83c0812b915aa503519c202f5e2
+```
+
+The stdout privacy scan returned `PRIVACY_SCAN_ZERO_MATCHES` for absolute Unix/Windows paths, `.stl`, `Copy of`, and email-like metadata.
+
+Opt-in fixture validation returned:
+
+```text
+autoSuccess: 8
+outputComparisonPass: true
+launcherTemplatePass: true
+```
+
+## Full suite (run once)
+
+Command:
+
+```sh
+npm test
+```
+
+Result: 46 test files / 1,181 tests; 1,180 passed and 1 failed. Every Task 4 test passed, as did the automatic outline pipeline and Knight repair regression.
+
+The sole failure was outside Task 4: `OneClickConverter > requires material selection before conversion and resets the chooser for a replacement file`. The test synchronously queried `選擇製作材料` while the DOM still showed the replacement file's `正在讀取模型` state. This replacement-read race is documented in earlier task reports and no UI or unrelated test was changed to mask it. Per the brief, the full suite was not rerun.
+
+## Self-review and concerns
+
+- Confirmed no production string or generated stdout contains either private fixture path or filename; only the approved normalized numeric fallback and two SHA-256 hashes are committed.
+- Confirmed all detector/template compatibility quadratic loops receive bounded checkpoints; planner containment and pairwise clearance also share the caller deadline.
+- Confirmed fallback generation fails rather than averaging topology, radius, area, or point-distance incompatibility.
+- Confirmed planning does not scale geometry and omits the complete three-cut group if either layer rejects any cut.
+- An independent read-only review was requested under the review skill, but its scan of the large generated numeric block did not return before the parent-requested conclusion; it was interrupted rather than delaying the task. The local requirements audit and fresh verification above found no Task 4 blocker.
+- Only known concern is the unrelated full-suite UI race described above.
 
 ---
 
-## Review Remediation (2026-07-21)
+## Review remediation (2026-07-22)
 
-This section supersedes the initial report where the review changed ZIP validation and the approved `LIGHT_BLUE` color.
+This follow-up addresses every critical, important, and minor review finding. The follow-up commit subject is `fix: harden launcher fallback safety`.
 
-### Critical — Strict Raw ZIP Reconciliation
+### Safety geometry and reliability
 
-- Replaced central-name-only inspection with a bounded canonical raw ZIP parser. It requires a final uncommented EOCD, one disk, exactly four non-ZIP64 central records, exact central offset/size/count reconciliation, and no archive bytes after EOCD.
-- Every central record now validates canonical raw filename bytes, flags, DEFLATE method, CRC32, compressed/uncompressed sizes, disk/attributes, and local-header offset. Only the four ASCII filename byte sequences emitted by ShapeCut are accepted; BOM, NUL, invalid encoding, noncanonical names, directory names, duplicate names, extra fields/comments, encryption, descriptors, and ZIP64 sentinels fail closed.
-- Every corresponding local header must have the expected signature and exactly match central version, flags, method, timestamp, raw name, CRC32, and sizes. Local data ranges must be contiguous from byte zero to the central directory, non-overlapping, in bounds, and free of gaps or hidden trailing records.
-- Each decompressed payload is read once as bytes, checked against the raw uncompressed size and a deadline-aware CRC32 calculation, then required byte-identical to its individual SVG/DXF/PDF download. Text payloads additionally require canonical UTF-8 before privacy scanning.
-- The canonical writer currently emits flags `0`, method `8`, complete local CRC/sizes, and no data descriptor/extra/comment; the verifier intentionally accepts only that known format.
+- Planning now constructs the required finished opening as the normalized hook plus `0.20 mm`, validates that envelope, then derives the emitted inside-cut path by offsetting it by `-kerf / 2`. Exterior, central-hole, and inter-hook minimum-web checks use the finished envelope on both layers; the returned cuts remain the exact kerf-compensated paths.
+- The polygon offset adapter accepts the caller checkpoint and propagates it through input validation, vertex construction, and output validation. Planner deadline exhaustion and arbitrary cancellation both propagate instead of being converted into an omission.
+- Detector evidence now has explicit nonzero loop/group reliability floors and a final score floor. A bounded size term breaks otherwise equal evidence in favor of the larger credible geometry; unreliable detection still selects the fallback.
+- Regressions cover exact nonzero-kerf output bounds/area, finished-envelope exterior rejection, central-hole clearance rejection, inter-hook clearance rejection, zero/tiny evidence, equal-score size selection, fallback selection, deadline expiry, and cancellation.
 
-### Important — Approved Light Blue
+### Canonicalization, sampling, and provenance
 
-- Updated `LIGHT_BLUE` everywhere to `#3A78D4`: the canonical role map, SVG, DXF true-color `420` decimal `3832020`, preview/exploded PDF strokes, metadata, legends, and assertions.
-- A full-repository `rg` check for the superseded hex, decimal, and RGB component literals returned `OLD_BLUE_ZERO_MATCHES`.
+- Normalization evaluates all three cyclic hook starts and chooses the lexicographically smallest canonical group. Tests cover asymmetric hooks rotated past 120 degrees and across the `atan2` branch.
+- Both references are uniformly arc-length resampled to one common bounded count before distance comparison and averaging. Cyclic point phase is aligned deterministically, the best cyclic group correspondence is selected without scaling, and every averaged loop is revalidated after numeric rounding.
+- Tests cover different tessellations and phases, forward/reverse deterministic averaging, and an averaged loop that becomes invalid after canonical numeric rounding.
+- Averaging and rendering now require exactly two lowercase 64-character hexadecimal provenance hashes at runtime. Uppercase, short, and extra hashes fail closed.
 
-### Review RED/GREEN Evidence
+### One caller-owned generator budget
 
-- Raw ZIP RED: 4 of 12 mutation cases were incorrectly accepted—local encryption bit, zero local sizes, forged matching central/local CRC, and descriptor bit without a descriptor. Central BOM, local-name mismatch, overlapping/out-of-range offsets, and ZIP64 were already rejected indirectly.
-- Deadline RED: the new local-record and decompressed-CRC loop checkpoint tests completed instead of expiring because those phases did not yet exist.
-- GREEN: all 12 mutations (including BOM, NUL, invalid UTF-8, directory name, encryption, size, CRC, name, overlap, range, ZIP64, and descriptor cases) are rejected, and both new deadline checkpoints expire inside the intended loops.
-- Blue RED: SVG, DXF, preview metadata, and exploded legend still emitted the superseded color. GREEN emits only `#3A78D4` / `3832020` and preserves ACI `5`.
+- The importable generator core is separated into `scripts/launcher-template-generator.ts`; the CLI remains a thin executable.
+- Environment generation establishes one 120-second deadline before file loading. The same deadline/checkpoint is used before and after axis discovery and projection, through raster/simplification candidate work, detector geometry kernels, template compatibility, and averaging. No per-reference or per-stage deadline is reset.
+- RED first failed because the importable generator module did not exist. GREEN proves an already-expired deadline is checked exactly once before mesh analysis and arbitrary cancellation propagates before analysis begins.
 
-### Fresh Review Verification
+### Review RED/GREEN evidence
 
-- Required export command: exit 0; 4 files, 438/438 tests passed.
-- Chromium worker command: exit 0; 1 file, 16/16 tests passed.
-- `npm run typecheck`: exit 0; no diagnostics.
-- Fresh `npm test`: exit 0; 40 files, 1034/1034 tests passed.
-- `git diff --check`: exit 0; no whitespace errors.
+- Launcher RED: 7 expected failures exposed zero/tiny evidence acceptance, missing size tie-breaking, missing fallback selection, safety checks against kerf-shrunken paths, and swallowed cancellation. GREEN: 19/19 launcher tests passed.
+- Template RED exposed noncanonical cyclic starts, tessellation-sensitive comparison, invalid averaged-loop acceptance, and permissive provenance hashes. GREEN: 13/13 template tests passed.
+- Generator RED failed module resolution for the new importable core. GREEN: 2/2 generator deadline/cancellation tests passed.
+- Final focused command passed 3 files / 34 tests.
 
-### Remaining Concern
+### Determinism, fixtures, privacy, and final verification
 
-- None blocking. ZIP acceptance is deliberately narrower than the general ZIP specification: archives not emitted in ShapeCut's canonical JSZip format are rejected even if another unzip tool could read them.
+- Two complete real-STL generator runs compared byte-for-byte equal. Both generated-output SHA-256 values were `32a4ae7dca2619fbd0f2be2c1527f5e3a2d3bd0692d4056e91addcd79d80f810`.
+- The regenerated numeric V1 template remains three 96-point loops with exactly two SHA-256 provenance hashes. The stdout scan found zero absolute Unix/Windows paths, `.stl`, supplied filenames, or email-like strings.
+- Opt-in fixture validation passed with `autoSuccess: 8`, `outputComparisonPass: true`, and `launcherTemplatePass: true`.
+- `npm run typecheck`: exit 0.
+- `npm run build`: exit 0; Vite transformed 141 modules.
+- Fresh full suite, run once after all remediation: 47 files / 1,196 tests passed. The formerly observed unrelated `OneClickConverter` race did not recur.
+- `git diff --check`: exit 0 after removing the generated trailing blank line.
+
+No review-remediation blocker remains. The two private STL inputs remain outside the worktree and are neither staged nor committed.

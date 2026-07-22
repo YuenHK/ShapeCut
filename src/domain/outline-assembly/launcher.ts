@@ -15,6 +15,11 @@ import {
 
 export const LAUNCHER_ASSEMBLY_ALLOWANCE_MM = 0.2 as const;
 export const LAUNCHER_OMISSION_WARNING = '無法安全保留原裝發射器相容性，已省略三個發射器開孔';
+/** Source evidence below these bounded floors is never considered model-derived geometry. */
+export const LAUNCHER_MIN_LOOP_SUPPORT = 0.1;
+export const LAUNCHER_MIN_GROUP_EVIDENCE = 0.1;
+export const LAUNCHER_MIN_RELIABLE_SCORE = 0.2;
+export const LAUNCHER_SIZE_SCORE_WEIGHT = 0.1;
 
 export type LauncherLoopEvidence = {
   readonly outer: readonly Point2[];
@@ -88,7 +93,8 @@ function evaluateCandidate(
   checkpoint: () => void,
   validity: Map<readonly Point2[], boolean>,
 ): number | undefined {
-  if (!Number.isFinite(candidate.evidenceStrength) || candidate.evidenceStrength < 0 || candidate.evidenceStrength > 1
+  if (!Number.isFinite(candidate.evidenceStrength)
+    || candidate.evidenceStrength < LAUNCHER_MIN_GROUP_EVIDENCE || candidate.evidenceStrength > 1
     || candidate.loops.length !== 3) return undefined;
   for (const loop of candidate.loops) {
     checkRuntime(deadline, checkpoint);
@@ -98,7 +104,7 @@ function evaluateCandidate(
         && validatePolygon({ points: loop.outer }, () => checkRuntime(deadline, checkpoint));
       validity.set(loop.outer, simple);
     }
-    if (!loop.closed || !Number.isFinite(loop.support) || loop.support < 0 || loop.support > 1
+    if (!loop.closed || !Number.isFinite(loop.support) || loop.support < LAUNCHER_MIN_LOOP_SUPPORT || loop.support > 1
       || !simple) return undefined;
   }
   const centers = candidate.loops.map(({ outer }) => polygonCentroid(outer));
@@ -118,7 +124,10 @@ function evaluateCandidate(
   const centeredError = Math.hypot(groupCenter[0] - axisPoint[0], groupCenter[1] - axisPoint[1]) / meanRadius;
   const symmetryError = gaps.reduce((sum, gap) => sum + Math.abs(gap - 120) / 8, 0) / 3;
   const support = (candidate.evidenceStrength + candidate.loops.reduce((sum, loop) => sum + loop.support, 0) / 3) / 2;
-  return support - centeredError * 2 - symmetryError * 0.1 - radialSpread;
+  const averageArea = candidate.loops.reduce((sum, loop) => sum + Math.abs(signedArea(loop.outer)), 0) / 3;
+  const normalizedSize = Math.max(0, Math.min(1, averageArea / (meanRadius * meanRadius * 0.05)));
+  return support - centeredError * 2 - symmetryError * 0.1 - radialSpread
+    + normalizedSize * LAUNCHER_SIZE_SCORE_WEIGHT;
 }
 
 export function detectLauncherTemplate(request: LauncherDetectionRequest): LauncherDetection {
@@ -133,7 +142,7 @@ export function detectLauncherTemplate(request: LauncherDetectionRequest): Launc
   for (let index = 0; index < request.candidates.length; index += 1) {
     checkRuntime(deadline, checkpoint);
     const score = evaluateCandidate(request.candidates[index], request.axisPoint, deadline, checkpoint, validity);
-    if (score === undefined) continue;
+    if (score === undefined || score < LAUNCHER_MIN_RELIABLE_SCORE) continue;
     if (!selected || score > selected.score + 1e-12) selected = { score, index };
   }
   if (!selected) return { status: 'omitted', reason: 'No reliable three-hook launcher evidence' };
@@ -213,17 +222,32 @@ export function planLauncherClearance(request: LauncherClearanceRequest): Launch
   const selection = request.detection.status === 'detected'
     ? { status: 'detected' as const, loops: request.detection.loops }
     : { status: 'fallback' as const, loops: (request.fallback ?? KNIGHT_FORTRESS_LAUNCHER_TEMPLATE).loops };
-  const radialOffsetMm = LAUNCHER_ASSEMBLY_ALLOWANCE_MM - request.material.kerfMm / 2;
+  const kernelCheckpoint = (): void => checkRuntime(deadline, checkpoint);
+  const finishedContours: FeatureContour[] = [];
   const cuts: FeatureContour[] = [];
   try {
     for (let index = 0; index < 3; index += 1) {
       checkRuntime(deadline, checkpoint);
       const translated = selection.loops[index].map(([x, y]): Point2 => [x + request.axisPoint[0], y + request.axisPoint[1]]);
-      const offset = simpleMiterPolygonKernel.offset({ points: translated }, radialOffsetMm);
-      if (offset.length !== 1 || !validatePolygon(offset[0], () => checkRuntime(deadline, checkpoint))) {
-        throw new RangeError('Launcher offset must remain one simple loop');
+      const finished = simpleMiterPolygonKernel.offset(
+        { points: translated }, LAUNCHER_ASSEMBLY_ALLOWANCE_MM, kernelCheckpoint,
+      );
+      if (finished.length !== 1 || !validatePolygon(finished[0], kernelCheckpoint)) {
+        throw new RangeError('Launcher finished opening must remain one simple loop');
       }
-      const outer = offset[0].points;
+      const path = simpleMiterPolygonKernel.offset(finished[0], -request.material.kerfMm / 2, kernelCheckpoint);
+      if (path.length !== 1 || !validatePolygon(path[0], kernelCheckpoint)) {
+        throw new RangeError('Launcher toolpath must remain one simple loop');
+      }
+      const finishedOuter = finished[0].points;
+      finishedContours.push({
+        id: `launcher-finished-envelope-${index + 1}`,
+        role: 'CUT_BLACK',
+        outer: finishedOuter,
+        boundsMm: contourBounds(finishedOuter, deadline, checkpoint),
+        areaMm2: Math.abs(signedArea(finishedOuter, deadline, checkpoint)),
+      });
+      const outer = path[0].points;
       cuts.push({
         id: `launcher-clearance-${index + 1}`,
         role: 'CUT_BLACK',
@@ -233,14 +257,17 @@ export function planLauncherClearance(request: LauncherClearanceRequest): Launch
       });
     }
   } catch (error) {
-    if (error instanceof RangeError && /runtime budget/i.test(error.message)) throw error;
+    if (!(error instanceof RangeError)
+      || /runtime budget/i.test(error.message)
+      || !/^(?:Offset |Built-in offset|Launcher (?:finished opening|toolpath))/.test(error.message)) throw error;
     return { status: 'omitted', cuts: [], warning: LAUNCHER_OMISSION_WARNING };
   }
   const tuple = cuts as unknown as readonly [FeatureContour, FeatureContour, FeatureContour];
+  const finishedTuple = finishedContours as unknown as readonly [FeatureContour, FeatureContour, FeatureContour];
   const top = { exterior: request.topExterior, centralHole: request.topCentralHole };
   const second = { exterior: request.secondExterior, centralHole: request.secondCentralHole };
-  if (!cutsAreSafe(tuple, top, request.material.minWebMm, deadline, checkpoint)
-    || !cutsAreSafe(tuple, second, request.material.minWebMm, deadline, checkpoint)) {
+  if (!cutsAreSafe(finishedTuple, top, request.material.minWebMm, deadline, checkpoint)
+    || !cutsAreSafe(finishedTuple, second, request.material.minWebMm, deadline, checkpoint)) {
     return { status: 'omitted', cuts: [], warning: LAUNCHER_OMISSION_WARNING };
   }
   return { status: selection.status, cuts: tuple, assemblyAllowanceMm: LAUNCHER_ASSEMBLY_ALLOWANCE_MM };

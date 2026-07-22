@@ -20,7 +20,14 @@ function rectangle(center: Point2, width = 2, height = 1): readonly Point2[] {
 
 function group(
   gaps: readonly [number, number, number] = [120, 120, 120],
-  options: { readonly rotationDeg?: number; readonly offset?: Point2; readonly support?: number } = {},
+  options: {
+    readonly rotationDeg?: number;
+    readonly offset?: Point2;
+    readonly support?: number;
+    readonly radius?: number;
+    readonly width?: number;
+    readonly height?: number;
+  } = {},
 ): LauncherCandidateGroup {
   const rotation = options.rotationDeg ?? 0;
   const offset = options.offset ?? [0, 0];
@@ -33,9 +40,9 @@ function group(
         closed: true,
         support: options.support ?? 0.8,
         outer: rectangle([
-          offset[0] + Math.cos(radians) * 10,
-          offset[1] + Math.sin(radians) * 10,
-        ]),
+          offset[0] + Math.cos(radians) * (options.radius ?? 10),
+          offset[1] + Math.sin(radians) * (options.radius ?? 10),
+        ], options.width, options.height),
       };
     }) as unknown as LauncherCandidateGroup['loops'],
   };
@@ -49,6 +56,20 @@ function exterior(id: string, halfSize: number): FeatureContour {
     outer,
     boundsMm: { minX: -halfSize, minY: -halfSize, maxX: halfSize, maxY: halfSize },
     areaMm2: halfSize * halfSize * 4,
+  };
+}
+
+function contour(id: string, outer: readonly Point2[]): FeatureContour {
+  const xs = outer.map(([x]) => x), ys = outer.map(([, y]) => y);
+  return {
+    id,
+    role: 'CUT_BLACK',
+    outer,
+    boundsMm: { minX: Math.min(...xs), minY: Math.min(...ys), maxX: Math.max(...xs), maxY: Math.max(...ys) },
+    areaMm2: Math.abs(outer.reduce((sum, point, index) => {
+      const next = outer[(index + 1) % outer.length];
+      return sum + point[0] * next[1] - next[0] * point[1];
+    }, 0) / 2),
   };
 }
 
@@ -141,6 +162,22 @@ describe('three-hook launcher detection', () => {
       },
     })).toThrow(/mid-loop checkpoint/);
   });
+
+  it('rejects zero and tiny source support below the documented reliability floor', () => {
+    expect(detectLauncherTemplate({ candidates: [group([120, 120, 120], { support: 0 })], axisPoint: [0, 0] }).status)
+      .toBe('omitted');
+    expect(detectLauncherTemplate({ candidates: [group([120, 120, 120], { support: 0.01 })], axisPoint: [0, 0] }).status)
+      .toBe('omitted');
+  });
+
+  it('uses bounded size evidence to prefer the larger of otherwise equal candidates', () => {
+    const result = detectLauncherTemplate({
+      candidates: [group([120, 120, 120], { width: 1 }), group([120, 120, 120], { width: 2 })],
+      axisPoint: [0, 0],
+    });
+    expect(result.status).toBe('detected');
+    if (result.status === 'detected') expect(result.sourceCandidateIndex).toBe(1);
+  });
 });
 
 describe('safe two-layer launcher planning', () => {
@@ -162,11 +199,19 @@ describe('safe two-layer launcher planning', () => {
     expect(result.assemblyAllowanceMm).toBe(0.2);
     expect(result.cuts).toHaveLength(3);
     expect(result.cuts[0].areaMm2).toBeCloseTo(2.64, 8);
+    expect(result.cuts[0].boundsMm.minX).toBeCloseTo(8.9, 12);
+    expect(result.cuts[0].boundsMm.maxX).toBeCloseTo(11.1, 12);
+    expect(result.cuts[0].boundsMm.minY).toBeCloseTo(-0.6, 12);
+    expect(result.cuts[0].boundsMm.maxY).toBeCloseTo(0.6, 12);
     expect(result.cuts.every(({ role }) => role === 'CUT_BLACK')).toBe(true);
   });
 
   it('uses the fallback without scaling when detection is unavailable', () => {
-    const fallback = { version: 7, loops: group().loops.map(({ outer }) => outer) as [readonly Point2[], readonly Point2[], readonly Point2[]], provenanceHashes: ['1', '2'] as const };
+    const fallback = {
+      version: 7,
+      loops: group().loops.map(({ outer }) => outer) as [readonly Point2[], readonly Point2[], readonly Point2[]],
+      provenanceHashes: ['a'.repeat(64), 'b'.repeat(64)] as const,
+    };
     const result = planLauncherClearance({
       detection: { status: 'omitted', reason: 'no reliable candidates' },
       fallback,
@@ -195,5 +240,81 @@ describe('safe two-layer launcher planning', () => {
       cuts: [],
       warning: '無法安全保留原裝發射器相容性，已省略三個發射器開孔',
     });
+  });
+
+  it('falls back when model-derived evidence is below the reliability floor', () => {
+    const fallbackGroup = group();
+    const result = planLauncherClearance({
+      detection: detectLauncherTemplate({ candidates: [group([120, 120, 120], { support: 0.01 })], axisPoint: [0, 0] }),
+      fallback: {
+        version: 1,
+        loops: fallbackGroup.loops.map(({ outer }) => outer) as [readonly Point2[], readonly Point2[], readonly Point2[]],
+        provenanceHashes: ['a'.repeat(64), 'b'.repeat(64)],
+      },
+      axisPoint: [0, 0],
+      topExterior: exterior('top', 20),
+      secondExterior: exterior('second', 20),
+      material: { kerfMm: 0.2, minWebMm: 0.8 },
+    });
+    expect(result.status).toBe('fallback');
+  });
+
+  it('checks the finished +0.20 mm opening envelope at a nonzero-kerf exterior boundary', () => {
+    const unsafe = planLauncherClearance({
+      detection: detection(), fallback: undefined, axisPoint: [0, 0],
+      topExterior: exterior('top', 11.95), secondExterior: exterior('second', 11.95),
+      material: { kerfMm: 0.2, minWebMm: 0.8 },
+    });
+    expect(unsafe.status).toBe('omitted');
+    const safe = planLauncherClearance({
+      detection: detection(), fallback: undefined, axisPoint: [0, 0],
+      topExterior: exterior('top', 12.01), secondExterior: exterior('second', 12.01),
+      material: { kerfMm: 0.2, minWebMm: 0.8 },
+    });
+    expect(safe.status).toBe('detected');
+  });
+
+  it('checks the finished opening envelope against a central hole at nonzero kerf', () => {
+    const centralHole = contour('central', rectangle([7.55, 0], 1, 1));
+    const result = planLauncherClearance({
+      detection: detection(), fallback: undefined, axisPoint: [0, 0],
+      topExterior: exterior('top', 20), secondExterior: exterior('second', 20),
+      topCentralHole: centralHole, secondCentralHole: centralHole,
+      material: { kerfMm: 0.2, minWebMm: 0.8 },
+    });
+    expect(result.status).toBe('omitted');
+  });
+
+  it('checks inter-hook minimum web against finished envelopes at nonzero kerf', () => {
+    const compact = detectLauncherTemplate({
+      candidates: [group([120, 120, 120], { radius: 3, width: 2, height: 1 })], axisPoint: [0, 0],
+    });
+    const result = planLauncherClearance({
+      detection: compact, fallback: undefined, axisPoint: [0, 0],
+      topExterior: exterior('top', 20), secondExterior: exterior('second', 20),
+      material: { kerfMm: 0.2, minWebMm: 2.55 },
+    });
+    expect(result.status).toBe('omitted');
+  });
+
+  it('fails immediately on an expired planner deadline and propagates cancellation', () => {
+    const checkpoint = vi.fn();
+    expect(() => planLauncherClearance({
+      detection: detection(), fallback: undefined, axisPoint: [0, 0],
+      topExterior: exterior('top', 20), secondExterior: exterior('second', 20),
+      material: { kerfMm: 0.2, minWebMm: 0.8 }, deadline: Date.now() - 1, checkpoint,
+    })).toThrow(/runtime budget/i);
+    expect(checkpoint).toHaveBeenCalled();
+
+    let calls = 0;
+    expect(() => planLauncherClearance({
+      detection: detection(), fallback: undefined, axisPoint: [0, 0],
+      topExterior: exterior('top', 20), secondExterior: exterior('second', 20),
+      material: { kerfMm: 0.2, minWebMm: 0.8 },
+      checkpoint: () => {
+        calls += 1;
+        if (calls === 4) throw new Error('planner cancelled');
+      },
+    })).toThrow(/planner cancelled/);
   });
 });

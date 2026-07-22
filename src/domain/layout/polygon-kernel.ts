@@ -2,7 +2,7 @@ import type { Point2, Polygon2 } from '../decomposition/types';
 import { polygonsOverlapArea, validatePolygon } from '../engraving/geometry';
 
 export interface PolygonKernel {
-  offset(polygon: Polygon2, mm: number): Polygon2[];
+  offset(polygon: Polygon2, mm: number, checkpoint?: () => void): Polygon2[];
   intersects(left: Polygon2, right: Polygon2): boolean;
 }
 
@@ -32,8 +32,14 @@ function intersection(a: Point2, directionA: Point2, b: Point2, directionB: Poin
   return [a[0] + directionA[0] * t, a[1] + directionA[1] * t];
 }
 
-function offsetMitered(polygon: Polygon2, mm: number, allowConcave: boolean): Polygon2[] {
-  if (!validatePolygon(polygon) || !Number.isFinite(mm)) throw new RangeError('Offset requires finite valid polygon geometry');
+function offsetMitered(
+  polygon: Polygon2,
+  mm: number,
+  allowConcave: boolean,
+  checkpoint: () => void = () => undefined,
+): Polygon2[] {
+  checkpoint();
+  if (!validatePolygon(polygon, checkpoint) || !Number.isFinite(mm)) throw new RangeError('Offset requires finite valid polygon geometry');
   if (!allowConcave && !isConvex(polygon)) throw new RangeError('Built-in offset kernel accepts convex polygons only');
   if (mm === 0) return [{ points: polygon.points.map(([x, y]) => [x, y]) }];
   const orientation = Math.sign(signedArea(polygon));
@@ -47,6 +53,7 @@ function offsetMitered(polygon: Polygon2, mm: number, allowConcave: boolean): Po
   const points: Point2[] = [];
   const scale = Math.max(...polygon.points.map(([x, y]) => Math.hypot(x, y)), 1);
   for (let index = 0; index < lines.length; index += 1) {
+    checkpoint();
     const prior = lines[(index - 1 + lines.length) % lines.length];
     const current = lines[index];
     let point = intersection(prior.point, prior.direction, current.point, current.direction);
@@ -65,18 +72,18 @@ function offsetMitered(polygon: Polygon2, mm: number, allowConcave: boolean): Po
   }
   if (points.length > 1 && Math.hypot(points[0][0] - points.at(-1)![0], points[0][1] - points.at(-1)![1]) <= scale * 256 * Number.EPSILON) points.pop();
   const result = { points };
-  if (!validatePolygon(result)) throw new RangeError('Offset collapsed or self-intersected the polygon');
+  if (!validatePolygon(result, checkpoint)) throw new RangeError('Offset collapsed or self-intersected the polygon');
   return [result];
 }
 
 /** Conservative built-in kernel: convex polygons only; complex offsets must use a vetted kernel adapter. */
 export const convexPolygonKernel: PolygonKernel = {
-  offset: (polygon, mm) => offsetMitered(polygon, mm, false),
+  offset: (polygon, mm, checkpoint) => offsetMitered(polygon, mm, false, checkpoint),
   intersects: polygonsOverlapArea,
 };
 
 /** Explicit adapter for validated simple manufacturing outlines, including concave notches. */
 export const simpleMiterPolygonKernel: PolygonKernel = {
-  offset: (polygon, mm) => offsetMitered(polygon, mm, true),
+  offset: (polygon, mm, checkpoint) => offsetMitered(polygon, mm, true, checkpoint),
   intersects: polygonsOverlapArea,
 };

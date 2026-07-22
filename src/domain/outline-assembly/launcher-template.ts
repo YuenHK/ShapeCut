@@ -17,7 +17,16 @@ export type LauncherReference = {
   readonly provenanceHash: string;
 };
 
+const PROVENANCE_HASH = /^[0-9a-f]{64}$/;
+
+function assertProvenanceHashes(value: readonly string[], context: string): void {
+  if (value.length !== 2 || value.some((hash) => !PROVENANCE_HASH.test(hash))) {
+    throw new RangeError(`${context} requires exactly two lowercase 64-hex provenance hashes`);
+  }
+}
+
 export function renderLauncherTemplateInitializer(template: LauncherTemplate): string {
+  assertProvenanceHashes(template.provenanceHashes, 'Launcher template render');
   const numeric = JSON.stringify({
     version: template.version,
     loops: template.loops,
@@ -78,6 +87,20 @@ function canonicalLoop(points: readonly Point2[]): readonly Point2[] {
   return Array.from({ length: clockwise.length }, (_, index) => clockwise[(first + index) % clockwise.length]);
 }
 
+function compareLoops(left: LauncherLoops, right: LauncherLoops): number {
+  for (let loopIndex = 0; loopIndex < 3; loopIndex += 1) {
+    const pointCount = Math.min(left[loopIndex].length, right[loopIndex].length);
+    for (let pointIndex = 0; pointIndex < pointCount; pointIndex += 1) {
+      const comparison = comparePoint(left[loopIndex][pointIndex], right[loopIndex][pointIndex]);
+      if (comparison !== 0) return comparison;
+    }
+    if (left[loopIndex].length !== right[loopIndex].length) {
+      return left[loopIndex].length - right[loopIndex].length;
+    }
+  }
+  return 0;
+}
+
 function loopMetrics(loops: readonly (readonly Point2[])[]): readonly LoopMetric[] {
   const centers = loops.map((loop) => centroid(loop));
   const groupCenter: Point2 = [
@@ -109,51 +132,128 @@ export function normalizeLauncherLoops(
   ];
   const ordered = source.map((loop, index) => ({
     loop,
-    angle: Math.atan2(centers[index][1] - groupCenter[1], centers[index][0] - groupCenter[0]),
+    angle: (Math.atan2(centers[index][1] - groupCenter[1], centers[index][0] - groupCenter[0]) + Math.PI * 2) % (Math.PI * 2),
   })).sort((left, right) => left.angle - right.angle);
-  const rotation = -ordered[0].angle;
-  const cosine = Math.cos(rotation), sine = Math.sin(rotation);
-  const rotated = ordered.map(({ loop }) => canonicalLoop(loop.map(([x, y], index): Point2 => {
-    if ((index & 63) === 0) checkpointRuntime(deadline, checkpoint);
-    const localX = x - groupCenter[0], localY = y - groupCenter[1];
-    return [rounded(localX * cosine - localY * sine), rounded(localX * sine + localY * cosine)];
-  })));
-  return rotated as unknown as LauncherLoops;
+  let best: LauncherLoops | undefined;
+  for (let start = 0; start < 3; start += 1) {
+    checkpointRuntime(deadline, checkpoint);
+    const rotation = -ordered[start].angle;
+    const cosine = Math.cos(rotation), sine = Math.sin(rotation);
+    const candidate = Array.from({ length: 3 }, (_, loopOffset) => {
+      const loop = ordered[(start + loopOffset) % 3].loop;
+      return canonicalLoop(loop.map(([x, y], index): Point2 => {
+        if ((index & 63) === 0) checkpointRuntime(deadline, checkpoint);
+        const localX = x - groupCenter[0], localY = y - groupCenter[1];
+        return [rounded(localX * cosine - localY * sine), rounded(localX * sine + localY * cosine)];
+      }));
+    }) as unknown as LauncherLoops;
+    if (!best || compareLoops(candidate, best) < 0) best = candidate;
+  }
+  return best!;
 }
 
 function relativeDifference(left: number, right: number): number {
   return Math.abs(left - right) / Math.min(left, right);
 }
 
-function meanNearestDistance(
+function meanCorrespondingDistance(
   left: readonly Point2[],
   right: readonly Point2[],
   deadline: number,
   checkpoint: () => void,
 ): number {
   let sum = 0;
+  if (left.length !== right.length) throw new RangeError('Launcher aligned loops require one common point count');
   for (let index = 0; index < left.length; index += 1) {
     if ((index & 63) === 0) checkpointRuntime(deadline, checkpoint);
-    const point = left[index];
-    let nearest = Infinity;
-    for (let candidateIndex = 0; candidateIndex < right.length; candidateIndex += 1) {
-      if ((candidateIndex & 255) === 0) checkpointRuntime(deadline, checkpoint);
-      const candidate = right[candidateIndex];
-      nearest = Math.min(nearest, Math.hypot(point[0] - candidate[0], point[1] - candidate[1]));
-    }
-    sum += nearest;
+    sum += Math.hypot(left[index][0] - right[index][0], left[index][1] - right[index][1]);
   }
   return sum / left.length;
 }
 
-function symmetricMeanPointDistance(
+function alignLoopPhase(
   left: readonly Point2[],
   right: readonly Point2[],
   deadline: number,
   checkpoint: () => void,
-): number {
-  return (meanNearestDistance(left, right, deadline, checkpoint)
-    + meanNearestDistance(right, left, deadline, checkpoint)) / 2;
+): readonly Point2[] {
+  if (left.length !== right.length) throw new RangeError('Launcher phase alignment requires one common point count');
+  let bestShift = 0, bestDistance = Infinity;
+  for (let shift = 0; shift < right.length; shift += 1) {
+    if ((shift & 63) === 0) checkpointRuntime(deadline, checkpoint);
+    let distance = 0;
+    for (let index = 0; index < left.length; index += 1) {
+      if ((index & 255) === 0) checkpointRuntime(deadline, checkpoint);
+      const candidate = right[(index + shift) % right.length];
+      distance += (left[index][0] - candidate[0]) ** 2 + (left[index][1] - candidate[1]) ** 2;
+    }
+    if (distance < bestDistance - 1e-18) {
+      bestDistance = distance;
+      bestShift = shift;
+    }
+  }
+  return Array.from({ length: right.length }, (_, index) => right[(index + bestShift) % right.length]);
+}
+
+type PreparedReferences = {
+  readonly sourceLeft: LauncherLoops;
+  readonly sourceRight: LauncherLoops;
+  readonly samplesLeft: LauncherLoops;
+  readonly samplesRight: LauncherLoops;
+};
+
+function cyclicNormalizedGroups(
+  source: LauncherLoops,
+  deadline: number,
+  checkpoint: () => void,
+): readonly LauncherLoops[] {
+  const entries = source.map((loop) => {
+    const center = centroid(loop);
+    return { loop, center, angle: (Math.atan2(center[1], center[0]) + Math.PI * 2) % (Math.PI * 2) };
+  }).sort((left, right) => left.angle - right.angle);
+  return Array.from({ length: 3 }, (_, start) => {
+    checkpointRuntime(deadline, checkpoint);
+    const rotation = -entries[start].angle, cosine = Math.cos(rotation), sine = Math.sin(rotation);
+    return Array.from({ length: 3 }, (__, offset) => canonicalLoop(
+      entries[(start + offset) % 3].loop.map(([x, y], index): Point2 => {
+        if ((index & 63) === 0) checkpointRuntime(deadline, checkpoint);
+        return [rounded(x * cosine - y * sine), rounded(x * sine + y * cosine)];
+      }),
+    )) as unknown as LauncherLoops;
+  });
+}
+
+function prepareReferences(
+  leftSource: readonly (readonly Point2[])[],
+  rightSource: readonly (readonly Point2[])[],
+  deadline: number,
+  checkpoint: () => void,
+): PreparedReferences {
+  const sourceLeft = normalizeLauncherLoops(leftSource, deadline, checkpoint);
+  const rightCandidates = cyclicNormalizedGroups(
+    normalizeLauncherLoops(rightSource, deadline, checkpoint), deadline, checkpoint,
+  );
+  const count = Math.max(
+    ...sourceLeft.map((loop) => loop.length),
+    ...rightCandidates[0].map((loop) => loop.length),
+  );
+  if (count > LAUNCHER_TEMPLATE_MAX_POINTS) throw new RangeError('Launcher template exceeds the point budget');
+  const samplesLeft = sourceLeft.map((loop) => resampleClosedLoop(loop, count)) as unknown as LauncherLoops;
+  let best: { readonly source: LauncherLoops; readonly samples: LauncherLoops; readonly distance: number } | undefined;
+  for (const sourceRight of rightCandidates) {
+    checkpointRuntime(deadline, checkpoint);
+    const samplesRight = sourceRight.map((loop, index) => alignLoopPhase(
+      samplesLeft[index], resampleClosedLoop(loop, count), deadline, checkpoint,
+    )) as unknown as LauncherLoops;
+    const distance = samplesLeft.reduce((sum, loop, index) => sum + meanCorrespondingDistance(
+      loop, samplesRight[index], deadline, checkpoint,
+    ), 0);
+    if (!best || distance < best.distance - 1e-12
+      || Math.abs(distance - best.distance) <= 1e-12 && compareLoops(sourceRight, best.source) < 0) {
+      best = { source: sourceRight, samples: samplesRight, distance };
+    }
+  }
+  return { sourceLeft, sourceRight: best!.source, samplesLeft, samplesRight: best!.samples };
 }
 
 export function launcherReferencesAreCompatible(
@@ -164,26 +264,26 @@ export function launcherReferencesAreCompatible(
 ): boolean {
   checkpointRuntime(deadline, checkpoint);
   if (leftReference.loops.length !== 3 || rightReference.loops.length !== 3) return false;
-  let left: LauncherLoops, right: LauncherLoops;
+  let prepared: PreparedReferences;
   try {
-    left = normalizeLauncherLoops(leftReference.loops, deadline, checkpoint);
-    right = normalizeLauncherLoops(rightReference.loops, deadline, checkpoint);
+    prepared = prepareReferences(leftReference.loops, rightReference.loops, deadline, checkpoint);
   } catch (error) {
     if (error instanceof RangeError && !/runtime budget/i.test(error.message)) return false;
     throw error;
   }
-  const leftMetrics = loopMetrics(left), rightMetrics = loopMetrics(right);
+  const leftMetrics = loopMetrics(prepared.sourceLeft), rightMetrics = loopMetrics(prepared.sourceRight);
   for (let index = 0; index < 3; index += 1) {
     checkpointRuntime(deadline, checkpoint);
     if (relativeDifference(leftMetrics[index].radius, rightMetrics[index].radius) > LAUNCHER_RADIUS_TOLERANCE_RATIO + 1e-9
       || relativeDifference(leftMetrics[index].area, rightMetrics[index].area) > LAUNCHER_AREA_TOLERANCE_RATIO + 1e-9
-      || symmetricMeanPointDistance(left[index], right[index], deadline, checkpoint) > LAUNCHER_MEAN_POINT_DISTANCE_TOLERANCE_MM + 1e-9) return false;
+      || meanCorrespondingDistance(
+        prepared.samplesLeft[index], prepared.samplesRight[index], deadline, checkpoint,
+      ) > LAUNCHER_MEAN_POINT_DISTANCE_TOLERANCE_MM + 1e-9) return false;
   }
   return true;
 }
 
 function resampleClosedLoop(points: readonly Point2[], count: number): readonly Point2[] {
-  if (points.length === count) return points.map(([x, y]): Point2 => [x, y]);
   const lengths = points.map((point, index) => Math.hypot(
     points[(index + 1) % points.length][0] - point[0],
     points[(index + 1) % points.length][1] - point[1],
@@ -211,21 +311,23 @@ export function averageCompatibleLauncherReferences(
 ): LauncherTemplate {
   checkpointRuntime(deadline, checkpoint);
   if (references.length !== 2) throw new RangeError('Launcher template requires exactly two provenance references');
+  assertProvenanceHashes(references.map(({ provenanceHash }) => provenanceHash), 'Launcher template averaging');
   if (references.some(({ loops }) => loops.length !== 3)) throw new RangeError('Launcher template requires three-loop topology');
   if (!Number.isInteger(version) || version <= 0) throw new RangeError('Launcher template version must be a positive integer');
   if (!launcherReferencesAreCompatible(references[0], references[1], deadline, checkpoint)) {
     throw new RangeError('Launcher references are incompatible and cannot be averaged');
   }
-  const normalized = references.map(({ loops }) => normalizeLauncherLoops(loops, deadline, checkpoint));
-  const count = Math.max(...normalized.flatMap((loops) => loops.map((loop) => loop.length)));
-  if (count > LAUNCHER_TEMPLATE_MAX_POINTS) throw new RangeError('Launcher template exceeds the point budget');
+  const normalized = prepareReferences(references[0].loops, references[1].loops, deadline, checkpoint);
+  const count = normalized.samplesLeft[0].length;
   const averaged = [0, 1, 2].map((loopIndex) => {
-    const resampled = normalized.map((loops) => resampleClosedLoop(loops[loopIndex], count));
     return canonicalLoop(Array.from({ length: count }, (_, pointIndex): Point2 => [
-      rounded((resampled[0][pointIndex][0] + resampled[1][pointIndex][0]) / 2),
-      rounded((resampled[0][pointIndex][1] + resampled[1][pointIndex][1]) / 2),
+      rounded((normalized.samplesLeft[loopIndex][pointIndex][0] + normalized.samplesRight[loopIndex][pointIndex][0]) / 2),
+      rounded((normalized.samplesLeft[loopIndex][pointIndex][1] + normalized.samplesRight[loopIndex][pointIndex][1]) / 2),
     ]));
   }) as unknown as LauncherLoops;
+  if (averaged.some((loop) => !finiteSimpleLoop(loop, deadline, checkpoint))) {
+    throw new RangeError('Launcher averaged template is invalid after numeric canonicalization');
+  }
   return {
     version,
     loops: averaged,
@@ -239,1160 +341,1160 @@ export const KNIGHT_FORTRESS_LAUNCHER_TEMPLATE = {
   "loops": [
     [
       [
-        10.676253769,
-        0.095143614
+        10.575140991,
+        16.715670682
       ],
       [
-        11.044968462,
-        0.682173689
+        10.904229946,
+        17.667493679
       ],
       [
-        11.287554737,
-        1.254741851
+        10.910633231,
+        18.624811701
       ],
       [
-        11.918694819,
-        1.243126447
+        11.780183721,
+        18.509985397
       ],
       [
-        12.545667223,
-        1.41872557
+        12.789918104,
+        18.489550766
       ],
       [
-        13.102046699,
-        1.194694298
+        13.744498461,
+        18.319555588
       ],
       [
-        13.638507424,
-        1.180629257
+        14.638021874,
+        17.830840745
       ],
       [
-        14.1241771,
-        0.873250225
+        15.487050645,
+        17.278433283
       ],
       [
-        14.844077116,
-        1.011103928
+        16.083069393,
+        16.539909897
       ],
       [
-        14.99317664,
-        0.581700469
+        16.241824069,
+        15.687889759
       ],
       [
-        15.626754684,
-        0.854427003
+        17.139966681,
+        15.591793558
       ],
       [
-        16.053967944,
-        0.47359657
+        17.846149839,
+        14.862359682
       ],
       [
-        17.338147417,
-        1.086315465
+        18.53787258,
+        14.115071592
       ],
       [
-        17.738095351,
-        0.993391263
+        19.100035787,
+        13.266716659
       ],
       [
-        18.285755638,
-        0.855363144
+        19.693255981,
+        12.454038115
       ],
       [
-        18.798179769,
-        1.447842414
+        19.737535385,
+        11.598796722
       ],
       [
-        19.24906518,
-        1.4626026
+        20.293954064,
+        10.964667259
       ],
       [
-        19.634346499,
-        1.368741599
+        20.920548739,
+        10.270213212
       ],
       [
-        20.055468901,
-        1.181768382
+        21.398504841,
+        9.37471318
       ],
       [
-        20.210678915,
-        0.89883533
+        21.778350825,
+        8.471061059
       ],
       [
-        20.445360725,
-        0.536885428
+        22.026764466,
+        7.483380512
       ],
       [
-        20.618406737,
-        0.258318974
+        22.410978873,
+        6.582250113
       ],
       [
-        21.028939675,
-        0.477189201
+        22.54750447,
+        5.654799286
       ],
       [
-        21.04355084,
-        0.929552427
+        22.632443993,
+        4.663927383
       ],
       [
-        21.132024949,
-        1.150596135
+        22.460079477,
+        3.691717474
       ],
       [
-        20.822835729,
-        1.844025192
+        21.971364633,
+        2.798194062
       ],
       [
-        20.780337122,
-        1.81164869
+        21.355272447,
+        2.00380049
       ],
       [
-        20.460725652,
-        1.890293147
+        20.915968748,
+        1.219985347
       ],
       [
-        20.364122318,
-        1.511742825
+        21.018677879,
+        0.246185822
       ],
       [
-        19.772343811,
-        3.414408394
+        20.92282563,
+        -0.766084352
       ],
       [
-        19.678473231,
-        3.346204655
+        20.984479889,
+        -1.723046366
       ],
       [
-        19.693452187,
-        3.372230719
+        21.582637096,
+        -2.541146194
       ],
       [
-        19.521667864,
-        3.203205942
+        22.069054236,
+        -3.419421666
       ],
       [
-        19.538302666,
-        3.0724303
+        22.376428825,
+        -4.390107485
       ],
       [
-        19.351656853,
-        2.692009099
+        22.628356357,
+        -5.249823711
       ],
       [
-        19.230180563,
-        2.329287436
+        22.528158788,
+        -6.240686713
       ],
       [
-        18.845579076,
-        2.027217417
+        22.308773445,
+        -7.21564534
       ],
       [
-        18.412908292,
-        1.954083443
+        21.928819021,
+        -8.155824963
       ],
       [
-        18.230179328,
-        1.78496622
+        21.028784578,
+        -8.475647296
       ],
       [
-        18.030268351,
-        1.491730495
+        21.436737542,
+        -9.321537414
       ],
       [
-        17.588380876,
-        1.207406704
+        20.948022698,
+        -10.215060827
       ],
       [
-        17.263512527,
-        0.974293986
+        20.459307855,
+        -11.10858424
       ],
       [
-        15.713982846,
-        1.724121948
+        19.970593012,
+        -12.002107653
       ],
       [
-        14.765402124,
-        1.634040347
+        19.481878168,
+        -12.895631066
       ],
       [
-        14.352898906,
-        1.679766979
+        18.695368352,
+        -13.297423643
       ],
       [
-        14.471689794,
-        1.313908272
+        18.175221584,
+        -13.842105945
       ],
       [
-        14.16619101,
-        1.650059521
+        17.876704484,
+        -14.769180071
       ],
       [
-        13.979782546,
-        1.319809624
+        17.208965852,
+        -15.50962488
       ],
       [
-        14.749290639,
-        0.946642945
+        16.479111573,
+        -16.181713888
       ],
       [
-        14.438373324,
-        0.486359154
+        15.708335726,
+        -16.841902442
       ],
       [
-        14.704320967,
-        -0.152400354
+        14.951990885,
+        -17.523781022
       ],
       [
-        14.841679177,
-        -0.833600862
+        14.100587111,
+        -18.012937133
       ],
       [
-        14.343913713,
-        -1.544406636
+        13.197052711,
+        -18.447333698
       ],
       [
-        14.348962708,
-        -1.544904067
+        12.309560415,
+        -18.713608029
       ],
       [
-        14.134356149,
-        -1.298700938
+        11.384450824,
+        -18.383296866
       ],
       [
-        14.682321941,
-        -1.678140334
+        11.075920518,
+        -17.468517828
       ],
       [
-        15.071973155,
-        -1.64347246
+        10.92988838,
+        -16.593003516
       ],
       [
-        15.85755539,
-        -1.821700103
+        11.681939726,
+        -15.956371476
       ],
       [
-        16.109439785,
-        -2.142615371
+        12.470279708,
+        -15.351209765
       ],
       [
-        16.988908841,
-        -2.051541992
+        13.276791648,
+        -14.735116973
       ],
       [
-        17.341294923,
-        -1.877876102
+        14.096218971,
+        -14.130376918
       ],
       [
-        18.124503517,
-        -2.230514863
+        14.884076828,
+        -13.48980094
       ],
       [
-        18.478270858,
-        -2.12048466
+        15.586517796,
+        -12.752370961
       ],
       [
-        19.233189961,
-        -2.893066504
+        16.22602708,
+        -11.967785272
       ],
       [
-        19.557891668,
-        -3.595638446
+        16.736651247,
+        -11.086599266
       ],
       [
-        19.646604094,
-        -3.394856857
+        17.247275414,
+        -10.205413261
       ],
       [
-        19.528201732,
-        -3.695685586
+        17.757899581,
+        -9.324227256
       ],
       [
-        19.529877111,
-        -3.587699145
+        18.268523747,
+        -8.44304125
       ],
       [
-        19.866141162,
-        -4.614375425
+        18.737396214,
+        -7.54223241
       ],
       [
-        20.169729331,
-        -4.26552918
+        19.089889969,
+        -6.58673545
       ],
       [
-        20.482986322,
-        -4.36213274
+        19.442383724,
+        -5.63123849
       ],
       [
-        20.988531633,
-        -4.518228205
+        19.79487748,
+        -4.675741531
       ],
       [
-        20.989677777,
-        -5.16954614
+        19.850304298,
+        -3.666608257
       ],
       [
-        20.794129506,
-        -4.987831856
+        19.878927803,
+        -2.650329478
       ],
       [
-        20.837398173,
-        -4.879182453
+        20.049531867,
+        -1.677227665
       ],
       [
-        20.390002389,
-        -4.523018865
+        20.177153602,
+        -0.682220197
       ],
       [
-        20.481928895,
-        -4.208543486
+        20.315821137,
+        0.31795886
       ],
       [
-        20.476315298,
-        -4.091651733
+        20.158128815,
+        1.323404795
       ],
       [
-        20.248054832,
-        -4.393676817
+        20.06008413,
+        2.308350416
       ],
       [
-        19.922748293,
-        -4.009490716
+        20.065073449,
+        3.299917583
       ],
       [
-        19.70752645,
-        -3.795091538
+        19.837106118,
+        4.280342649
       ],
       [
-        19.207981028,
-        -3.761022239
+        19.54285721,
+        5.255311428
       ],
       [
-        18.96021583,
-        -3.594156526
+        19.248608302,
+        6.230280205
       ],
       [
-        18.323730212,
-        -3.117399942
+        18.935546465,
+        7.190128726
       ],
       [
-        18.208761428,
-        -3.202314454
+        18.614863976,
+        8.126883327
       ],
       [
-        17.496687977,
-        -3.174172142
+        18.186694373,
+        8.987904369
       ],
       [
-        17.366000957,
-        -2.815256971
+        17.74758876,
+        9.834020892
       ],
       [
-        16.800629877,
-        -2.683153938
+        17.184468441,
+        10.615645659
       ],
       [
-        16.35566998,
-        -2.294431929
+        16.609659004,
+        11.425051339
       ],
       [
-        15.852599438,
-        -2.161633926
+        15.970618235,
+        12.186054025
       ],
       [
-        15.157240576,
-        -1.969344016
+        15.256613809,
+        12.905961012
       ],
       [
-        14.401357318,
-        -2.035265468
+        14.651011225,
+        13.717747137
       ],
       [
-        13.398058366,
-        -2.028991047
+        13.894088696,
+        14.398168831
       ],
       [
-        12.134691628,
-        -1.773698922
+        13.132215307,
+        15.074016684
       ],
       [
-        11.622521786,
-        -0.929110495
+        12.362187816,
+        15.738240995
       ],
       [
-        10.979546314,
-        -0.459941569
+        11.468664404,
+        16.226955839
       ]
     ],
     [
       [
-        -22.772743175,
-        4.441772322
+        -22.59170988,
+        4.094606434
       ],
       [
-        -22.574038374,
-        5.440643023
+        -22.449469556,
+        5.087888949
       ],
       [
-        -21.758126743,
-        5.950543635
+        -22.019689988,
+        5.893022947
       ],
       [
-        -22.059297209,
-        6.709307914
+        -21.479081131,
+        6.445993509
       ],
       [
-        -21.89286847,
-        7.701114447
+        -21.760221431,
+        7.257773473
       ],
       [
-        -21.592435488,
-        8.674236381
+        -21.494012819,
+        8.211803723
       ],
       [
-        -21.193182431,
-        9.607248739
+        -21.165667569,
+        9.159129965
       ],
       [
-        -20.73045647,
-        10.514503367
+        -20.767563173,
+        10.080893781
       ],
       [
-        -20.248027539,
-        11.215494708
+        -20.369458776,
+        11.002657599
       ],
       [
-        -19.625067567,
-        11.752376119
+        -19.599716386,
+        11.410493486
       ],
       [
-        -19.558973513,
-        12.724401851
+        -19.243552869,
+        12.098559804
       ],
       [
-        -18.992306373,
-        13.556573625
+        -19.132160591,
+        13.010970101
       ],
       [
-        -18.469428493,
-        14.391786318
+        -18.592815247,
+        13.857875911
       ],
       [
-        -17.737713928,
-        15.100178617
+        -17.949539678,
+        14.609877052
       ],
       [
-        -17.07268251,
-        15.835964387
+        -17.263120005,
+        15.334475465
       ],
       [
-        -16.441799225,
-        16.549785484
+        -16.578186792,
+        16.044450057
       ],
       [
-        -15.64789931,
-        17.099002428
+        -15.865459832,
+        16.731496894
       ],
       [
-        -14.769134193,
-        17.608600705
+        -15.040557517,
+        17.303929442
       ],
       [
-        -13.750944416,
-        17.631313128
+        -14.157131331,
+        17.502579299
       ],
       [
-        -12.739295652,
-        17.607129605
+        -13.183486976,
+        17.644879284
       ],
       [
-        -11.766173718,
-        17.306696622
+        -12.207681854,
+        17.527292694
       ],
       [
-        -10.960251394,
-        17.866804071
+        -11.301518896,
+        17.355085338
       ],
       [
-        -10.107526456,
-        18.36470479
+        -10.632287871,
+        18.051225145
       ],
       [
-        -9.21101245,
-        18.768798019
+        -9.752004731,
+        18.475593452
       ],
       [
-        -8.706429798,
-        19.637820291
+        -9.125833527,
+        19.226746893
       ],
       [
-        -8.278893937,
-        20.553741375
+        -8.549946963,
+        20.049112353
       ],
       [
-        -7.608942267,
-        21.316370522
+        -7.974060398,
+        20.871477812
       ],
       [
-        -7.089349607,
-        22.119096156
+        -7.372850067,
+        21.650746486
       ],
       [
-        -6.135647951,
-        22.454562533
+        -6.521698623,
+        22.108462475
       ],
       [
-        -5.234081161,
-        22.854102025
+        -5.637255392,
+        22.440473488
       ],
       [
-        -4.236326817,
-        23.036205822
+        -4.699517427,
+        22.722141662
       ],
       [
-        -3.439969281,
-        22.603557124
+        -3.832963166,
+        22.48491645
       ],
       [
-        -2.815649761,
-        22.961592086
+        -3.175573988,
+        22.614335866
       ],
       [
-        -1.96501127,
-        23.242341944
+        -2.401831913,
+        22.893267348
       ],
       [
-        -0.946821493,
-        23.265054368
+        -1.411236843,
+        23.051668113
       ],
       [
-        0.071368283,
-        23.287766791
+        -0.420712253,
+        23.124753748
       ],
       [
-        1.089558061,
-        23.310479214
+        0.537545655,
+        23.137282167
       ],
       [
-        2.002796643,
-        23.142705616
+        1.509288124,
+        23.104507365
       ],
       [
-        2.618150895,
-        22.494347275
+        2.146178431,
+        22.40080257
       ],
       [
-        3.514324975,
-        22.855242908
+        2.951223691,
+        22.720692595
       ],
       [
-        4.510566622,
-        22.764861824
+        3.884907077,
+        22.792701227
       ],
       [
-        5.476259764,
-        22.513934369
+        4.872972035,
+        22.614178143
       ],
       [
-        6.410438278,
-        22.129915478
+        5.824481863,
+        22.309382339
       ],
       [
-        7.378867581,
-        21.81507615
+        6.754730628,
+        21.933713456
       ],
       [
-        8.279940024,
-        21.41188634
+        7.700698281,
+        21.622744101
       ],
       [
-        9.117344822,
-        20.853399992
+        8.569636927,
+        21.120260749
       ],
       [
-        9.909675321,
-        20.328130023
+        9.410738376,
+        20.586779769
       ],
       [
-        10.255887998,
-        19.388938057
+        10.002530014,
+        19.818516151
       ],
       [
-        9.81815659,
-        18.592690531
+        9.928917962,
+        18.982779858
       ],
       [
-        9.261991807,
-        17.78021629
+        9.393942949,
+        18.136609759
       ],
       [
-        8.32662093,
-        18.00270508
+        8.582744669,
+        17.917602323
       ],
       [
-        7.408842527,
-        18.384194831
+        7.658267247,
+        18.309373108
       ],
       [
-        6.463599539,
-        18.717853815
+        6.733789825,
+        18.701143892
       ],
       [
-        5.530498632,
-        19.125867108
+        5.785967517,
+        19.030046596
       ],
       [
-        4.597397724,
-        19.5338804
+        4.829921802,
+        19.33683552
       ],
       [
-        3.61232967,
-        19.787891709
+        3.873876088,
+        19.643624443
       ],
       [
-        2.62266699,
-        20.02829565
+        2.90558431,
+        19.901307165
       ],
       [
-        1.604846873,
-        20.035855524
+        1.914775369,
+        20.054354481
       ],
       [
-        0.586406569,
-        20.038286043
+        0.929276074,
+        20.030424216
       ],
       [
-        -0.432033735,
-        20.040716562
+        -0.020336214,
+        20.020401291
       ],
       [
-        -1.450474039,
-        20.04314708
+        -0.971901094,
+        20.014395725
       ],
       [
-        -2.468914343,
-        20.045577599
+        -1.949783907,
+        19.824855047
       ],
       [
-        -3.474024174,
-        19.888777628
+        -2.912386042,
+        19.741705149
       ],
       [
-        -4.477892551,
-        19.717096072
+        -3.843943919,
+        19.621461089
       ],
       [
-        -5.481760929,
-        19.545414516
+        -4.797005293,
+        19.437080621
       ],
       [
-        -6.425489385,
-        19.206042163
+        -5.750157407,
+        19.250798707
       ],
       [
-        -7.309844302,
-        18.700936527
+        -6.666257683,
+        18.874383899
       ],
       [
-        -8.231670727,
-        18.331345076
+        -7.526063718,
+        18.375623316
       ],
       [
-        -9.179625493,
-        17.999645579
+        -8.434053125,
+        17.974379637
       ],
       [
-        -10.100757844,
-        17.590093039
+        -9.316290266,
+        17.601991036
       ],
       [
-        -10.935721055,
-        17.02930873
+        -10.220670447,
+        17.31252251
       ],
       [
-        -11.726827309,
-        16.388411544
+        -10.978354755,
+        16.712862464
       ],
       [
-        -12.547676853,
-        15.869453177
+        -11.88978975,
+        16.432066423
       ],
       [
-        -13.369760372,
-        15.309508617
+        -12.511710988,
+        15.64697244
       ],
       [
-        -14.067580655,
-        14.567744713
+        -13.244691366,
+        14.971696514
       ],
       [
-        -14.765400938,
-        13.825980809
+        -13.893599197,
+        14.213130244
       ],
       [
-        -15.463221221,
-        13.084216907
+        -14.608619604,
+        13.520439475
       ],
       [
-        -16.08369549,
-        12.32116625
+        -15.287576381,
+        12.780739768
       ],
       [
-        -16.692662156,
-        11.542633615
+        -15.975928997,
+        12.071932774
       ],
       [
-        -17.166957743,
-        10.744453601
+        -16.569941822,
+        11.26243193
       ],
       [
-        -17.716740047,
-        9.926532039
+        -17.088976145,
+        10.406981463
       ],
       [
-        -18.10316,
-        9.018162694
+        -17.54848626,
+        9.51460567
       ],
       [
-        -18.459000108,
-        8.10090543
+        -17.94574423,
+        8.593712238
       ],
       [
-        -18.676575444,
-        7.106605166
+        -18.293472435,
+        7.651841711
       ],
       [
-        -19.091102035,
-        6.181330572
+        -18.64120064,
+        6.709971184
       ],
       [
-        -19.340701136,
-        5.197676154
+        -18.935170203,
+        5.752402759
       ],
       [
-        -19.545859737,
-        4.200111401
+        -19.151662317,
+        4.771966193
       ],
       [
-        -19.751018337,
-        3.202546647
+        -19.36815443,
+        3.791529628
       ],
       [
-        -19.79376301,
-        2.190282713
+        -19.584646543,
+        2.811093063
       ],
       [
-        -19.771050587,
-        1.172092936
+        -19.57221993,
+        1.81480994
       ],
       [
-        -20.417493321,
-        0.713299765
+        -19.763901263,
+        0.989969679
       ],
       [
-        -21.237299384,
-        0.231127864
+        -20.618233392,
+        0.752559341
       ],
       [
-        -21.679389193,
-        0.72132546
+        -21.390061139,
+        0.488546499
       ],
       [
-        -22.207450769,
-        1.556018619
+        -21.745669925,
+        1.356249564
       ],
       [
-        -22.727318329,
-        2.405392768
+        -22.328662437,
+        2.171048606
       ],
       [
-        -22.750030753,
-        3.423582545
+        -22.5488156,
+        3.122332802
       ]
     ],
     [
       [
-        -22.600320439,
-        -3.258242969
+        -22.615513599,
+        -3.510113739
       ],
       [
-        -22.373189738,
-        -2.302572928
+        -22.523452345,
+        -2.524742012
       ],
       [
-        -21.978700355,
-        -1.604997819
+        -22.303871891,
+        -1.569399171
       ],
       [
-        -21.354252926,
-        -1.164696073
+        -21.851578464,
+        -0.667410245
       ],
       [
-        -20.733156357,
-        -1.182511391
+        -20.944328872,
+        -0.771495731
       ],
       [
-        -20.171286403,
-        -1.685180569
+        -19.971454894,
+        -0.820946868
       ],
       [
-        -19.70501858,
-        -2.370322271
+        -19.661089102,
+        -1.655208843
       ],
       [
-        -19.551008383,
-        -3.361572996
+        -19.437849648,
+        -2.547500977
       ],
       [
-        -19.384137086,
-        -4.350661932
+        -19.432485079,
+        -3.437807456
       ],
       [
-        -19.195246284,
-        -5.336022403
+        -19.218519966,
+        -4.380103342
       ],
       [
-        -18.961061474,
-        -6.311097692
+        -19.03510134,
+        -5.322946379
       ],
       [
-        -18.675939776,
-        -7.270112468
+        -18.899275809,
+        -6.270963244
       ],
       [
-        -18.322788735,
-        -8.197952113
+        -18.615490961,
+        -7.239961691
       ],
       [
-        -17.908903202,
-        -9.075029005
+        -18.331706114,
+        -8.20896014
       ],
       [
-        -17.403630317,
-        -9.910119045
+        -17.782880831,
+        -9.044973829
       ],
       [
-        -16.826348593,
-        -10.685350283
+        -17.342794158,
+        -9.918299519
       ],
       [
-        -16.325182862,
-        -11.492920783
+        -16.718435025,
+        -10.711772286
       ],
       [
-        -15.7249067,
-        -12.249942003
+        -16.219751339,
+        -11.577610333
       ],
       [
-        -15.165991536,
-        -13.046987163
+        -15.667548073,
+        -12.382889875
       ],
       [
-        -14.544676775,
-        -13.766374132
+        -15.048270013,
+        -13.149397181
       ],
       [
-        -13.790863266,
-        -14.416716005
+        -14.421280314,
+        -13.902708794
       ],
       [
-        -13.083077666,
-        -15.039639822
+        -13.794650416,
+        -14.694012504
       ],
       [
-        -12.332839124,
-        -15.698038862
+        -12.965696486,
+        -15.245275099
       ],
       [
-        -11.491440658,
-        -16.214571709
+        -12.079844923,
+        -15.729794283
       ],
       [
-        -10.727229248,
-        -16.814812809
+        -11.33609595,
+        -16.40771345
       ],
       [
-        -9.885344157,
-        -17.266883192
+        -10.524598748,
+        -16.986522153
       ],
       [
-        -9.23170189,
-        -17.993556332
+        -9.613234794,
+        -17.421157144
       ],
       [
-        -8.24149066,
-        -18.14322278
+        -8.757885186,
+        -17.924305103
       ],
       [
-        -7.473206624,
-        -18.708670094
+        -8.05111022,
+        -18.574757618
       ],
       [
-        -6.485635741,
-        -18.87556375
+        -7.074039737,
+        -18.660867953
       ],
       [
-        -5.535185158,
-        -19.162662174
+        -6.100677935,
+        -18.894192063
       ],
       [
-        -4.55528471,
-        -19.381582571
+        -5.127007857,
+        -19.161509123
       ],
       [
-        -3.571791365,
-        -19.579197153
+        -4.153337778,
+        -19.428826183
       ],
       [
-        -2.582509146,
-        -19.74248381
+        -3.1796677,
+        -19.696143243
       ],
       [
-        -1.620467249,
-        -19.923175969
+        -2.204609636,
+        -19.948218637
       ],
       [
-        -0.620706891,
-        -19.942154815
+        -1.202713339,
+        -19.90613524
       ],
       [
-        0.380036339,
-        -19.938485248
+        -0.224486203,
+        -20.129855225
       ],
       [
-        1.376501424,
-        -19.841865676
+        0.760574554,
+        -19.93329756
       ],
       [
-        2.36732982,
-        -19.685228396
+        1.736277638,
+        -19.782973888
       ],
       [
-        3.349971425,
-        -19.487293607
+        2.688210634,
+        -19.657533812
       ],
       [
-        4.32519991,
-        -19.258954652
+        3.640108624,
+        -19.536206126
       ],
       [
-        5.298538015,
-        -19.022736409
+        4.607395233,
+        -19.347948534
       ],
       [
-        6.256101241,
-        -18.720766867
+        5.56941518,
+        -19.051182017
       ],
       [
-        7.174475993,
-        -18.331143577
+        6.530607661,
+        -18.741987587
       ],
       [
-        8.041410632,
-        -18.024520556
+        7.491800142,
+        -18.432793158
       ],
       [
-        8.787308084,
-        -18.10334514
+        8.329514181,
+        -17.897805698
       ],
       [
-        9.508374904,
-        -18.148788523
+        9.099879908,
+        -17.64985319
       ],
       [
-        9.526711859,
-        -18.878059273
+        9.813597761,
+        -18.272928597
       ],
       [
-        9.770535018,
-        -19.491690322
+        10.427660504,
+        -18.836491925
       ],
       [
-        9.171498063,
-        -20.16907225
+        9.902490134,
+        -19.6985565
       ],
       [
-        8.535551477,
-        -20.89543492
+        9.368185793,
+        -20.55529802
       ],
       [
-        7.787605793,
-        -21.488944487
+        8.59193224,
+        -21.083964741
       ],
       [
-        6.907366602,
-        -21.700934928
+        7.813734044,
+        -21.650123943
       ],
       [
-        6.085649964,
-        -21.831967275
+        6.911174746,
+        -22.016525094
       ],
       [
-        5.352110582,
-        -22.340780445
+        6.004026963,
+        -22.10188303
       ],
       [
-        4.459787684,
-        -22.204443302
+        5.263198189,
+        -21.814559965
       ],
       [
-        3.69552909,
-        -22.610503921
+        4.747168856,
+        -22.466565299
       ],
       [
-        2.759395885,
-        -22.839579736
+        3.773842796,
+        -22.66262389
       ],
       [
-        1.77205871,
-        -23.012322137
+        2.794276294,
+        -22.907453014
       ],
       [
-        0.927489221,
-        -22.787405412
+        1.796143163,
+        -22.927078936
       ],
       [
-        0.034031602,
-        -22.925790625
+        0.811116957,
+        -23.113520756
       ],
       [
-        -0.844921433,
-        -23.030619319
+        -0.017915289,
+        -22.736852417
       ],
       [
-        -1.697084704,
-        -22.770677142
+        -0.798775152,
+        -22.737630604
       ],
       [
-        -2.578098734,
-        -22.978234055
+        -1.660438157,
+        -22.998261715
       ],
       [
-        -3.569220322,
-        -22.845147453
+        -2.669369012,
+        -22.999860344
       ],
       [
-        -4.517785492,
-        -22.606758241
+        -3.629986502,
+        -22.765421497
       ],
       [
-        -5.466546755,
-        -22.349728648
+        -4.608611555,
+        -22.525060149
       ],
       [
-        -6.414747366,
-        -22.047839184
+        -5.60421407,
+        -22.368472462
       ],
       [
-        -7.222844694,
-        -21.642067839
+        -6.546160681,
+        -22.023905119
       ],
       [
-        -7.940569229,
-        -21.044139053
+        -7.451653319,
+        -21.578772397
       ],
       [
-        -8.509902577,
-        -20.289056656
+        -8.139977337,
+        -20.916843895
       ],
       [
-        -8.94121191,
-        -19.4282958
+        -8.666718206,
+        -20.079734535
       ],
       [
-        -9.686622758,
-        -18.938980589
+        -9.240790002,
+        -19.275067836
       ],
       [
-        -10.175925062,
-        -18.128885395
+        -9.853455988,
+        -18.567464883
       ],
       [
-        -11.090442963,
-        -17.902199372
+        -10.759517617,
+        -18.121881942
       ],
       [
-        -12.015161142,
-        -17.638593952
+        -11.665579245,
+        -17.676299
       ],
       [
-        -12.96594843,
-        -17.443326897
+        -12.610457153,
+        -17.536315051
       ],
       [
-        -13.966027995,
-        -17.354982629
+        -13.588682545,
+        -17.288422301
       ],
       [
-        -14.846259664,
-        -17.010841814
+        -14.585859269,
+        -17.173571444
       ],
       [
-        -15.731697167,
-        -16.693843811
+        -15.501936019,
+        -16.886462139
       ],
       [
-        -16.46895719,
-        -16.154788605
+        -16.360031095,
+        -16.359064327
       ],
       [
-        -17.025600839,
-        -15.42161005
+        -17.099811898,
+        -15.691285662
       ],
       [
-        -17.553456105,
-        -14.774085005
+        -17.786021197,
+        -14.964896639
       ],
       [
-        -18.086396348,
-        -14.155960955
+        -17.655809403,
+        -14.025750899
       ],
       [
-        -18.525887561,
-        -13.431100852
+        -18.416369468,
+        -13.769851626
       ],
       [
-        -19.163539285,
-        -12.831041938
+        -19.027487315,
+        -13.03869225
       ],
       [
-        -19.732884654,
-        -12.042614723
+        -19.630962956,
+        -12.229901406
       ],
       [
-        -20.266082058,
-        -11.198295837
+        -20.080586373,
+        -11.375762654
       ],
       [
-        -20.341039384,
-        -10.265794028
+        -20.528712201,
+        -10.479972844
       ],
       [
-        -20.920993393,
-        -9.591654141
+        -20.769634056,
+        -9.631999583
       ],
       [
-        -21.093123046,
-        -8.803283912
+        -20.696541833,
+        -8.84023931
       ],
       [
-        -21.48732384,
-        -8.004680947
+        -21.481267499,
+        -8.283946023
       ],
       [
-        -21.931964176,
-        -7.186163516
+        -21.759915801,
+        -7.3567033
       ],
       [
-        -22.190618214,
-        -6.21958049
+        -22.076505714,
+        -6.438157187
       ],
       [
-        -22.382664314,
-        -5.239472984
+        -22.250394094,
+        -5.483423939
       ],
       [
-        -22.443512553,
-        -4.238019517
+        -22.372405428,
+        -4.489184363
       ]
     ]
   ],
