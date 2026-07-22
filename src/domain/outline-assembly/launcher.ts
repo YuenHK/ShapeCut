@@ -300,7 +300,13 @@ export function planLauncherClearance(request: LauncherClearanceRequest): Launch
         boundsMm: contourBounds(finishedOuter, deadline, guardedCheckpoint),
         areaMm2: Math.abs(signedArea(finishedOuter, deadline, guardedCheckpoint)),
       });
-      const outer = path[0].points;
+      const pathOuter = path[0].points;
+      const outer = signedArea(pathOuter, deadline, guardedCheckpoint) > 0
+        ? pathOuter
+        : pathOuter.map((_, pointIndex) => {
+          if ((pointIndex & 63) === 0) guardedCheckpoint();
+          return pathOuter[pathOuter.length - 1 - pointIndex];
+        });
       cuts.push({
         id: `launcher-clearance-${index + 1}`,
         role: 'CUT_BLACK',

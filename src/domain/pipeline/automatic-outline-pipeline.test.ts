@@ -19,8 +19,8 @@ import { createOutlineAxisBasis } from '../outline-2.5d/raster';
 import * as simplification from '../outline-2.5d/simplify';
 import { MAX_STL_BYTES } from '../mesh/parse-stl';
 import type { OutlinePreviewPayload } from '../outline-features/types';
-import { featureEvidenceFingerprint } from '../outline-features/types';
-import type { LauncherCandidateGroup } from '../outline-assembly/launcher';
+import { featureEvidenceFingerprint, validateAutomaticColoredResult } from '../outline-features/types';
+import { createOutlinePackage } from '../../export/outline-package';
 
 const testMaterial = { id: 'test-material', name: 'Test material', thicknessMm: 3, kerfMm: 0.1, minFeatureMm: 0.8, minWebMm: 0.5, fitAllowanceMm: { loose: 0.2, slip: 0.1, snug: 0, press: -0.1 } } as const;
 function convertAutomatically(request: { readonly bytes: ArrayBuffer }, onProgress?: Parameters<typeof convertAutomaticOutline>[1]) {
@@ -137,19 +137,73 @@ function translated(mesh: TriangleMesh, x: number, y: number, z: number): Triang
   };
 }
 
-function detectedLauncherEvidence(radiusMm = 10): LauncherCandidateGroup {
-  return {
-    evidenceStrength: 0.8,
-    loops: [0, 120, 240].map((degrees) => {
-      const radians = degrees * Math.PI / 180;
-      const x = Math.cos(radians) * radiusMm, y = Math.sin(radians) * radiusMm;
-      return {
-        closed: true,
-        support: 0.8,
-        outer: [[x - 1, y - 0.5], [x + 1, y - 0.5], [x + 1, y + 0.5], [x - 1, y + 0.5]],
-      };
-    }) as unknown as LauncherCandidateGroup['loops'],
+function perforatedLauncherPlate(): TriangleMesh {
+  const holes = [0, 120, 240].map((degrees) => {
+    const angle = degrees * Math.PI / 180;
+    const centerX = Math.cos(angle) * 10, centerY = Math.sin(angle) * 10;
+    return { minX: centerX - 1, maxX: centerX + 1, minY: centerY - 0.5, maxY: centerY + 0.5 };
+  });
+  const xs = [...new Set([-30, 30, ...holes.flatMap(({ minX, maxX }) => [minX, maxX])])].sort((a, b) => a - b);
+  const ys = [...new Set([-30, 30, ...holes.flatMap(({ minY, maxY }) => [minY, maxY])])].sort((a, b) => a - b);
+  const positions: number[] = [], indices: number[] = [];
+  const addBox = (minX: number, minY: number, maxX: number, maxY: number) => {
+    const offset = positions.length / 3;
+    positions.push(
+      minX, minY, -1, maxX, minY, -1, maxX, maxY, -1, minX, maxY, -1,
+      minX, minY, 1, maxX, minY, 1, maxX, maxY, 1, minX, maxY, 1,
+    );
+    const faces = [
+      [0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7],
+      [0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5],
+      [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7],
+    ];
+    for (const face of faces) indices.push(...face.map((index) => offset + index));
   };
+  for (let xIndex = 0; xIndex + 1 < xs.length; xIndex += 1) {
+    for (let yIndex = 0; yIndex + 1 < ys.length; yIndex += 1) {
+      const minX = xs[xIndex], maxX = xs[xIndex + 1], minY = ys[yIndex], maxY = ys[yIndex + 1];
+      const centerX = (minX + maxX) / 2, centerY = (minY + maxY) / 2;
+      if (holes.some((hole) => centerX > hole.minX && centerX < hole.maxX
+        && centerY > hole.minY && centerY < hole.maxY)) continue;
+      addBox(minX, minY, maxX, maxY);
+    }
+  }
+  return { positions: new Float64Array(positions), indices: new Uint32Array(indices) };
+}
+
+function rectangularPrism(width: number, height: number): TriangleMesh {
+  const minX = -width / 2, maxX = width / 2, minY = -height / 2, maxY = height / 2;
+  const positions = new Float64Array([
+    minX, minY, -1, maxX, minY, -1, maxX, maxY, -1, minX, maxY, -1,
+    minX, minY, 1, maxX, minY, 1, maxX, maxY, 1, minX, maxY, 1,
+  ]);
+  const indices = new Uint32Array([
+    0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7,
+    0, 1, 5, 0, 5, 4, 1, 2, 6, 1, 6, 5,
+    2, 3, 7, 2, 7, 6, 3, 0, 4, 3, 4, 7,
+  ]);
+  return { positions, indices };
+}
+
+function asymmetricFastenerPlate(): TriangleMesh {
+  const cells = [
+    { minX: -10, minY: -1, maxX: 2, maxY: 1 },
+    { minX: 2, minY: -5, maxX: 10, maxY: 5 },
+  ];
+  const positions: number[] = [], indices: number[] = [];
+  for (const { minX, minY, maxX, maxY } of cells) {
+    const offset = positions.length / 3;
+    const cell = rectangularPrism(maxX - minX, maxY - minY);
+    for (let index = 0; index < cell.positions.length; index += 3) {
+      positions.push(
+        cell.positions[index] + (minX + maxX) / 2,
+        cell.positions[index + 1] + (minY + maxY) / 2,
+        cell.positions[index + 2],
+      );
+    }
+    indices.push(...Array.from(cell.indices, (index) => index + offset));
+  }
+  return { positions: new Float64Array(positions), indices: new Uint32Array(indices) };
 }
 
 describe('automatic outline pipeline', () => {
@@ -204,26 +258,88 @@ describe('automatic outline pipeline', () => {
     }
   });
 
-  it('publishes detected launcher evidence through the full extraction result contract', async () => {
-    const original = extraction.extractExactContours;
-    const exact = vi.spyOn(extraction, 'extractExactContours').mockImplementationOnce((
-      mesh, selection, specs, budgets, deadline, options,
-    ) => original(mesh, selection, specs, budgets, deadline, {
-      ...options,
-      planBlackCuts: (context) => options!.planBlackCuts!({
-        ...context,
-        launcherCandidates: [detectedLauncherEvidence()],
-      }),
-    }));
-    try {
-      const result = await convertAutomatically({ bytes: writeBinarySTL(scaled(cylinder(), 8, 8, 1), 'safe') });
-      expect(result.assembly.launcher.status).toBe('detected');
-      expect(result.coloredLayers.slice(-2).every((layer) => layer.launcherCuts.length === 3)).toBe(true);
-      expect(result.coloredLayers.slice(0, -2).every((layer) => layer.launcherCuts.length === 0)).toBe(true);
-    } finally {
-      exact.mockRestore();
-    }
+  it('rejects recomputed-fingerprint fastener metadata and geometry forgeries from a genuine result', async () => {
+    const result = await convertAutomatically({ bytes: writeBinarySTL(scaled(cylinder(), 8, 8, 1), 'safe') });
+    expect(result.assembly.fastener.count).toBe(3);
+
+    const metadataEvidence = {
+      ...structuredClone(result),
+      assembly: {
+        ...result.assembly,
+        fastener: {
+          ...result.assembly.fastener,
+          pathDiameterMm: result.assembly.fastener.pathDiameterMm + 0.01,
+        },
+      },
+    };
+    const metadata = { ...metadataEvidence, featureEvidenceFingerprint: featureEvidenceFingerprint(metadataEvidence) };
+    expect(() => validateAutomaticColoredResult(metadata, Infinity, () => undefined, result.material))
+      .toThrow(/fastener.*path diameter|kerf|material/i);
+
+    const forgedLayers = structuredClone(result).coloredLayers.map((layer) => {
+      const holes = layer.fastenerHoles.map((hole, holeIndex) => {
+        if (holeIndex !== 0) return hole;
+        const outer = hole.outer.map(([x, y], pointIndex) => pointIndex === 0 ? [x + 0.1, y] as const : [x, y] as const);
+        const xs = outer.map(([x]) => x), ys = outer.map(([, y]) => y);
+        const areaMm2 = Math.abs(outer.reduce((sum, point, index) => {
+          const next = outer[(index + 1) % outer.length];
+          return sum + point[0] * next[1] - next[0] * point[1];
+        }, 0) / 2);
+        return {
+          ...hole,
+          outer,
+          boundsMm: {
+            minX: Math.min(...xs), minY: Math.min(...ys),
+            maxX: Math.max(...xs), maxY: Math.max(...ys),
+          },
+          areaMm2,
+        };
+      });
+      return { ...layer, fastenerHoles: holes };
+    });
+    const firstForged = forgedLayers[0].fastenerHoles[0].outer;
+    const firstCenter: readonly [number, number] = [
+      firstForged.reduce((sum, [x]) => sum + x, 0) / firstForged.length,
+      firstForged.reduce((sum, [, y]) => sum + y, 0) / firstForged.length,
+    ];
+    const geometryEvidence = {
+      ...structuredClone(result),
+      coloredLayers: forgedLayers,
+      preview: { ...result.preview, layers: forgedLayers },
+      assembly: {
+        ...result.assembly,
+        fastener: {
+          ...result.assembly.fastener,
+          centers: [firstCenter, ...result.assembly.fastener.centers.slice(1)],
+        },
+      },
+    };
+    const geometry = { ...geometryEvidence, featureEvidenceFingerprint: featureEvidenceFingerprint(geometryEvidence) };
+    expect(() => validateAutomaticColoredResult(geometry, Infinity, () => undefined, result.material))
+      .toThrow(/fastener.*(?:48-point|circle|geometry|diameter)/i);
   });
+
+  it('publishes launcher holes detected by actual extraction through the full result contract', async () => {
+    const result = await convertAutomatically({ bytes: writeBinarySTL(perforatedLauncherPlate(), 'safe') });
+    expect(result.assembly.launcher.status).toBe('detected');
+    expect(result.coloredLayers.slice(-2).every((layer) => layer.launcherCuts.length === 3)).toBe(true);
+    expect(result.coloredLayers.slice(0, -2).every((layer) => layer.launcherCuts.length === 0)).toBe(true);
+    const packaged = await createOutlinePackage(result);
+    expect(packaged.cutSvg.match(/-launcher-clearance-/g)).toHaveLength(6);
+  }, 20_000);
+
+  it.each([
+    ['three', scaled(cylinder(), 8, 8, 1), 3],
+    ['two', rectangularPrism(20, 6), 2],
+    ['one', asymmetricFastenerPlate(), 1],
+    ['zero', rectangularPrism(4, 4), 0],
+  ] as const)('produces exactly %s shared fastener holes through actual extraction', async (_label, mesh, count) => {
+    const result = await convertAutomatically({ bytes: writeBinarySTL(mesh, 'safe') });
+    expect(result.assembly.fastener.count).toBe(count);
+    expect(result.coloredLayers.every((layer) => layer.fastenerHoles.length === count)).toBe(true);
+    const packaged = await createOutlinePackage(result);
+    expect(packaged.cutSvg.match(/-fastener-hole-/g) ?? []).toHaveLength(count * result.coloredLayers.length);
+  }, 20_000);
 
   it('publishes both layer-local depth roles through preview and fingerprint evidence', async () => {
     const result = await convertAutomaticOutline({

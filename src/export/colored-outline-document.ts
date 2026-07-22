@@ -275,7 +275,9 @@ function runColoredResultValidation(
   const material = result.material === undefined
     ? undefined
     : validateManufacturingGeometryProfile(result.material);
-  validateAutomaticColoredResult(result, options.now ? Infinity : deadline, () => checkpoint('canonical:result-validation-loop'), material);
+  validateAutomaticColoredResult(result, options.now ? Infinity : deadline, (label) => checkpoint(
+    label ? `canonical:result-validation:${label}` : 'canonical:result-validation-loop',
+  ), material);
   const inspection = result.originalReport.inspection;
   const expectedTopology = {
     triangleCount: inspection.triangleCount,

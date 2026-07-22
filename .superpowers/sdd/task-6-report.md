@@ -307,3 +307,34 @@ The first full-suite attempt exposed two stale E2E assumptions: a fixture replac
 
 - Standard PDF fonts cannot encode the canonical Traditional Chinese launcher/fastener warnings. The canonical document retains the exact sanitized source warnings; PDF pages render faithful public English safety notes and the independent parser verifies them.
 - `src/export/svg.ts` and `src/export/dxf.ts` were not changed because the colored canonical SVG/DXF writers live in `src/export/package.ts`; they already consume the ordered canonical document role arrays. Package verification remains exactly four records: SVG, DXF, preview PDF, and exploded PDF.
+
+## Formal review follow-up: assembly evidence and artifact oracle (2026-07-22)
+
+### RED evidence
+
+- A genuine non-mocked three-fastener pipeline result accepted a forged `pathDiameterMm` after its feature fingerprint was recomputed.
+- The same boundary accepted a shared, recomputed-area/bounds contour whose first fastener vertex no longer formed the compensated circle.
+- The canonical call chain did not expose the late assembly-point checkpoint, so a targeted cancellation was not observed.
+- Preview and exploded PDFs followed input warning order; launcher/fastener notes could precede a central-hole omission.
+- A genuine fallback-launcher plus three-fastener package first exposed non-canonical launcher winding, then reached the E2E oracle and failed its obsolete two-black-contour cap.
+
+### Fixes
+
+- Assembly validation now binds the path diameter to exactly `3 mm - material.kerfMm` within 64 scaled ULPs. Every shared fastener is independently bound to its summary center and deterministic 48-point circle, with finite/distinct/simple points plus recomputed area and bounds. Shared layer geometry and public-ID uniqueness remain mandatory.
+- New reconciliation loops poll at first and every 64 points. The optional labeled checkpoint propagates through canonical validation without wrapping an exact caller cancellation.
+- Launcher toolpaths are normalized to canonical positive winding before materialization.
+- One shared safety-note contract defines central-hole, launcher, then fastener order for production PDFs and the independent oracle.
+- The artifact oracle permits and reconciles the complete canonical arrays: up to eight black contours, twelve top red/blue contours, one lower red/blue contour, exterior-central-launcher-fastener order, atomic top-two launchers, and one common all-layer fastener count.
+- Non-mocked synthetic meshes traverse actual extraction and prove detected and fallback launchers. Four production conversions deterministically produce and package fastener counts 3, 2, 1, and 0. A genuine convert-package-inspect regression reconciles six fallback launcher cuts and eighteen shared fastener holes.
+
+### Verification
+
+- Focused pipeline/types/assembly/export/E2E/UI: 8 files, 604/604 passed.
+- Full unit suite: 52 files, 1254/1254 passed.
+- `npm run typecheck`: passed.
+- `npm run build`: passed, 147 modules transformed.
+- `git diff --check`: passed.
+
+### Remaining concern
+
+- `KNIGHT_FORTRESS_STL` and `KNIGHT_FORTRESS_GROUP_STL` were not set in this session, so the private opt-in real-STL cases could not run. No private path or fixture was guessed or copied; the actual-extraction synthetic coverage above is fully non-mocked.

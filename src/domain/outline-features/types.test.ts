@@ -45,6 +45,13 @@ function circle(radius: number, id = 'layer-0-hole', role: FeatureRole = 'CUT_BL
   }));
 }
 
+function circle48At(center: Point2, radius: number, id: string): FeatureContour {
+  return contour(id, 'CUT_BLACK', Array.from({ length: 48 }, (_, index) => {
+    const angle = index * Math.PI * 2 / 48;
+    return [center[0] + Math.cos(angle) * radius, center[1] + Math.sin(angle) * radius] as const;
+  }));
+}
+
 function rectangle(width: number, height: number, id = 'layer-0-deep', role: FeatureRole = 'DEEP_RED'): FeatureContour {
   const left = -8;
   return contour(id, role, [
@@ -210,6 +217,35 @@ function withFeatureCounts(topDeep: number, lowerDeep: number): AutomaticOutline
       },
     },
     coloredLayers,
+    preview: { ...source.preview, layers: coloredLayers },
+  };
+  return { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
+}
+
+function withThreeFasteners(): AutomaticOutlineResult {
+  const source = automaticResult();
+  const radiusMm = 5, rotationRad = 0, pathDiameterMm = 2.9;
+  const centers = [0, 1, 2].map((index): Point2 => {
+    const angle = rotationRad + index * Math.PI * 2 / 3;
+    return [Math.cos(angle) * radiusMm, Math.sin(angle) * radiusMm];
+  });
+  const coloredLayers = source.coloredLayers.map((layer) => ({
+    ...layer,
+    fastenerHoles: centers.map((center, index) => (
+      circle48At(center, pathDiameterMm / 2, `${layer.id}-fastener-hole-${index + 1}`)
+    )),
+  }));
+  const changed = {
+    ...source,
+    assembly: {
+      ...source.assembly,
+      fastener: {
+        count: 3 as const, centers, finishedDiameterMm: 3 as const,
+        pathDiameterMm, radiusMm, rotationRad,
+      },
+    },
+    coloredLayers,
+    featureWarnings: source.featureWarnings.filter((warning) => warning !== FASTENER_OMISSION_WARNING),
     preview: { ...source.preview, layers: coloredLayers },
   };
   return { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
@@ -775,5 +811,16 @@ describe('colored outline contracts', () => {
     expect(Object.prototype.toString.call(cloned.preview.mesh.positions)).toBe('[object Float32Array]');
     expect(Object.prototype.toString.call(cloned.preview.mesh.indices)).toBe('[object Uint32Array]');
     expect(cloned.featureEvidenceFingerprint).toBe(featureEvidenceFingerprint(cloned));
+  });
+
+  it('polls late fastener-circle reconciliation and preserves the exact caller cancellation', () => {
+    const result = withThreeFasteners();
+    expect(() => validateAutomaticColoredResult(result)).not.toThrow();
+    const cancellation = new Error('cancel during late fastener point reconciliation');
+    let pointPolls = 0;
+    expect(() => validateAutomaticColoredResult(result, Infinity, (label?: string) => {
+      if (label === 'assembly:fastener-point-loop' && ++pointPolls === 2) throw cancellation;
+    })).toThrow(cancellation);
+    expect(pointPolls).toBe(2);
   });
 });

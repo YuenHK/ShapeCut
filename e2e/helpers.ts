@@ -15,6 +15,9 @@ import {
   PDFString,
 } from 'pdf-lib';
 import { expect, type Download, type Page } from '@playwright/test';
+import {
+  publicSafetyNotes,
+} from '../src/export/safety-notes';
 
 export const COLORED_ROLES = ['CUT_BLACK', 'DEEP_RED', 'LIGHT_BLUE'] as const;
 export type ColoredRole = typeof COLORED_ROLES[number];
@@ -47,8 +50,6 @@ const ROLE_LEGEND_LABEL = 'BLACK CUT | RED DEEP | BLUE LIGHT';
 const RELATIVE_LEVEL_GUIDANCE = 'Red and blue are relative processing levels, not literal machine settings.';
 const TEST_CUT_GUIDANCE = 'Assign machine-specific settings after material test cuts.';
 const PREVIEW_SAFETY_NOTE_MINIMUM_WIDTH_MM = 80;
-const LAUNCHER_OMISSION_NOTE = 'Launcher clearance omitted because compatibility could not be preserved safely.';
-const FASTENER_OMISSION_NOTE = '3 mm fastener holes omitted because no all-layer pattern was safe.';
 
 export type ColoredEntityRecord = {
   readonly physicalLayerId: string;
@@ -318,11 +319,12 @@ function signedArea(points: readonly (readonly number[])[]): number {
   }, 0) / 2;
 }
 
-function validateEntityRecords(entities: readonly ColoredEntityRecord[], label: string): void {
+export function validateColoredEntityRecords(entities: readonly ColoredEntityRecord[], label: string): void {
   if (entities.length === 0) throw new Error(`${label} contains no colored entities`);
   const ids = new Set<string>();
   let lastOrder = 0;
   const layerRoles = new Map<string, ColoredRole[]>();
+  const layerEntities = new Map<string, ColoredEntityRecord[]>();
   for (const entity of entities) {
     if (!SAFE_ID.test(entity.id) || !SAFE_ID.test(entity.physicalLayerId) || ids.has(entity.id)) {
       throw new Error(`${label} contains malformed or duplicate feature identity`);
@@ -345,13 +347,46 @@ function validateEntityRecords(entities: readonly ColoredEntityRecord[], label: 
     const roles = layerRoles.get(key) ?? [];
     roles.push(entity.role);
     layerRoles.set(key, roles);
+    const records = layerEntities.get(key) ?? [];
+    records.push(entity);
+    layerEntities.set(key, records);
   }
-  for (const roles of layerRoles.values()) {
+  const maximumOrder = Math.max(...entities.map(({ order }) => order));
+  const orderedLayers = [...layerEntities.values()].sort((left, right) => left[0].order - right[0].order);
+  const centralCounts: number[] = [], launcherCounts: number[] = [], fastenerCounts: number[] = [];
+  for (const records of orderedLayers) {
+    const roles = layerRoles.get(`${records[0].order}:${records[0].physicalLayerId}`)!;
     const counts = Object.fromEntries(COLORED_ROLES.map((role) => [role, roles.filter((item) => item === role).length])) as Record<ColoredRole, number>;
-    if (counts.CUT_BLACK < 1 || counts.CUT_BLACK > 2 || counts.DEEP_RED > 1 || counts.LIGHT_BLUE > 1
+    const top = records[0].order === maximumOrder;
+    if (counts.CUT_BLACK < 1 || counts.CUT_BLACK > 8
+      || counts.DEEP_RED > (top ? 12 : 1) || counts.LIGHT_BLUE > (top ? 12 : 1)
       || exact(roles) !== exact(COLORED_ROLES.flatMap((role) => Array.from({ length: counts[role] }, () => role)))) {
       throw new Error(`${label} role encounter order or per-layer cardinality is invalid`);
     }
+    const black = records.filter(({ role }) => role === 'CUT_BLACK');
+    const remainder = black.slice(1);
+    const central = remainder.filter(({ id }) => id.endsWith('-hole') && !id.includes('-fastener-hole-'));
+    const launcher = remainder.filter(({ id }) => id.includes('-launcher-clearance-'));
+    const fastener = remainder.filter(({ id }) => id.includes('-fastener-hole-'));
+    if (central.length > 1 || launcher.length > 3 || fastener.length > 3
+      || remainder.length !== central.length + launcher.length + fastener.length
+      || exact(remainder.map(({ id }) => id)) !== exact([
+        ...central.map(({ id }) => id),
+        ...launcher.map(({ id }) => id),
+        ...fastener.map(({ id }) => id),
+      ])) {
+      throw new Error(`${label} black exterior, central, launcher, and fastener arrays are not canonical`);
+    }
+    centralCounts.push(central.length);
+    launcherCounts.push(launcher.length);
+    fastenerCounts.push(fastener.length);
+  }
+  if (new Set(centralCounts).size !== 1 || new Set(fastenerCounts).size !== 1
+    || ![0, 3].includes(launcherCounts.at(-1) ?? -1)
+    || ![0, 3].includes(launcherCounts.at(-2) ?? -1)
+    || launcherCounts.at(-1) !== launcherCounts.at(-2)
+    || launcherCounts.slice(0, -2).some((count) => count !== 0)) {
+    throw new Error(`${label} shared central, top-two launcher, or all-layer fastener arrays do not reconcile`);
   }
 }
 
@@ -530,7 +565,7 @@ export function parseColoredOutlineSvgArtifact(svg: string): ParsedColoredArtifa
       || index > 0 && (layer.index <= layers[index - 1].index || layer.zStart < layers[index - 1].zEnd))) {
     throw new Error('Colored SVG contains duplicate or out-of-order layer identity');
   }
-  validateEntityRecords(entities, 'Colored SVG');
+  validateColoredEntityRecords(entities, 'Colored SVG');
   const documentExtents = canonicalColoredDocumentExtents(entities, 'Colored SVG');
   if (root.xmlns !== 'http://www.w3.org/2000/svg'
     || root.width !== `${documentExtents.width}mm`
@@ -685,7 +720,7 @@ export function parseColoredOutlineDxfArtifact(dxf: string): Omit<ParsedColoredA
       role, points,
     };
   });
-  validateEntityRecords(entities, 'Colored DXF');
+  validateColoredEntityRecords(entities, 'Colored DXF');
   const documentExtents = canonicalColoredDocumentExtents(entities, 'Colored DXF');
   if (maximumX !== documentExtents.width || maximumY !== documentExtents.height) {
     throw new Error('Colored DXF EXTMAX does not match the canonical entity layout extents');
@@ -1323,11 +1358,11 @@ function reconcilePdf(
       && entity.role === 'CUT_BLACK' && entity.id.endsWith('-hole')
       && !entity.id.includes('-fastener-hole-'))
   ));
-  const safetyNotes = [
-    ...(allCentralHolesOmitted ? [CENTRAL_HOLE_OMISSION_WARNING] : []),
-    ...(svg.entities.some((entity) => entity.id.includes('-launcher-clearance-')) ? [] : [LAUNCHER_OMISSION_NOTE]),
-    ...(svg.entities.some((entity) => entity.id.includes('-fastener-hole-')) ? [] : [FASTENER_OMISSION_NOTE]),
-  ];
+  const safetyNotes = publicSafetyNotes({
+    centralHole: allCentralHolesOmitted,
+    launcher: !svg.entities.some((entity) => entity.id.includes('-launcher-clearance-')),
+    fastener: !svg.entities.some((entity) => entity.id.includes('-fastener-hole-')),
+  });
   if (exact(pdf.layerRecords.map(({ id, order }) => ({ id, order }))) !== exact(expectedLayers)) {
     throw new Error(`Colored ${pdf.kind} PDF layer metadata does not reconcile with SVG`);
   }

@@ -1,5 +1,4 @@
 import { PDFDocument, PDFName, StandardFonts, rgb, type PDFPage, type PDFFont } from 'pdf-lib';
-import { CENTRAL_HOLE_OMISSION_WARNING } from '../domain/outline-features/hole';
 import {
   COLORED_ROLE_COLORS,
   type ColoredDocumentCheckpoint,
@@ -7,6 +6,7 @@ import {
   type ColoredOutlineRole,
 } from './colored-outline-document';
 import { createColoredExportLayout } from './package';
+import { publicSafetyNotesFromWarnings } from './safety-notes';
 
 const MM_TO_POINTS = 72 / 25.4;
 const FIXED_DATE = new Date('2000-01-01T00:00:00.000Z');
@@ -21,16 +21,7 @@ const TEST_CUT_GUIDANCE = 'Assign machine-specific settings after material test 
 const PREVIEW_SAFETY_NOTE_MINIMUM_WIDTH_MM = 80;
 
 function assemblySafetyNotes(document: ColoredOutlineDocument): readonly string[] {
-  return document.safetyNotes.flatMap((note) => {
-    if (note === CENTRAL_HOLE_OMISSION_WARNING) return [note];
-    if (note.includes('發射器')) {
-      return ['Launcher clearance omitted because compatibility could not be preserved safely.'];
-    }
-    if (note.includes('螺絲孔')) {
-      return ['3 mm fastener holes omitted because no all-layer pattern was safe.'];
-    }
-    return [];
-  });
+  return publicSafetyNotesFromWarnings(document.safetyNotes);
 }
 
 function configure(pdf: PDFDocument, title: string, keywords: readonly string[]): void {

@@ -138,8 +138,10 @@ describe('safe degrading fastener planning', () => {
     const coloredLayers = sourceLayers.map((source, index) => ({ ...source, fastenerHoles: materialized[index] }));
     const withLayers = {
       ...seed,
+      material,
       assembly: {
         ...seed.assembly,
+        material,
         fastener: {
           count: plan.count,
           centers: plan.centers,

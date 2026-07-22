@@ -8,15 +8,44 @@ import {
   parseColoredOutlinePdf,
   parseColoredOutlineSvgArtifact,
   parseColoredZipRecords,
+  validateColoredEntityRecords,
   type ColoredArtifactPayloads,
+  type ColoredEntityRecord,
   type WorkerResultSummary,
 } from '../../e2e/helpers';
 import { coloredResult } from '../export/colored-outline-test-fixture';
 import { createOutlinePackage, type ColoredOutlinePackage } from '../export/outline-package';
 import { featureEvidenceFingerprint } from '../domain/outline-features/types';
+import { convertAutomatically } from '../domain/pipeline/automatic-outline-pipeline';
+import { writeBinarySTL } from '../domain/mesh/write-stl';
+import type { TriangleMesh } from '../domain/mesh/types';
 
 let output: ColoredOutlinePackage;
 let artifacts: ColoredArtifactPayloads;
+
+const integrationMaterial = {
+  id: 'e2e-assembly', name: 'E2E assembly', thicknessMm: 3, kerfMm: 0.1,
+  minFeatureMm: 0.8, minWebMm: 0.5,
+  fitAllowanceMm: { loose: 0.2, slip: 0.1, snug: 0, press: -0.1 },
+} as const;
+
+function assemblyCylinder(segments = 32): TriangleMesh {
+  const positions: number[] = [0, 0, -1, 0, 0, 1];
+  for (let index = 0; index < segments; index += 1) {
+    const angle = index / segments * Math.PI * 2;
+    positions.push(40 * Math.cos(angle), 40 * Math.sin(angle), -1);
+    positions.push(40 * Math.cos(angle), 40 * Math.sin(angle), 1);
+  }
+  const indices: number[] = [];
+  for (let index = 0; index < segments; index += 1) {
+    const next = (index + 1) % segments;
+    const bottom = 2 + index * 2, top = bottom + 1;
+    const nextBottom = 2 + next * 2, nextTop = nextBottom + 1;
+    indices.push(0, bottom, nextBottom, 1, nextTop, top);
+    indices.push(bottom, top, nextTop, bottom, nextTop, nextBottom);
+  }
+  return { positions: new Float64Array(positions), indices: new Uint32Array(indices) };
+}
 
 beforeAll(async () => {
   output = await createOutlinePackage(coloredResult());
@@ -249,6 +278,63 @@ function sharedHoleSummary(): WorkerResultSummary {
 }
 
 describe('release E2E colored artifact parsers', () => {
+  it('accepts exact maximum canonical role arrays and rejects lower/top overflow or black subrole reordering', () => {
+    const polygon = [[0, 0], [1, 0], [1, 1]] as const;
+    const record = (layer: number, role: ColoredEntityRecord['role'], id: string): ColoredEntityRecord => ({
+      physicalLayerId: `layer-${layer}`, order: layer, index: layer - 1,
+      zStart: layer - 1, zEnd: layer, role, id, points: polygon,
+    });
+    const entities = Array.from({ length: 6 }, (_, position) => {
+      const layer = position + 1, top = layer === 6;
+      return [
+        record(layer, 'CUT_BLACK', `layer-${layer}-exterior`),
+        record(layer, 'CUT_BLACK', `layer-${layer}-hole`),
+        ...(layer >= 5 ? [1, 2, 3].map((index) => record(
+          layer, 'CUT_BLACK', `layer-${layer}-launcher-clearance-${index}`,
+        )) : []),
+        ...[1, 2, 3].map((index) => record(layer, 'CUT_BLACK', `layer-${layer}-fastener-hole-${index}`)),
+        ...Array.from({ length: top ? 12 : 1 }, (_, index) => record(layer, 'DEEP_RED', `layer-${layer}-red-${index}`)),
+        ...Array.from({ length: top ? 12 : 1 }, (_, index) => record(layer, 'LIGHT_BLUE', `layer-${layer}-blue-${index}`)),
+      ];
+    }).flat();
+    expect(() => validateColoredEntityRecords(entities, 'maximum fixture')).not.toThrow();
+
+    const lowerRedIndex = entities.findIndex(({ physicalLayerId, role }) => physicalLayerId === 'layer-1' && role === 'DEEP_RED');
+    const lowerOverflow = [...entities];
+    lowerOverflow.splice(lowerRedIndex + 1, 0, record(1, 'DEEP_RED', 'layer-1-red-extra'));
+    expect(() => validateColoredEntityRecords(lowerOverflow, 'lower overflow')).toThrow(/cardinality|role/i);
+
+    const topBlueIndex = entities.length - 1;
+    const topOverflow = [...entities];
+    topOverflow.splice(topBlueIndex + 1, 0, record(6, 'LIGHT_BLUE', 'layer-6-blue-extra'));
+    expect(() => validateColoredEntityRecords(topOverflow, 'top overflow')).toThrow(/cardinality|role/i);
+
+    const reordered = [...entities];
+    const launcherIndex = reordered.findIndex(({ id }) => id === 'layer-6-launcher-clearance-1');
+    const fastenerIndex = reordered.findIndex(({ id }) => id === 'layer-6-fastener-hole-1');
+    [reordered[launcherIndex], reordered[fastenerIndex]] = [reordered[fastenerIndex], reordered[launcherIndex]];
+    expect(() => validateColoredEntityRecords(reordered, 'black reorder')).toThrow(/canonical|array/i);
+  });
+
+  it('reconciles a genuine converted package with fallback launcher and three shared fasteners', async () => {
+    const result = await convertAutomatically({
+      bytes: writeBinarySTL(assemblyCylinder(), 'safe'),
+      material: integrationMaterial,
+    });
+    expect(result.assembly.launcher.status).toBe('fallback');
+    expect(result.assembly.fastener.count).toBe(3);
+    const packaged = await createOutlinePackage(result);
+    const inspected = await inspectColoredArtifacts({
+      zip: packaged.zip,
+      svg: packaged.cutSvg,
+      dxf: packaged.cutDxf,
+      previewPdf: packaged.previewPdf,
+      explodedPdf: packaged.explodedViewPdf,
+    });
+    expect(inspected.entities.filter(({ id }) => id.includes('-launcher-clearance-'))).toHaveLength(6);
+    expect(inspected.entities.filter(({ id }) => id.includes('-fastener-hole-'))).toHaveLength(18);
+  });
+
   it('reconciles readable PDF safety notes for a warned all-layer hole omission', async () => {
     const omitted = await createOutlinePackage(allLayerHoleOmissionResult());
     const payloads: ColoredArtifactPayloads = {

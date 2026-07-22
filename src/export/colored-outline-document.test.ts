@@ -2,11 +2,29 @@ import { describe, expect, it } from 'vitest';
 import { diagnosticsFingerprint } from '../domain/pipeline/automatic-outline-pipeline';
 import { CENTRAL_HOLE_OMISSION_WARNING } from '../domain/outline-features/hole';
 import { featureEvidenceFingerprint } from '../domain/outline-features/types';
+import type { Point2 } from '../domain/decomposition/types';
+import type { FeatureContour } from '../domain/outline-features/types';
 import {
   createColoredOutlineDocument,
   validateColoredOutlineDocument,
 } from './colored-outline-document';
 import { coloredResult } from './colored-outline-test-fixture';
+
+function circle48(center: Point2, radius: number, id: string): FeatureContour {
+  const outer = Array.from({ length: 48 }, (_, index) => {
+    const angle = index * Math.PI * 2 / 48;
+    return [center[0] + Math.cos(angle) * radius, center[1] + Math.sin(angle) * radius] as const;
+  });
+  const xs = outer.map(([x]) => x), ys = outer.map(([, y]) => y);
+  return {
+    id, role: 'CUT_BLACK', outer,
+    boundsMm: { minX: Math.min(...xs), minY: Math.min(...ys), maxX: Math.max(...xs), maxY: Math.max(...ys) },
+    areaMm2: Math.abs(outer.reduce((sum, point, index) => {
+      const next = outer[(index + 1) % outer.length];
+      return sum + point[0] * next[1] - next[0] * point[1];
+    }, 0) / 2),
+  };
+}
 
 function allLayerHoleOmissionResult() {
   const result = coloredResult();
@@ -45,39 +63,46 @@ function withColoredLayers(
   return { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
 }
 
+function activeAssemblyResult() {
+  const result = coloredResult();
+  const layer = result.coloredLayers[5], featured = result.coloredLayers[2];
+  const fastenerCenters = [[4, 0], [-4, 0]] as const;
+  const coloredLayers = result.coloredLayers.map((candidate, index) => ({
+    ...candidate,
+    launcherCuts: index < 4 ? [] : [1, 2, 3].map((number) => ({
+      ...layer.centralHole!, id: `${candidate.id}-launcher-${number}`,
+    })),
+    fastenerHoles: fastenerCenters.map((center, fastenerIndex) => (
+      circle48(center, 2.85 / 2, `${candidate.id}-fastener-${fastenerIndex + 1}`)
+    )),
+    deepFeatures: index === 5
+      ? featured.deepFeatures.map((contour) => ({ ...contour, id: 'top-deep-1' }))
+      : candidate.deepFeatures,
+    lightFeatures: index === 5
+      ? featured.lightFeatures.map((contour) => ({ ...contour, id: 'top-light-1' }))
+      : candidate.lightFeatures,
+  }));
+  const changed = {
+    ...result,
+    coloredLayers,
+    featureWarnings: [],
+    assembly: {
+      ...result.assembly,
+      launcher: { status: 'detected' as const, cutCount: 3 as const, assemblyAllowanceMm: 0.2 as const },
+      fastener: {
+        count: 2 as const, centers: fastenerCenters, finishedDiameterMm: 3 as const,
+        pathDiameterMm: 2.85, radiusMm: 4, rotationRad: 0,
+      },
+      topFeatures: { retained: { red: 1, blue: 1 }, omitted: { red: 0, blue: 0 } },
+    },
+    preview: { ...result.preview, layers: coloredLayers },
+  };
+  return { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
+}
+
 describe('canonical colored outline document', () => {
   it('writes bounded multi-contour geometry in canonical cut and engraving order', () => {
-    const result = coloredResult();
-    const layer = result.coloredLayers[5];
-    const featured = result.coloredLayers[2];
-    const coloredLayers = result.coloredLayers.map((candidate, index) => ({
-      ...candidate,
-      launcherCuts: index < 4 ? [] : [1, 2, 3].map((number) => ({
-        ...layer.centralHole!, id: `${candidate.id}-launcher-${number}`,
-      })),
-      fastenerHoles: [1, 2].map((number) => ({
-        ...layer.centralHole!, id: `${candidate.id}-fastener-${number}`,
-      })),
-      deepFeatures: index === 5
-        ? featured.deepFeatures.map((contour) => ({ ...contour, id: 'top-deep-1' }))
-        : candidate.deepFeatures,
-      lightFeatures: index === 5
-        ? featured.lightFeatures.map((contour) => ({ ...contour, id: 'top-light-1' }))
-        : candidate.lightFeatures,
-    }));
-    const changed = {
-      ...result,
-      coloredLayers,
-      featureWarnings: [],
-      assembly: {
-        ...result.assembly,
-        launcher: { status: 'detected' as const, cutCount: 3 as const, assemblyAllowanceMm: 0.2 as const },
-        fastener: { count: 2 as const, centers: [[0, 0], [0, 0]] as const, finishedDiameterMm: 3 as const, pathDiameterMm: 2.85 },
-        topFeatures: { retained: { red: 1, blue: 1 }, omitted: { red: 0, blue: 0 } },
-      },
-      preview: { ...result.preview, layers: coloredLayers },
-    };
-    const complete = { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
+    const complete = activeAssemblyResult();
     const document = createColoredOutlineDocument(complete);
 
     expect(document.layers[5].roles.CUT_BLACK.map(({ id }) => id)).toEqual([
@@ -221,6 +246,20 @@ describe('canonical colored outline document', () => {
       onCheckpoint: (label) => labels.push(label),
     })).toThrow(/shared deadline/i);
     expect(labels).toContain('canonical:polygon-loop');
+  });
+
+  it('propagates labeled late assembly cancellation unchanged through canonical validation', () => {
+    const cancellation = new Error('cancel canonical fastener reconciliation');
+    let polls = 0;
+    expect(() => createColoredOutlineDocument(activeAssemblyResult(), 1, {
+      now: () => 0,
+      onCheckpoint: (label) => {
+        if (label === 'canonical:result-validation:assembly:fastener-point-loop' && ++polls === 2) {
+          throw cancellation;
+        }
+      },
+    })).toThrow(cancellation);
+    expect(polls).toBe(2);
   });
 
   it('rejects diagnostics and removal fingerprints that drift from the direct pipeline evidence', () => {

@@ -2,9 +2,10 @@ import type { Point2 } from '../decomposition/types';
 import type { ManufacturingGeometryProfile } from '../materials/manufacturing-profile';
 import type { OutlineLayer } from '../outline-2.5d/extract';
 import { createOutlineAxisBasis } from '../outline-2.5d/raster';
-import type { Bounds2 } from '../outline-2.5d/simplify';
+import { contourBounds, signedArea as contourSignedArea, type Bounds2 } from '../outline-2.5d/simplify';
 import { DEFAULT_OUTLINE_BUDGETS, type OutlineMode } from '../outline-2.5d/types';
 import { validateOutlineLayer } from '../outline-2.5d/validate';
+import { validatePolygon } from '../engraving/geometry';
 import type { Vec3 } from '../types';
 import { CENTRAL_HOLE_OMISSION_WARNING, isStrictlyContainedLoop } from './hole';
 import type { DepthFeatureOmissionCode } from './depth-field';
@@ -144,8 +145,8 @@ function validLayerCount(count: number): boolean {
   return count >= DEFAULT_OUTLINE_BUDGETS.minLayers && count <= DEFAULT_OUTLINE_BUDGETS.maxLayers;
 }
 
-function checkRuntimeBudget(deadline: number, checkpoint: () => void): void {
-  checkpoint();
+function checkRuntimeBudget(deadline: number, checkpoint: (label?: string) => void, label?: string): void {
+  checkpoint(label);
   if (Date.now() > deadline) throw new RangeError(RUNTIME_REASON);
 }
 
@@ -160,7 +161,7 @@ function sharedHoleGeometryMatches(
   reference: SharedCentralHoleLayerEvidence,
   candidate: SharedCentralHoleLayerEvidence,
   deadline: number,
-  checkpoint: () => void,
+  checkpoint: (label?: string) => void,
 ): boolean {
   const left = reference.contour!, right = candidate.contour!;
   if (left.outer.length !== right.outer.length
@@ -574,7 +575,7 @@ export function validateColoredLayerShape(
 function contourRecord(
   contourValue: FeatureContour | undefined,
   deadline: number,
-  checkpoint: () => void,
+  checkpoint: (label?: string) => void,
 ): unknown {
   if (contourValue === undefined) return null;
   const outer: number[][] = [];
@@ -799,11 +800,59 @@ function samePoints(left: readonly Point2[], right: readonly Point2[]): boolean 
 const LAUNCHER_OMISSION_WARNING_TEXT = '無法安全保留原裝發射器相容性，已省略三個發射器開孔';
 const FASTENER_OMISSION_WARNING_TEXT = '無法安全配置 3 mm 固定螺絲孔，已省略螺絲孔';
 
-function sameContourGeometry(left: FeatureContour, right: FeatureContour): boolean {
-  return left.role === right.role
-    && left.areaMm2 === right.areaMm2
-    && JSON.stringify(left.boundsMm) === JSON.stringify(right.boundsMm)
-    && samePoints(left.outer, right.outer);
+function nearlyEqual(left: number, right: number): boolean {
+  // Geometry producers use deterministic IEEE-754 operations; 64 scaled ULPs
+  // permits serialization noise without accepting manufacturing-scale drift.
+  return Math.abs(left - right) <= Number.EPSILON * 64 * Math.max(1, Math.abs(left), Math.abs(right));
+}
+
+function sameContourGeometry(
+  left: FeatureContour,
+  right: FeatureContour,
+  deadline: number,
+  checkpoint: () => void,
+): boolean {
+  if (left.role !== right.role
+    || left.areaMm2 !== right.areaMm2
+    || JSON.stringify(left.boundsMm) !== JSON.stringify(right.boundsMm)
+    || left.outer.length !== right.outer.length) return false;
+  for (let index = 0; index < left.outer.length; index += 1) {
+    if ((index & 63) === 0) checkRuntimeBudget(deadline, checkpoint);
+    if (left.outer[index][0] !== right.outer[index][0]
+      || left.outer[index][1] !== right.outer[index][1]) return false;
+  }
+  return true;
+}
+
+function validFastenerContour(
+  contour: FeatureContour,
+  center: Point2,
+  pathDiameterMm: number,
+  deadline: number,
+  checkpoint: () => void,
+): boolean {
+  if (contour.role !== 'CUT_BLACK' || contour.outer.length !== 48) return false;
+  const distinct = new Set<string>();
+  const radius = pathDiameterMm / 2;
+  for (let index = 0; index < contour.outer.length; index += 1) {
+    if ((index & 63) === 0) checkRuntimeBudget(deadline, checkpoint, 'assembly:fastener-point-loop');
+    const point = contour.outer[index];
+    if (!Array.isArray(point) || point.length !== 2 || !point.every(Number.isFinite)) return false;
+    distinct.add(`${point[0]}:${point[1]}`);
+    const angle = index * Math.PI * 2 / 48;
+    if (!nearlyEqual(point[0], center[0] + Math.cos(angle) * radius)
+      || !nearlyEqual(point[1], center[1] + Math.sin(angle) * radius)) return false;
+  }
+  if (distinct.size !== 48 || !validatePolygon({ points: contour.outer }, () => checkRuntimeBudget(deadline, checkpoint))) {
+    return false;
+  }
+  const bounds = contourBounds(contour.outer, deadline, checkpoint);
+  const area = Math.abs(contourSignedArea(contour.outer, deadline, checkpoint));
+  return nearlyEqual(contour.boundsMm.minX, bounds.minX)
+    && nearlyEqual(contour.boundsMm.minY, bounds.minY)
+    && nearlyEqual(contour.boundsMm.maxX, bounds.maxX)
+    && nearlyEqual(contour.boundsMm.maxY, bounds.maxY)
+    && nearlyEqual(contour.areaMm2, area);
 }
 
 function assemblyReasons(
@@ -811,8 +860,11 @@ function assemblyReasons(
   layers: readonly ColoredOutlineLayer[],
   featureWarnings: readonly string[],
   material: ManufacturingGeometryProfile | undefined,
+  deadline: number,
+  checkpoint: (label?: string) => void,
 ): string[] {
   const reasons: string[] = [];
+  checkRuntimeBudget(deadline, checkpoint);
   if (!isRecord(value)) return ['Automatic assembly summary must be present'];
   reasons.push(...unexpectedKeys(value, new Set(['material', 'launcher', 'fastener', 'topFeatures']), 'Automatic assembly'));
   if (!material || JSON.stringify(value.material) !== JSON.stringify(material)) {
@@ -839,7 +891,9 @@ function assemblyReasons(
       reasons.push('Automatic assembly launcher must be identical on exactly the top two layers or omitted atomically');
     } else if (active && layers.length >= 2) {
       for (let index = 0; index < 3; index += 1) {
-        if (!sameContourGeometry(layers.at(-2)!.launcherCuts[index], layers.at(-1)!.launcherCuts[index])) {
+        if (!sameContourGeometry(
+          layers.at(-2)!.launcherCuts[index], layers.at(-1)!.launcherCuts[index], deadline, checkpoint,
+        )) {
           reasons.push('Automatic assembly launcher geometry must be identical on the top two layers');
         }
       }
@@ -856,32 +910,40 @@ function assemblyReasons(
       'count', 'centers', 'finishedDiameterMm', 'pathDiameterMm', 'radiusMm', 'rotationRad',
     ]), 'Automatic assembly fastener'));
     const count = fastener.count;
+    const expectedPathDiameterMm = material ? 3 - material.kerfMm : NaN;
     if (![0, 1, 2, 3].includes(count as number)
       || !Array.isArray(fastener.centers) || fastener.centers.length !== count
       || fastener.centers.some((center) => !finiteTuple(center, 2))
       || fastener.finishedDiameterMm !== 3
       || !Number.isFinite(fastener.pathDiameterMm) || (fastener.pathDiameterMm as number) <= 0
-      || fastener.radiusMm !== undefined && !Number.isFinite(fastener.radiusMm)
-      || fastener.rotationRad !== undefined && !Number.isFinite(fastener.rotationRad)) {
+      || count === 0 && (fastener.radiusMm !== undefined || fastener.rotationRad !== undefined)
+      || count !== 0 && (!Number.isFinite(fastener.radiusMm) || (fastener.radiusMm as number) < 0
+        || !Number.isFinite(fastener.rotationRad))) {
       reasons.push('Automatic assembly fastener summary is invalid');
+    } else if (!Number.isFinite(expectedPathDiameterMm) || expectedPathDiameterMm <= 0
+      || !nearlyEqual(fastener.pathDiameterMm as number, expectedPathDiameterMm)) {
+      reasons.push('Automatic assembly fastener path diameter must equal 3 mm minus the material kerf');
     } else if (layers.some((layer) => layer.fastenerHoles.length !== count)) {
       reasons.push('Automatic assembly fastener count must be shared by every layer');
     } else if ((count as number) > 0 && layers.length > 0) {
       const reference = layers[0].fastenerHoles;
       for (const layer of layers.slice(1)) for (let index = 0; index < (count as number); index += 1) {
-        if (!sameContourGeometry(reference[index], layer.fastenerHoles[index])) {
+        if (!sameContourGeometry(reference[index], layer.fastenerHoles[index], deadline, checkpoint)) {
           reasons.push('Automatic assembly fastener geometry must be identical on every layer');
         }
       }
       for (let index = 0; index < (count as number); index += 1) {
-        const points = reference[index].outer;
-        const center = [
-          points.reduce((sum, point) => sum + point[0], 0) / points.length,
-          points.reduce((sum, point) => sum + point[1], 0) / points.length,
-        ];
         const expected = (fastener.centers as readonly Point2[])[index];
-        if (Math.hypot(center[0] - expected[0], center[1] - expected[1]) > 1e-9) {
-          reasons.push('Automatic assembly fastener centers must match the shared path geometry');
+        const patternAngle = (fastener.rotationRad as number) + index * Math.PI * 2 / (count as number);
+        const patternCenter: Point2 = [
+          Math.cos(patternAngle) * (fastener.radiusMm as number),
+          Math.sin(patternAngle) * (fastener.radiusMm as number),
+        ];
+        if (!nearlyEqual(expected[0], patternCenter[0]) || !nearlyEqual(expected[1], patternCenter[1])
+          || !validFastenerContour(
+            reference[index], expected, fastener.pathDiameterMm as number, deadline, checkpoint,
+          )) {
+          reasons.push('Automatic assembly fastener path diameter, centers, and 48-point circle geometry must reconcile');
         }
       }
     }
@@ -904,7 +966,7 @@ function assemblyReasons(
 export function validateAutomaticColoredResult(
   value: unknown,
   deadline = Date.now() + DEFAULT_VALIDATION_RUNTIME_MS,
-  checkpoint: () => void = () => undefined,
+  checkpoint: (label?: string) => void = () => undefined,
   material?: ManufacturingGeometryProfile,
 ): void {
   checkRuntimeBudget(deadline, checkpoint);
@@ -1038,7 +1100,9 @@ export function validateAutomaticColoredResult(
     reasons.push('Automatic result material must match the validated manufacturing geometry profile');
   }
   if (coloredLayersValid && featureWarnings) {
-    reasons.push(...assemblyReasons(value.assembly, coloredLayers, featureWarnings, validatedMaterial));
+    reasons.push(...assemblyReasons(
+      value.assembly, coloredLayers, featureWarnings, validatedMaterial, deadline, checkpoint,
+    ));
   }
   if (coloredLayersValid && featureWarnings) {
     try {

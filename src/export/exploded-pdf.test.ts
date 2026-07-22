@@ -102,6 +102,25 @@ describe('deterministic colored PDFs', () => {
     }
   });
 
+  it('uses one canonical central-launcher-fastener omission order in both PDFs', async () => {
+    const document = createColoredOutlineDocument(allLayerHoleOmissionResult());
+    const [preview, exploded] = await Promise.all([
+      writeColoredPreviewPdf(document),
+      writeExplodedViewPdf(document),
+    ]);
+    const contents = await Promise.all([preview, exploded].map(async (bytes) => (
+      visiblePdfContent(await PDFDocument.load(bytes, { updateMetadata: false }))
+    )));
+    for (const content of contents) {
+      const central = content.indexOf(CENTRAL_HOLE_OMISSION_WARNING);
+      const launcher = content.indexOf('Launcher clearance omitted because compatibility could not be preserved safely.');
+      const fastener = content.indexOf('3 mm fastener holes omitted because no all-layer pattern was safe.');
+      expect(central).toBeGreaterThanOrEqual(0);
+      expect(launcher).toBeGreaterThan(central);
+      expect(fastener).toBeGreaterThan(launcher);
+    }
+  });
+
   it('reserves enough preview page width for the omission warning on compact six-layer layouts', async () => {
     const document = createColoredOutlineDocument(compactAllLayerHoleOmissionResult());
     const preview = await writeColoredPreviewPdf(document);
