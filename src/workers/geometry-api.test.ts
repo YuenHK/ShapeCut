@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { proxyMarker } from 'comlink';
 import type { AutomaticOutlineResult } from '../domain/pipeline/automatic-outline-pipeline';
 import { featureEvidenceFingerprint, validateAutomaticColoredResult } from '../domain/outline-features/types';
+import { CENTRAL_HOLE_OMISSION_WARNING } from '../domain/outline-features/hole';
 import { tetrahedron } from '../test/mesh-builders';
 import {
   OUTLINE_ARTIFACT_IDS,
@@ -75,7 +76,7 @@ function automaticResult(sourceHash: string): AutomaticOutlineResult {
   const result: Omit<AutomaticOutlineResult, 'featureEvidenceFingerprint'> = {
     sourceHash,
     mode: 'exact',
-    status: 'success',
+    status: 'warning',
     axis: {
       source: 'candidate',
       axis: { origin: [0, 0, 0], direction: [0, 0, 1], confidence: 1, confirmed: true },
@@ -89,7 +90,7 @@ function automaticResult(sourceHash: string): AutomaticOutlineResult {
       removedComponentCount: 0,
     })),
     coloredLayers,
-    featureWarnings: [],
+    featureWarnings: [CENTRAL_HOLE_OMISSION_WARNING],
     preview: {
       mesh: {
         positions: Float32Array.from(previewSource.positions),

@@ -1,6 +1,8 @@
 import type { FeatureContour } from '../domain/outline-features/types';
-import { validateAutomaticColoredResult } from '../domain/outline-features/types';
-import { CENTRAL_HOLE_OMISSION_WARNING } from '../domain/outline-features/hole';
+import {
+  validateAutomaticColoredResult,
+  validateSharedCentralHoleDecision,
+} from '../domain/outline-features/types';
 import {
   diagnosticsFingerprint,
   removalEvidenceFingerprint,
@@ -190,11 +192,13 @@ function assertCanonicalShape(
       }
     }
   }
-  const allCentralHolesOmitted = document.layers.every((layer) => layer.roles.CUT_BLACK.length === 1);
-  const claimsCentralHoleOmission = safetyNotes.includes(CENTRAL_HOLE_OMISSION_WARNING);
-  if (allCentralHolesOmitted !== claimsCentralHoleOmission) {
-    throw new RangeError('Colored canonical central hole omission warning does not match the shared hole decision');
-  }
+  validateSharedCentralHoleDecision(document.layers.map((layer) => {
+    const contour = layer.roles.CUT_BLACK[1];
+    return {
+      status: contour ? 'retained' as const : 'omitted' as const,
+      ...(contour ? { contour } : {}),
+    };
+  }), safetyNotes, Infinity, () => checkpoint('canonical:shared-hole-loop'), 'Canonical shared central hole');
 }
 
 function runColoredResultValidation(

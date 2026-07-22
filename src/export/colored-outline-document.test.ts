@@ -33,6 +33,18 @@ function withFeatureWarnings(
   return { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
 }
 
+function withColoredLayers(
+  result: ReturnType<typeof coloredResult>,
+  coloredLayers: ReturnType<typeof coloredResult>['coloredLayers'],
+) {
+  const changed = {
+    ...result,
+    coloredLayers,
+    preview: { ...result.preview, layers: coloredLayers },
+  };
+  return { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
+}
+
 describe('canonical colored outline document', () => {
   it('preserves ordered physical layers and exact canonical role identity', () => {
     const result = coloredResult();
@@ -73,6 +85,49 @@ describe('canonical colored outline document', () => {
 
     const retainedWithFalseWarning = withFeatureWarnings(coloredResult(), [CENTRAL_HOLE_OMISSION_WARNING]);
     expect(() => createColoredOutlineDocument(retainedWithFalseWarning)).toThrow(/central.*hole.*omission.*warning/i);
+  });
+
+  it('rejects mixed and shifted shared-hole decisions before creating a canonical document', () => {
+    const result = coloredResult();
+    const mixedLayers = result.coloredLayers.map((layer, index) => index === 0 ? {
+      ...layer,
+      centralHole: undefined,
+      diagnostics: { ...layer.diagnostics, hole: { status: 'omitted' as const } },
+    } : layer);
+    expect(() => createColoredOutlineDocument(withColoredLayers(result, mixedLayers)))
+      .toThrow(/shared central hole.*(?:every layer|mixed|retain.*omit)/i);
+
+    const shiftedLayers = result.coloredLayers.map((layer, index) => {
+      if (index !== 2 || !layer.centralHole) return layer;
+      const outer = layer.centralHole.outer.map(([x, y]) => [x + 0.25, y] as const);
+      return {
+        ...layer,
+        centralHole: {
+          ...layer.centralHole,
+          outer,
+          boundsMm: {
+            ...layer.centralHole.boundsMm,
+            minX: layer.centralHole.boundsMm.minX + 0.25,
+            maxX: layer.centralHole.boundsMm.maxX + 0.25,
+          },
+        },
+      };
+    });
+    expect(() => createColoredOutlineDocument(withColoredLayers(result, shiftedLayers)))
+      .toThrow(/shared central holes.*identical.*model space/i);
+  });
+
+  it('independently rejects mixed and shifted hole geometry in a forged canonical document', () => {
+    const result = coloredResult();
+    const mixed = structuredClone(createColoredOutlineDocument(result));
+    Object.assign(mixed.layers[0].roles, { CUT_BLACK: [mixed.layers[0].roles.CUT_BLACK[0]] });
+    expect(() => validateColoredOutlineDocument(mixed, result))
+      .toThrow(/canonical shared central hole.*(?:every layer|mixed|retain.*omit)/i);
+
+    const shifted = structuredClone(createColoredOutlineDocument(result));
+    (shifted.layers[2].roles.CUT_BLACK[1].outer[0] as unknown as [number, number])[0] += 0.25;
+    expect(() => validateColoredOutlineDocument(shifted, result))
+      .toThrow(/canonical shared central holes.*identical.*model space/i);
   });
 
   it.each([

@@ -53,6 +53,19 @@ function coloredResultMissingCentralHoleOmissionWarning(): AutomaticOutlineResul
   return { ...missing, featureEvidenceFingerprint: featureEvidenceFingerprint(missing) };
 }
 
+function coloredResultWithSharedHoleMutation(
+  mutate: (layers: AutomaticOutlineResult['coloredLayers']) => AutomaticOutlineResult['coloredLayers'],
+): AutomaticOutlineResult {
+  const result = coloredResult();
+  const coloredLayers = mutate(result.coloredLayers);
+  const changed = {
+    ...result,
+    coloredLayers,
+    preview: { ...result.preview, layers: coloredLayers },
+  };
+  return { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
+}
+
 function layer(
   id: string,
   index: number,
@@ -331,6 +344,34 @@ describe('material-independent outline package', () => {
   it('rejects an all-layer central-hole omission without the canonical safety warning', async () => {
     await expect(createColoredOutlinePackage(coloredResultMissingCentralHoleOmissionWarning()))
       .rejects.toThrow(/central.*hole.*omission.*warning/i);
+  });
+
+  it('rejects mixed and shifted shared-hole evidence before packaging any artifact', async () => {
+    const mixed = coloredResultWithSharedHoleMutation((layers) => layers.map((layer, index) => index === 0 ? {
+      ...layer,
+      centralHole: undefined,
+      diagnostics: { ...layer.diagnostics, hole: { status: 'omitted' as const } },
+    } : layer));
+    await expect(createColoredOutlinePackage(mixed))
+      .rejects.toThrow(/shared central hole.*(?:every layer|mixed|retain.*omit)/i);
+
+    const shifted = coloredResultWithSharedHoleMutation((layers) => layers.map((layer, index) => {
+      if (index !== 2 || !layer.centralHole) return layer;
+      return {
+        ...layer,
+        centralHole: {
+          ...layer.centralHole,
+          outer: layer.centralHole.outer.map(([x, y]) => [x + 0.25, y] as const),
+          boundsMm: {
+            ...layer.centralHole.boundsMm,
+            minX: layer.centralHole.boundsMm.minX + 0.25,
+            maxX: layer.centralHole.boundsMm.maxX + 0.25,
+          },
+        },
+      };
+    }));
+    await expect(createColoredOutlinePackage(shifted))
+      .rejects.toThrow(/shared central holes.*identical.*model space/i);
   });
 
   it('uses exact SVG hex roles and DXF ACI plus true-color roles without private process text', async () => {

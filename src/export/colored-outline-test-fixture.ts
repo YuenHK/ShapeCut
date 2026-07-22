@@ -29,49 +29,43 @@ function contour(
 
 export function coloredResult(): AutomaticOutlineResult {
   const coloredLayers: ColoredOutlineLayer[] = Array.from({ length: 6 }, (_, index) => {
-    const offset = index * 30;
     const exterior = contour(
       `layer-${index + 1}-exterior`,
       'CUT_BLACK',
-      [[offset - 10, -10], [offset - 10, 10], [offset + 10, 10], [offset + 10, -10]],
+      [[-10, -10], [-10, 10], [10, 10], [10, -10]],
     );
-    if (index !== 2) return {
-      id: `layer-${index + 1}`,
-      index,
-      zStart: index * 2,
-      zEnd: index * 2 + 2,
-      exterior,
-      removedComponentCount: 0,
-      diagnostics: {
-        hole: { status: 'omitted' },
-        depth: { cellSizeMm: 0.25, contrastMm: 0, redThresholdMm: 0, blueThresholdMm: 0 },
-      },
-    };
+    const centralHole = contour(
+      `layer-${index + 1}-hole`,
+      'CUT_BLACK',
+      [[-2, -2], [2, -2], [2, 2], [-2, 2]],
+    );
     return {
       id: `layer-${index + 1}`,
       index,
       zStart: index * 2,
       zEnd: index * 2 + 2,
       exterior,
-      centralHole: contour(
-        `layer-${index + 1}-hole`,
-        'CUT_BLACK',
-        [[offset - 2, -2], [offset + 2, -2], [offset + 2, 2], [offset - 2, 2]],
-      ),
-      deepFeature: contour(
+      centralHole,
+      deepFeature: index === 2 ? contour(
         `layer-${index + 1}-deep`,
         'DEEP_RED',
-        [[offset - 8, -8], [offset - 8, -4], [offset - 4, -4], [offset - 4, -8]],
-      ),
-      lightFeature: contour(
+        [[-8, -8], [-8, -4], [-4, -4], [-4, -8]],
+      ) : undefined,
+      lightFeature: index === 2 ? contour(
         `layer-${index + 1}-light`,
         'LIGHT_BLUE',
-        [[offset + 4, 4], [offset + 4, 8], [offset + 8, 8], [offset + 8, 4]],
-      ),
+        [[4, 4], [4, 8], [8, 8], [8, 4]],
+      ) : undefined,
       removedComponentCount: 0,
       diagnostics: {
-        hole: { status: 'retained', equivalentDiameterMm: 4, axisDistanceMm: 0 },
-        depth: { cellSizeMm: 0.25, contrastMm: 2, redThresholdMm: 1.5, blueThresholdMm: 0.5 },
+        hole: {
+          status: 'retained',
+          equivalentDiameterMm: 2 * Math.sqrt(centralHole.areaMm2 / Math.PI),
+          axisDistanceMm: 0,
+        },
+        depth: index === 2
+          ? { cellSizeMm: 0.25, contrastMm: 2, redThresholdMm: 1.5, blueThresholdMm: 0.5 }
+          : { cellSizeMm: 0.25, contrastMm: 0, redThresholdMm: 0, blueThresholdMm: 0 },
       },
     };
   });
@@ -109,7 +103,7 @@ export function coloredResult(): AutomaticOutlineResult {
     status: 'success' as const,
     axis: {
       source: 'candidate' as const,
-      axis: { origin: [60, 0, 0] as const, direction: [0, 0, 1] as const, confidence: 1, confirmed: true },
+      axis: { origin: [0, 0, 0] as const, direction: [0, 0, 1] as const, confidence: 1, confirmed: true },
     },
     layers,
     coloredLayers,
@@ -120,7 +114,7 @@ export function coloredResult(): AutomaticOutlineResult {
         indices: Uint32Array.from([0, 1, 2]),
       },
       axis: {
-        origin: [60, 0, 0] as const,
+        origin: [0, 0, 0] as const,
         direction: [0, 0, 1] as const,
         planeX: [0, 1, 0] as const,
         planeY: [-1, 0, 0] as const,

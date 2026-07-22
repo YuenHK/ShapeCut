@@ -332,7 +332,7 @@ describe('release E2E colored artifact parsers', () => {
     expect(svg.layers.map(({ order }) => order)).toEqual([1, 2, 3, 4, 5, 6]);
     expect(svg.entities.map(({ id }) => id)).toEqual(dxf.entities.map(({ id }) => id));
     expect(svg.entities).toEqual(dxf.entities);
-    expect(svg.entityCounts).toEqual({ CUT_BLACK: 7, DEEP_RED: 1, LIGHT_BLUE: 1 });
+    expect(svg.entityCounts).toEqual({ CUT_BLACK: 12, DEEP_RED: 1, LIGHT_BLUE: 1 });
     expect(svg.layers.flatMap(({ roleGroups }) => roleGroups.map(({ role }) => role)))
       .toEqual(Array.from({ length: 6 }, () => ['CUT_BLACK', 'DEEP_RED', 'LIGHT_BLUE']).flat());
   });

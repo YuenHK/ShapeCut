@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Point2 } from '../decomposition/types';
 import type { OutlineLayer } from '../outline-2.5d/extract';
 import type { AutomaticOutlineResult } from '../pipeline/automatic-outline-pipeline';
+import { CENTRAL_HOLE_OMISSION_WARNING } from './hole';
 import {
   featureEvidenceFingerprint,
   validateAutomaticColoredResult,
@@ -143,11 +144,81 @@ function automaticResult(coloredLayers = coloredLayerSet(6)): AutomaticOutlineRe
   return { ...result, featureEvidenceFingerprint: featureEvidenceFingerprint(result) };
 }
 
+function withSharedHoleEvidence(
+  result: AutomaticOutlineResult,
+  coloredLayers: readonly ColoredOutlineLayer[],
+  featureWarnings: readonly string[] = result.featureWarnings,
+): AutomaticOutlineResult {
+  const changed = {
+    ...result,
+    coloredLayers,
+    featureWarnings,
+    preview: { ...result.preview, layers: coloredLayers },
+  };
+  return { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
+}
+
 describe('colored outline contracts', () => {
   it('accepts the exact singular role structure', () => {
     const layer = coloredLayer();
 
     expect(validateColoredLayerShape(layer)).toEqual({ ok: true, reasons: [] });
+  });
+
+  it('rejects a fingerprint-consistent mixed retain/omit shared-hole decision', () => {
+    const source = automaticResult();
+    const omitted = {
+      ...source.coloredLayers[1],
+      centralHole: undefined,
+      diagnostics: { ...source.coloredLayers[1].diagnostics, hole: { status: 'omitted' as const } },
+    };
+    const coloredLayers = [...source.coloredLayers];
+    coloredLayers[1] = omitted;
+
+    expect(() => validateAutomaticColoredResult(withSharedHoleEvidence(source, coloredLayers)))
+      .toThrow(/shared central hole.*(?:every layer|mixed|retain.*omit)/i);
+  });
+
+  it.each([
+    ['shifted', (hole: FeatureContour) => contour(
+      hole.id,
+      'CUT_BLACK',
+      hole.outer.map(([x, y]) => [x + 0.25, y] as const),
+    )],
+    ['resized', (hole: FeatureContour) => circle(1.5, hole.id)],
+  ])('rejects a fingerprint-consistent %s shared-hole contour', (_label, mutate) => {
+    const source = automaticResult();
+    const changed = {
+      ...source.coloredLayers[2],
+      centralHole: mutate(source.coloredLayers[2].centralHole!),
+    };
+    const coloredLayers = [...source.coloredLayers];
+    coloredLayers[2] = changed;
+
+    expect(() => validateAutomaticColoredResult(withSharedHoleEvidence(source, coloredLayers)))
+      .toThrow(/shared central holes.*identical.*model space/i);
+  });
+
+  it('requires exact warning provenance for the all-layer shared-hole decision', () => {
+    const retained = automaticResult();
+    expect(() => validateAutomaticColoredResult(withSharedHoleEvidence(
+      retained,
+      retained.coloredLayers,
+      [CENTRAL_HOLE_OMISSION_WARNING],
+    ))).toThrow(/shared central hole.*omission warning/i);
+
+    const omittedLayers = retained.coloredLayers.map((layer) => ({
+      ...layer,
+      centralHole: undefined,
+      diagnostics: { ...layer.diagnostics, hole: { status: 'omitted' as const } },
+    }));
+    expect(() => validateAutomaticColoredResult(withSharedHoleEvidence(retained, omittedLayers, [])))
+      .toThrow(/shared central hole.*omission warning/i);
+    expect(() => validateAutomaticColoredResult(withSharedHoleEvidence(
+      retained,
+      omittedLayers,
+      [CENTRAL_HOLE_OMISSION_WARNING],
+    ))).not.toThrow();
   });
 
   it('rejects a forged self-intersecting role contour', () => {

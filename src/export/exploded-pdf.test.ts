@@ -152,7 +152,7 @@ describe('deterministic colored PDFs', () => {
     expect(keywords).toContain('axis:central');
     expect(keywords).toContain('legend:CUT_BLACK:#000000,DEEP_RED:#E5484D,LIGHT_BLUE:#3A78D4');
     expect(keywords).toContain('layer:3:layer-3:order=3:thickness=2:X=20:Y=20:hole-diameter=4.514');
-    expect(keywords).toContain('layer:1:layer-1:order=1:thickness=2:X=20:Y=20:hole-diameter=—');
+    expect(keywords).toContain('layer:1:layer-1:order=1:thickness=2:X=20:Y=20:hole-diameter=4.514');
     expect(content).toContain('Red and blue are relative processing levels, not literal machine settings.');
     expect(content).toContain('Assign machine-specific settings after material test cuts.');
   });

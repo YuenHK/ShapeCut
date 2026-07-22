@@ -5,7 +5,7 @@ import type { Bounds2 } from '../outline-2.5d/simplify';
 import { DEFAULT_OUTLINE_BUDGETS, type OutlineMode } from '../outline-2.5d/types';
 import { validateOutlineLayer } from '../outline-2.5d/validate';
 import type { Vec3 } from '../types';
-import { isStrictlyContainedLoop } from './hole';
+import { CENTRAL_HOLE_OMISSION_WARNING, isStrictlyContainedLoop } from './hole';
 import type { DepthFeatureOmissionCode } from './depth-field';
 import { validateDepthFeatureContours } from './validate';
 
@@ -82,6 +82,7 @@ const LAYER_KEYS = new Set([
 const CONTOUR_KEYS = new Set(['id', 'role', 'outer', 'boundsMm', 'areaMm2']);
 const RUNTIME_REASON = 'Colored feature validation exceeded the runtime budget';
 const DEFAULT_VALIDATION_RUNTIME_MS = 30_000;
+const MAX_SHARED_HOLE_POINT_COUNT = 4096;
 
 function validLayerCount(count: number): boolean {
   return count >= DEFAULT_OUTLINE_BUDGETS.minLayers && count <= DEFAULT_OUTLINE_BUDGETS.maxLayers;
@@ -90,6 +91,94 @@ function validLayerCount(count: number): boolean {
 function checkRuntimeBudget(deadline: number, checkpoint: () => void): void {
   checkpoint();
   if (Date.now() > deadline) throw new RangeError(RUNTIME_REASON);
+}
+
+export type SharedCentralHoleLayerEvidence = {
+  readonly status: 'retained' | 'omitted';
+  readonly contour?: Pick<FeatureContour, 'outer' | 'boundsMm' | 'areaMm2'>;
+  readonly equivalentDiameterMm?: number;
+  readonly axisDistanceMm?: number;
+};
+
+function sharedHoleGeometryMatches(
+  reference: SharedCentralHoleLayerEvidence,
+  candidate: SharedCentralHoleLayerEvidence,
+  deadline: number,
+  checkpoint: () => void,
+): boolean {
+  const left = reference.contour!, right = candidate.contour!;
+  if (left.outer.length !== right.outer.length
+    || left.areaMm2 !== right.areaMm2
+    || left.boundsMm.minX !== right.boundsMm.minX
+    || left.boundsMm.minY !== right.boundsMm.minY
+    || left.boundsMm.maxX !== right.boundsMm.maxX
+    || left.boundsMm.maxY !== right.boundsMm.maxY
+    || reference.equivalentDiameterMm !== candidate.equivalentDiameterMm
+    || reference.axisDistanceMm !== candidate.axisDistanceMm) return false;
+  for (let index = 0; index < left.outer.length; index += 1) {
+    if ((index & 63) === 0) checkRuntimeBudget(deadline, checkpoint);
+    if (left.outer[index][0] !== right.outer[index][0]
+      || left.outer[index][1] !== right.outer[index][1]) return false;
+  }
+  return true;
+}
+
+export function validateSharedCentralHoleDecision(
+  layers: readonly SharedCentralHoleLayerEvidence[],
+  featureWarnings: readonly string[],
+  deadline = Date.now() + DEFAULT_VALIDATION_RUNTIME_MS,
+  checkpoint: () => void = () => undefined,
+  context = 'Shared central hole',
+): void {
+  checkRuntimeBudget(deadline, checkpoint);
+  if (!validLayerCount(layers.length)) {
+    throw new RangeError(`${context} evidence requires 6 to 24 ordered layers`);
+  }
+  const retained: SharedCentralHoleLayerEvidence[] = [];
+  for (const layer of layers) {
+    checkRuntimeBudget(deadline, checkpoint);
+    const hasContour = layer.contour !== undefined;
+    if ((layer.status === 'retained') !== hasContour) {
+      throw new RangeError(`${context} status must match its contour evidence`);
+    }
+    if (!hasContour) continue;
+    const contour = layer.contour!;
+    if (!Array.isArray(contour.outer)
+      || contour.outer.length < 3
+      || contour.outer.length > MAX_SHARED_HOLE_POINT_COUNT
+      || !Number.isFinite(contour.areaMm2)
+      || contour.areaMm2 <= 0
+      || ![contour.boundsMm.minX, contour.boundsMm.minY, contour.boundsMm.maxX, contour.boundsMm.maxY].every(Number.isFinite)) {
+      throw new RangeError(`${context} evidence exceeds the bounded point geometry contract`);
+    }
+    for (let index = 0; index < contour.outer.length; index += 1) {
+      if ((index & 63) === 0) checkRuntimeBudget(deadline, checkpoint);
+      const point = contour.outer[index];
+      if (!Array.isArray(point) || point.length !== 2 || !point.every(Number.isFinite)) {
+        throw new RangeError(`${context} evidence exceeds the bounded point geometry contract`);
+      }
+    }
+    retained.push(layer);
+  }
+  if (retained.length !== 0 && retained.length !== layers.length) {
+    throw new RangeError(`${context} decision must retain every layer or omit every layer`);
+  }
+  const omissionWarningCount = featureWarnings.reduce((count, warning) => {
+    checkRuntimeBudget(deadline, checkpoint);
+    return count + Number(warning === CENTRAL_HOLE_OMISSION_WARNING);
+  }, 0);
+  if ((retained.length === 0 && omissionWarningCount !== 1)
+    || (retained.length !== 0 && omissionWarningCount !== 0)) {
+    throw new RangeError(`${context} omission warning provenance must exactly match the all-layer decision`);
+  }
+  if (retained.length === 0) return;
+  const reference = retained[0];
+  for (let index = 1; index < retained.length; index += 1) {
+    checkRuntimeBudget(deadline, checkpoint);
+    if (!sharedHoleGeometryMatches(reference, retained[index], deadline, checkpoint)) {
+      throw new RangeError(`${context}s must be geometrically identical in model space`);
+    }
+  }
 }
 
 function isRecord(value: unknown): value is UnknownRecord {
@@ -690,10 +779,12 @@ export function validateAutomaticColoredResult(
     }
   }
   const featureWarningSet = new Set<string>();
+  let featureWarnings: readonly string[] | undefined;
   if (!Array.isArray(value.featureWarnings) || value.featureWarnings.some((warning) => typeof warning !== 'string')) {
     reasons.push('Feature warnings must be an array of strings');
   } else {
-    for (const warning of value.featureWarnings as readonly string[]) {
+    featureWarnings = value.featureWarnings as readonly string[];
+    for (const warning of featureWarnings) {
       checkRuntimeBudget(deadline, checkpoint);
       if (warning.length === 0 || warning.length > 200 || /[\\/@\r\n\0]/.test(warning)
         || /[\w.+-]+@[\w.-]+/.test(warning)) {
@@ -708,6 +799,21 @@ export function validateAutomaticColoredResult(
     : [];
   const coloredLayersValid = validLayerCount(coloredLayers.length)
     && coloredLayers.every((layer) => validateLayer(layer).ok);
+  if (coloredLayersValid && featureWarnings) {
+    try {
+      validateSharedCentralHoleDecision(coloredLayers.map((layer) => ({
+        status: layer.diagnostics.hole.status,
+        contour: layer.centralHole,
+        ...(layer.diagnostics.hole.status === 'retained' ? {
+          equivalentDiameterMm: layer.diagnostics.hole.equivalentDiameterMm,
+          axisDistanceMm: layer.diagnostics.hole.axisDistanceMm,
+        } : {}),
+      })), featureWarnings, deadline, checkpoint);
+    } catch (error) {
+      if (error instanceof RangeError && error.message === RUNTIME_REASON) throw error;
+      reasons.push(error instanceof Error ? error.message : 'Shared central hole decision is invalid');
+    }
+  }
   for (const layer of coloredLayers) {
     checkRuntimeBudget(deadline, checkpoint);
     if (!isRecord(layer) || !isRecord(layer.diagnostics) || !isRecord(layer.diagnostics.depth)) continue;
