@@ -236,6 +236,15 @@ describe('colored outline contracts', () => {
       .toThrow(/legacy.*canonical|mixed/i);
   });
 
+  it.each([
+    ['deep features', { deepFeatures: 'bad' }],
+    ['launcher cuts', { launcherCuts: {} }],
+    ['explicit undefined', { lightFeatures: undefined }],
+  ])('rejects present malformed canonical %s instead of erasing it during migration', (_label, malformed) => {
+    expect(() => migrateColoredOutlineLayer({ ...legacyLayerBase(), ...malformed }))
+      .toThrow(/canonical.*array|array.*canonical/i);
+  });
+
   it('bounds top and lower engraving arrays independently', () => {
     expect(() => validateAutomaticColoredResult(withFeatureCounts(13, 1))).toThrow(/12.*deep/i);
     expect(() => validateAutomaticColoredResult(withFeatureCounts(1, 2))).toThrow(/one.*deep/i);

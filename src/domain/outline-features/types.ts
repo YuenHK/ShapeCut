@@ -100,6 +100,11 @@ export function migrateColoredOutlineLayer(value: unknown): ColoredOutlineLayer 
   if (hasLegacyEngraving && hasCanonicalEngraving) {
     throw new RangeError('Legacy and canonical colored feature fields must not be mixed');
   }
+  for (const key of ['launcherCuts', 'fastenerHoles', 'deepFeatures', 'lightFeatures'] as const) {
+    if (Object.hasOwn(value, key) && !Array.isArray(value[key])) {
+      throw new RangeError(`Canonical ${key} must be an array when present`);
+    }
+  }
   const { deepFeature, lightFeature, ...withoutLegacy } = value;
   return {
     ...withoutLegacy,
