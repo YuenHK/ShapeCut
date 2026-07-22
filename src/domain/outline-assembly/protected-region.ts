@@ -19,6 +19,14 @@ export type CircleSafetyRequest = {
   readonly checkpoint?: () => void;
 };
 
+export type PairwiseCircleSafetyRequest = {
+  readonly centers: readonly Point2[];
+  readonly finishedDiameterMm: number;
+  readonly minimumWebMm: number;
+  readonly deadline?: number;
+  readonly checkpoint?: () => void;
+};
+
 export type PreparedProtectedRegions = {
   readonly layers: readonly ProtectedRegionLayer[];
   minimumClearanceMm(center: Point2): number;
@@ -147,6 +155,28 @@ export function isCircleSafeThroughAllLayers(request: CircleSafetyRequest): bool
     || !Number.isFinite(request.clearanceMm) || request.clearanceMm < 0) return false;
   const clearance = minimumMaterialClearanceMm(request.center, request.layers, deadline, checkpoint);
   return clearance + 1e-12 >= request.radiusMm + request.clearanceMm;
+}
+
+export function areFinishedCirclesPairwiseSeparated(request: PairwiseCircleSafetyRequest): boolean {
+  const deadline = request.deadline ?? Infinity;
+  const checkpoint = request.checkpoint ?? (() => undefined);
+  checkRuntime(deadline, checkpoint);
+  if (!Array.isArray(request.centers) || request.centers.length > 3
+    || request.centers.some((center) => !Array.isArray(center)
+      || center.length !== 2 || !center.every(Number.isFinite))
+    || !Number.isFinite(request.finishedDiameterMm) || request.finishedDiameterMm <= 0
+    || !Number.isFinite(request.minimumWebMm) || request.minimumWebMm < 0) return false;
+  const requiredSeparationMm = request.finishedDiameterMm + request.minimumWebMm;
+  for (let left = 0; left < request.centers.length; left += 1) {
+    for (let right = left + 1; right < request.centers.length; right += 1) {
+      checkRuntime(deadline, checkpoint);
+      if (Math.hypot(
+        request.centers[left][0] - request.centers[right][0],
+        request.centers[left][1] - request.centers[right][1],
+      ) + 1e-12 < requiredSeparationMm) return false;
+    }
+  }
+  return true;
 }
 
 export function circleLoop48(center: Point2, radiusMm: number): readonly Point2[] {

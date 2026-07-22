@@ -66,7 +66,7 @@ function withColoredLayers(
 function activeAssemblyResult() {
   const result = coloredResult();
   const layer = result.coloredLayers[5], featured = result.coloredLayers[2];
-  const fastenerCenters = [[4, 0], [-4, 0]] as const;
+  const fastenerCenters = [[5, 0], [-5, 0]] as const;
   const coloredLayers = result.coloredLayers.map((candidate, index) => ({
     ...candidate,
     launcherCuts: index < 4 ? [] : [1, 2, 3].map((number) => ({
@@ -91,7 +91,7 @@ function activeAssemblyResult() {
       launcher: { status: 'detected' as const, cutCount: 3 as const, assemblyAllowanceMm: 0.2 as const },
       fastener: {
         count: 2 as const, centers: fastenerCenters, finishedDiameterMm: 3 as const,
-        pathDiameterMm: 2.85, radiusMm: 4, rotationRad: 0,
+        pathDiameterMm: 2.85, radiusMm: 5, rotationRad: 0,
       },
       topFeatures: { retained: { red: 1, blue: 1 }, omitted: { red: 0, blue: 0 } },
     },
@@ -148,6 +148,31 @@ describe('canonical colored outline document', () => {
     Object.assign(fastener.assembly.fastener, { count: 2, centers: [[1, 1], [-1, -1]] });
     expect(() => validateColoredOutlineDocument(fastener, result))
       .toThrow(/assembly|fastener|canonical|mismatch/i);
+  });
+
+  it('rejects a recomputed-fingerprint exterior-clearance forgery at the canonical boundary', () => {
+    const source = activeAssemblyResult();
+    const radiusMm = 9;
+    const centers = [[radiusMm, 0], [-radiusMm, 0]] as const;
+    const coloredLayers = source.coloredLayers.map((layer) => ({
+      ...layer,
+      fastenerHoles: centers.map((center, index) => (
+        circle48(center, source.assembly.fastener.pathDiameterMm / 2, layer.fastenerHoles[index].id)
+      )),
+    }));
+    const changed = {
+      ...source,
+      assembly: {
+        ...source.assembly,
+        fastener: { ...source.assembly.fastener, centers, radiusMm },
+      },
+      coloredLayers,
+      preview: { ...source.preview, layers: coloredLayers },
+    };
+    const forged = { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
+
+    expect(forged.featureEvidenceFingerprint).toBe(featureEvidenceFingerprint(forged));
+    expect(() => createColoredOutlineDocument(forged)).toThrow(/fastener.*physical safety|clearance/i);
   });
 
   it('carries the bounded sanitized all-layer central-hole omission safety note', () => {

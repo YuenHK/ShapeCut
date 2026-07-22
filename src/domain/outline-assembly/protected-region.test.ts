@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Point2 } from '../decomposition/types';
 import {
+  areFinishedCirclesPairwiseSeparated,
   circleLoop48,
   isCircleSafeThroughAllLayers,
   minimumMaterialClearanceMm,
@@ -38,6 +39,28 @@ describe('protected material regions', () => {
       .toBe(false);
     expect(isCircleSafeThroughAllLayers({ center: [7, 4], radiusMm: 1.5, clearanceMm: 0.5, layers }))
       .toBe(false);
+  });
+
+  it('checks finished-hole pair separation and preserves exact bounded cancellation', () => {
+    expect(areFinishedCirclesPairwiseSeparated({
+      centers: [[0, 0], [3.5, 0]], finishedDiameterMm: 3, minimumWebMm: 0.5,
+    })).toBe(true);
+    expect(areFinishedCirclesPairwiseSeparated({
+      centers: [[0, 0], [3.49, 0]], finishedDiameterMm: 3, minimumWebMm: 0.5,
+    })).toBe(false);
+
+    const cancellation = new Error('pair scan cancelled');
+    expect(() => areFinishedCirclesPairwiseSeparated({
+      centers: [[0, 0], [4, 0], [0, 4]],
+      finishedDiameterMm: 3,
+      minimumWebMm: 0.5,
+      checkpoint: () => { throw cancellation; },
+    })).toThrow(cancellation);
+    expect(areFinishedCirclesPairwiseSeparated({
+      centers: [[0, 0], [4, 0], [0, 4], [-4, 0]],
+      finishedDiameterMm: 3,
+      minimumWebMm: 0.5,
+    })).toBe(false);
   });
 
   it('creates one deterministic fixed 48-point circle without closing-point duplication', () => {

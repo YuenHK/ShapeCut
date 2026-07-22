@@ -251,6 +251,74 @@ function withThreeFasteners(): AutomaticOutlineResult {
   return { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
 }
 
+function repositionThreeFasteners(
+  source: AutomaticOutlineResult,
+  radiusMm: number,
+  rotationRad = 0,
+): AutomaticOutlineResult {
+  const centers = [0, 1, 2].map((index): Point2 => {
+    const angle = rotationRad + index * Math.PI * 2 / 3;
+    return [Math.cos(angle) * radiusMm, Math.sin(angle) * radiusMm];
+  });
+  const coloredLayers = source.coloredLayers.map((layer) => ({
+    ...layer,
+    fastenerHoles: centers.map((center, index) => circle48At(
+      center,
+      source.assembly.fastener.pathDiameterMm / 2,
+      layer.fastenerHoles[index].id,
+    )),
+  }));
+  const changed = {
+    ...source,
+    assembly: {
+      ...source.assembly,
+      fastener: { ...source.assembly.fastener, centers, radiusMm, rotationRad },
+    },
+    coloredLayers,
+    preview: { ...source.preview, layers: coloredLayers },
+  };
+  return { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
+}
+
+function omitCentralHoleEvidence(source: AutomaticOutlineResult): AutomaticOutlineResult {
+  const coloredLayers = source.coloredLayers.map(({ centralHole: _centralHole, ...layer }) => ({
+    ...layer,
+    diagnostics: { ...layer.diagnostics, hole: { status: 'omitted' as const } },
+  }));
+  const changed = {
+    ...source,
+    coloredLayers,
+    featureWarnings: [...source.featureWarnings, CENTRAL_HOLE_OMISSION_WARNING],
+    preview: { ...source.preview, layers: coloredLayers },
+  };
+  return { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
+}
+
+function overlapLauncherWithFasteners(source: AutomaticOutlineResult): AutomaticOutlineResult {
+  const topStart = source.coloredLayers.length - 2;
+  const referenceCuts = source.assembly.fastener.centers.map((center, index) => (
+    circle48At(center, 0.75, `launcher-reference-${index + 1}`)
+  ));
+  const coloredLayers = source.coloredLayers.map((layer, layerIndex) => ({
+    ...layer,
+    launcherCuts: layerIndex < topStart ? [] : referenceCuts.map((cut, index) => ({
+      ...cut,
+      id: `${layer.id}-launcher-clearance-${index + 1}`,
+    })),
+  }));
+  const changed = {
+    ...source,
+    assembly: {
+      ...source.assembly,
+      launcher: { status: 'fallback' as const, cutCount: 3 as const, assemblyAllowanceMm: 0.2 as const },
+    },
+    coloredLayers,
+    featureWarnings: source.featureWarnings.filter((warning) => warning !== LAUNCHER_OMISSION_WARNING),
+    preview: { ...source.preview, layers: coloredLayers },
+  };
+  return { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
+}
+
 describe('colored outline contracts', () => {
   function legacyLayerBase(): Record<string, unknown> {
     const { deepFeatures: _deepFeatures, lightFeatures: _lightFeatures,
@@ -822,5 +890,29 @@ describe('colored outline contracts', () => {
       if (label === 'assembly:fastener-point-loop' && ++pointPolls === 2) throw cancellation;
     })).toThrow(cancellation);
     expect(pointPolls).toBe(2);
+  });
+
+  it.each([
+    // 2.04 mm remains around the 1.5 mm finished radius: minWeb alone would pass,
+    // but the required extra 0.05 mm kerf loss must reject it.
+    ['exterior web plus kerf loss', () => repositionThreeFasteners(withThreeFasteners(), 7.96)],
+    ['central-hole web', () => repositionThreeFasteners(withThreeFasteners(), 3)],
+    ['launcher-cut web', () => overlapLauncherWithFasteners(withThreeFasteners())],
+    ['pairwise web', () => repositionThreeFasteners(omitCentralHoleEvidence(withThreeFasteners()), 1)],
+  ])('rejects a self-consistent recomputed fastener forgery that violates %s safety', (_label, forge) => {
+    const forged = forge();
+    expect(forged.featureEvidenceFingerprint).toBe(featureEvidenceFingerprint(forged));
+    expect(() => validateAutomaticColoredResult(forged, Infinity, () => undefined, forged.material))
+      .toThrow(/fastener.*physical safety|clearance|separation/i);
+  });
+
+  it('polls bounded physical-safety reconciliation and preserves the exact caller cancellation', () => {
+    const result = withThreeFasteners();
+    const cancellation = new Error('cancel during protected-region safety reconciliation');
+    let safetyPolls = 0;
+    expect(() => validateAutomaticColoredResult(result, Infinity, (label?: string) => {
+      if (label === 'assembly:fastener-protected-region-loop' && ++safetyPolls === 2) throw cancellation;
+    }, result.material)).toThrow(cancellation);
+    expect(safetyPolls).toBe(2);
   });
 });

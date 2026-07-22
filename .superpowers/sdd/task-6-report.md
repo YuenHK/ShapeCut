@@ -338,3 +338,30 @@ The first full-suite attempt exposed two stale E2E assumptions: a fixture replac
 ### Remaining concern
 
 - `KNIGHT_FORTRESS_STL` and `KNIGHT_FORTRESS_GROUP_STL` were not set in this session, so the private opt-in real-STL cases could not run. No private path or fixture was guessed or copied; the actual-extraction synthetic coverage above is fully non-mocked.
+
+## Formal review follow-up: final fastener physical-safety reconciliation (2026-07-22)
+
+### RED evidence
+
+- The final automatic-result validator accepted four self-consistent forgeries after centers, regular-pattern metadata, all 48-point contours, bounds, areas, preview layers, and feature fingerprints were recomputed. The forged finished 3 mm holes respectively violated the exterior web plus half-kerf loss, central-hole clearance, launcher-cut clearance, and pairwise finished-hole separation.
+- A targeted checkpoint at the missing protected-region reconciliation was never reached. The focused RED run was 40 passed and 5 failed.
+
+### Fixes
+
+- Final result validation now independently applies the same bounded protected-region geometry used by planning to every published fastener center across every layer. It checks the 1.5 mm finished radius against exterior, central-hole, and launcher CUT boundaries with `minWebMm + kerfMm / 2`; it never trusts the smaller compensated path as the safety envelope.
+- A pure bounded pairwise helper requires center separation of `3 mm + minWebMm`. Both protected-region and pairwise loops preserve the caller's exact cancellation and absolute deadline checkpoints.
+- Canonical document creation inherits the same final validation. A canonical recomputed-fingerprint exterior forgery is explicitly rejected, while a genuine non-mocked pipeline result is explicitly accepted.
+- Two test fixtures that had planned holes against different geometry than they later validated were corrected to use genuinely safe positions/source layers; no production tolerance was weakened.
+
+### Verification
+
+- Focused types/planner/pipeline/export/artifact-E2E/UI matrix: 8 files, 599/599 passed.
+- Pairwise/protected-region unit coverage and corrected planner materialization coverage: 6/6 and 17/17 passed.
+- Full unit/integration suite: 52 files, 1261/1261 passed.
+- `npm run typecheck`: passed.
+- `npm run build`: passed, 147 modules transformed.
+- `git diff --check`: passed.
+
+### Remaining concern
+
+- No new blocking concern. Production manufacturing approval remains subject to the existing physical material, coupon, and qualified-operator evidence requirements.

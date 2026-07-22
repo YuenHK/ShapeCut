@@ -6,6 +6,10 @@ import { contourBounds, signedArea as contourSignedArea, type Bounds2 } from '..
 import { DEFAULT_OUTLINE_BUDGETS, type OutlineMode } from '../outline-2.5d/types';
 import { validateOutlineLayer } from '../outline-2.5d/validate';
 import { validatePolygon } from '../engraving/geometry';
+import {
+  areFinishedCirclesPairwiseSeparated,
+  isCircleSafeThroughAllLayers,
+} from '../outline-assembly/protected-region';
 import type { Vec3 } from '../types';
 import { CENTRAL_HOLE_OMISSION_WARNING, isStrictlyContainedLoop } from './hole';
 import type { DepthFeatureOmissionCode } from './depth-field';
@@ -945,6 +949,43 @@ function assemblyReasons(
           )) {
           reasons.push('Automatic assembly fastener path diameter, centers, and 48-point circle geometry must reconcile');
         }
+      }
+      const centers = fastener.centers as readonly Point2[];
+      const safetyCheckpoint = () => checkRuntimeBudget(
+        deadline,
+        checkpoint,
+        'assembly:fastener-protected-region-loop',
+      );
+      const protectedLayers = layers.map((layer) => ({
+        exterior: layer.exterior.outer,
+        protected: [
+          ...(layer.centralHole ? [layer.centralHole.outer] : []),
+          ...layer.launcherCuts.map((cut) => cut.outer),
+        ],
+      }));
+      if (protectedLayers.every((layer) => layer.protected.length <= 4)
+        && centers.some((center) => !isCircleSafeThroughAllLayers({
+          center,
+          radiusMm: fastener.finishedDiameterMm as number / 2,
+          clearanceMm: material!.minWebMm + material!.kerfMm / 2,
+          layers: protectedLayers,
+          deadline,
+          checkpoint: safetyCheckpoint,
+        }))) {
+        reasons.push('Automatic assembly fastener physical safety must preserve exterior, central-hole, and launcher-cut web clearance');
+      }
+      if (!areFinishedCirclesPairwiseSeparated({
+        centers,
+        finishedDiameterMm: fastener.finishedDiameterMm as number,
+        minimumWebMm: material!.minWebMm,
+        deadline,
+        checkpoint: () => checkRuntimeBudget(
+          deadline,
+          checkpoint,
+          'assembly:fastener-pairwise-loop',
+        ),
+      })) {
+        reasons.push('Automatic assembly fastener physical safety requires pairwise finished-hole separation');
       }
     }
     if (featureWarnings.includes(FASTENER_OMISSION_WARNING_TEXT) !== (count === 0)) {

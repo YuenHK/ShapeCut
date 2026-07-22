@@ -210,6 +210,8 @@ describe('automatic outline pipeline', () => {
   it('publishes one reconciled assembly decision before engraving and preview evidence', async () => {
     const result = await convertAutomatically({ bytes: writeBinarySTL(scaled(cylinder(), 8, 8, 1), 'safe') });
 
+    expect(() => validateAutomaticColoredResult(result, Infinity, () => undefined, result.material)).not.toThrow();
+
     expect(result.assembly.material).toEqual(testMaterial);
     expect(result.assembly.launcher.status).toBe('fallback');
     const topTwo = result.coloredLayers.slice(-2);
