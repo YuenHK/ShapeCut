@@ -58,9 +58,30 @@ export type OutlinePreviewPayload = {
   readonly layers: readonly ColoredOutlineLayer[];
 };
 
+export type AutomaticOutlineAssembly = {
+  readonly material: ManufacturingGeometryProfile;
+  readonly launcher:
+    | { readonly status: 'detected' | 'fallback'; readonly cutCount: 3; readonly assemblyAllowanceMm: 0.2 }
+    | { readonly status: 'omitted'; readonly cutCount: 0 };
+  readonly fastener: {
+    readonly count: 0 | 1 | 2 | 3;
+    readonly centers: readonly Point2[];
+    readonly finishedDiameterMm: 3;
+    readonly pathDiameterMm: number;
+    readonly radiusMm?: number;
+    readonly rotationRad?: number;
+  };
+  readonly topFeatures: {
+    readonly retained: { readonly red: number; readonly blue: number };
+    readonly omitted: { readonly red: number; readonly blue: number };
+  };
+};
+
 export type ColoredLayerValidation = { readonly ok: boolean; readonly reasons: readonly string[] };
 type FeatureFingerprintSource = {
   readonly sourceHash: string;
+  readonly material?: ManufacturingGeometryProfile;
+  readonly assembly?: AutomaticOutlineAssembly;
   readonly mode: OutlineMode;
   readonly coloredLayers: readonly ColoredOutlineLayer[];
   readonly preview: { readonly axis: OutlinePreviewAxis };
@@ -654,9 +675,11 @@ export function featureEvidenceFingerprint(
   material?: ManufacturingGeometryProfile,
 ): string {
   checkRuntimeBudget(deadline, checkpoint);
+  const fingerprintMaterial = material ?? result.material;
   const serialized = JSON.stringify({
     sourceHash: result.sourceHash,
-    ...(material ? { material } : {}),
+    ...(fingerprintMaterial ? { material: fingerprintMaterial } : {}),
+    ...(result.assembly ? { assembly: result.assembly } : {}),
     mode: result.mode,
     previewAxis: result.preview.axis,
     layers: orderedLayerRecords(result.coloredLayers, deadline, checkpoint),
@@ -771,6 +794,111 @@ function isLegacyLayerCandidate(value: unknown): value is OutlineLayer {
 function samePoints(left: readonly Point2[], right: readonly Point2[]): boolean {
   return left.length === right.length
     && left.every(([x, y], index) => x === right[index][0] && y === right[index][1]);
+}
+
+const LAUNCHER_OMISSION_WARNING_TEXT = '無法安全保留原裝發射器相容性，已省略三個發射器開孔';
+const FASTENER_OMISSION_WARNING_TEXT = '無法安全配置 3 mm 固定螺絲孔，已省略螺絲孔';
+
+function sameContourGeometry(left: FeatureContour, right: FeatureContour): boolean {
+  return left.role === right.role
+    && left.areaMm2 === right.areaMm2
+    && JSON.stringify(left.boundsMm) === JSON.stringify(right.boundsMm)
+    && samePoints(left.outer, right.outer);
+}
+
+function assemblyReasons(
+  value: unknown,
+  layers: readonly ColoredOutlineLayer[],
+  featureWarnings: readonly string[],
+  material: ManufacturingGeometryProfile | undefined,
+): string[] {
+  const reasons: string[] = [];
+  if (!isRecord(value)) return ['Automatic assembly summary must be present'];
+  reasons.push(...unexpectedKeys(value, new Set(['material', 'launcher', 'fastener', 'topFeatures']), 'Automatic assembly'));
+  if (!material || JSON.stringify(value.material) !== JSON.stringify(material)) {
+    reasons.push('Automatic assembly material must match the validated manufacturing geometry profile');
+  }
+  const launcher = value.launcher;
+  if (!isRecord(launcher)) {
+    reasons.push('Automatic assembly launcher summary must be present');
+  } else {
+    const active = launcher.status === 'detected' || launcher.status === 'fallback';
+    const omitted = launcher.status === 'omitted';
+    const permitted = active
+      ? new Set(['status', 'cutCount', 'assemblyAllowanceMm'])
+      : new Set(['status', 'cutCount']);
+    reasons.push(...unexpectedKeys(launcher, permitted, 'Automatic assembly launcher'));
+    if (!active && !omitted) reasons.push('Automatic assembly launcher status is invalid');
+    if (active && (launcher.cutCount !== 3 || launcher.assemblyAllowanceMm !== 0.2)) {
+      reasons.push('Automatic assembly launcher retained summary is invalid');
+    }
+    if (omitted && launcher.cutCount !== 0) reasons.push('Automatic assembly launcher omitted summary is invalid');
+    const topStart = Math.max(0, layers.length - 2);
+    const expectedCount = active ? 3 : 0;
+    if (layers.some((layer, index) => layer.launcherCuts.length !== (index >= topStart ? expectedCount : 0))) {
+      reasons.push('Automatic assembly launcher must be identical on exactly the top two layers or omitted atomically');
+    } else if (active && layers.length >= 2) {
+      for (let index = 0; index < 3; index += 1) {
+        if (!sameContourGeometry(layers.at(-2)!.launcherCuts[index], layers.at(-1)!.launcherCuts[index])) {
+          reasons.push('Automatic assembly launcher geometry must be identical on the top two layers');
+        }
+      }
+    }
+    if (featureWarnings.includes(LAUNCHER_OMISSION_WARNING_TEXT) !== omitted) {
+      reasons.push('Automatic assembly launcher omission warning provenance is inconsistent');
+    }
+  }
+  const fastener = value.fastener;
+  if (!isRecord(fastener)) {
+    reasons.push('Automatic assembly fastener summary must be present');
+  } else {
+    reasons.push(...unexpectedKeys(fastener, new Set([
+      'count', 'centers', 'finishedDiameterMm', 'pathDiameterMm', 'radiusMm', 'rotationRad',
+    ]), 'Automatic assembly fastener'));
+    const count = fastener.count;
+    if (![0, 1, 2, 3].includes(count as number)
+      || !Array.isArray(fastener.centers) || fastener.centers.length !== count
+      || fastener.centers.some((center) => !finiteTuple(center, 2))
+      || fastener.finishedDiameterMm !== 3
+      || !Number.isFinite(fastener.pathDiameterMm) || (fastener.pathDiameterMm as number) <= 0
+      || fastener.radiusMm !== undefined && !Number.isFinite(fastener.radiusMm)
+      || fastener.rotationRad !== undefined && !Number.isFinite(fastener.rotationRad)) {
+      reasons.push('Automatic assembly fastener summary is invalid');
+    } else if (layers.some((layer) => layer.fastenerHoles.length !== count)) {
+      reasons.push('Automatic assembly fastener count must be shared by every layer');
+    } else if ((count as number) > 0 && layers.length > 0) {
+      const reference = layers[0].fastenerHoles;
+      for (const layer of layers.slice(1)) for (let index = 0; index < (count as number); index += 1) {
+        if (!sameContourGeometry(reference[index], layer.fastenerHoles[index])) {
+          reasons.push('Automatic assembly fastener geometry must be identical on every layer');
+        }
+      }
+      for (let index = 0; index < (count as number); index += 1) {
+        const points = reference[index].outer;
+        const center = [
+          points.reduce((sum, point) => sum + point[0], 0) / points.length,
+          points.reduce((sum, point) => sum + point[1], 0) / points.length,
+        ];
+        const expected = (fastener.centers as readonly Point2[])[index];
+        if (Math.hypot(center[0] - expected[0], center[1] - expected[1]) > 1e-9) {
+          reasons.push('Automatic assembly fastener centers must match the shared path geometry');
+        }
+      }
+    }
+    if (featureWarnings.includes(FASTENER_OMISSION_WARNING_TEXT) !== (count === 0)) {
+      reasons.push('Automatic assembly fastener omission warning provenance is inconsistent');
+    }
+  }
+  const topFeatures = value.topFeatures;
+  const top = layers.at(-1);
+  if (!isRecord(topFeatures) || !isRecord(topFeatures.retained) || !isRecord(topFeatures.omitted) || !top
+    || topFeatures.retained.red !== top.deepFeatures.length
+    || topFeatures.retained.blue !== top.lightFeatures.length
+    || topFeatures.omitted.red !== (top.diagnostics.depth.omitted?.red ?? 0)
+    || topFeatures.omitted.blue !== (top.diagnostics.depth.omitted?.blue ?? 0)) {
+    reasons.push('Automatic assembly top-feature retained and omitted counts are inconsistent');
+  }
+  return reasons;
 }
 
 export function validateAutomaticColoredResult(
@@ -901,6 +1029,17 @@ export function validateAutomaticColoredResult(
     : [];
   const coloredLayersValid = validLayerCount(coloredLayers.length)
     && coloredLayers.every((layer) => validateLayer(layer).ok);
+  const resultMaterial = isRecord(value.material)
+    ? value.material as unknown as ManufacturingGeometryProfile
+    : undefined;
+  const validatedMaterial = material ?? resultMaterial;
+  if (material && value.material !== undefined
+    && JSON.stringify(value.material) !== JSON.stringify(material)) {
+    reasons.push('Automatic result material must match the validated manufacturing geometry profile');
+  }
+  if (coloredLayersValid && featureWarnings) {
+    reasons.push(...assemblyReasons(value.assembly, coloredLayers, featureWarnings, validatedMaterial));
+  }
   if (coloredLayersValid && featureWarnings) {
     try {
       validateSharedCentralHoleDecision(coloredLayers.map((layer) => ({
@@ -989,10 +1128,12 @@ export function validateAutomaticColoredResult(
   } else if (previewAxis && coloredLayersValid && (value.mode === 'exact' || value.mode === 'outline-2.5d') && typeof value.sourceHash === 'string'
     && value.featureEvidenceFingerprint !== featureEvidenceFingerprint({
       sourceHash: value.sourceHash,
+      material: validatedMaterial,
+      assembly: value.assembly as AutomaticOutlineAssembly | undefined,
       mode: value.mode,
       coloredLayers,
       preview: { axis: previewAxis },
-    }, deadline, checkpoint, material)) {
+    }, deadline, checkpoint, validatedMaterial)) {
     reasons.push('Feature evidence fingerprint is inconsistent with ordered role records');
   }
   if (reasons.length > 0) throw new RangeError(`Invalid automatic colored result: ${reasons.join('; ')}`);

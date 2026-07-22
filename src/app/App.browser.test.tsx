@@ -35,7 +35,15 @@ describe('App real browser one-click flow', () => {
       },
     };
     const result: AutomaticOutlineResult = {
-      sourceHash: 'c'.repeat(32), mode: 'exact', status: 'success', warnings: [], layers: [{
+      sourceHash: 'c'.repeat(32), mode: 'exact', status: 'success', warnings: [],
+      material: manufacturingGeometryProfile(defaultPendingMaterialProfile('plywood-3')!),
+      assembly: {
+        material: manufacturingGeometryProfile(defaultPendingMaterialProfile('plywood-3')!),
+        launcher: { status: 'omitted', cutCount: 0 },
+        fastener: { count: 0, centers: [], finishedDiameterMm: 3, pathDiameterMm: 2.85 },
+        topFeatures: { retained: { red: 0, blue: 0 }, omitted: { red: 0, blue: 0 } },
+      },
+      layers: [{
         id: 'layer-0', index: 0, zStart: 0, zEnd: 1,
         contour: { outer: [[0, 0], [10, 0], [10, 5], [0, 5]], holes: [] },
         sourceAreaMm2: 50, simplifiedAreaMm2: 50,

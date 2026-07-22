@@ -19,7 +19,7 @@ function allLayerHoleOmissionResult() {
     ...result,
     status: 'warning' as const,
     coloredLayers,
-    featureWarnings: [CENTRAL_HOLE_OMISSION_WARNING],
+    featureWarnings: [...result.featureWarnings, CENTRAL_HOLE_OMISSION_WARNING],
     preview: { ...result.preview, layers: coloredLayers },
   };
   return { ...omitted, featureEvidenceFingerprint: featureEvidenceFingerprint(omitted) };
@@ -50,27 +50,40 @@ describe('canonical colored outline document', () => {
     const result = coloredResult();
     const layer = result.coloredLayers[5];
     const featured = result.coloredLayers[2];
-    const launcherCuts = [
-      { ...layer.centralHole!, id: 'launcher-1' },
-      { ...layer.centralHole!, id: 'launcher-2' },
-    ];
-    const fastenerHoles = [
-      { ...layer.centralHole!, id: 'fastener-1' },
-      { ...layer.centralHole!, id: 'fastener-2' },
-    ];
-    const coloredLayers = result.coloredLayers.map((candidate, index) => index === 5
-      ? {
-        ...candidate,
-        launcherCuts,
-        fastenerHoles,
-        deepFeatures: featured.deepFeatures.map((contour) => ({ ...contour, id: 'top-deep-1' })),
-        lightFeatures: featured.lightFeatures.map((contour) => ({ ...contour, id: 'top-light-1' })),
-      }
-      : candidate);
-    const document = createColoredOutlineDocument(withColoredLayers(result, coloredLayers));
+    const coloredLayers = result.coloredLayers.map((candidate, index) => ({
+      ...candidate,
+      launcherCuts: index < 4 ? [] : [1, 2, 3].map((number) => ({
+        ...layer.centralHole!, id: `${candidate.id}-launcher-${number}`,
+      })),
+      fastenerHoles: [1, 2].map((number) => ({
+        ...layer.centralHole!, id: `${candidate.id}-fastener-${number}`,
+      })),
+      deepFeatures: index === 5
+        ? featured.deepFeatures.map((contour) => ({ ...contour, id: 'top-deep-1' }))
+        : candidate.deepFeatures,
+      lightFeatures: index === 5
+        ? featured.lightFeatures.map((contour) => ({ ...contour, id: 'top-light-1' }))
+        : candidate.lightFeatures,
+    }));
+    const changed = {
+      ...result,
+      coloredLayers,
+      featureWarnings: [],
+      assembly: {
+        ...result.assembly,
+        launcher: { status: 'detected' as const, cutCount: 3 as const, assemblyAllowanceMm: 0.2 as const },
+        fastener: { count: 2 as const, centers: [[0, 0], [0, 0]] as const, finishedDiameterMm: 3 as const, pathDiameterMm: 2.85 },
+        topFeatures: { retained: { red: 1, blue: 1 }, omitted: { red: 0, blue: 0 } },
+      },
+      preview: { ...result.preview, layers: coloredLayers },
+    };
+    const complete = { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
+    const document = createColoredOutlineDocument(complete);
 
     expect(document.layers[5].roles.CUT_BLACK.map(({ id }) => id)).toEqual([
-      'layer-6-exterior', 'layer-6-hole', 'launcher-1', 'launcher-2', 'fastener-1', 'fastener-2',
+      'layer-6-exterior', 'layer-6-hole',
+      'layer-6-launcher-1', 'layer-6-launcher-2', 'layer-6-launcher-3',
+      'layer-6-fastener-1', 'layer-6-fastener-2',
     ]);
     expect(document.layers[5].roles.DEEP_RED.map(({ id }) => id)).toEqual(['top-deep-1']);
     expect(document.layers[5].roles.LIGHT_BLUE.map(({ id }) => id)).toEqual(['top-light-1']);
@@ -95,14 +108,28 @@ describe('canonical colored outline document', () => {
     ]);
     expect(document.layers[2].roles.DEEP_RED).toHaveLength(1);
     expect(document.layers[2].roles.LIGHT_BLUE).toHaveLength(1);
+    expect(document.assembly).toEqual(result.assembly);
     expect(() => validateColoredOutlineDocument(document, result)).not.toThrow();
+  });
+
+  it('rejects a mixed launcher or fastener assembly forgery independently of the source result', () => {
+    const result = coloredResult();
+    const launcher = structuredClone(createColoredOutlineDocument(result));
+    Object.assign(launcher.assembly.launcher, { status: 'detected', cutCount: 3 });
+    expect(() => validateColoredOutlineDocument(launcher, result))
+      .toThrow(/assembly|launcher|canonical|mismatch/i);
+
+    const fastener = structuredClone(createColoredOutlineDocument(result));
+    Object.assign(fastener.assembly.fastener, { count: 2, centers: [[1, 1], [-1, -1]] });
+    expect(() => validateColoredOutlineDocument(fastener, result))
+      .toThrow(/assembly|fastener|canonical|mismatch/i);
   });
 
   it('carries the bounded sanitized all-layer central-hole omission safety note', () => {
     const result = allLayerHoleOmissionResult();
     const document = createColoredOutlineDocument(result);
 
-    expect(document).toHaveProperty('safetyNotes', [CENTRAL_HOLE_OMISSION_WARNING]);
+    expect(document.safetyNotes).toContain(CENTRAL_HOLE_OMISSION_WARNING);
     const safetyNotes = (document as typeof document & { readonly safetyNotes?: readonly string[] }).safetyNotes ?? [];
     for (const note of safetyNotes) expect(note).not.toMatch(/[\\/@\r\n\0]|[\w.+-]+@[\w.-]+/);
     expect(() => validateColoredOutlineDocument(document, result)).not.toThrow();

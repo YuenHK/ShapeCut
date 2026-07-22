@@ -1,4 +1,4 @@
-import type { FeatureContour } from '../domain/outline-features/types';
+import type { AutomaticOutlineAssembly, FeatureContour } from '../domain/outline-features/types';
 import { validateManufacturingGeometryProfile } from '../domain/materials/manufacturing-profile';
 import {
   validateAutomaticColoredResult,
@@ -23,6 +23,7 @@ export type ColoredOutlineDocument = {
   readonly featureEvidenceFingerprint: string;
   readonly diagnosticsFingerprint: string;
   readonly safetyNotes: readonly string[];
+  readonly assembly: AutomaticOutlineAssembly;
   readonly layers: readonly {
     readonly id: string;
     readonly order: number;
@@ -93,6 +94,39 @@ function copySafetyNotes(
   });
 }
 
+function copyAssembly(
+  assembly: AutomaticOutlineAssembly,
+  checkpoint: ColoredDocumentCheckpoint,
+): AutomaticOutlineAssembly {
+  checkpoint('canonical:assembly:start');
+  const material = validateManufacturingGeometryProfile(assembly.material);
+  return {
+    material: { ...material, fitAllowanceMm: { ...material.fitAllowanceMm } },
+    launcher: assembly.launcher.status === 'omitted'
+      ? { status: 'omitted', cutCount: 0 }
+      : {
+        status: assembly.launcher.status,
+        cutCount: 3,
+        assemblyAllowanceMm: assembly.launcher.assemblyAllowanceMm,
+      },
+    fastener: {
+      count: assembly.fastener.count,
+      centers: assembly.fastener.centers.map(([x, y]) => {
+        checkpoint('canonical:assembly-center-loop');
+        return [x, y] as const;
+      }),
+      finishedDiameterMm: assembly.fastener.finishedDiameterMm,
+      pathDiameterMm: assembly.fastener.pathDiameterMm,
+      ...(assembly.fastener.radiusMm === undefined ? {} : { radiusMm: assembly.fastener.radiusMm }),
+      ...(assembly.fastener.rotationRad === undefined ? {} : { rotationRad: assembly.fastener.rotationRad }),
+    },
+    topFeatures: {
+      retained: { ...assembly.topFeatures.retained },
+      omitted: { ...assembly.topFeatures.omitted },
+    },
+  };
+}
+
 function documentFromValidatedResult(
   result: AutomaticOutlineResult,
   checkpoint: ColoredDocumentCheckpoint,
@@ -123,6 +157,7 @@ function documentFromValidatedResult(
     featureEvidenceFingerprint: result.featureEvidenceFingerprint,
     diagnosticsFingerprint: diagnosticsFingerprint(result.diagnostics),
     safetyNotes: copySafetyNotes(result.featureWarnings, checkpoint),
+    assembly: copyAssembly(result.assembly, checkpoint),
     layers,
   };
 }
@@ -155,6 +190,18 @@ function assertCanonicalShape(
     throw new RangeError('Colored canonical document fingerprint or layer count is invalid');
   }
   const safetyNotes = copySafetyNotes(document.safetyNotes, checkpoint);
+  const assembly = copyAssembly(document.assembly, checkpoint);
+  const launcherCount = assembly.launcher.status === 'omitted' ? 0 : 3;
+  const fastenerCount = assembly.fastener.count;
+  if (![0, 1, 2, 3].includes(fastenerCount)
+    || assembly.fastener.centers.length !== fastenerCount
+    || assembly.fastener.finishedDiameterMm !== 3
+    || !Number.isFinite(assembly.fastener.pathDiameterMm) || assembly.fastener.pathDiameterMm <= 0
+    || ![assembly.topFeatures.retained.red, assembly.topFeatures.retained.blue,
+      assembly.topFeatures.omitted.red, assembly.topFeatures.omitted.blue]
+      .every((count) => Number.isSafeInteger(count) && count >= 0)) {
+    throw new RangeError('Colored canonical assembly summary is invalid');
+  }
   const layerIds = new Set<string>(), featureIds = new Set<string>();
   for (const [position, layer] of document.layers.entries()) {
     checkpoint('canonical:validate-layer-loop');
@@ -195,13 +242,26 @@ function assertCanonicalShape(
       }
     }
   }
-  validateSharedCentralHoleDecision(document.layers.map((layer) => {
-    const contour = layer.roles.CUT_BLACK[1];
+  const centralHoles = document.layers.map((layer, index) => {
+    const layerLauncherCount = index >= document.layers.length - 2 ? launcherCount : 0;
+    const centralCount = layer.roles.CUT_BLACK.length - 1 - layerLauncherCount - fastenerCount;
+    if (centralCount !== 0 && centralCount !== 1) {
+      throw new RangeError('Colored canonical black-cut assembly cardinality is inconsistent');
+    }
+    const contour = centralCount === 1 ? layer.roles.CUT_BLACK[1] : undefined;
     return {
       status: contour ? 'retained' as const : 'omitted' as const,
       ...(contour ? { contour } : {}),
     };
-  }), safetyNotes, Infinity, () => checkpoint('canonical:shared-hole-loop'), 'Canonical shared central hole');
+  });
+  validateSharedCentralHoleDecision(
+    centralHoles, safetyNotes, Infinity, () => checkpoint('canonical:shared-hole-loop'), 'Canonical shared central hole',
+  );
+  const top = document.layers.at(-1)!;
+  if (assembly.topFeatures.retained.red !== top.roles.DEEP_RED.length
+    || assembly.topFeatures.retained.blue !== top.roles.LIGHT_BLUE.length) {
+    throw new RangeError('Colored canonical top-feature assembly counts are inconsistent');
+  }
 }
 
 function runColoredResultValidation(

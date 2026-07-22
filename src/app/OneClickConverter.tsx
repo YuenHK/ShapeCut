@@ -191,6 +191,12 @@ function measurementRange(values: readonly number[]): string | undefined {
   return `${finite[0]}–${finite[finite.length - 1]} mm`;
 }
 
+function launcherSummary(status: AutomaticOutlineResult['assembly']['launcher']['status']): string {
+  if (status === 'detected') return '已偵測原機幾何';
+  if (status === 'fallback') return '後備樣板';
+  return '已安全省略';
+}
+
 function ModelInput({ compact = false, onFile }: { readonly compact?: boolean; readonly onFile: (file: File) => void }) {
   const input = useRef<HTMLInputElement>(null);
   const select = (event: ChangeEvent<HTMLInputElement>) => {
@@ -425,6 +431,7 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
   const blueThreshold = measurementRange(result.coloredLayers.flatMap((layer) => (
     layer.lightFeatures.length > 0 ? [layer.diagnostics.depth.blueThresholdMm] : []
   )));
+  const assembly = result.assembly;
   return (
     <section className="converter-card result-card" aria-labelledby="result-title">
       <div className="result-heading">
@@ -451,6 +458,13 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
           <div><dt>平面尺寸 X × Y</dt><dd>{presentation ? `${presentation.width} × ${presentation.height} mm` : '不可用'}</dd></div>
           <div><dt>原始 Z 範圍</dt><dd>{presentation ? `總高度 ${presentation.totalZ} mm` : '不可用'}</dd></div>
           <div><dt>輸出內容</dt><dd>切割外形與相對深淺層級</dd></div>
+          {assembly && <>
+            <div><dt>製作材料</dt><dd>{assembly.material.name} ({assembly.material.thicknessMm} mm，kerf {assembly.material.kerfMm} mm)</dd></div>
+            <div><dt>發射器相容性</dt><dd>{launcherSummary(assembly.launcher.status)}</dd></div>
+            <div><dt>固定螺絲孔</dt><dd>{assembly.fastener.count === 0 ? '已安全省略' : `${assembly.fastener.count} 個`}</dd></div>
+            <div><dt>頂層紅色特徵</dt><dd>保留 {assembly.topFeatures.retained.red}，省略 {assembly.topFeatures.omitted.red}</dd></div>
+            <div><dt>頂層藍色特徵</dt><dd>保留 {assembly.topFeatures.retained.blue}，省略 {assembly.topFeatures.omitted.blue}</dd></div>
+          </>}
         </dl>
       </div>
       <div className="color-legend" aria-label="相對顏色圖例">

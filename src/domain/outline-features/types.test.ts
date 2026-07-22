@@ -3,6 +3,8 @@ import type { Point2 } from '../decomposition/types';
 import type { OutlineLayer } from '../outline-2.5d/extract';
 import type { AutomaticOutlineResult } from '../pipeline/automatic-outline-pipeline';
 import { CENTRAL_HOLE_OMISSION_WARNING } from './hole';
+import { LAUNCHER_OMISSION_WARNING } from '../outline-assembly/launcher';
+import { FASTENER_OMISSION_WARNING } from '../outline-assembly/fasteners';
 import {
   featureEvidenceFingerprint,
   migrateColoredOutlineLayer,
@@ -98,8 +100,19 @@ function legacyLayer(layer = indexedColoredLayer(0)): OutlineLayer {
 }
 
 function automaticResult(coloredLayers = coloredLayerSet(6)): AutomaticOutlineResult {
+  const material = { id: 'test', name: 'Test', thicknessMm: 3, kerfMm: 0.1, minFeatureMm: 0.8, minWebMm: 0.5, fitAllowanceMm: { loose: 0.2, slip: 0.1, snug: 0, press: -0.1 } } as const;
   const result = {
     sourceHash: 'a'.repeat(32),
+    material,
+    assembly: {
+      material,
+      launcher: { status: 'omitted' as const, cutCount: 0 as const },
+      fastener: { count: 0 as const, centers: [], finishedDiameterMm: 3 as const, pathDiameterMm: 2.9 },
+      topFeatures: {
+        retained: { red: coloredLayers.at(-1)?.deepFeatures.length ?? 0, blue: coloredLayers.at(-1)?.lightFeatures.length ?? 0 },
+        omitted: coloredLayers.at(-1)?.diagnostics.depth.omitted ?? { red: 0, blue: 0 },
+      },
+    },
     mode: 'exact' as const,
     status: 'success' as const,
     axis: {
@@ -108,7 +121,7 @@ function automaticResult(coloredLayers = coloredLayerSet(6)): AutomaticOutlineRe
     },
     layers: coloredLayers.map((layer) => legacyLayer(layer)),
     coloredLayers,
-    featureWarnings: [],
+    featureWarnings: [LAUNCHER_OMISSION_WARNING, FASTENER_OMISSION_WARNING],
     warnings: [],
     originalReport: {
       inspection: { triangleCount: 1, boundaryEdgeCount: 0, nonManifoldEdgeCount: 0, degenerateTriangleCount: 0, invertedVolume: false },
@@ -151,10 +164,15 @@ function withSharedHoleEvidence(
   coloredLayers: readonly ColoredOutlineLayer[],
   featureWarnings: readonly string[] = result.featureWarnings,
 ): AutomaticOutlineResult {
+  const reconciledWarnings = [...new Set([
+    ...featureWarnings,
+    LAUNCHER_OMISSION_WARNING,
+    FASTENER_OMISSION_WARNING,
+  ])];
   const changed = {
     ...result,
     coloredLayers,
-    featureWarnings,
+    featureWarnings: reconciledWarnings,
     preview: { ...result.preview, layers: coloredLayers },
   };
   return { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
@@ -181,7 +199,19 @@ function withFeatureCounts(topDeep: number, lowerDeep: number): AutomaticOutline
         ? featureSeries('DEEP_RED', lowerDeep, `lower-deep-${index}`)
         : layer.deepFeatures,
   }));
-  const changed = { ...source, coloredLayers, preview: { ...source.preview, layers: coloredLayers } };
+  const top = coloredLayers.at(-1)!;
+  const changed = {
+    ...source,
+    assembly: {
+      ...source.assembly,
+      topFeatures: {
+        retained: { red: top.deepFeatures.length, blue: top.lightFeatures.length },
+        omitted: top.diagnostics.depth.omitted ?? { red: 0, blue: 0 },
+      },
+    },
+    coloredLayers,
+    preview: { ...source.preview, layers: coloredLayers },
+  };
   return { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
 }
 

@@ -47,6 +47,8 @@ const ROLE_LEGEND_LABEL = 'BLACK CUT | RED DEEP | BLUE LIGHT';
 const RELATIVE_LEVEL_GUIDANCE = 'Red and blue are relative processing levels, not literal machine settings.';
 const TEST_CUT_GUIDANCE = 'Assign machine-specific settings after material test cuts.';
 const PREVIEW_SAFETY_NOTE_MINIMUM_WIDTH_MM = 80;
+const LAUNCHER_OMISSION_NOTE = 'Launcher clearance omitted because compatibility could not be preserved safely.';
+const FASTENER_OMISSION_NOTE = '3 mm fastener holes omitted because no all-layer pattern was safe.';
 
 export type ColoredEntityRecord = {
   readonly physicalLayerId: string;
@@ -1317,19 +1319,26 @@ function reconcilePdf(
 ): void {
   const expectedLayers = svg.layers.map(({ id, order }) => ({ id, order }));
   const allCentralHolesOmitted = svg.layers.every((layer) => (
-    svg.entities.filter((entity) => entity.physicalLayerId === layer.id && entity.role === 'CUT_BLACK').length === 1
+    !svg.entities.some((entity) => entity.physicalLayerId === layer.id
+      && entity.role === 'CUT_BLACK' && entity.id.endsWith('-hole')
+      && !entity.id.includes('-fastener-hole-'))
   ));
+  const safetyNotes = [
+    ...(allCentralHolesOmitted ? [CENTRAL_HOLE_OMISSION_WARNING] : []),
+    ...(svg.entities.some((entity) => entity.id.includes('-launcher-clearance-')) ? [] : [LAUNCHER_OMISSION_NOTE]),
+    ...(svg.entities.some((entity) => entity.id.includes('-fastener-hole-')) ? [] : [FASTENER_OMISSION_NOTE]),
+  ];
   if (exact(pdf.layerRecords.map(({ id, order }) => ({ id, order }))) !== exact(expectedLayers)) {
     throw new Error(`Colored ${pdf.kind} PDF layer metadata does not reconcile with SVG`);
   }
   if (pdf.kind === 'preview') {
     const extents = canonicalColoredDocumentExtents(svg.entities, 'Colored SVG');
     const expectedPageSize: readonly [number, number] = [
-      Math.max(extents.width, allCentralHolesOmitted ? PREVIEW_SAFETY_NOTE_MINIMUM_WIDTH_MM : 0) * MM_TO_POINTS,
+      Math.max(extents.width, safetyNotes.length > 0 ? PREVIEW_SAFETY_NOTE_MINIMUM_WIDTH_MM : 0) * MM_TO_POINTS,
       (extents.height + 24) * MM_TO_POINTS,
     ];
     if (!nearlyEqual(pdf.pageSize[0], expectedPageSize[0]) || !nearlyEqual(pdf.pageSize[1], expectedPageSize[1])
-      || pdf.textBlockCount !== svg.layers.length + 3 + (allCentralHolesOmitted ? 1 : 0)) {
+      || pdf.textBlockCount !== svg.layers.length + 3 + safetyNotes.length) {
       throw new Error('Colored preview PDF page dimensions or label cardinality do not reconcile with SVG');
     }
     const expectedStrokes: PdfStrokeRecord[] = [];
@@ -1351,15 +1360,15 @@ function reconcilePdf(
         x: (bounds.minX + 1) * MM_TO_POINTS, y: (bounds.maxY - 3) * MM_TO_POINTS,
       });
     }
-    expectedTexts.push({ text: `Scale 1:1 | ${ROLE_LEGEND_LABEL}`, size: 8, x: 5 * MM_TO_POINTS, y: (extents.height + 17) * MM_TO_POINTS });
-    expectedTexts.push({ text: RELATIVE_LEVEL_GUIDANCE, size: 7, x: 5 * MM_TO_POINTS, y: (extents.height + 11) * MM_TO_POINTS });
-    expectedTexts.push({ text: TEST_CUT_GUIDANCE, size: 7, x: 5 * MM_TO_POINTS, y: (extents.height + 5) * MM_TO_POINTS });
-    if (allCentralHolesOmitted) {
+    expectedTexts.push({ text: `Scale 1:1 | ${ROLE_LEGEND_LABEL}`, size: 8, x: 5 * MM_TO_POINTS, y: (extents.height + 21) * MM_TO_POINTS });
+    expectedTexts.push({ text: RELATIVE_LEVEL_GUIDANCE, size: 7, x: 5 * MM_TO_POINTS, y: (extents.height + 16) * MM_TO_POINTS });
+    expectedTexts.push({ text: TEST_CUT_GUIDANCE, size: 7, x: 5 * MM_TO_POINTS, y: (extents.height + 11) * MM_TO_POINTS });
+    for (const [index, safetyNote] of safetyNotes.entries()) {
       expectedTexts.push({
-        text: CENTRAL_HOLE_OMISSION_WARNING,
+        text: safetyNote,
         size: 7,
         x: 5 * MM_TO_POINTS,
-        y: (extents.height + 1) * MM_TO_POINTS,
+        y: (extents.height + 1 + index * 3) * MM_TO_POINTS,
       });
     }
     assertPdfTextRecords(pdf.textRecords, expectedTexts, 'preview');
@@ -1370,8 +1379,10 @@ function reconcilePdf(
     const layer = svg.layers[index];
     const exterior = exteriorForLayer(svg.entities, layer);
     const xs = exterior.points.map((point) => point[0]), ys = exterior.points.map((point) => point[1]);
-    const black = svg.entities.filter((entity) => entity.physicalLayerId === layer.id && entity.role === 'CUT_BLACK');
-    const expectedHole = black[1] ? Number((2 * Math.sqrt(polygonArea(black[1].points) / Math.PI)).toFixed(3)) : null;
+    const central = svg.entities.find((entity) => entity.physicalLayerId === layer.id
+      && entity.role === 'CUT_BLACK' && entity.id.endsWith('-hole')
+      && !entity.id.includes('-fastener-hole-'));
+    const expectedHole = central ? Number((2 * Math.sqrt(polygonArea(central.points) / Math.PI)).toFixed(3)) : null;
     if (!nearlyEqual(record.thickness, layer.zEnd - layer.zStart)
       || !nearlyEqual(record.width, Math.max(...xs) - Math.min(...xs))
       || !nearlyEqual(record.height, Math.max(...ys) - Math.min(...ys))
@@ -1381,7 +1392,7 @@ function reconcilePdf(
   });
   const expectedPageSize: readonly [number, number] = [297 * MM_TO_POINTS, 210 * MM_TO_POINTS];
   if (!nearlyEqual(pdf.pageSize[0], expectedPageSize[0]) || !nearlyEqual(pdf.pageSize[1], expectedPageSize[1])
-    || pdf.textBlockCount !== svg.layers.length + 6 + (allCentralHolesOmitted ? 1 : 0)) {
+    || pdf.textBlockCount !== svg.layers.length + 6 + safetyNotes.length) {
     throw new Error('Colored exploded PDF page dimensions or label cardinality do not reconcile with SVG');
   }
   const centerX = 120 * MM_TO_POINTS, baseY = 36 * MM_TO_POINTS;
@@ -1436,12 +1447,12 @@ function reconcilePdf(
   }));
   expectedTexts.push({ text: RELATIVE_LEVEL_GUIDANCE, size: 7, x: 18 * MM_TO_POINTS, y: 19 * MM_TO_POINTS });
   expectedTexts.push({ text: TEST_CUT_GUIDANCE, size: 7, x: 18 * MM_TO_POINTS, y: 12 * MM_TO_POINTS });
-  if (allCentralHolesOmitted) {
+  for (const [index, safetyNote] of safetyNotes.entries()) {
     expectedTexts.push({
-      text: CENTRAL_HOLE_OMISSION_WARNING,
+      text: safetyNote,
       size: 7,
       x: 184 * MM_TO_POINTS,
-      y: 195 * MM_TO_POINTS,
+      y: (195 - index * 5) * MM_TO_POINTS,
     });
   }
   assertPdfTextRecords(pdf.textRecords, expectedTexts, 'exploded');

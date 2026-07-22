@@ -33,9 +33,17 @@ const coloredLayer: ColoredOutlineLayer = {
     depth: { cellSizeMm: 0, contrastMm: 0, redThresholdMm: 0, blueThresholdMm: 0 },
   },
 };
+const resultMaterial = manufacturingGeometryProfile(defaultPendingMaterialProfile('plywood-3')!);
 
 const result: AutomaticOutlineResult = {
   sourceHash: 'a'.repeat(32),
+  material: resultMaterial,
+  assembly: {
+    material: resultMaterial,
+    launcher: { status: 'omitted', cutCount: 0 },
+    fastener: { count: 0, centers: [], finishedDiameterMm: 3, pathDiameterMm: 2.85 },
+    topFeatures: { retained: { red: 0, blue: 0 }, omitted: { red: 0, blue: 0 } },
+  },
   mode: 'exact',
   status: 'success',
   axis: { source: 'candidate', axis: { origin: [0, 0, 0], direction: [0, 0, 1], confidence: 0.9, confirmed: true } },
@@ -104,6 +112,33 @@ async function uploadAndSelectMaterial(user: ReturnType<typeof userEvent.setup>,
 }
 
 describe('OneClickConverter', () => {
+  it('shows the material, launcher, fastener, and top-feature assembly summary without adding downloads', async () => {
+    const user = userEvent.setup();
+    const assemblyResult = {
+      ...result,
+      assembly: {
+        material: manufacturingGeometryProfile(defaultPendingMaterialProfile('plywood-3')!),
+        launcher: { status: 'fallback' as const, cutCount: 3 as const, assemblyAllowanceMm: 0.2 as const },
+        fastener: {
+          count: 2 as const, centers: [[6, 0], [-6, 0]] as const,
+          finishedDiameterMm: 3 as const, pathDiameterMm: 2.85, radiusMm: 6, rotationRad: 0,
+        },
+        topFeatures: { retained: { red: 4, blue: 3 }, omitted: { red: 2, blue: 1 } },
+      },
+    };
+    render(<OneClickConverter services={services({ convert: vi.fn().mockResolvedValue(assemblyResult) })} />);
+
+    await uploadAndSelectMaterial(user, new File(['mesh'], 'assembly.stl'));
+    await screen.findByRole('heading', { name: '轉換完成' });
+
+    expect(screen.getByText('發射器相容性').nextElementSibling).toHaveTextContent('後備樣板');
+    expect(screen.getByText('固定螺絲孔').nextElementSibling).toHaveTextContent('2 個');
+    expect(screen.getByText('頂層紅色特徵').nextElementSibling).toHaveTextContent('保留 4，省略 2');
+    expect(screen.getByText('頂層藍色特徵').nextElementSibling).toHaveTextContent('保留 3，省略 1');
+    expect(screen.getByText('製作材料').nextElementSibling).toHaveTextContent(/3 mm.*kerf 0\.15 mm/i);
+    expect(screen.getAllByRole('link', { name: /下載/ })).toHaveLength(5);
+  });
+
   it('drains the idle renderer pool when the application workflow unmounts', () => {
     const shutdown = vi.spyOn(outlineProcessScene, 'shutdownOutlineProcessRendererPool');
     const view = render(<OneClickConverter services={services()} />);
@@ -149,7 +184,7 @@ describe('OneClickConverter', () => {
     expect(api.convert).toHaveBeenCalledWith(expect.any(ArrayBuffer), expectedSubset, expect.any(Function));
     await screen.findByRole('heading', { name: '轉換完成' });
     await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['replacement'], 'replacement.stl'));
-    expect(screen.getByLabelText('選擇製作材料')).toHaveValue('');
+    expect(await screen.findByLabelText('選擇製作材料')).toHaveValue('');
   });
 
   it('does not leave an old material selection actionable while a replacement file is still reading', async () => {

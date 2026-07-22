@@ -4,8 +4,15 @@ import {
   removalEvidenceFingerprint,
   type AutomaticOutlineResult,
 } from '../domain/pipeline/automatic-outline-pipeline';
+import { LAUNCHER_OMISSION_WARNING } from '../domain/outline-assembly/launcher';
+import { FASTENER_OMISSION_WARNING } from '../domain/outline-assembly/fasteners';
 
 const SOURCE_HASH = '0123456789abcdef'.repeat(2);
+const MATERIAL = {
+  id: 'test-plywood', name: 'Test plywood', thicknessMm: 3, kerfMm: 0.15,
+  minFeatureMm: 0.8, minWebMm: 0.5,
+  fitAllowanceMm: { loose: 0.2, slip: 0.1, snug: 0, press: -0.1 },
+} as const;
 
 function contour(
   id: string,
@@ -102,14 +109,23 @@ export function coloredResult(): AutomaticOutlineResult {
   const base = {
     sourceHash: SOURCE_HASH,
     mode: 'exact' as const,
-    status: 'success' as const,
+    status: 'warning' as const,
     axis: {
       source: 'candidate' as const,
       axis: { origin: [0, 0, 0] as const, direction: [0, 0, 1] as const, confidence: 1, confirmed: true },
     },
     layers,
     coloredLayers,
-    featureWarnings: [],
+    material: MATERIAL,
+    assembly: {
+      material: MATERIAL,
+      launcher: { status: 'omitted' as const, cutCount: 0 as const },
+      fastener: {
+        count: 0 as const, centers: [], finishedDiameterMm: 3 as const, pathDiameterMm: 2.85,
+      },
+      topFeatures: { retained: { red: 0, blue: 0 }, omitted: { red: 0, blue: 0 } },
+    },
+    featureWarnings: [LAUNCHER_OMISSION_WARNING, FASTENER_OMISSION_WARNING],
     preview: {
       mesh: {
         positions: Float32Array.from([0, 0, 0, 1, 0, 0, 0, 1, 0]),
@@ -147,7 +163,7 @@ export function coloredResult(): AutomaticOutlineResult {
   const result = {
     ...base,
     removalEvidenceFingerprint: removalEvidenceFingerprint(base),
-    featureEvidenceFingerprint: featureEvidenceFingerprint(base),
+    featureEvidenceFingerprint: featureEvidenceFingerprint(base, undefined, undefined, MATERIAL),
   };
   // Keep this assertion near the fixture: all package tests consume genuinely valid evidence.
   if (!/^[0-9a-f]{32}$/.test(diagnosticsFingerprint(result.diagnostics))) throw new Error('Invalid fixture diagnostics');
@@ -232,6 +248,6 @@ export function nearLimitColoredResult(pointCount = 512): AutomaticOutlineResult
   return {
     ...base,
     removalEvidenceFingerprint: removalEvidenceFingerprint(base),
-    featureEvidenceFingerprint: featureEvidenceFingerprint(base),
+    featureEvidenceFingerprint: featureEvidenceFingerprint(base, undefined, undefined, MATERIAL),
   };
 }

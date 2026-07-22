@@ -222,7 +222,7 @@ function allLayerHoleOmissionResult() {
     ...result,
     status: 'warning' as const,
     coloredLayers,
-    featureWarnings: [CENTRAL_HOLE_OMISSION_WARNING],
+    featureWarnings: [CENTRAL_HOLE_OMISSION_WARNING, ...result.featureWarnings],
     preview: { ...result.preview, layers: coloredLayers },
   };
   return { ...omitted, featureEvidenceFingerprint: featureEvidenceFingerprint(omitted) };

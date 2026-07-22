@@ -14,14 +14,26 @@ import {
   extractExactContours,
   extractProjectedContours,
   type OutlineExtraction,
+  type OutlineBlackCutPlanningContext,
   type OutlineLayer,
 } from '../outline-2.5d/extract';
+import {
+  detectLauncherTemplate,
+  planLauncherClearance,
+  type LauncherPlan,
+} from '../outline-assembly/launcher';
+import {
+  materializeFastenerHoles,
+  planFastenerHoles,
+  type FastenerPlan,
+} from '../outline-assembly/fasteners';
 import { createOutlineAxisBasis } from '../outline-2.5d/raster';
 import { scheduleOutlineLayers } from '../outline-2.5d/layer-schedule';
 import {
   featureEvidenceFingerprint,
   validateAutomaticColoredResult,
   type ColoredOutlineLayer,
+  type AutomaticOutlineAssembly,
   type OutlinePreviewPayload,
 } from '../outline-features/types';
 import {
@@ -39,6 +51,7 @@ export type AutomaticOutlineResult = {
   readonly sourceHash: string;
   /** Bounded material evidence required to verify the feature fingerprint during packaging. */
   readonly material?: ManufacturingGeometryProfile;
+  readonly assembly: AutomaticOutlineAssembly;
   readonly mode: OutlineMode;
   readonly status: OutlineResultStatus;
   readonly axis: OutlineAxisSelection;
@@ -175,11 +188,12 @@ function clonePreviewPayload(preview: OutlinePreviewPayload): OutlinePreviewPayl
 }
 
 function withResultEvidence(
-  result: Omit<AutomaticOutlineResult, 'coloredLayers' | 'featureWarnings' | 'featureEvidenceFingerprint' | 'preview' | 'removalEvidenceFingerprint'>,
+  result: Omit<AutomaticOutlineResult, 'assembly' | 'coloredLayers' | 'featureWarnings' | 'featureEvidenceFingerprint' | 'preview' | 'removalEvidenceFingerprint'>,
   previewMesh: TriangleMesh,
   deadline: number,
   extraction: Pick<OutlineExtraction, 'holeSelections' | 'depthFeatures' | 'blackCuts' | 'featureWarnings'>,
   material: ManufacturingGeometryProfile,
+  assembly: Omit<AutomaticOutlineAssembly, 'topFeatures'>,
 ): AutomaticOutlineResult {
   let coloredLayers: readonly ColoredOutlineLayer[];
   let previewMeshCopy: OutlinePreviewPayload['mesh'];
@@ -214,17 +228,137 @@ function withResultEvidence(
     },
   };
   try {
+    const assemblyEvidence: AutomaticOutlineAssembly = {
+      ...assembly,
+      topFeatures: {
+        retained: {
+          red: coloredLayers.at(-1)?.deepFeatures.length ?? 0,
+          blue: coloredLayers.at(-1)?.lightFeatures.length ?? 0,
+        },
+        omitted: coloredLayers.at(-1)?.diagnostics.depth.omitted ?? { red: 0, blue: 0 },
+      },
+    };
+    const completeEvidence = { ...coloredResult, material, assembly: assemblyEvidence };
     const complete: AutomaticOutlineResult = {
-      ...coloredResult,
-      material,
+      ...completeEvidence,
       removalEvidenceFingerprint: removalEvidenceFingerprint(result),
-      featureEvidenceFingerprint: featureEvidenceFingerprint(coloredResult, deadline, () => undefined, material),
+      featureEvidenceFingerprint: featureEvidenceFingerprint(completeEvidence, deadline, () => undefined, material),
     };
     validateAutomaticColoredResult(complete, deadline, () => undefined, material);
     return complete;
   } catch (error) {
     throw asAutomaticOutlineError(error, 'NO_OUTLINE');
   }
+}
+
+type PlannedAssembly = {
+  readonly summary: Omit<AutomaticOutlineAssembly, 'topFeatures'>;
+  readonly cuts: OutlineExtraction['blackCuts'];
+  readonly warnings: readonly string[];
+};
+
+function materializeLauncherCuts(
+  plan: LauncherPlan,
+  layers: readonly ColoredOutlineLayer[],
+): readonly (readonly import('../outline-features/types').FeatureContour[])[] {
+  return layers.map((layer, index) => index < layers.length - 2 || plan.status === 'omitted'
+    ? []
+    : plan.cuts.map((cut, cutIndex) => ({
+      ...cut,
+      id: `${layer.id}-launcher-clearance-${cutIndex + 1}`,
+    })));
+}
+
+function planAssemblyBlackCuts(
+  context: OutlineBlackCutPlanningContext,
+  material: ManufacturingGeometryProfile,
+): PlannedAssembly {
+  const checkpoint = () => checkEvidenceDeadline(context.deadline);
+  const bareLayers = colorizeExteriorLayers(
+    context.layers, context.cellSizeMm, context.deadline, checkpoint, context.holeSelections,
+  );
+  const detection = detectLauncherTemplate({
+    candidates: context.launcherCandidates,
+    axisPoint: [0, 0],
+    deadline: context.deadline,
+    checkpoint,
+  });
+  const top = bareLayers.at(-1), second = bareLayers.at(-2);
+  if (!top || !second) throw new RangeError('Assembly planning requires at least two ordered layers');
+  const launcher = planLauncherClearance({
+    detection,
+    axisPoint: [0, 0],
+    topExterior: top.exterior,
+    secondExterior: second.exterior,
+    topCentralHole: top.centralHole,
+    secondCentralHole: second.centralHole,
+    material,
+    deadline: context.deadline,
+    checkpoint,
+  });
+  const launcherByLayer = materializeLauncherCuts(launcher, bareLayers);
+  const fastenerPlan = planFastenerHoles({
+    layers: bareLayers.map((layer, index) => ({
+      id: layer.id,
+      exterior: layer.exterior,
+      centralHole: layer.centralHole,
+      launcherCuts: launcherByLayer[index],
+    })),
+    axisPoint: [0, 0],
+    material,
+    deadline: context.deadline,
+    checkpoint,
+  });
+  const layersWithLauncher = bareLayers.map((layer, index) => ({
+    ...layer,
+    launcherCuts: launcherByLayer[index],
+  }));
+  const fastenerByLayer = materializeFastenerHoles(
+    fastenerPlan, layersWithLauncher, context.deadline, checkpoint,
+  );
+  const cuts = bareLayers.map((_, index) => ({
+    launcherCuts: launcherByLayer[index],
+    fastenerHoles: fastenerByLayer[index],
+  }));
+  const warnings = [
+    ...(launcher.status === 'omitted' ? [launcher.warning] : []),
+    ...(fastenerPlan.warning ? [fastenerPlan.warning] : []),
+  ];
+  return {
+    cuts,
+    warnings,
+    summary: {
+      material,
+      launcher: launcher.status === 'omitted'
+        ? { status: 'omitted', cutCount: 0 }
+        : { status: launcher.status, cutCount: 3, assemblyAllowanceMm: launcher.assemblyAllowanceMm },
+      fastener: fastenerSummary(fastenerPlan),
+    },
+  };
+}
+
+function fastenerSummary(plan: FastenerPlan): AutomaticOutlineAssembly['fastener'] {
+  return {
+    count: plan.count,
+    centers: plan.centers.map(([x, y]) => [x, y] as const),
+    finishedDiameterMm: plan.finishedDiameterMm,
+    pathDiameterMm: plan.pathDiameterMm,
+    ...(plan.radiusMm === undefined ? {} : { radiusMm: plan.radiusMm }),
+    ...(plan.rotationRad === undefined ? {} : { rotationRad: plan.rotationRad }),
+  };
+}
+
+function extractionOptions(
+  material: ManufacturingGeometryProfile,
+  receive: (assembly: PlannedAssembly) => void,
+): { readonly planBlackCuts: (context: OutlineBlackCutPlanningContext) => { readonly cuts: OutlineExtraction['blackCuts']; readonly warnings: readonly string[] } } {
+  return {
+    planBlackCuts: (context) => {
+      const assembly = planAssemblyBlackCuts(context, material);
+      receive(assembly);
+      return { cuts: assembly.cuts, warnings: assembly.warnings };
+    },
+  };
 }
 
 function diagnostics(extraction: { readonly layers: readonly OutlineLayer[]; readonly cellSizeMm?: number }, report: MeshProblemReport, repairAccepted: boolean): AutomaticOutlineDiagnostics {
@@ -340,17 +474,23 @@ export async function convertAutomatically(
   await emit({ stage: 'slicing' });
   if (safeRepair.accepted) {
     let exactExtraction: ReturnType<typeof extractExactContours>;
+    let exactAssembly: PlannedAssembly | undefined;
     try {
-      exactExtraction = extractExactContours(extractionMesh, axis, specs, DEFAULT_OUTLINE_BUDGETS, deadline);
+      exactExtraction = extractExactContours(
+        extractionMesh, axis, specs, DEFAULT_OUTLINE_BUDGETS, deadline,
+        extractionOptions(material, (assembly) => { exactAssembly = assembly; }),
+      );
     } catch (exactError) {
       const mappedExactError = asAutomaticOutlineError(exactError, 'NO_OUTLINE');
       if (mappedExactError.code !== 'NO_OUTLINE' || !(exactError instanceof ExactContourAmbiguityError)) {
         throw mappedExactError;
       }
       let projectedExtraction: ReturnType<typeof extractProjectedContours>;
+      let projectedAssembly: PlannedAssembly | undefined;
       try {
         projectedExtraction = extractProjectedContours(
           extractionMesh, axis, specs, DEFAULT_OUTLINE_BUDGETS, deadline,
+          extractionOptions(material, (assembly) => { projectedAssembly = assembly; }),
         );
       } catch (projectedError) {
         throw asAutomaticOutlineError(projectedError, 'NO_OUTLINE');
@@ -366,7 +506,7 @@ export async function convertAutomatically(
         repairAccepted: true,
         removedComponentCount: projectedExtraction.removedComponentCount,
         diagnostics: diagnostics(projectedExtraction, originalReport, true),
-      }, extractionMesh, deadline, projectedExtraction, material);
+      }, extractionMesh, deadline, projectedExtraction, material, projectedAssembly!.summary);
       await emit({ stage: 'slicing', preview: clonePreviewPayload(result.preview) });
       await emit({ stage: 'packaging' });
       return result;
@@ -382,15 +522,19 @@ export async function convertAutomatically(
       repairAccepted: true,
       removedComponentCount: 0,
       diagnostics: diagnostics(exactExtraction, originalReport, true),
-    }, extractionMesh, deadline, exactExtraction, material);
+    }, extractionMesh, deadline, exactExtraction, material, exactAssembly!.summary);
     await emit({ stage: 'slicing', preview: clonePreviewPayload(result.preview) });
     await emit({ stage: 'packaging' });
     return result;
   }
 
   let projectedExtraction: ReturnType<typeof extractProjectedContours>;
+  let projectedAssembly: PlannedAssembly | undefined;
   try {
-    projectedExtraction = extractProjectedContours(originalMesh, axis, specs, DEFAULT_OUTLINE_BUDGETS, deadline);
+    projectedExtraction = extractProjectedContours(
+      originalMesh, axis, specs, DEFAULT_OUTLINE_BUDGETS, deadline,
+      extractionOptions(material, (assembly) => { projectedAssembly = assembly; }),
+    );
   } catch (error) {
     throw asAutomaticOutlineError(error, 'NO_OUTLINE');
   }
@@ -405,7 +549,7 @@ export async function convertAutomatically(
     repairAccepted: false,
     removedComponentCount: projectedExtraction.removedComponentCount,
     diagnostics: diagnostics(projectedExtraction, originalReport, false),
-  }, originalMesh, deadline, projectedExtraction, material);
+  }, originalMesh, deadline, projectedExtraction, material, projectedAssembly!.summary);
   await emit({ stage: 'slicing', preview: clonePreviewPayload(result.preview) });
   await emit({ stage: 'packaging' });
   return result;

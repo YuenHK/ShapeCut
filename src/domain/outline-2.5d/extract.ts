@@ -1,6 +1,7 @@
 import type { Point2 } from '../decomposition/types';
 import type { TriangleMesh } from '../mesh/types';
 import type { ColoredOutlineLayer, FeatureContour } from '../outline-features/types';
+import type { LauncherCandidateGroup } from '../outline-assembly/launcher';
 import {
   CENTRAL_HOLE_OMISSION_WARNING,
   selectSharedCentralHole,
@@ -46,6 +47,20 @@ export type ExistingBlackCuts = {
 };
 export type OutlineFeatureExtractionOptions = {
   readonly existingBlackCuts?: readonly ExistingBlackCuts[];
+  readonly planBlackCuts?: (context: OutlineBlackCutPlanningContext) => OutlineBlackCutPlan;
+};
+
+export type OutlineBlackCutPlanningContext = {
+  readonly layers: readonly OutlineLayer[];
+  readonly holeSelections: readonly CentralHoleSelection[];
+  readonly launcherCandidates: readonly LauncherCandidateGroup[];
+  readonly cellSizeMm: number;
+  readonly deadline: number;
+};
+
+export type OutlineBlackCutPlan = {
+  readonly cuts: readonly ExistingBlackCuts[];
+  readonly warnings?: readonly string[];
 };
 
 export type HoleCandidateProbeEvidence = {
@@ -198,11 +213,10 @@ function validateRequest(projected: ProjectedMesh, specs: readonly OutlineLayerS
   }
 }
 
-function existingBlackCutsForLayers(
-  options: OutlineFeatureExtractionOptions | undefined,
+function boundedBlackCutsForLayers(
+  supplied: readonly ExistingBlackCuts[],
   layerCount: number,
 ): readonly ExistingBlackCuts[] {
-  const supplied = options?.existingBlackCuts ?? [];
   if (!Array.isArray(supplied) || supplied.length !== 0 && supplied.length !== layerCount) {
     throw new RangeError('Contour extraction requires ordered existing black cuts for every layer');
   }
@@ -213,6 +227,50 @@ function existingBlackCutsForLayers(
     }
     return cuts ?? { launcherCuts: [], fastenerHoles: [] };
   });
+}
+
+function launcherCandidateGroups(
+  candidates: readonly CentralHoleCandidate[],
+  deadline: number,
+): readonly LauncherCandidateGroup[] {
+  const ranked = candidates.filter(({ outer, closed }) => closed !== false && outer.length >= 3 && outer.length <= 4096)
+    .map((candidate) => ({
+      candidate,
+      evidence: candidate.occupiedCellCount ?? Math.abs(signedArea(candidate.outer, deadline)),
+    }))
+    .filter(({ evidence }) => Number.isFinite(evidence) && evidence > 0)
+    .sort((left, right) => right.evidence - left.evidence)
+    .slice(0, 18);
+  const maximum = Math.max(...ranked.map(({ evidence }) => evidence), 1);
+  const groups: LauncherCandidateGroup[] = [];
+  for (let first = 0; first + 2 < ranked.length && groups.length < 64; first += 1) {
+    for (let second = first + 1; second + 1 < ranked.length && groups.length < 64; second += 1) {
+      for (let third = second + 1; third < ranked.length && groups.length < 64; third += 1) {
+        checkDeadline(deadline);
+        const loops = [ranked[first], ranked[second], ranked[third]].map(({ candidate, evidence }) => ({
+          outer: candidate.outer,
+          closed: true,
+          support: evidence / maximum,
+        })) as unknown as LauncherCandidateGroup['loops'];
+        groups.push({ loops, evidenceStrength: loops.reduce((sum, loop) => sum + loop.support, 0) / 3 });
+      }
+    }
+  }
+  return groups;
+}
+
+function resolveBlackCuts(
+  options: OutlineFeatureExtractionOptions | undefined,
+  context: OutlineBlackCutPlanningContext,
+): OutlineBlackCutPlan {
+  if (options?.existingBlackCuts && options.planBlackCuts) {
+    throw new RangeError('Contour extraction accepts either existing cuts or one black-cut planner');
+  }
+  const plan = options?.planBlackCuts?.(context) ?? { cuts: options?.existingBlackCuts ?? [] };
+  return {
+    cuts: boundedBlackCutsForLayers(plan.cuts, context.layers.length),
+    warnings: plan.warnings ?? [],
+  };
 }
 
 function withinDrift(sourceBounds: Bounds2, simplified: readonly Point2[], deadline: number): boolean {
@@ -290,7 +348,6 @@ export function extractProjectedContours(
   validateBudgets(budgets);
   const projected = projectMesh(mesh, selection, deadline); validateRequest(projected, specs, budgets, deadline);
   const cellSizeMm = rasterCellSize(projected);
-  const blackCuts = existingBlackCutsForLayers(options, specs.length);
   const width = Math.ceil((projected.maxX - projected.minX) / cellSizeMm) + 3;
   const height = Math.ceil((projected.maxY - projected.minY) / cellSizeMm) + 3;
   if (width * height * specs.length > budgets.maxRasterCellsTotal) throw new RangeError('Projected contour exceeds the total raster cell budget');
@@ -321,6 +378,14 @@ export function extractProjectedContours(
     holeRequests.push(holeRequest);
   }
   const holeSelections = selectSharedCentralHole(holeRequests);
+  const blackCutPlan = resolveBlackCuts(options, {
+    layers,
+    holeSelections,
+    launcherCandidates: launcherCandidateGroups(holeRequests.at(-1)?.candidates ?? [], deadline),
+    cellSizeMm,
+    deadline,
+  });
+  const blackCuts = blackCutPlan.cuts;
   const depthFeatures = layers.map((layer, index) => extractAdaptiveDepthFeatures(projected, {
       layerId: layer.id,
       layer: specs[index],
@@ -336,6 +401,7 @@ export function extractProjectedContours(
       deadline,
     }));
   const featureWarnings = new Set<string>();
+  for (const warning of blackCutPlan.warnings ?? []) featureWarnings.add(warning);
   if (!holeSelections[0].hole) featureWarnings.add(CENTRAL_HOLE_OMISSION_WARNING);
   for (const feature of depthFeatures) if (feature.warning) featureWarnings.add(feature.warning);
   return {
@@ -613,7 +679,6 @@ export function extractExactContours(
   const layers: OutlineLayer[] = [];
   const holeRequests: CentralHoleRequest[] = [];
   const cellSizeMm = rasterCellSize(projected);
-  const blackCuts = existingBlackCutsForLayers(options, specs.length);
   for (let index = 0; index < specs.length; index += 1) {
     checkDeadline(deadline);
     const spec = specs[index];
@@ -634,6 +699,14 @@ export function extractExactContours(
     holeRequests.push(holeRequest);
   }
   const holeSelections = selectSharedCentralHole(holeRequests);
+  const blackCutPlan = resolveBlackCuts(options, {
+    layers,
+    holeSelections,
+    launcherCandidates: launcherCandidateGroups(holeRequests.at(-1)?.candidates ?? [], deadline),
+    cellSizeMm,
+    deadline,
+  });
+  const blackCuts = blackCutPlan.cuts;
   const depthFeatures = layers.map((layer, index) => extractAdaptiveDepthFeatures(projected, {
       layerId: layer.id,
       layer: specs[index],
@@ -649,6 +722,7 @@ export function extractExactContours(
       deadline,
     }));
   const featureWarnings = new Set<string>();
+  for (const warning of blackCutPlan.warnings ?? []) featureWarnings.add(warning);
   if (!holeSelections[0].hole) featureWarnings.add(CENTRAL_HOLE_OMISSION_WARNING);
   for (const feature of depthFeatures) if (feature.warning) featureWarnings.add(feature.warning);
   return {

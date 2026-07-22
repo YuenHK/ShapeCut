@@ -136,7 +136,23 @@ describe('safe degrading fastener planning', () => {
     expect(new Set(allIds).size).toBe(allIds.length);
 
     const coloredLayers = sourceLayers.map((source, index) => ({ ...source, fastenerHoles: materialized[index] }));
-    const withLayers = { ...seed, coloredLayers, preview: { ...seed.preview, layers: coloredLayers } };
+    const withLayers = {
+      ...seed,
+      assembly: {
+        ...seed.assembly,
+        fastener: {
+          count: plan.count,
+          centers: plan.centers,
+          finishedDiameterMm: plan.finishedDiameterMm,
+          pathDiameterMm: plan.pathDiameterMm,
+          ...(plan.radiusMm === undefined ? {} : { radiusMm: plan.radiusMm }),
+          ...(plan.rotationRad === undefined ? {} : { rotationRad: plan.rotationRad }),
+        },
+      },
+      coloredLayers,
+      featureWarnings: seed.featureWarnings.filter((warning) => warning !== FASTENER_OMISSION_WARNING),
+      preview: { ...seed.preview, layers: coloredLayers },
+    };
     const complete = { ...withLayers, featureEvidenceFingerprint: featureEvidenceFingerprint(withLayers) };
     expect(() => validateAutomaticColoredResult(complete)).not.toThrow();
   });

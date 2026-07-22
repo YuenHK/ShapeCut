@@ -20,7 +20,7 @@ function allLayerHoleOmissionResult() {
     ...result,
     status: 'warning' as const,
     coloredLayers,
-    featureWarnings: [CENTRAL_HOLE_OMISSION_WARNING],
+    featureWarnings: [...result.featureWarnings, CENTRAL_HOLE_OMISSION_WARNING],
     preview: { ...result.preview, layers: coloredLayers },
   };
   return { ...omitted, featureEvidenceFingerprint: featureEvidenceFingerprint(omitted) };
@@ -135,6 +135,8 @@ describe('deterministic colored PDFs', () => {
     expect(content).toContain('BLACK CUT | RED DEEP | BLUE LIGHT');
     expect(content).toContain('Red and blue are relative processing levels, not literal machine settings.');
     expect(content).toContain('Assign machine-specific settings after material test cuts.');
+    expect(content).toContain('Launcher clearance omitted because compatibility could not be preserved safely.');
+    expect(content).toContain('3 mm fastener holes omitted because no all-layer pattern was safe.');
   });
 
   it('renders one deterministic exploded assembly with axis and complete dimensions', async () => {
@@ -154,5 +156,7 @@ describe('deterministic colored PDFs', () => {
     expect(keywords).toContain('layer:1:layer-1:order=1:thickness=2:X=20:Y=20:hole-diameter=4.514');
     expect(content).toContain('Red and blue are relative processing levels, not literal machine settings.');
     expect(content).toContain('Assign machine-specific settings after material test cuts.');
+    expect(content).toContain('Launcher clearance omitted because compatibility could not be preserved safely.');
+    expect(content).toContain('3 mm fastener holes omitted because no all-layer pattern was safe.');
   });
 });

@@ -251,3 +251,59 @@ Both real-file UI cases completed in approximately 2.5 seconds, showed `已簡�
 ### Concerns
 
 - None blocking.
+
+## Assembly integration, canonical exports, and result summary (2026-07-22)
+
+## Outcome
+
+- The automatic outline pipeline now makes one bounded assembly decision after exterior/shared-hole extraction and before depth extraction.
+- Launcher cuts are atomic across the top two layers; fastener geometry is shared across every layer; both become protected engraving masks.
+- `AutomaticOutlineResult.assembly` records the bounded material profile, launcher mode, fastener geometry summary, and top-layer retained/omitted feature counts.
+- Assembly and material evidence are included in the feature fingerprint and independently reconciled by result/document validators.
+- Canonical role ordering remains exterior, optional central hole, launcher cuts, fastener holes, deep red, then light blue.
+- Preview and exploded PDFs visibly report central-hole, launcher, and fastener safety omissions. The independent E2E artifact reader reconciles their exact text positions and counts.
+- The one-click result view shows material/kerf, launcher mode, fastener count, top red/blue counts, and the existing sanitized warning list without adding controls or downloads.
+
+## TDD Evidence
+
+Initial focused RED run:
+
+```text
+3 failed, 61 passed
+```
+
+The failures proved the missing result assembly contract, canonical document assembly evidence, and UI summary.
+
+The pipeline contract now explicitly covers detected, fallback, and omitted launcher outcomes, identical top-two launcher geometry, common fastener geometry, warning provenance, preview equality, top-feature counts, and assembly-sensitive fingerprints. Canonical document tests reject mixed launcher/fastener summary forgeries.
+
+## Verification
+
+```text
+npm run typecheck
+PASS
+
+npm run build
+PASS (147 modules transformed)
+
+npx vitest run src/domain/pipeline/automatic-outline-pipeline.test.ts src/export/colored-outline-document.test.ts src/export/exploded-pdf.test.ts src/export/outline-package.test.ts src/app/OneClickConverter.test.tsx
+PASS (5 files, 491 tests after the detected-mode case was added)
+
+npx vitest run src/domain/outline-2.5d/extract.test.ts src/domain/outline-features/types.test.ts src/domain/outline-assembly/launcher.test.ts src/domain/outline-assembly/fasteners.test.ts
+PASS (4 files, 119 tests; direct type/fastener builders were subsequently reconciled and rechecked)
+
+npx vitest run src/export/exploded-pdf.test.ts src/test/e2e-helpers.test.ts
+PASS (2 files, 51 tests)
+
+npm test
+PASS (52 files, 1244 tests)
+
+git diff --check
+PASS
+```
+
+The first full-suite attempt exposed two stale E2E assumptions: a fixture replaced assembly warning provenance, and the PDF inspector expected the old fixed note cardinality. Both were corrected; the final full-suite result above is clean.
+
+## Notes
+
+- Standard PDF fonts cannot encode the canonical Traditional Chinese launcher/fastener warnings. The canonical document retains the exact sanitized source warnings; PDF pages render faithful public English safety notes and the independent parser verifies them.
+- `src/export/svg.ts` and `src/export/dxf.ts` were not changed because the colored canonical SVG/DXF writers live in `src/export/package.ts`; they already consume the ordered canonical document role arrays. Package verification remains exactly four records: SVG, DXF, preview PDF, and exploded PDF.

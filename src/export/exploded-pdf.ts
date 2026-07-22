@@ -20,8 +20,17 @@ const RELATIVE_LEVEL_GUIDANCE = 'Red and blue are relative processing levels, no
 const TEST_CUT_GUIDANCE = 'Assign machine-specific settings after material test cuts.';
 const PREVIEW_SAFETY_NOTE_MINIMUM_WIDTH_MM = 80;
 
-function centralHoleSafetyNote(document: ColoredOutlineDocument): string | undefined {
-  return document.safetyNotes.find((note) => note === CENTRAL_HOLE_OMISSION_WARNING);
+function assemblySafetyNotes(document: ColoredOutlineDocument): readonly string[] {
+  return document.safetyNotes.flatMap((note) => {
+    if (note === CENTRAL_HOLE_OMISSION_WARNING) return [note];
+    if (note.includes('發射器')) {
+      return ['Launcher clearance omitted because compatibility could not be preserved safely.'];
+    }
+    if (note.includes('螺絲孔')) {
+      return ['3 mm fastener holes omitted because no all-layer pattern was safe.'];
+    }
+    return [];
+  });
 }
 
 function configure(pdf: PDFDocument, title: string, keywords: readonly string[]): void {
@@ -35,11 +44,27 @@ function configure(pdf: PDFDocument, title: string, keywords: readonly string[])
   pdf.setKeywords([...keywords]);
 }
 
-function layerDimensionKeyword(layer: ColoredOutlineDocument['layers'][number]): string {
+function centralHoleForLayer(
+  document: ColoredOutlineDocument,
+  layerIndex: number,
+): ColoredOutlineDocument['layers'][number]['roles']['CUT_BLACK'][number] | undefined {
+  const layer = document.layers[layerIndex];
+  const launcherCount = document.assembly.launcher.status === 'omitted' || layerIndex < document.layers.length - 2
+    ? 0
+    : document.assembly.launcher.cutCount;
+  const expectedWithoutCentral = 1 + launcherCount + document.assembly.fastener.count;
+  return layer.roles.CUT_BLACK.length === expectedWithoutCentral + 1 ? layer.roles.CUT_BLACK[1] : undefined;
+}
+
+function layerDimensionKeyword(
+  document: ColoredOutlineDocument,
+  layerIndex: number,
+): string {
+  const layer = document.layers[layerIndex];
   const exterior = layer.roles.CUT_BLACK[0], exteriorBounds = exterior.boundsMm;
   const width = exteriorBounds.maxX - exteriorBounds.minX;
   const height = exteriorBounds.maxY - exteriorBounds.minY;
-  const central = layer.roles.CUT_BLACK[1];
+  const central = centralHoleForLayer(document, layerIndex);
   const diameter = central
     ? Number((2 * Math.sqrt(central.areaMm2 / Math.PI)).toFixed(3))
     : '—';
@@ -105,8 +130,8 @@ export async function writeColoredPreviewPdf(
     ...document.layers.map((layer) => `layer:${layer.order}:${layer.id}`),
   ], (pdf, font, drawCheckpoint) => {
     const layout = createColoredExportLayout(document, drawCheckpoint);
-    const safetyNote = centralHoleSafetyNote(document);
-    const pageWidthMm = Math.max(layout.width, safetyNote ? PREVIEW_SAFETY_NOTE_MINIMUM_WIDTH_MM : 0);
+    const safetyNotes = assemblySafetyNotes(document);
+    const pageWidthMm = Math.max(layout.width, safetyNotes.length > 0 ? PREVIEW_SAFETY_NOTE_MINIMUM_WIDTH_MM : 0);
     const page = pdf.addPage([pageWidthMm * MM_TO_POINTS, (layout.height + 24) * MM_TO_POINTS]);
     const map = ([x, y]: readonly [number, number]) => [x * MM_TO_POINTS, y * MM_TO_POINTS] as const;
     const layerLabels = document.layers.map((layer) => {
@@ -128,17 +153,20 @@ export async function writeColoredPreviewPdf(
     }
     const guidanceY = layout.height * MM_TO_POINTS;
     page.drawText(`Scale 1:1 | ${ROLE_LEGEND_LABEL}`, {
-      x: 5 * MM_TO_POINTS, y: guidanceY + 17 * MM_TO_POINTS, size: 8, font,
+      x: 5 * MM_TO_POINTS, y: guidanceY + 21 * MM_TO_POINTS, size: 8, font,
     });
     page.drawText(RELATIVE_LEVEL_GUIDANCE, {
-      x: 5 * MM_TO_POINTS, y: guidanceY + 11 * MM_TO_POINTS, size: 7, font,
+      x: 5 * MM_TO_POINTS, y: guidanceY + 16 * MM_TO_POINTS, size: 7, font,
     });
     page.drawText(TEST_CUT_GUIDANCE, {
-      x: 5 * MM_TO_POINTS, y: guidanceY + 5 * MM_TO_POINTS, size: 7, font,
+      x: 5 * MM_TO_POINTS, y: guidanceY + 11 * MM_TO_POINTS, size: 7, font,
     });
-    if (safetyNote) {
+    for (const [index, safetyNote] of safetyNotes.entries()) {
       page.drawText(safetyNote, {
-        x: 5 * MM_TO_POINTS, y: guidanceY + 1 * MM_TO_POINTS, size: 7, font,
+        x: 5 * MM_TO_POINTS,
+        y: (layout.height + 1 + index * 3) * MM_TO_POINTS,
+        size: 7,
+        font,
       });
     }
   }, checkpoint);
@@ -156,7 +184,7 @@ export async function writeExplodedViewPdf(
     'axis:central',
     'legend:CUT_BLACK:#000000,DEEP_RED:#E5484D,LIGHT_BLUE:#3A78D4',
     'levels:relative-machine-settings-after-test-cuts',
-    ...document.layers.map(layerDimensionKeyword),
+    ...document.layers.map((_, index) => layerDimensionKeyword(document, index)),
   ], (pdf, font, drawCheckpoint) => {
     const page = pdf.addPage([297 * MM_TO_POINTS, 210 * MM_TO_POINTS]);
     const centerX = 120 * MM_TO_POINTS, baseY = 36 * MM_TO_POINTS;
@@ -194,7 +222,7 @@ export async function writeExplodedViewPdf(
       const exteriorBounds = layer.roles.CUT_BLACK[0].boundsMm;
       const width = exteriorBounds.maxX - exteriorBounds.minX;
       const height = exteriorBounds.maxY - exteriorBounds.minY;
-      const central = layer.roles.CUT_BLACK[1];
+      const central = centralHoleForLayer(document, layerIndex);
       const diameter = central ? Number((2 * Math.sqrt(central.areaMm2 / Math.PI)).toFixed(3)) : '—';
       page.drawText(`${layer.order}. ${layer.id}  thickness ${layer.zEnd - layer.zStart} X ${width} Y ${height} hole diameter ${diameter}`, {
         x: 184 * MM_TO_POINTS, y: offsetY + 4, size: 7, font,
@@ -213,9 +241,10 @@ export async function writeExplodedViewPdf(
     }
     page.drawText(RELATIVE_LEVEL_GUIDANCE, { x: 18 * MM_TO_POINTS, y: 19 * MM_TO_POINTS, size: 7, font });
     page.drawText(TEST_CUT_GUIDANCE, { x: 18 * MM_TO_POINTS, y: 12 * MM_TO_POINTS, size: 7, font });
-    const safetyNote = centralHoleSafetyNote(document);
-    if (safetyNote) {
-      page.drawText(safetyNote, { x: 184 * MM_TO_POINTS, y: 195 * MM_TO_POINTS, size: 7, font });
+    for (const [index, safetyNote] of assemblySafetyNotes(document).entries()) {
+      page.drawText(safetyNote, {
+        x: 184 * MM_TO_POINTS, y: (195 - index * 5) * MM_TO_POINTS, size: 7, font,
+      });
     }
   }, checkpoint);
 }

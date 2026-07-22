@@ -19,6 +19,8 @@ import { createOutlineAxisBasis } from '../outline-2.5d/raster';
 import * as simplification from '../outline-2.5d/simplify';
 import { MAX_STL_BYTES } from '../mesh/parse-stl';
 import type { OutlinePreviewPayload } from '../outline-features/types';
+import { featureEvidenceFingerprint } from '../outline-features/types';
+import type { LauncherCandidateGroup } from '../outline-assembly/launcher';
 
 const testMaterial = { id: 'test-material', name: 'Test material', thicknessMm: 3, kerfMm: 0.1, minFeatureMm: 0.8, minWebMm: 0.5, fitAllowanceMm: { loose: 0.2, slip: 0.1, snug: 0, press: -0.1 } } as const;
 function convertAutomatically(request: { readonly bytes: ArrayBuffer }, onProgress?: Parameters<typeof convertAutomaticOutline>[1]) {
@@ -135,9 +137,105 @@ function translated(mesh: TriangleMesh, x: number, y: number, z: number): Triang
   };
 }
 
+function detectedLauncherEvidence(radiusMm = 10): LauncherCandidateGroup {
+  return {
+    evidenceStrength: 0.8,
+    loops: [0, 120, 240].map((degrees) => {
+      const radians = degrees * Math.PI / 180;
+      const x = Math.cos(radians) * radiusMm, y = Math.sin(radians) * radiusMm;
+      return {
+        closed: true,
+        support: 0.8,
+        outer: [[x - 1, y - 0.5], [x + 1, y - 0.5], [x + 1, y + 0.5], [x - 1, y + 0.5]],
+      };
+    }) as unknown as LauncherCandidateGroup['loops'],
+  };
+}
+
 describe('automatic outline pipeline', () => {
+  it('publishes one reconciled assembly decision before engraving and preview evidence', async () => {
+    const result = await convertAutomatically({ bytes: writeBinarySTL(scaled(cylinder(), 8, 8, 1), 'safe') });
+
+    expect(result.assembly.material).toEqual(testMaterial);
+    expect(result.assembly.launcher.status).toBe('fallback');
+    const topTwo = result.coloredLayers.slice(-2);
+    const lower = result.coloredLayers.slice(0, -2);
+    if (result.assembly.launcher.status === 'omitted') {
+      expect(result.featureWarnings).toContain('無法安全保留原裝發射器相容性，已省略三個發射器開孔');
+      expect(result.coloredLayers.every((layer) => layer.launcherCuts.length === 0)).toBe(true);
+    } else {
+      expect(topTwo.every((layer) => layer.launcherCuts.length === 3)).toBe(true);
+      expect(topTwo[1].launcherCuts.map(({ outer }) => outer)).toEqual(topTwo[0].launcherCuts.map(({ outer }) => outer));
+      expect(lower.every((layer) => layer.launcherCuts.length === 0)).toBe(true);
+    }
+
+    expect(result.assembly.fastener.count).toBeGreaterThanOrEqual(0);
+    expect(result.assembly.fastener.count).toBeLessThanOrEqual(3);
+    expect(result.coloredLayers.every((layer) => layer.fastenerHoles.length === result.assembly.fastener.count)).toBe(true);
+    const firstFasteners = result.coloredLayers[0].fastenerHoles.map(({ outer }) => outer);
+    for (const layer of result.coloredLayers.slice(1)) {
+      expect(layer.fastenerHoles.map(({ outer }) => outer)).toEqual(firstFasteners);
+    }
+    const publicIds = result.coloredLayers.flatMap((layer) => [
+      layer.id, layer.exterior.id, layer.centralHole?.id,
+      ...layer.launcherCuts.map(({ id }) => id), ...layer.fastenerHoles.map(({ id }) => id),
+      ...layer.deepFeatures.map(({ id }) => id), ...layer.lightFeatures.map(({ id }) => id),
+    ].filter((id): id is string => id !== undefined));
+    expect(new Set(publicIds).size).toBe(publicIds.length);
+
+    const top = result.coloredLayers.at(-1)!;
+    expect(result.assembly.topFeatures).toEqual({
+      retained: { red: top.deepFeatures.length, blue: top.lightFeatures.length },
+      omitted: top.diagnostics.depth.omitted ?? { red: 0, blue: 0 },
+    });
+    expect(result.preview.layers).toEqual(result.coloredLayers);
+    const alternateLauncher = {
+      ...result,
+      assembly: {
+        ...result.assembly,
+        launcher: result.assembly.launcher.status === 'fallback'
+          ? { ...result.assembly.launcher, status: 'detected' as const }
+          : result.assembly.launcher,
+      },
+    };
+    if (alternateLauncher.assembly.launcher.status !== result.assembly.launcher.status) {
+      expect(featureEvidenceFingerprint(alternateLauncher, undefined, undefined, result.material))
+        .not.toBe(result.featureEvidenceFingerprint);
+    }
+  });
+
+  it('publishes detected launcher evidence through the full extraction result contract', async () => {
+    const original = extraction.extractExactContours;
+    const exact = vi.spyOn(extraction, 'extractExactContours').mockImplementationOnce((
+      mesh, selection, specs, budgets, deadline, options,
+    ) => original(mesh, selection, specs, budgets, deadline, {
+      ...options,
+      planBlackCuts: (context) => options!.planBlackCuts!({
+        ...context,
+        launcherCandidates: [detectedLauncherEvidence()],
+      }),
+    }));
+    try {
+      const result = await convertAutomatically({ bytes: writeBinarySTL(scaled(cylinder(), 8, 8, 1), 'safe') });
+      expect(result.assembly.launcher.status).toBe('detected');
+      expect(result.coloredLayers.slice(-2).every((layer) => layer.launcherCuts.length === 3)).toBe(true);
+      expect(result.coloredLayers.slice(0, -2).every((layer) => layer.launcherCuts.length === 0)).toBe(true);
+    } finally {
+      exact.mockRestore();
+    }
+  });
+
   it('publishes both layer-local depth roles through preview and fingerprint evidence', async () => {
-    const result = await convertAutomatically({ bytes: writeBinarySTL(layerLocalSteppedPrism(), 'safe') });
+    const result = await convertAutomaticOutline({
+      bytes: writeBinarySTL(layerLocalSteppedPrism(), 'safe'),
+      material: { ...testMaterial, minWebMm: 100 },
+    });
+    expect(result.assembly.launcher.status).toBe('omitted');
+    expect(result.assembly.fastener.count).toBe(0);
+    expect(result.featureWarnings).toEqual(expect.arrayContaining([
+      '無法安全保留原裝發射器相容性，已省略三個發射器開孔',
+      '無法安全配置 3 mm 固定螺絲孔，已省略螺絲孔',
+    ]));
     const featured = result.coloredLayers.filter((layer) => layer.deepFeatures.length > 0 && layer.lightFeatures.length > 0);
 
     expect(featured.length).toBeGreaterThan(0);
@@ -189,7 +287,7 @@ describe('automatic outline pipeline', () => {
     const result = await convertAutomatically({ bytes: writeBinarySTL(squareTube(), 'safe') });
 
     expect(result.mode).toBe('exact');
-    expect(result.featureWarnings).toEqual(['表面深度差不足，已省略雕刻特徵']);
+    expect(result.featureWarnings).toContain('表面深度差不足，已省略雕刻特徵');
     expect(result.coloredLayers).toHaveLength(result.layers.length);
     expect(result.coloredLayers.every((layer) => layer.centralHole?.role === 'CUT_BLACK')).toBe(true);
     expect(result.coloredLayers.every((layer) => layer.diagnostics.hole.status === 'retained')).toBe(true);
@@ -205,10 +303,8 @@ describe('automatic outline pipeline', () => {
 
     expect(result.status).toBe('warning');
     expect(result.coloredLayers.every((layer) => layer.centralHole === undefined)).toBe(true);
-    expect(result.featureWarnings).toEqual([
-      'No reliable central axle hole was found; the hole was omitted.',
-      '表面深度差不足，已省略雕刻特徵',
-    ]);
+    expect(result.featureWarnings).toContain('No reliable central axle hole was found; the hole was omitted.');
+    expect(result.featureWarnings).toContain('表面深度差不足，已省略雕刻特徵');
     expect(result.featureWarnings[0]).not.toMatch(/[\\/@]|[\w.+-]+@[\w.-]+/);
   });
 

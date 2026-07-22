@@ -3,6 +3,8 @@ import { proxyMarker } from 'comlink';
 import type { AutomaticOutlineResult } from '../domain/pipeline/automatic-outline-pipeline';
 import { featureEvidenceFingerprint, validateAutomaticColoredResult } from '../domain/outline-features/types';
 import { CENTRAL_HOLE_OMISSION_WARNING } from '../domain/outline-features/hole';
+import { LAUNCHER_OMISSION_WARNING } from '../domain/outline-assembly/launcher';
+import { FASTENER_OMISSION_WARNING } from '../domain/outline-assembly/fasteners';
 import { tetrahedron } from '../test/mesh-builders';
 import { validateManufacturingGeometryProfile } from '../domain/materials/manufacturing-profile';
 import {
@@ -82,6 +84,13 @@ function automaticResult(sourceHash: string): AutomaticOutlineResult {
   const previewSource = tetrahedron();
   const result: Omit<AutomaticOutlineResult, 'featureEvidenceFingerprint'> = {
     sourceHash,
+    material: testMaterial,
+    assembly: {
+      material: testMaterial,
+      launcher: { status: 'omitted', cutCount: 0 },
+      fastener: { count: 0, centers: [], finishedDiameterMm: 3, pathDiameterMm: 2.9 },
+      topFeatures: { retained: { red: 0, blue: 0 }, omitted: { red: 0, blue: 0 } },
+    },
     mode: 'exact',
     status: 'warning',
     axis: {
@@ -97,7 +106,7 @@ function automaticResult(sourceHash: string): AutomaticOutlineResult {
       removedComponentCount: 0,
     })),
     coloredLayers,
-    featureWarnings: [CENTRAL_HOLE_OMISSION_WARNING],
+    featureWarnings: [CENTRAL_HOLE_OMISSION_WARNING, LAUNCHER_OMISSION_WARNING, FASTENER_OMISSION_WARNING],
     preview: {
       mesh: {
         positions: Float32Array.from(previewSource.positions),
