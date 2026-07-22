@@ -1,7 +1,15 @@
 import { describe, expect, test } from 'vitest';
 import type { TriangleMesh } from '../mesh/types';
+import { CENTRAL_HOLE_OMISSION_WARNING } from '../outline-features/hole';
 import { DEFAULT_OUTLINE_BUDGETS, type OutlineAxisSelection, type OutlineLayerSpec } from './types';
-import { ExactContourAmbiguityError, extractExactContours, extractProjectedContours, outlineBoundsDriftMetrics } from './extract';
+import {
+  ExactContourAmbiguityError,
+  extractExactContours,
+  extractProjectedContours,
+  outlineBoundsDriftMetrics,
+  setHoleCandidateProbeForTesting,
+  type HoleCandidateProbeEvidence,
+} from './extract';
 import { validateOutlineLayer } from './validate';
 
 const selection: OutlineAxisSelection = {
@@ -14,10 +22,10 @@ function mesh(positions: readonly number[], indices: readonly number[]): Triangl
   return { positions: new Float64Array(positions), indices: new Uint32Array(indices) };
 }
 
-function box(cx: number, cy: number, width: number, height: number, depth = 2, omitFace = -1): TriangleMesh {
+function box(cx: number, cy: number, width: number, height: number, depth = 2, omitFace = -1, zCenter = 0): TriangleMesh {
   const x0 = cx - width / 2, x1 = cx + width / 2;
   const y0 = cy - height / 2, y1 = cy + height / 2;
-  const z0 = -depth / 2, z1 = depth / 2;
+  const z0 = zCenter - depth / 2, z1 = zCenter + depth / 2;
   const positions = [
     x0, y0, z0, x1, y0, z0, x1, y1, z0, x0, y1, z0,
     x0, y0, z1, x1, y0, z1, x1, y1, z1, x0, y1, z1,
@@ -40,9 +48,9 @@ function combine(...meshes: readonly TriangleMesh[]): TriangleMesh {
   return mesh(positions, indices);
 }
 
-function sheet(cx: number, cy: number, width: number, height: number): TriangleMesh {
+function sheet(cx: number, cy: number, width: number, height: number, z = 0): TriangleMesh {
   const x0 = cx - width / 2, x1 = cx + width / 2, y0 = cy - height / 2, y1 = cy + height / 2;
-  return mesh([x0, y0, 0, x1, y0, 0, x1, y1, 0, x0, y1, 0], [0, 1, 2, 0, 2, 3]);
+  return mesh([x0, y0, z, x1, y0, z, x1, y1, z, x0, y1, z], [0, 1, 2, 0, 2, 3]);
 }
 
 function reverseTriangleOrder(value: TriangleMesh): TriangleMesh {
@@ -51,11 +59,11 @@ function reverseTriangleOrder(value: TriangleMesh): TriangleMesh {
   return mesh(Array.from(value.positions), triangles.reverse().flat());
 }
 
-function squareTube(outerSize: number, innerSize: number, depth = 2): TriangleMesh {
+function squareTube(outerSize: number, innerSize: number, depth = 2, zCenter = 0): TriangleMesh {
   const positions: number[] = [];
   const rings = [
-    { size: outerSize, z: -depth / 2 }, { size: outerSize, z: depth / 2 },
-    { size: innerSize, z: -depth / 2 }, { size: innerSize, z: depth / 2 },
+    { size: outerSize, z: zCenter - depth / 2 }, { size: outerSize, z: zCenter + depth / 2 },
+    { size: innerSize, z: zCenter - depth / 2 }, { size: innerSize, z: zCenter + depth / 2 },
   ];
   for (const { size, z } of rings) {
     const h = size / 2;
@@ -71,6 +79,31 @@ function squareTube(outerSize: number, innerSize: number, depth = 2): TriangleMe
     quad(8 + edge, 8 + next, next, edge);
   }
   return mesh(positions, indices);
+}
+
+function squareFrame(outerSize: number, innerSize: number, z: number): TriangleMesh {
+  const strip = (outerSize - innerSize) / 2;
+  const offset = (outerSize + innerSize) / 4;
+  return combine(
+    sheet(0, -offset, outerSize, strip, z),
+    sheet(0, offset, outerSize, strip, z),
+    sheet(-offset, 0, strip, innerSize, z),
+    sheet(offset, 0, strip, innerSize, z),
+  );
+}
+
+const separatedSpecs: readonly OutlineLayerSpec[] = [
+  { index: 0, zStart: -2.4, zEnd: -1.6, zMid: -2 },
+  { index: 1, zStart: 1.6, zEnd: 2.4, zMid: 2 },
+];
+
+function expectBoundedProbeEvidence(
+  evidence: readonly HoleCandidateProbeEvidence[],
+  extractionMode: HoleCandidateProbeEvidence['extractionMode'],
+): void {
+  expect(evidence).toHaveLength(separatedSpecs.length);
+  expect(evidence.map(({ layerId }) => layerId)).toEqual(['outline-layer-0', 'outline-layer-1']);
+  expect(evidence.every((item) => item.extractionMode === extractionMode && item.candidates.length <= 64)).toBe(true);
 }
 
 function bounds(points: readonly (readonly [number, number])[]) {
@@ -166,6 +199,41 @@ describe('extractProjectedContours', () => {
     expect(first.holeSelections[0].hole?.axisDistanceMm).toBeLessThan(0.1);
   });
 
+  test('uses the smaller projected void when the largest layer-local candidate is unsafe for a narrowing layer', () => {
+    const evidence: HoleCandidateProbeEvidence[] = [];
+    setHoleCandidateProbeForTesting((item) => { evidence.push(item); });
+    try {
+      const candidate = combine(squareFrame(10, 4, -2), squareFrame(4, 1, 2));
+      const result = extractProjectedContours(candidate, selection, separatedSpecs, DEFAULT_OUTLINE_BUDGETS);
+      const retained = result.holeSelections
+        .map((holeSelection) => holeSelection.hole?.outer)
+        .filter((outer): outer is NonNullable<typeof outer> => outer !== undefined);
+
+      expectBoundedProbeEvidence(evidence, 'projected');
+      expect(retained).toHaveLength(result.layers.length);
+      for (const contour of retained.slice(1)) expect(contour).toEqual(retained[0]);
+      expect(result.featureWarnings).not.toContain(CENTRAL_HOLE_OMISSION_WARNING);
+    } finally {
+      setHoleCandidateProbeForTesting(undefined);
+    }
+  });
+
+  test('omits projected holes from every layer when no candidate fits an incompatible exterior', () => {
+    const evidence: HoleCandidateProbeEvidence[] = [];
+    setHoleCandidateProbeForTesting((item) => { evidence.push(item); });
+    try {
+      const candidate = combine(squareFrame(10, 4, -2), sheet(0, 0, 3.5, 3.5, 2));
+      const result = extractProjectedContours(candidate, selection, separatedSpecs, DEFAULT_OUTLINE_BUDGETS);
+
+      expectBoundedProbeEvidence(evidence, 'projected');
+      expect(result.holeSelections).toHaveLength(result.layers.length);
+      expect(result.holeSelections.every(({ hole }) => hole === undefined)).toBe(true);
+      expect(result.featureWarnings).toContain(CENTRAL_HOLE_OMISSION_WARNING);
+    } finally {
+      setHoleCandidateProbeForTesting(undefined);
+    }
+  });
+
   test('omits a projected multiply-connected void instead of covering its occupied island with a hole', () => {
     const frameWithIsland = combine(
       sheet(0, -4.5, 12, 3), sheet(0, 4.5, 12, 3),
@@ -219,6 +287,41 @@ describe('extractExactContours', () => {
     expect(first.holeSelections).toEqual(reversed.holeSelections);
     expect(first.holeSelections[0].hole?.equivalentDiameterMm).toBeCloseTo(Math.sqrt(16 * 4 / Math.PI), 8);
     expect(first.holeSelections[0].hole?.axisDistanceMm).toBe(0);
+  });
+
+  test('uses the smaller exact hole when the largest layer-local candidate is unsafe for a narrowing layer', () => {
+    const evidence: HoleCandidateProbeEvidence[] = [];
+    setHoleCandidateProbeForTesting((item) => { evidence.push(item); });
+    try {
+      const candidate = combine(squareTube(10, 3, 1, -2), squareTube(4, 1, 1, 2));
+      const result = extractExactContours(candidate, selection, separatedSpecs, DEFAULT_OUTLINE_BUDGETS);
+      const retained = result.holeSelections
+        .map((holeSelection) => holeSelection.hole?.outer)
+        .filter((outer): outer is NonNullable<typeof outer> => outer !== undefined);
+
+      expectBoundedProbeEvidence(evidence, 'exact');
+      expect(retained).toHaveLength(result.layers.length);
+      for (const contour of retained.slice(1)) expect(contour).toEqual(retained[0]);
+      expect(result.featureWarnings).not.toContain(CENTRAL_HOLE_OMISSION_WARNING);
+    } finally {
+      setHoleCandidateProbeForTesting(undefined);
+    }
+  });
+
+  test('omits exact holes from every layer when no candidate fits an incompatible exterior', () => {
+    const evidence: HoleCandidateProbeEvidence[] = [];
+    setHoleCandidateProbeForTesting((item) => { evidence.push(item); });
+    try {
+      const candidate = combine(squareTube(10, 3, 1, -2), box(0, 0, 2.5, 2.5, 1, -1, 2));
+      const result = extractExactContours(candidate, selection, separatedSpecs, DEFAULT_OUTLINE_BUDGETS);
+
+      expectBoundedProbeEvidence(evidence, 'exact');
+      expect(result.holeSelections).toHaveLength(result.layers.length);
+      expect(result.holeSelections.every(({ hole }) => hole === undefined)).toBe(true);
+      expect(result.featureWarnings).toContain(CENTRAL_HOLE_OMISSION_WARNING);
+    } finally {
+      setHoleCandidateProbeForTesting(undefined);
+    }
   });
 
   test('keeps two depth-zero loops as ambiguity rather than inventing a hole', () => {

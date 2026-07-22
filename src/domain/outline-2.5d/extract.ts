@@ -3,7 +3,8 @@ import type { TriangleMesh } from '../mesh/types';
 import type { ColoredOutlineLayer, FeatureContour } from '../outline-features/types';
 import {
   CENTRAL_HOLE_OMISSION_WARNING,
-  selectCentralHole,
+  selectSharedCentralHole,
+  type CentralHoleRequest,
   type CentralHoleSelection,
   type CentralHoleCandidate,
 } from '../outline-features/hole';
@@ -255,8 +256,8 @@ export function extractProjectedContours(
   if (width * height * specs.length > budgets.maxRasterCellsTotal) throw new RangeError('Projected contour exceeds the total raster cell budget');
   let removedComponentCount = 0;
   const tolerance = Math.max(cellSizeMm * 1.5, projected.planarDiameter * 0.001);
-  const layers: OutlineLayer[] = [], holeSelections: CentralHoleSelection[] = [];
-  const depthFeatures: DepthFeatureResult[] = [];
+  const layers: OutlineLayer[] = [];
+  const holeRequests: CentralHoleRequest[] = [];
   for (let index = 0; index < specs.length; index += 1) {
     checkDeadline(deadline);
     const spec = specs[index];
@@ -275,15 +276,16 @@ export function extractProjectedContours(
       planarDiameterMm: projected.planarDiameter,
       cellSizeMm,
       deadline,
-    } as const;
+    } satisfies CentralHoleRequest;
     emitHoleCandidatesForTesting({ extractionMode: 'projected', layerId: layer.id, ...holeRequest });
-    const holeSelection = selectCentralHole(holeRequest);
-    holeSelections.push(holeSelection);
-    depthFeatures.push(extractAdaptiveDepthFeatures(projected, {
+    holeRequests.push(holeRequest);
+  }
+  const holeSelections = selectSharedCentralHole(holeRequests);
+  const depthFeatures = layers.map((layer, index) => extractAdaptiveDepthFeatures(projected, {
       layerId: layer.id,
-      layer: spec,
+      layer: specs[index],
       exterior: layer.contour.outer,
-      centralHole: holeSelection.hole?.outer,
+      centralHole: holeSelections[index].hole?.outer,
       exteriorAreaMm2: layer.simplifiedAreaMm2,
       cellSizeMm,
       planarDiameterMm: projected.planarDiameter,
@@ -291,9 +293,8 @@ export function extractProjectedContours(
       totalLayerCount: specs.length,
       deadline,
     }));
-  }
   const featureWarnings = new Set<string>();
-  if (holeSelections.some((selection) => !selection.hole)) featureWarnings.add(CENTRAL_HOLE_OMISSION_WARNING);
+  if (!holeSelections[0].hole) featureWarnings.add(CENTRAL_HOLE_OMISSION_WARNING);
   for (const feature of depthFeatures) if (feature.warning) featureWarnings.add(feature.warning);
   return {
     layers,
@@ -565,7 +566,8 @@ export function extractExactContours(
   const projected = projectMesh(mesh, selection, deadline);
   validateRequest(projected, specs, budgets, deadline);
   const tolerance = Math.max(rasterCellSize(projected) * 1.5, projected.planarDiameter * 0.001);
-  const layers: OutlineLayer[] = [], holeSelections: CentralHoleSelection[] = [], depthFeatures: DepthFeatureResult[] = [];
+  const layers: OutlineLayer[] = [];
+  const holeRequests: CentralHoleRequest[] = [];
   const cellSizeMm = rasterCellSize(projected);
   for (let index = 0; index < specs.length; index += 1) {
     checkDeadline(deadline);
@@ -582,15 +584,16 @@ export function extractExactContours(
       planarDiameterMm: projected.planarDiameter,
       cellSizeMm,
       deadline,
-    } as const;
+    } satisfies CentralHoleRequest;
     emitHoleCandidatesForTesting({ extractionMode: 'exact', layerId: layer.id, ...holeRequest });
-    const holeSelection = selectCentralHole(holeRequest);
-    holeSelections.push(holeSelection);
-    depthFeatures.push(extractAdaptiveDepthFeatures(projected, {
+    holeRequests.push(holeRequest);
+  }
+  const holeSelections = selectSharedCentralHole(holeRequests);
+  const depthFeatures = layers.map((layer, index) => extractAdaptiveDepthFeatures(projected, {
       layerId: layer.id,
-      layer: spec,
+      layer: specs[index],
       exterior: layer.contour.outer,
-      centralHole: holeSelection.hole?.outer,
+      centralHole: holeSelections[index].hole?.outer,
       exteriorAreaMm2: layer.simplifiedAreaMm2,
       cellSizeMm,
       planarDiameterMm: projected.planarDiameter,
@@ -598,9 +601,8 @@ export function extractExactContours(
       totalLayerCount: specs.length,
       deadline,
     }));
-  }
   const featureWarnings = new Set<string>();
-  if (holeSelections.some((selection) => !selection.hole)) featureWarnings.add(CENTRAL_HOLE_OMISSION_WARNING);
+  if (!holeSelections[0].hole) featureWarnings.add(CENTRAL_HOLE_OMISSION_WARNING);
   for (const feature of depthFeatures) if (feature.warning) featureWarnings.add(feature.warning);
   return {
     layers,

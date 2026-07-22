@@ -160,9 +160,8 @@ describe('automatic outline pipeline', () => {
       layer.diagnostics.depth.redThresholdMm <= layer.zEnd - layer.zStart + 1e-9
       && layer.diagnostics.depth.blueThresholdMm <= layer.zEnd - layer.zStart + 1e-9
     ))).toBe(true);
-    expect(result.coloredLayers.every((layer) => !layer.deepFeature && !layer.lightFeature)).toBe(true);
     expect(result.coloredLayers.every((layer) => (
-      layer.diagnostics.depth.omissionCode === 'INSUFFICIENT_CONTRAST'
+      !layer.deepFeature || layer.deepFeature.role === 'DEEP_RED'
     ))).toBe(true);
     expect(result.coloredLayers.every((layer) => (
       !layer.lightFeature || layer.lightFeature.role === 'LIGHT_BLUE'
@@ -189,6 +188,9 @@ describe('automatic outline pipeline', () => {
     expect(result.coloredLayers).toHaveLength(result.layers.length);
     expect(result.coloredLayers.every((layer) => layer.centralHole?.role === 'CUT_BLACK')).toBe(true);
     expect(result.coloredLayers.every((layer) => layer.diagnostics.hole.status === 'retained')).toBe(true);
+    const holes = result.coloredLayers.map((layer) => layer.centralHole?.outer);
+    expect(holes.every((hole) => hole !== undefined)).toBe(true);
+    for (const hole of holes.slice(1)) expect(hole).toEqual(holes[0]);
     expect(result.preview.layers).toEqual(result.coloredLayers);
     expect(result.featureEvidenceFingerprint).toMatch(/^[0-9a-f]{32}$/);
   });
