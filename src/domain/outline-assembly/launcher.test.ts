@@ -4,6 +4,7 @@ import type { FeatureContour } from '../outline-features/types';
 import {
   detectLauncherTemplate,
   LAUNCHER_OMISSION_WARNING,
+  launcherCutsArePhysicallySafe,
   planLauncherClearance,
   type LauncherCandidateGroup,
   type LauncherDetection,
@@ -357,42 +358,80 @@ describe('safe two-layer launcher planning', () => {
     expect(result.status).toBe('fallback');
   });
 
-  it('checks the finished +0.20 mm opening envelope at a nonzero-kerf exterior boundary', () => {
-    const unsafe = planLauncherClearance({
+  it('requires the exact inclusive minWeb + kerf/2 band from finished openings to exterior toolpaths', () => {
+    const material = { kerfMm: 0.2, minWebMm: 0.8 };
+    const exactExterior = exterior('exact', 12.1);
+    const belowExterior = exterior('below', 12.099);
+    const exact = planLauncherClearance({
       detection: detection(), fallback: undefined, axisPoint: [0, 0],
-      topExterior: exterior('top', 11.95), secondExterior: exterior('second', 11.95),
-      material: { kerfMm: 0.2, minWebMm: 0.8 },
+      topExterior: exactExterior, secondExterior: exactExterior, material,
     });
-    expect(unsafe.status).toBe('omitted');
-    const safe = planLauncherClearance({
+    const below = planLauncherClearance({
       detection: detection(), fallback: undefined, axisPoint: [0, 0],
-      topExterior: exterior('top', 12.01), secondExterior: exterior('second', 12.01),
-      material: { kerfMm: 0.2, minWebMm: 0.8 },
+      topExterior: belowExterior, secondExterior: belowExterior, material,
     });
-    expect(safe.status).toBe('detected');
+
+    expect(exact.status).toBe('detected');
+    expect(below.status).toBe('omitted');
+    if (exact.status === 'omitted') return;
+    expect(launcherCutsArePhysicallySafe({
+      cuts: exact.cuts,
+      top: { exterior: exactExterior }, second: { exterior: exactExterior }, material,
+    })).toBe(true);
+    expect(launcherCutsArePhysicallySafe({
+      cuts: exact.cuts,
+      top: { exterior: belowExterior }, second: { exterior: belowExterior }, material,
+    })).toBe(false);
   });
 
-  it('checks the finished opening envelope against a central hole at nonzero kerf', () => {
-    const centralHole = contour('central', rectangle([7.55, 0], 1, 1));
-    const result = planLauncherClearance({
+  it('requires the exact inclusive minWeb + kerf/2 band from central-hole toolpaths', () => {
+    const material = { kerfMm: 0.2, minWebMm: 0.8 };
+    const exactCentralHole = contour('central-exact', rectangle([7.4, 0], 1, 1));
+    const belowCentralHole = contour('central-below', rectangle([7.401, 0], 1, 1));
+    const exact = planLauncherClearance({
       detection: detection(), fallback: undefined, axisPoint: [0, 0],
       topExterior: exterior('top', 20), secondExterior: exterior('second', 20),
-      topCentralHole: centralHole, secondCentralHole: centralHole,
-      material: { kerfMm: 0.2, minWebMm: 0.8 },
+      topCentralHole: exactCentralHole, secondCentralHole: exactCentralHole, material,
     });
-    expect(result.status).toBe('omitted');
+    const below = planLauncherClearance({
+      detection: detection(), fallback: undefined, axisPoint: [0, 0],
+      topExterior: exterior('top', 20), secondExterior: exterior('second', 20),
+      topCentralHole: belowCentralHole, secondCentralHole: belowCentralHole, material,
+    });
+
+    expect(exact.status).toBe('detected');
+    expect(below.status).toBe('omitted');
+    if (exact.status === 'omitted') return;
+    expect(launcherCutsArePhysicallySafe({
+      cuts: exact.cuts,
+      top: { exterior: exterior('top', 20), centralHole: exactCentralHole },
+      second: { exterior: exterior('second', 20), centralHole: exactCentralHole },
+      material,
+    })).toBe(true);
+    expect(launcherCutsArePhysicallySafe({
+      cuts: exact.cuts,
+      top: { exterior: exterior('top', 20), centralHole: belowCentralHole },
+      second: { exterior: exterior('second', 20), centralHole: belowCentralHole },
+      material,
+    })).toBe(false);
   });
 
-  it('checks inter-hook minimum web against finished envelopes at nonzero kerf', () => {
-    const compact = detectLauncherTemplate({
-      candidates: [group([120, 120, 120], { radius: 3, width: 2, height: 1 })], axisPoint: [0, 0],
-    });
+  it('keeps exact inclusive inter-launcher finished-envelope spacing at minWeb without another kerf band', () => {
+    const material = { kerfMm: 0.2, minWebMm: 0.8 };
+    const loops = [
+      rectangle([-1.1, 0], 1, 1), rectangle([1.1, 0], 1, 1), rectangle([10, 0], 1, 1),
+    ] as [readonly Point2[], readonly Point2[], readonly Point2[]];
     const result = planLauncherClearance({
-      detection: compact, fallback: undefined, axisPoint: [0, 0],
-      topExterior: exterior('top', 20), secondExterior: exterior('second', 20),
-      material: { kerfMm: 0.2, minWebMm: 2.55 },
+      detection: { status: 'detected', loops, score: 1, sourceCandidateIndex: 0 },
+      fallback: undefined, axisPoint: [0, 0],
+      topExterior: exterior('top', 20), secondExterior: exterior('second', 20), material,
     });
-    expect(result.status).toBe('omitted');
+    expect(result.status).toBe('detected');
+    if (result.status === 'omitted') return;
+    expect(launcherCutsArePhysicallySafe({
+      cuts: result.cuts,
+      top: { exterior: exterior('top', 20) }, second: { exterior: exterior('second', 20) }, material,
+    })).toBe(true);
   });
 
   it('fails immediately on an expired planner deadline and propagates cancellation', () => {

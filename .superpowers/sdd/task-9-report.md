@@ -83,3 +83,38 @@ git diff --check
 - The release summary uses only `reference-a` and `reference-b`; errors are converted to sanitized case IDs.
 - No screenshot or generated Playwright report is staged. Five download names and four ZIP entries remain unchanged.
 - No Critical, Important, or Minor issue remains open from this fix pass.
+
+## Final half-kerf launcher boundary follow-up
+
+### Finding and implementation
+
+The first final-review commit compared each finished launcher opening to the exterior and central-hole toolpaths with `minWeb` alone. This omitted the half-kerf material removed on the protected toolpath side. Planning and canonical revalidation now share two explicit clearances:
+
+- finished launcher to exterior or central-hole toolpath: `minWeb + kerf / 2`;
+- finished launcher to another finished launcher: exactly `minWeb`.
+
+Both boundaries are inclusive with the existing numeric tolerance. Inter-launcher spacing does not receive a second half-kerf term because both operands are already finished removal envelopes.
+
+### RED / GREEN evidence
+
+Before the production change, the launcher suite passed 23 tests and failed exactly two new regressions: an exterior gap and a central-hole gap of 0.899 mm were accepted for `kerf=0.2` and `minWeb=0.8`. The required band is 0.9 mm. Exact 0.9 mm equality and exact 0.8 mm inter-launcher equality were accepted.
+
+After the shared-predicate change:
+
+```text
+Launcher boundary suite: 25/25 passed
+Focused launcher + canonical types + production pipeline + runtime gate: 115/115 passed
+```
+
+The canonical altered-result cases now use 0.549 mm exterior and central gaps for `kerf=0.1` and `minWeb=0.5`: each exceeds `minWeb` alone but is just below the required 0.55 mm band, and each is rejected after recomputing its fingerprint. The genuine extraction-driven active launcher remains detected; exact caller cancellation identity remains covered.
+
+### Fresh final verification
+
+```text
+Private fixture validator: both references omitted; detected unavailable; fallback unsafe; safePlanCount 0; artifactCutCount 0
+Vitest with both private inputs: 55 files, 1299/1299 passed
+Chromium: 5 files, 48/48 passed
+Playwright with both private inputs: 15/15 passed in 2.9 minutes
+Typecheck and production build: passed; 156 modules transformed
+git diff --check: passed
+```

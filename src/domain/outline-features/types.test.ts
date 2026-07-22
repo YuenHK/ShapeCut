@@ -995,8 +995,10 @@ describe('colored outline contracts', () => {
   });
 
   it.each([
-    ['exterior containment and minimum web', [[9.1, 0], [-2.5, 4.330127018922193], [-2.5, -4.330127018922193]] as const],
-    ['central-hole minimum web', [[2.7, 0], [-5, 4], [-5, -4]] as const],
+    // With kerf 0.1 and minWeb 0.5, these leave 0.549 mm to the toolpath:
+    // above minWeb alone, but just below the required inclusive 0.55 mm band.
+    ['exterior containment and minimum web', [[9.001, 0], [-2.5, 4.330127018922193], [-2.5, -4.330127018922193]] as const],
+    ['central-hole minimum web', [[2.999, 0], [-5, 4], [-5, -4]] as const],
     ['inter-hook minimum web', [[5, 0], [5.7, 0], [-5, 0]] as const],
   ])('rejects recomputed active launcher geometry violating %s', (_label, centers) => {
     const forged = withLauncherCenters(centers);

@@ -240,24 +240,44 @@ function boundaryDistance(
   return distance;
 }
 
-function cutsAreSafe(
+type LauncherFinishedSafetyClearances = {
+  /** Finished launcher opening to an exterior or central-hole toolpath. */
+  readonly toolpathBoundaryMm: number;
+  /** Finished launcher opening to another finished launcher opening. */
+  readonly interLauncherMm: number;
+};
+
+function finishedSafetyClearances(
+  material: Pick<ManufacturingGeometryProfile, 'kerfMm' | 'minWebMm'>,
+): LauncherFinishedSafetyClearances {
+  return {
+    toolpathBoundaryMm: material.minWebMm + material.kerfMm / 2,
+    interLauncherMm: material.minWebMm,
+  };
+}
+
+function finishedCutsAreSafe(
   cuts: readonly FeatureContour[],
   layer: LauncherPlanningLayer,
-  minimumWebMm: number,
+  clearances: LauncherFinishedSafetyClearances,
   deadline: number,
   checkpoint: () => void,
 ): boolean {
   for (let index = 0; index < cuts.length; index += 1) {
     checkRuntime(deadline, checkpoint);
     const cut = cuts[index];
-    if (!isStrictlyContainedLoop(layer.exterior.outer, cut.outer, minimumWebMm, deadline, checkpoint)) return false;
+    if (!isStrictlyContainedLoop(
+      layer.exterior.outer, cut.outer, clearances.toolpathBoundaryMm, deadline, checkpoint,
+    )) return false;
     if (layer.centralHole && (polygonsIntersectOrTouch(
       { points: cut.outer }, { points: layer.centralHole.outer }, () => checkRuntime(deadline, checkpoint),
-    ) || boundaryDistance(cut.outer, layer.centralHole.outer, deadline, checkpoint) + 1e-12 < minimumWebMm)) return false;
+    ) || boundaryDistance(cut.outer, layer.centralHole.outer, deadline, checkpoint) + 1e-12
+      < clearances.toolpathBoundaryMm)) return false;
     for (let other = 0; other < index; other += 1) {
       if (polygonsIntersectOrTouch(
         { points: cut.outer }, { points: cuts[other].outer }, () => checkRuntime(deadline, checkpoint),
-      ) || boundaryDistance(cut.outer, cuts[other].outer, deadline, checkpoint) + 1e-12 < minimumWebMm) return false;
+      ) || boundaryDistance(cut.outer, cuts[other].outer, deadline, checkpoint) + 1e-12
+        < clearances.interLauncherMm) return false;
     }
   }
   return true;
@@ -288,8 +308,9 @@ export function launcherCutsArePhysicallySafe(request: LauncherPhysicalSafetyReq
       areaMm2: Math.abs(signedArea(outer, deadline, checkpoint)),
     });
   }
-  return cutsAreSafe(finished, request.top, request.material.minWebMm, deadline, checkpoint)
-    && cutsAreSafe(finished, request.second, request.material.minWebMm, deadline, checkpoint);
+  const clearances = finishedSafetyClearances(request.material);
+  return finishedCutsAreSafe(finished, request.top, clearances, deadline, checkpoint)
+    && finishedCutsAreSafe(finished, request.second, clearances, deadline, checkpoint);
 }
 
 export function planLauncherClearance(request: LauncherClearanceRequest): LauncherPlan {
@@ -364,8 +385,9 @@ export function planLauncherClearance(request: LauncherClearanceRequest): Launch
   const finishedTuple = finishedContours as unknown as readonly [FeatureContour, FeatureContour, FeatureContour];
   const top = { exterior: request.topExterior, centralHole: request.topCentralHole };
   const second = { exterior: request.secondExterior, centralHole: request.secondCentralHole };
-  if (!cutsAreSafe(finishedTuple, top, request.material.minWebMm, deadline, checkpoint)
-    || !cutsAreSafe(finishedTuple, second, request.material.minWebMm, deadline, checkpoint)) {
+  const clearances = finishedSafetyClearances(request.material);
+  if (!finishedCutsAreSafe(finishedTuple, top, clearances, deadline, checkpoint)
+    || !finishedCutsAreSafe(finishedTuple, second, clearances, deadline, checkpoint)) {
     return { status: 'omitted', cuts: [], warning: LAUNCHER_OMISSION_WARNING };
   }
   return { status: selection.status, cuts: tuple, assemblyAllowanceMm: LAUNCHER_ASSEMBLY_ALLOWANCE_MM };
