@@ -32,7 +32,7 @@ export function rankTopFeatures<T extends TopFeatureCandidate>(
       || left.ambiguity - right.ambiguity
       || left.contour.boundsMm.minX - right.contour.boundsMm.minX
       || left.contour.boundsMm.minY - right.contour.boundsMm.minY
-      || left.contour.id.localeCompare(right.contour.id);
+      || (left.contour.id < right.contour.id ? -1 : left.contour.id > right.contour.id ? 1 : 0);
   });
   if (Date.now() > deadline) throw new RangeError('Top feature ranking exceeded the runtime budget');
   return ranked.slice(0, limit);

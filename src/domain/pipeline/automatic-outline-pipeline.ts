@@ -178,7 +178,7 @@ function withResultEvidence(
   result: Omit<AutomaticOutlineResult, 'coloredLayers' | 'featureWarnings' | 'featureEvidenceFingerprint' | 'preview' | 'removalEvidenceFingerprint'>,
   previewMesh: TriangleMesh,
   deadline: number,
-  extraction: Pick<OutlineExtraction, 'holeSelections' | 'depthFeatures' | 'featureWarnings'>,
+  extraction: Pick<OutlineExtraction, 'holeSelections' | 'depthFeatures' | 'blackCuts' | 'featureWarnings'>,
   material: ManufacturingGeometryProfile,
 ): AutomaticOutlineResult {
   let coloredLayers: readonly ColoredOutlineLayer[];
@@ -191,6 +191,7 @@ function withResultEvidence(
       () => undefined,
       extraction.holeSelections,
       extraction.depthFeatures,
+      extraction.blackCuts,
     );
     previewMeshCopy = copyPreviewMesh(previewMesh, deadline);
   } catch (error) {

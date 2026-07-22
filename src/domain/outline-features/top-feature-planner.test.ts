@@ -26,4 +26,11 @@ describe('top feature planner', () => {
     expect(rankTopFeatures(candidates, 4, Infinity).map(({ contour }) => contour.id))
       .toEqual(['largest', 'first-coordinate', 'later-coordinate', 'higher-ambiguity']);
   });
+
+  it('uses code-unit ID order without locale-sensitive comparison for an otherwise exact tie', () => {
+    const equal = (id: string) => candidate(id, 1, 1, 1, 0, 0);
+
+    expect(rankTopFeatures([equal('z'), equal('Z'), equal('a')], 3, Infinity)
+      .map(({ contour }) => contour.id)).toEqual(['Z', 'a', 'z']);
+  });
 });

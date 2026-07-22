@@ -109,6 +109,9 @@ type LabeledComponents = {
 const MAX_DEPTH_HIT_BYTES = 64 * 1024 * 1024;
 const MAX_DEPTH_TOPOLOGY_BYTES = 64 * 1024 * 1024;
 const MAX_DEPTH_COMPONENT_BYTES = 64 * 1024 * 1024;
+const MAX_PROTECTED_CUTS = 8;
+const MAX_PROTECTED_CUT_POINTS = 32_768;
+const CANDIDATE_REFERENCE_BYTES = 32;
 const HIT_RECORD_BYTES = Float64Array.BYTES_PER_ELEMENT + Int32Array.BYTES_PER_ELEMENT;
 const ESTIMATED_POINT_BYTES = 64;
 
@@ -219,10 +222,6 @@ function validateRequest(projected: ProjectedMesh, request: DepthFeatureRequest,
   });
   if (!exteriorValidation.ok) throw new RangeError(`Depth feature extraction requires valid cut geometry: ${exteriorValidation.reasons.join('; ')}`);
   const retainedHole = holeLoop(request);
-  for (const cut of request.protectedCuts ?? []) {
-    const validation = validateDepthFeatureContours({ exterior: cut, clearanceMm: 0, deadline, checkpoint });
-    if (!validation.ok) throw new RangeError(`Depth feature extraction requires valid protected cut geometry: ${validation.reasons.join('; ')}`);
-  }
   const cutClearance = Math.max(request.cellSizeMm, request.planarDiameterMm * 0.001);
   if (retainedHole && !isStrictlyContainedLoop(
     request.exterior, retainedHole, cutClearance, deadline, checkpoint,
@@ -233,6 +232,25 @@ function validateRequest(projected: ProjectedMesh, request: DepthFeatureRequest,
     || projected.maxX <= projected.minX || projected.maxY <= projected.minY
     || width > request.budgets.maxRasterWidth || height > request.budgets.maxRasterHeight) {
     throw new RangeError('Depth feature extraction exceeds the raster dimension budget');
+  }
+  const protectedCuts = request.protectedCuts ?? [];
+  if (!Array.isArray(protectedCuts) || protectedCuts.length > MAX_PROTECTED_CUTS) {
+    throw new RangeError('Depth feature extraction exceeds the protected cut budget');
+  }
+  let protectedPointCount = 0;
+  for (const cut of protectedCuts) {
+    if (!Array.isArray(cut)) throw new RangeError('Depth feature extraction requires protected cut loops');
+    protectedPointCount += cut.length;
+    if (!Number.isSafeInteger(protectedPointCount) || protectedPointCount > MAX_PROTECTED_CUT_POINTS) {
+      throw new RangeError('Depth feature extraction exceeds the protected cut budget');
+    }
+  }
+  if (protectedPointCount * width * height > MAX_DEPTH_COMPONENT_BYTES) {
+    throw new RangeError('Depth feature extraction exceeds the protected cut work budget');
+  }
+  for (const cut of protectedCuts) {
+    const validation = validateDepthFeatureContours({ exterior: cut, clearanceMm: 0, deadline, checkpoint });
+    if (!validation.ok) throw new RangeError(`Depth feature extraction requires valid protected cut geometry: ${validation.reasons.join('; ')}`);
   }
   if (width * height * totalLayerCount > request.budgets.maxRasterCellsTotal) {
     throw new RangeError('Depth feature extraction exceeds the total raster cell budget');
@@ -686,9 +704,15 @@ function labelComponents(
   request: DepthFeatureRequest,
   retainedExternalBytes = 0,
 ): LabeledComponents {
+  const maximumComponents = Math.floor(source.length / minimumCells);
+  const estimatedWorkspaceBytes = source.length * Int32Array.BYTES_PER_ELEMENT * 2
+    + maximumComponents * Int32Array.BYTES_PER_ELEMENT * 6;
+  if (!Number.isSafeInteger(estimatedWorkspaceBytes)
+    || estimatedWorkspaceBytes + retainedExternalBytes > (request.maximumComponentBytes ?? MAX_DEPTH_COMPONENT_BYTES)) {
+    throw new RangeError('Depth feature extraction exceeds the component resource budget');
+  }
   const labels = new Int32Array(source.length), queue = new Int32Array(source.length);
   labels.fill(-1);
-  const maximumComponents = Math.floor(source.length / minimumCells);
   const counts = new Int32Array(maximumComponents), minXValues = new Int32Array(maximumComponents);
   const minYValues = new Int32Array(maximumComponents), maxXValues = new Int32Array(maximumComponents);
   const maxYValues = new Int32Array(maximumComponents);
@@ -987,6 +1011,11 @@ type DepthFeatureCandidate = TopFeatureCandidate & {
   readonly evidence: DepthFeatureSourceEvidence;
 };
 
+function candidateStorageBytes(candidates: readonly DepthFeatureCandidate[]): number {
+  return candidates.reduce((total, candidate) => total + candidate.contour.outer.length * ESTIMATED_POINT_BYTES
+    + CANDIDATE_REFERENCE_BYTES, 0);
+}
+
 function protectedCell(
   point: Point2,
   cuts: readonly (readonly Point2[])[],
@@ -1043,7 +1072,7 @@ function validFeaturesFromMask(
     const minimumX = selected.minX[component], minimumY = selected.minY[component];
     const maximumX = selected.maxX[component], maximumY = selected.maxY[component];
     const localWidth = maximumX - minimumX + 3, localHeight = maximumY - minimumY + 3;
-    const retainedPointsBytes = candidates.reduce((total, candidate) => total + candidate.contour.outer.length * ESTIMATED_POINT_BYTES, 0);
+    const retainedPointsBytes = candidateStorageBytes(candidates);
     const candidatePeakBytes = selected.workspaceBytes + localWidth * localHeight * 8
       + retainedExternalBytes + retainedPointsBytes;
     if (candidatePeakBytes > componentByteLimit) {
@@ -1151,6 +1180,14 @@ function validFeaturesFromMask(
       contrastMm: maximumDepthMm - minimumDepthMm,
       ambiguity: contour.outer.length,
     };
+    if (selected.workspaceBytes + retainedExternalBytes + candidateStorageBytes([...candidates, candidate])
+      > componentByteLimit) {
+      observeResources(
+        request, 'component-boundary-rejected', selected.workspaceBytes + retainedExternalBytes
+          + candidateStorageBytes([...candidates, candidate]), field.valid.length, { minimumX },
+      );
+      continue;
+    }
     candidates.push(candidate);
     if (candidates.length >= 64) break;
   }
@@ -1257,7 +1294,7 @@ export function extractAdaptiveDepthFeatures(projected: ProjectedMesh, request: 
   const red = rankTopFeatures(redCandidates, limit, deadline);
   const blueCandidates = validFeaturesFromMask(
     'LIGHT_BLUE', closedBlue, field, request, minimumCells, deadline, checkpoint,
-    red.reduce((total, candidate) => total + candidate.contour.outer.length * ESTIMATED_POINT_BYTES, 0),
+    candidateStorageBytes(redCandidates) + red.length * CANDIDATE_REFERENCE_BYTES,
     (blue) => validateDepthFeatureContours({
       exterior: request.exterior,
       centralHole,
@@ -1270,7 +1307,7 @@ export function extractAdaptiveDepthFeatures(projected: ProjectedMesh, request: 
   );
   const blue = rankTopFeatures(blueCandidates, limit, deadline);
   checkRuntime(deadline, checkpoint);
-  const incomplete = red.length === 0 || blue.length === 0;
+  const incomplete = red.length === 0 && blue.length === 0;
   return {
     red: red.map((candidate) => candidate.contour),
     blue: blue.map((candidate) => candidate.contour),

@@ -115,6 +115,56 @@ function bounds(points: readonly (readonly [number, number])[]) {
 }
 
 describe('extractProjectedContours', () => {
+  test('rejects unordered or overlapping layer slabs before top-layer feature limits are assigned', () => {
+    const unordered = [
+      { index: 1, zStart: 0.5, zMid: 0.75, zEnd: 1 },
+      { index: 0, zStart: -1, zMid: -0.75, zEnd: -0.5 },
+    ];
+    const overlapping = [
+      { index: 0, zStart: -1, zMid: -0.25, zEnd: 0.5 },
+      { index: 1, zStart: 0.25, zMid: 0.75, zEnd: 1 },
+    ];
+
+    expect(() => extractProjectedContours(box(0, 0, 20, 20, 2), selection, unordered, DEFAULT_OUTLINE_BUDGETS))
+      .toThrow(/ordered|overlap/i);
+    expect(() => extractProjectedContours(box(0, 0, 20, 20, 2), selection, overlapping, DEFAULT_OUTLINE_BUDGETS))
+      .toThrow(/ordered|overlap/i);
+  });
+
+  test('accepts ordered layers with the lower/top 1/12 feature caps', () => {
+    const ordered = [
+      { index: 0, zStart: -1, zMid: -0.75, zEnd: -0.5 },
+      { index: 1, zStart: 0.5, zMid: 0.75, zEnd: 1 },
+    ];
+    const result = extractProjectedContours(box(0, 0, 20, 20, 3), selection, ordered, DEFAULT_OUTLINE_BUDGETS);
+
+    expect(result.depthFeatures[0].red.length).toBeLessThanOrEqual(1);
+    expect(result.depthFeatures[0].blue.length).toBeLessThanOrEqual(1);
+    expect(result.depthFeatures[1].red.length).toBeLessThanOrEqual(12);
+    expect(result.depthFeatures[1].blue.length).toBeLessThanOrEqual(12);
+  });
+
+  test('preserves supplied black arrays while their contours remain protected from engraving', () => {
+    const black = (id: string, minX: number) => ({
+      id, role: 'CUT_BLACK' as const,
+      outer: [[minX, -1], [minX + 1, -1], [minX + 1, 1], [minX, 1]] as const,
+      boundsMm: { minX, minY: -1, maxX: minX + 1, maxY: 1 }, areaMm2: 2,
+    });
+    const launcher = black('launcher', -4), fastener = black('fastener', 3);
+    const extraction = extractProjectedContours(
+      box(0, 0, 20, 20, 2), selection, specs, DEFAULT_OUTLINE_BUDGETS, undefined,
+      { existingBlackCuts: [{ launcherCuts: [launcher], fastenerHoles: [fastener] }] },
+    );
+    const [colored] = colorizeExteriorLayers(extraction.layers, 0, Infinity, () => undefined, [], [{
+      red: [], blue: [], diagnostics: {
+        cellSizeMm: 0.5, contrastMm: 0, redThresholdMm: 0, blueThresholdMm: 0,
+        retained: { red: 0, blue: 0 }, omitted: { red: 0, blue: 0 },
+      }, evidence: { red: [], blue: [] },
+    }], extraction.blackCuts);
+
+    expect(colored.launcherCuts).toEqual([launcher]);
+    expect(colored.fastenerHoles).toEqual([fastener]);
+  });
   test('publishes all ordered depth contours instead of wrapping the feature arrays', () => {
     const layer = extractProjectedContours(box(0, 0, 20, 20, 2), selection, specs, DEFAULT_OUTLINE_BUDGETS).layers[0];
     const feature = (id: string, role: 'DEEP_RED' | 'LIGHT_BLUE', minX: number) => ({

@@ -398,19 +398,20 @@ describe('adaptive source-triangle depth features', () => {
     expect(features.blue).toBeDefined();
   });
 
-  it('keeps multiple protected-cut-safe candidates when the caller raises the per-role cap', () => {
+  it('keeps multiple launcher/fastener-safe candidates when the caller raises the per-role cap', () => {
     const patches: Patch[] = [];
     for (let index = 0; index < 14; index += 1) {
       const minX = -14 + index * 2;
       patches.push({ minX, maxX: minX + 1, minY: -2, maxY: -1, depth: 5 });
       patches.push({ minX, maxX: minX + 1, minY: 1, maxY: 2, depth: 2 });
     }
-    const protectedCut = [[-0.25, -2.5], [-0.25, -0.5], [0.25, -0.5], [0.25, -2.5]] as const;
+    const launcherCut = [[-0.25, -2.5], [-0.25, -0.5], [0.25, -0.5], [0.25, -2.5]] as const;
+    const fastenerCut = [[5.75, 0.5], [5.75, 2.5], [6.25, 2.5], [6.25, 0.5]] as const;
     const features = extractAdaptiveDepthFeatures(patchedSurface(patches), request({
       exterior: [[-14, -3], [-14, 3], [14, 3], [14, -3]],
       exteriorAreaMm2: 168,
       maximumFeaturesPerRole: 12,
-      protectedCuts: [protectedCut],
+      protectedCuts: [launcherCut, fastenerCut],
     }));
 
     expect(features.red).toHaveLength(12);
@@ -421,11 +422,14 @@ describe('adaptive source-triangle depth features', () => {
       'outline-layer-0-deep-6', 'outline-layer-0-deep-7', 'outline-layer-0-deep-8',
       'outline-layer-0-deep-9', 'outline-layer-0-deep-10', 'outline-layer-0-deep-11',
     ]);
-    for (const feature of [...features.red, ...features.blue]) {
-      expect(boundsOverlap(feature.boundsMm, { minX: -0.75, minY: -3, maxX: 0.75, maxY: 0 })).toBe(false);
+    for (const feature of [...features.red, ...features.blue]) for (const blackCut of [
+      { minX: -0.75, minY: -3, maxX: 0.75, maxY: 0 },
+      { minX: 5.25, minY: 0, maxX: 6.75, maxY: 3 },
+    ]) {
+      expect(boundsOverlap(feature.boundsMm, blackCut)).toBe(false);
     }
     expect(features.diagnostics.retained).toEqual({ red: 12, blue: 12 });
-    expect(features.diagnostics.omitted).toEqual({ red: 0, blue: 1 });
+    expect(features.diagnostics.omitted).toEqual({ red: 0, blue: 0 });
   });
 
   it('uses adaptive textured-surface quantiles instead of fixed millimeter levels', () => {
@@ -470,6 +474,37 @@ describe('adaptive source-triangle depth features', () => {
     expect(features.blue).toBeDefined();
     expect(boundsOverlap(features.red[0]!.boundsMm, holeBounds)).toBe(false);
     expect(features.blue[0]!.boundsMm.minX).toBeGreaterThan(holeBounds.maxX);
+  });
+
+  it('retains a surviving role without an unreliable-geometry warning', () => {
+    const redCut = [[-5.5, -5.5], [-1.5, -5.5], [-1.5, 5.5], [-5.5, 5.5]] as const;
+    const blueCut = [[1.5, -5.5], [5.5, -5.5], [5.5, 5.5], [1.5, 5.5]] as const;
+    const surface = patchedSurface([
+      { minX: -5, maxX: -2, minY: -5, maxY: 5, depth: 5 },
+      { minX: 2, maxX: 5, minY: -5, maxY: 5, depth: 1 },
+    ]);
+
+    const redOnly = extractAdaptiveDepthFeatures(surface, request({ protectedCuts: [blueCut] }));
+    const blueOnly = extractAdaptiveDepthFeatures(surface, request({ protectedCuts: [redCut] }));
+    const none = extractAdaptiveDepthFeatures(surface, request({ protectedCuts: [redCut, blueCut] }));
+
+    expect(redOnly).toMatchObject({ warning: undefined, omissionCode: undefined });
+    expect(redOnly.red).not.toEqual([]);
+    expect(redOnly.blue).toEqual([]);
+    expect(blueOnly).toMatchObject({ warning: undefined, omissionCode: undefined });
+    expect(blueOnly.red).toEqual([]);
+    expect(blueOnly.blue).not.toEqual([]);
+    expect(none).toMatchObject({
+      red: [], blue: [], warning: '雕刻特徵不可靠，已局部省略', omissionCode: 'UNRELIABLE_DEPTH_GEOMETRY',
+    });
+  });
+
+  it('fails closed before raster work when protected cuts exceed their bounded aggregate', () => {
+    const cut = [[-1, -1], [-1, 1], [1, 1], [1, -1]] as const;
+
+    expect(() => extractAdaptiveDepthFeatures(steppedSurface(), request({
+      protectedCuts: Array.from({ length: 9 }, () => cut),
+    }))).toThrow(/protected cut.*budget/i);
   });
 
   it('is deterministic under source-triangle shuffling', () => {

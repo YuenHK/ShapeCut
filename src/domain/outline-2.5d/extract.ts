@@ -35,9 +35,17 @@ export type OutlineExtraction = {
   readonly layers: readonly OutlineLayer[];
   readonly holeSelections: readonly CentralHoleSelection[];
   readonly depthFeatures: readonly DepthFeatureResult[];
+  readonly blackCuts: readonly ExistingBlackCuts[];
   readonly featureWarnings: readonly string[];
   readonly cellSizeMm?: number;
   readonly removedComponentCount: number;
+};
+export type ExistingBlackCuts = {
+  readonly launcherCuts: readonly FeatureContour[];
+  readonly fastenerHoles: readonly FeatureContour[];
+};
+export type OutlineFeatureExtractionOptions = {
+  readonly existingBlackCuts?: readonly ExistingBlackCuts[];
 };
 
 export type HoleCandidateProbeEvidence = {
@@ -80,6 +88,7 @@ export function colorizeExteriorLayers(
   checkpoint: () => void = () => undefined,
   holeSelections: readonly CentralHoleSelection[] = [],
   depthFeatures: readonly DepthFeatureResult[] = [],
+  blackCuts: readonly ExistingBlackCuts[] = [],
 ): readonly ColoredOutlineLayer[] {
   const checkColorizationDeadline = (): void => {
     checkpoint();
@@ -94,6 +103,9 @@ export function colorizeExteriorLayers(
   }
   if (depthFeatures.length !== 0 && depthFeatures.length !== layers.length) {
     throw new RangeError('Colored outline layers require one ordered depth result per layer');
+  }
+  if (blackCuts.length !== 0 && blackCuts.length !== layers.length) {
+    throw new RangeError('Colored outline layers require one ordered black-cut record per layer');
   }
   const coloredLayers: ColoredOutlineLayer[] = [];
   for (const layer of layers) {
@@ -114,6 +126,7 @@ export function colorizeExteriorLayers(
       areaMm2: holeSelection.hole.areaMm2,
     };
     const depthFeature = depthFeatures[coloredLayers.length];
+    const existingBlackCuts = blackCuts[coloredLayers.length];
     checkColorizationDeadline();
     coloredLayers.push({
       id: layer.id,
@@ -122,8 +135,8 @@ export function colorizeExteriorLayers(
       zEnd: layer.zEnd,
       exterior,
       centralHole,
-      launcherCuts: [],
-      fastenerHoles: [],
+      launcherCuts: existingBlackCuts?.launcherCuts ?? [],
+      fastenerHoles: existingBlackCuts?.fastenerHoles ?? [],
       deepFeatures: depthFeature?.red ?? [],
       lightFeatures: depthFeature?.blue ?? [],
       removedComponentCount: layer.removedComponentCount,
@@ -178,7 +191,28 @@ function validateRequest(projected: ProjectedMesh, specs: readonly OutlineLayerS
       || spec.zMid < spec.zStart || spec.zMid > spec.zEnd) {
       throw new RangeError('Contour extraction requires each finite layer interval to contain its midpoint');
     }
+    const previous = specs[index - 1];
+    if (previous && (spec.index <= previous.index || spec.zStart < previous.zEnd)) {
+      throw new RangeError('Contour extraction requires strictly ordered non-overlapping layer intervals');
+    }
   }
+}
+
+function existingBlackCutsForLayers(
+  options: OutlineFeatureExtractionOptions | undefined,
+  layerCount: number,
+): readonly ExistingBlackCuts[] {
+  const supplied = options?.existingBlackCuts ?? [];
+  if (!Array.isArray(supplied) || supplied.length !== 0 && supplied.length !== layerCount) {
+    throw new RangeError('Contour extraction requires ordered existing black cuts for every layer');
+  }
+  return Array.from({ length: layerCount }, (_, index) => {
+    const cuts = supplied[index];
+    if (cuts !== undefined && (!Array.isArray(cuts.launcherCuts) || !Array.isArray(cuts.fastenerHoles))) {
+      throw new RangeError('Contour extraction requires bounded black-cut arrays');
+    }
+    return cuts ?? { launcherCuts: [], fastenerHoles: [] };
+  });
 }
 
 function withinDrift(sourceBounds: Bounds2, simplified: readonly Point2[], deadline: number): boolean {
@@ -251,10 +285,12 @@ export function extractProjectedContours(
   specs: readonly OutlineLayerSpec[],
   budgets: OutlineBudgets,
   deadline = Date.now() + budgets.maxRuntimeMs,
+  options?: OutlineFeatureExtractionOptions,
 ): OutlineExtraction {
   validateBudgets(budgets);
   const projected = projectMesh(mesh, selection, deadline); validateRequest(projected, specs, budgets, deadline);
   const cellSizeMm = rasterCellSize(projected);
+  const blackCuts = existingBlackCutsForLayers(options, specs.length);
   const width = Math.ceil((projected.maxX - projected.minX) / cellSizeMm) + 3;
   const height = Math.ceil((projected.maxY - projected.minY) / cellSizeMm) + 3;
   if (width * height * specs.length > budgets.maxRasterCellsTotal) throw new RangeError('Projected contour exceeds the total raster cell budget');
@@ -296,6 +332,7 @@ export function extractProjectedContours(
       budgets,
       totalLayerCount: specs.length,
       maximumFeaturesPerRole: index === layers.length - 1 ? 12 : 1,
+      protectedCuts: [...blackCuts[index].launcherCuts, ...blackCuts[index].fastenerHoles].map(({ outer }) => outer),
       deadline,
     }));
   const featureWarnings = new Set<string>();
@@ -305,6 +342,7 @@ export function extractProjectedContours(
     layers,
     holeSelections,
     depthFeatures,
+    blackCuts,
     featureWarnings: [...featureWarnings],
     cellSizeMm,
     removedComponentCount,
@@ -566,6 +604,7 @@ export function extractExactContours(
   specs: readonly OutlineLayerSpec[],
   budgets: OutlineBudgets,
   deadline = Date.now() + budgets.maxRuntimeMs,
+  options?: OutlineFeatureExtractionOptions,
 ): OutlineExtraction {
   validateBudgets(budgets);
   const projected = projectMesh(mesh, selection, deadline);
@@ -574,6 +613,7 @@ export function extractExactContours(
   const layers: OutlineLayer[] = [];
   const holeRequests: CentralHoleRequest[] = [];
   const cellSizeMm = rasterCellSize(projected);
+  const blackCuts = existingBlackCutsForLayers(options, specs.length);
   for (let index = 0; index < specs.length; index += 1) {
     checkDeadline(deadline);
     const spec = specs[index];
@@ -605,6 +645,7 @@ export function extractExactContours(
       budgets,
       totalLayerCount: specs.length,
       maximumFeaturesPerRole: index === layers.length - 1 ? 12 : 1,
+      protectedCuts: [...blackCuts[index].launcherCuts, ...blackCuts[index].fastenerHoles].map(({ outer }) => outer),
       deadline,
     }));
   const featureWarnings = new Set<string>();
@@ -614,6 +655,7 @@ export function extractExactContours(
     layers,
     holeSelections,
     depthFeatures,
+    blackCuts,
     featureWarnings: [...featureWarnings],
     removedComponentCount: 0,
   };
