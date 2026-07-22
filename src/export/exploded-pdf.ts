@@ -18,6 +18,7 @@ const ROLE_RGB = Object.freeze({
 const ROLE_LEGEND_LABEL = 'BLACK CUT | RED DEEP | BLUE LIGHT';
 const RELATIVE_LEVEL_GUIDANCE = 'Red and blue are relative processing levels, not literal machine settings.';
 const TEST_CUT_GUIDANCE = 'Assign machine-specific settings after material test cuts.';
+const PREVIEW_SAFETY_NOTE_MINIMUM_WIDTH_MM = 80;
 
 function centralHoleSafetyNote(document: ColoredOutlineDocument): string | undefined {
   return document.safetyNotes.find((note) => note === CENTRAL_HOLE_OMISSION_WARNING);
@@ -104,7 +105,9 @@ export async function writeColoredPreviewPdf(
     ...document.layers.map((layer) => `layer:${layer.order}:${layer.id}`),
   ], (pdf, font, drawCheckpoint) => {
     const layout = createColoredExportLayout(document, drawCheckpoint);
-    const page = pdf.addPage([layout.width * MM_TO_POINTS, (layout.height + 24) * MM_TO_POINTS]);
+    const safetyNote = centralHoleSafetyNote(document);
+    const pageWidthMm = Math.max(layout.width, safetyNote ? PREVIEW_SAFETY_NOTE_MINIMUM_WIDTH_MM : 0);
+    const page = pdf.addPage([pageWidthMm * MM_TO_POINTS, (layout.height + 24) * MM_TO_POINTS]);
     const map = ([x, y]: readonly [number, number]) => [x * MM_TO_POINTS, y * MM_TO_POINTS] as const;
     const layerLabels = document.layers.map((layer) => {
       const exterior = layout.entities.find((entity) => entity.physicalLayerId === layer.id && entity.role === 'CUT_BLACK');
@@ -133,7 +136,6 @@ export async function writeColoredPreviewPdf(
     page.drawText(TEST_CUT_GUIDANCE, {
       x: 5 * MM_TO_POINTS, y: guidanceY + 5 * MM_TO_POINTS, size: 7, font,
     });
-    const safetyNote = centralHoleSafetyNote(document);
     if (safetyNote) {
       page.drawText(safetyNote, {
         x: 5 * MM_TO_POINTS, y: guidanceY + 1 * MM_TO_POINTS, size: 7, font,

@@ -25,6 +25,14 @@ function allLayerHoleOmissionResult() {
   return { ...omitted, featureEvidenceFingerprint: featureEvidenceFingerprint(omitted) };
 }
 
+function withFeatureWarnings(
+  result: ReturnType<typeof coloredResult>,
+  featureWarnings: readonly string[],
+) {
+  const changed = { ...result, status: 'warning' as const, featureWarnings };
+  return { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
+}
+
 describe('canonical colored outline document', () => {
   it('preserves ordered physical layers and exact canonical role identity', () => {
     const result = coloredResult();
@@ -56,6 +64,15 @@ describe('canonical colored outline document', () => {
     const safetyNotes = (document as typeof document & { readonly safetyNotes?: readonly string[] }).safetyNotes ?? [];
     for (const note of safetyNotes) expect(note).not.toMatch(/[\\/@\r\n\0]|[\w.+-]+@[\w.-]+/);
     expect(() => validateColoredOutlineDocument(document, result)).not.toThrow();
+  });
+
+  it('requires exact central-hole omission provenance and rejects false omission claims', () => {
+    const omitted = allLayerHoleOmissionResult();
+    const missingWarning = withFeatureWarnings(omitted, []);
+    expect(() => createColoredOutlineDocument(missingWarning)).toThrow(/central.*hole.*omission.*warning/i);
+
+    const retainedWithFalseWarning = withFeatureWarnings(coloredResult(), [CENTRAL_HOLE_OMISSION_WARNING]);
+    expect(() => createColoredOutlineDocument(retainedWithFalseWarning)).toThrow(/central.*hole.*omission.*warning/i);
   });
 
   it.each([

@@ -1,5 +1,6 @@
 import type { FeatureContour } from '../domain/outline-features/types';
 import { validateAutomaticColoredResult } from '../domain/outline-features/types';
+import { CENTRAL_HOLE_OMISSION_WARNING } from '../domain/outline-features/hole';
 import {
   diagnosticsFingerprint,
   removalEvidenceFingerprint,
@@ -148,7 +149,7 @@ function assertCanonicalShape(
     || document.layers.length > 24) {
     throw new RangeError('Colored canonical document fingerprint or layer count is invalid');
   }
-  copySafetyNotes(document.safetyNotes, checkpoint);
+  const safetyNotes = copySafetyNotes(document.safetyNotes, checkpoint);
   const layerIds = new Set<string>(), featureIds = new Set<string>();
   for (const [position, layer] of document.layers.entries()) {
     checkpoint('canonical:validate-layer-loop');
@@ -188,6 +189,11 @@ function assertCanonicalShape(
         }
       }
     }
+  }
+  const allCentralHolesOmitted = document.layers.every((layer) => layer.roles.CUT_BLACK.length === 1);
+  const claimsCentralHoleOmission = safetyNotes.includes(CENTRAL_HOLE_OMISSION_WARNING);
+  if (allCentralHolesOmitted !== claimsCentralHoleOmission) {
+    throw new RangeError('Colored canonical central hole omission warning does not match the shared hole decision');
   }
 }
 

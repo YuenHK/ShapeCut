@@ -46,6 +46,7 @@ const MM_TO_POINTS = 72 / 25.4;
 const ROLE_LEGEND_LABEL = 'BLACK CUT | RED DEEP | BLUE LIGHT';
 const RELATIVE_LEVEL_GUIDANCE = 'Red and blue are relative processing levels, not literal machine settings.';
 const TEST_CUT_GUIDANCE = 'Assign machine-specific settings after material test cuts.';
+const PREVIEW_SAFETY_NOTE_MINIMUM_WIDTH_MM = 80;
 
 export type ColoredEntityRecord = {
   readonly physicalLayerId: string;
@@ -1324,7 +1325,7 @@ function reconcilePdf(
   if (pdf.kind === 'preview') {
     const extents = canonicalColoredDocumentExtents(svg.entities, 'Colored SVG');
     const expectedPageSize: readonly [number, number] = [
-      extents.width * MM_TO_POINTS,
+      Math.max(extents.width, allCentralHolesOmitted ? PREVIEW_SAFETY_NOTE_MINIMUM_WIDTH_MM : 0) * MM_TO_POINTS,
       (extents.height + 24) * MM_TO_POINTS,
     ];
     if (!nearlyEqual(pdf.pageSize[0], expectedPageSize[0]) || !nearlyEqual(pdf.pageSize[1], expectedPageSize[1])

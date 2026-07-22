@@ -438,6 +438,22 @@ describe('OneClickConverter', () => {
     expect(screen.queryByRole('link', { name: /下載/ })).not.toBeInTheDocument();
   });
 
+  it('retains completed evidence without inventing an artifact identity for a packaging timeout', async () => {
+    const user = userEvent.setup();
+    render(<OneClickConverter services={services({
+      convert: vi.fn().mockResolvedValue(result),
+      package: vi.fn().mockRejectedValue(new AutomaticOutlineError('TIME_LIMIT', 'internal package timeout')),
+    })} />);
+
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'timeout.stl'));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('處理時間過長，已安全停止');
+    expect(alert).not.toHaveTextContent('受影響輸出');
+    expect(screen.getByRole('img', { name: /模型分層預覽/ })).toBeVisible();
+    expect(screen.queryByRole('link', { name: /下載/ })).not.toBeInTheDocument();
+  });
+
   it('revokes every object URL on replacement and unmount', async () => {
     const user = userEvent.setup();
     const revoke = vi.fn();

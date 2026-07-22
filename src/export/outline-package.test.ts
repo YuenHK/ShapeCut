@@ -24,6 +24,7 @@ import {
 } from './package';
 import { writeOutlineProjectJson } from './project-json';
 import { coloredResult } from './colored-outline-test-fixture';
+import { featureEvidenceFingerprint } from '../domain/outline-features/types';
 
 const SOURCE_HASH = '0123456789abcdef'.repeat(2);
 const PROJECTED_WARNINGS = [
@@ -34,6 +35,23 @@ const PROJECTED_WARNINGS = [
   '正式製作前應先試切少量零件',
   '未找到可信旋轉軸，已使用模型最短包圍盒軸',
 ] as const;
+
+function coloredResultMissingCentralHoleOmissionWarning(): AutomaticOutlineResult {
+  const result = coloredResult();
+  const coloredLayers = result.coloredLayers.map((layer) => ({
+    ...layer,
+    centralHole: undefined,
+    diagnostics: { ...layer.diagnostics, hole: { status: 'omitted' as const } },
+  }));
+  const missing = {
+    ...result,
+    status: 'warning' as const,
+    coloredLayers,
+    featureWarnings: [],
+    preview: { ...result.preview, layers: coloredLayers },
+  };
+  return { ...missing, featureEvidenceFingerprint: featureEvidenceFingerprint(missing) };
+}
 
 function layer(
   id: string,
@@ -308,6 +326,11 @@ describe('material-independent outline package', () => {
     expect(await zip.file('preview.pdf')!.async('uint8array')).toEqual(output.previewPdf);
     expect(await zip.file('exploded-view.pdf')!.async('uint8array')).toEqual(output.explodedViewPdf);
     await expect(verifyColoredOutlinePackage(output, runtime)).resolves.toBeUndefined();
+  });
+
+  it('rejects an all-layer central-hole omission without the canonical safety warning', async () => {
+    await expect(createColoredOutlinePackage(coloredResultMissingCentralHoleOmissionWarning()))
+      .rejects.toThrow(/central.*hole.*omission.*warning/i);
   });
 
   it('uses exact SVG hex roles and DXF ACI plus true-color roles without private process text', async () => {

@@ -255,8 +255,8 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
       setView({ kind: 'result', fileName: file.name, result, downloads });
     } catch (error) {
       if (current !== requestId.current || error instanceof SupersededError) return;
-      const artifact = completedResult
-        ? error instanceof OutlineArtifactError ? error.artifact : 'package-verification'
+      const artifact = completedResult && error instanceof OutlineArtifactError
+        ? error.artifact
         : undefined;
       setView({
         kind: 'failure',

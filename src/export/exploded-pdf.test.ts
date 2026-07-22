@@ -1,4 +1,4 @@
-import { decodePDFRawStream, PDFArray, PDFDocument, PDFRawStream } from 'pdf-lib';
+import { decodePDFRawStream, PDFArray, PDFDocument, PDFRawStream, StandardFonts } from 'pdf-lib';
 import { describe, expect, it } from 'vitest';
 import { CENTRAL_HOLE_OMISSION_WARNING } from '../domain/outline-features/hole';
 import { featureEvidenceFingerprint } from '../domain/outline-features/types';
@@ -24,6 +24,47 @@ function allLayerHoleOmissionResult() {
     preview: { ...result.preview, layers: coloredLayers },
   };
   return { ...omitted, featureEvidenceFingerprint: featureEvidenceFingerprint(omitted) };
+}
+
+function compactAllLayerHoleOmissionResult() {
+  const result = allLayerHoleOmissionResult();
+  const coloredLayers = result.coloredLayers.map((layer, index) => {
+    const centerX = index * 6;
+    const outer = [
+      [centerX - 2, -2], [centerX - 2, 2], [centerX + 2, 2], [centerX + 2, -2],
+    ] as const;
+    return {
+      ...layer,
+      exterior: {
+        ...layer.exterior,
+        outer,
+        boundsMm: { minX: centerX - 2, minY: -2, maxX: centerX + 2, maxY: 2 },
+        areaMm2: 16,
+      },
+      centralHole: undefined,
+      deepFeature: undefined,
+      lightFeature: undefined,
+      diagnostics: {
+        ...layer.diagnostics,
+        hole: { status: 'omitted' as const },
+        depth: { ...layer.diagnostics.depth, contrastMm: 0, redThresholdMm: 0, blueThresholdMm: 0 },
+      },
+    };
+  });
+  const layers = result.layers.map((layer, index) => ({
+    ...layer,
+    contour: { outer: coloredLayers[index].exterior.outer, holes: [] as const },
+    sourceAreaMm2: 16,
+    simplifiedAreaMm2: 16,
+    sourceBoundsMm: { ...coloredLayers[index].exterior.boundsMm },
+  }));
+  const changed = {
+    ...result,
+    layers,
+    coloredLayers,
+    preview: { ...result.preview, layers: coloredLayers },
+  };
+  return { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
 }
 
 function visiblePdfContent(pdf: PDFDocument): string {
@@ -60,6 +101,17 @@ describe('deterministic colored PDFs', () => {
       expect(content.split(CENTRAL_HOLE_OMISSION_WARNING)).toHaveLength(2);
       expect(content).not.toMatch(/[\\/@\0]|[\w.+-]+@[\w.-]+/);
     }
+  });
+
+  it('reserves enough preview page width for the omission warning on compact six-layer layouts', async () => {
+    const document = createColoredOutlineDocument(compactAllLayerHoleOmissionResult());
+    const preview = await writeColoredPreviewPdf(document);
+    const pdf = await PDFDocument.load(preview, { updateMetadata: false });
+    const measuringPdf = await PDFDocument.create({ updateMetadata: false });
+    const font = await measuringPdf.embedFont(StandardFonts.Helvetica);
+    const minimumWidthMm = 10 + font.widthOfTextAtSize(CENTRAL_HOLE_OMISSION_WARNING, 7) / MM_TO_POINTS;
+
+    expect(pdf.getPage(0).getWidth()).toBeGreaterThanOrEqual(minimumWidthMm * MM_TO_POINTS);
   });
 
   it('renders a byte-identical flat preview on the canonical fabrication sheet with visible relative-level guidance', async () => {
