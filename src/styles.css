@@ -116,6 +116,8 @@ progress::-webkit-progress-bar { background: var(--mint-100); } progress::-webki
 .technical-details dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
 .technical-details h2 { margin-top: 18px; font-size: 1rem; }.technical-details > p:last-child { margin-bottom: 18px; color: var(--muted); }
 .failure-card p:not(.result-badge) { color: var(--muted); line-height: 1.6; }
+.failure-card .warning-panel { text-align: left; }
+.failure-retained-preview { margin-top: 20px; }
 .failure-card .primary-button { margin-top: 12px; }
 
 @keyframes neutral-pulse { 0%, 100% { opacity: .3; transform: scale(.8); } 50% { opacity: 1; transform: scale(1); } }

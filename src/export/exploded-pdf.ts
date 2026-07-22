@@ -1,4 +1,5 @@
 import { PDFDocument, PDFName, StandardFonts, rgb, type PDFPage, type PDFFont } from 'pdf-lib';
+import { CENTRAL_HOLE_OMISSION_WARNING } from '../domain/outline-features/hole';
 import {
   COLORED_ROLE_COLORS,
   type ColoredDocumentCheckpoint,
@@ -17,6 +18,10 @@ const ROLE_RGB = Object.freeze({
 const ROLE_LEGEND_LABEL = 'BLACK CUT | RED DEEP | BLUE LIGHT';
 const RELATIVE_LEVEL_GUIDANCE = 'Red and blue are relative processing levels, not literal machine settings.';
 const TEST_CUT_GUIDANCE = 'Assign machine-specific settings after material test cuts.';
+
+function centralHoleSafetyNote(document: ColoredOutlineDocument): string | undefined {
+  return document.safetyNotes.find((note) => note === CENTRAL_HOLE_OMISSION_WARNING);
+}
 
 function configure(pdf: PDFDocument, title: string, keywords: readonly string[]): void {
   pdf.setTitle(title);
@@ -128,6 +133,12 @@ export async function writeColoredPreviewPdf(
     page.drawText(TEST_CUT_GUIDANCE, {
       x: 5 * MM_TO_POINTS, y: guidanceY + 5 * MM_TO_POINTS, size: 7, font,
     });
+    const safetyNote = centralHoleSafetyNote(document);
+    if (safetyNote) {
+      page.drawText(safetyNote, {
+        x: 5 * MM_TO_POINTS, y: guidanceY + 1 * MM_TO_POINTS, size: 7, font,
+      });
+    }
   }, checkpoint);
 }
 
@@ -200,5 +211,9 @@ export async function writeExplodedViewPdf(
     }
     page.drawText(RELATIVE_LEVEL_GUIDANCE, { x: 18 * MM_TO_POINTS, y: 19 * MM_TO_POINTS, size: 7, font });
     page.drawText(TEST_CUT_GUIDANCE, { x: 18 * MM_TO_POINTS, y: 12 * MM_TO_POINTS, size: 7, font });
+    const safetyNote = centralHoleSafetyNote(document);
+    if (safetyNote) {
+      page.drawText(safetyNote, { x: 184 * MM_TO_POINTS, y: 195 * MM_TO_POINTS, size: 7, font });
+    }
   }, checkpoint);
 }

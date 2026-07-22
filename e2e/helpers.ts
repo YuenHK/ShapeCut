@@ -1315,6 +1315,9 @@ function reconcilePdf(
   svg: ParsedColoredArtifact,
 ): void {
   const expectedLayers = svg.layers.map(({ id, order }) => ({ id, order }));
+  const allCentralHolesOmitted = svg.layers.every((layer) => (
+    svg.entities.filter((entity) => entity.physicalLayerId === layer.id && entity.role === 'CUT_BLACK').length === 1
+  ));
   if (exact(pdf.layerRecords.map(({ id, order }) => ({ id, order }))) !== exact(expectedLayers)) {
     throw new Error(`Colored ${pdf.kind} PDF layer metadata does not reconcile with SVG`);
   }
@@ -1325,7 +1328,7 @@ function reconcilePdf(
       (extents.height + 24) * MM_TO_POINTS,
     ];
     if (!nearlyEqual(pdf.pageSize[0], expectedPageSize[0]) || !nearlyEqual(pdf.pageSize[1], expectedPageSize[1])
-      || pdf.textBlockCount !== svg.layers.length + 3) {
+      || pdf.textBlockCount !== svg.layers.length + 3 + (allCentralHolesOmitted ? 1 : 0)) {
       throw new Error('Colored preview PDF page dimensions or label cardinality do not reconcile with SVG');
     }
     const expectedStrokes: PdfStrokeRecord[] = [];
@@ -1350,6 +1353,14 @@ function reconcilePdf(
     expectedTexts.push({ text: `Scale 1:1 | ${ROLE_LEGEND_LABEL}`, size: 8, x: 5 * MM_TO_POINTS, y: (extents.height + 17) * MM_TO_POINTS });
     expectedTexts.push({ text: RELATIVE_LEVEL_GUIDANCE, size: 7, x: 5 * MM_TO_POINTS, y: (extents.height + 11) * MM_TO_POINTS });
     expectedTexts.push({ text: TEST_CUT_GUIDANCE, size: 7, x: 5 * MM_TO_POINTS, y: (extents.height + 5) * MM_TO_POINTS });
+    if (allCentralHolesOmitted) {
+      expectedTexts.push({
+        text: CENTRAL_HOLE_OMISSION_WARNING,
+        size: 7,
+        x: 5 * MM_TO_POINTS,
+        y: (extents.height + 1) * MM_TO_POINTS,
+      });
+    }
     assertPdfTextRecords(pdf.textRecords, expectedTexts, 'preview');
     assertPdfStrokeRecords(pdf.strokeRecords, expectedStrokes, 'preview');
     return;
@@ -1369,7 +1380,7 @@ function reconcilePdf(
   });
   const expectedPageSize: readonly [number, number] = [297 * MM_TO_POINTS, 210 * MM_TO_POINTS];
   if (!nearlyEqual(pdf.pageSize[0], expectedPageSize[0]) || !nearlyEqual(pdf.pageSize[1], expectedPageSize[1])
-    || pdf.textBlockCount !== svg.layers.length + 6) {
+    || pdf.textBlockCount !== svg.layers.length + 6 + (allCentralHolesOmitted ? 1 : 0)) {
     throw new Error('Colored exploded PDF page dimensions or label cardinality do not reconcile with SVG');
   }
   const centerX = 120 * MM_TO_POINTS, baseY = 36 * MM_TO_POINTS;
@@ -1424,6 +1435,14 @@ function reconcilePdf(
   }));
   expectedTexts.push({ text: RELATIVE_LEVEL_GUIDANCE, size: 7, x: 18 * MM_TO_POINTS, y: 19 * MM_TO_POINTS });
   expectedTexts.push({ text: TEST_CUT_GUIDANCE, size: 7, x: 18 * MM_TO_POINTS, y: 12 * MM_TO_POINTS });
+  if (allCentralHolesOmitted) {
+    expectedTexts.push({
+      text: CENTRAL_HOLE_OMISSION_WARNING,
+      size: 7,
+      x: 184 * MM_TO_POINTS,
+      y: 195 * MM_TO_POINTS,
+    });
+  }
   assertPdfTextRecords(pdf.textRecords, expectedTexts, 'exploded');
   assertPdfStrokeRecords(pdf.strokeRecords, expectedStrokes, 'exploded');
 }

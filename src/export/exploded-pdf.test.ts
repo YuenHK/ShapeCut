@@ -1,11 +1,30 @@
 import { decodePDFRawStream, PDFArray, PDFDocument, PDFRawStream } from 'pdf-lib';
 import { describe, expect, it } from 'vitest';
+import { CENTRAL_HOLE_OMISSION_WARNING } from '../domain/outline-features/hole';
+import { featureEvidenceFingerprint } from '../domain/outline-features/types';
 import { createColoredOutlineDocument } from './colored-outline-document';
 import { coloredResult } from './colored-outline-test-fixture';
 import { writeColoredPreviewPdf, writeExplodedViewPdf } from './exploded-pdf';
 import { writeColoredOutlineSvg } from './package';
 
 const MM_TO_POINTS = 72 / 25.4;
+
+function allLayerHoleOmissionResult() {
+  const result = coloredResult();
+  const coloredLayers = result.coloredLayers.map((layer) => ({
+    ...layer,
+    centralHole: undefined,
+    diagnostics: { ...layer.diagnostics, hole: { status: 'omitted' as const } },
+  }));
+  const omitted = {
+    ...result,
+    status: 'warning' as const,
+    coloredLayers,
+    featureWarnings: [CENTRAL_HOLE_OMISSION_WARNING],
+    preview: { ...result.preview, layers: coloredLayers },
+  };
+  return { ...omitted, featureEvidenceFingerprint: featureEvidenceFingerprint(omitted) };
+}
 
 function visiblePdfContent(pdf: PDFDocument): string {
   const contents = pdf.getPage(0).node.Contents();
@@ -27,6 +46,22 @@ function svgDimensions(svg: string): readonly [number, number] {
 }
 
 describe('deterministic colored PDFs', () => {
+  it('renders the all-layer central-hole omission as readable sanitized text in both PDFs', async () => {
+    const document = createColoredOutlineDocument(allLayerHoleOmissionResult());
+    const [preview, exploded] = await Promise.all([
+      writeColoredPreviewPdf(document),
+      writeExplodedViewPdf(document),
+    ]);
+    const contents = await Promise.all([preview, exploded].map(async (bytes) => (
+      visiblePdfContent(await PDFDocument.load(bytes, { updateMetadata: false }))
+    )));
+
+    for (const content of contents) {
+      expect(content.split(CENTRAL_HOLE_OMISSION_WARNING)).toHaveLength(2);
+      expect(content).not.toMatch(/[\\/@\0]|[\w.+-]+@[\w.-]+/);
+    }
+  });
+
   it('renders a byte-identical flat preview on the canonical fabrication sheet with visible relative-level guidance', async () => {
     const document = createColoredOutlineDocument(coloredResult());
     const first = await writeColoredPreviewPdf(document);

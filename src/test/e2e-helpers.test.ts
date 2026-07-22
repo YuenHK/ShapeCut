@@ -13,6 +13,7 @@ import {
 } from '../../e2e/helpers';
 import { coloredResult } from '../export/colored-outline-test-fixture';
 import { createOutlinePackage, type ColoredOutlinePackage } from '../export/outline-package';
+import { featureEvidenceFingerprint } from '../domain/outline-features/types';
 
 let output: ColoredOutlinePackage;
 let artifacts: ColoredArtifactPayloads;
@@ -210,6 +211,23 @@ async function zipWithArtifacts(value: ColoredArtifactPayloads): Promise<Uint8Ar
 
 const CENTRAL_HOLE_OMISSION_WARNING = 'No reliable central axle hole was found; the hole was omitted.';
 
+function allLayerHoleOmissionResult() {
+  const result = coloredResult();
+  const coloredLayers = result.coloredLayers.map((layer) => ({
+    ...layer,
+    centralHole: undefined,
+    diagnostics: { ...layer.diagnostics, hole: { status: 'omitted' as const } },
+  }));
+  const omitted = {
+    ...result,
+    status: 'warning' as const,
+    coloredLayers,
+    featureWarnings: [CENTRAL_HOLE_OMISSION_WARNING],
+    preview: { ...result.preview, layers: coloredLayers },
+  };
+  return { ...omitted, featureEvidenceFingerprint: featureEvidenceFingerprint(omitted) };
+}
+
 function sharedHoleSummary(): WorkerResultSummary {
   const points = [[-2, -2], [2, -2], [2, 2], [-2, 2]] as const;
   return {
@@ -231,6 +249,22 @@ function sharedHoleSummary(): WorkerResultSummary {
 }
 
 describe('release E2E colored artifact parsers', () => {
+  it('reconciles readable PDF safety notes for a warned all-layer hole omission', async () => {
+    const omitted = await createOutlinePackage(allLayerHoleOmissionResult());
+    const payloads: ColoredArtifactPayloads = {
+      zip: omitted.zip,
+      svg: omitted.cutSvg,
+      dxf: omitted.cutDxf,
+      previewPdf: omitted.previewPdf,
+      explodedPdf: omitted.explodedViewPdf,
+    };
+
+    const inspected = await inspectColoredArtifacts(payloads);
+    for (const pdf of [inspected.previewPdf, inspected.explodedPdf]) {
+      expect(pdf.textRecords.map(({ text }) => text)).toContain(CENTRAL_HOLE_OMISSION_WARNING);
+    }
+  });
+
   it('accepts six identical retained central holes in bounded model-space evidence', () => {
     expect(() => expectSharedCentralHoleGeometry(sharedHoleSummary())).not.toThrow();
   });

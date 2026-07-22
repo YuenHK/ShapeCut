@@ -9,6 +9,7 @@ import {
 import { featureEvidenceFingerprint, type ColoredOutlineLayer } from '../domain/outline-features/types';
 import { MAX_STL_BYTES } from '../domain/mesh/parse-stl';
 import { SupersededError } from '../workers/geometry-client';
+import { OutlineArtifactError } from '../workers/geometry-api';
 import * as outlineProcessScene from '../preview/outline-process-scene';
 import {
   OneClickConverter,
@@ -414,6 +415,27 @@ describe('OneClickConverter', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('模型太複雜，超出這次可處理的上限');
     await user.click(screen.getByRole('button', { name: '選擇另一個模型' }));
     expect(screen.getByRole('heading', { name: '把 3D 模型變成 Laser Cut 切片' })).toBeVisible();
+  });
+
+  it('retains the real preview and shared-hole warning when preview PDF packaging fails', async () => {
+    const user = userEvent.setup();
+    const omissionResult = {
+      ...result,
+      status: 'warning' as const,
+      featureWarnings: ['No reliable central axle hole was found; the hole was omitted.'],
+    };
+    render(<OneClickConverter services={services({
+      convert: vi.fn().mockResolvedValue(omissionResult),
+      package: vi.fn().mockRejectedValue(new OutlineArtifactError('preview.pdf')),
+    })} />);
+
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'omitted-hole.stl'));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('preview.pdf');
+    expect(screen.getByRole('img', { name: /模型分層預覽/ })).toBeVisible();
+    expect(document.querySelector('.failure-card .outline-process-viewport')).toHaveAttribute('data-stage', 'packaging');
+    expect(screen.getByRole('region', { name: '模型處理提示' })).toHaveTextContent('所有切片未偵測到可靠中央孔');
+    expect(screen.queryByRole('link', { name: /下載/ })).not.toBeInTheDocument();
   });
 
   it('revokes every object URL on replacement and unmount', async () => {

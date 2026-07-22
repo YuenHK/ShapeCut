@@ -1,10 +1,29 @@
 import { describe, expect, it } from 'vitest';
 import { diagnosticsFingerprint } from '../domain/pipeline/automatic-outline-pipeline';
+import { CENTRAL_HOLE_OMISSION_WARNING } from '../domain/outline-features/hole';
+import { featureEvidenceFingerprint } from '../domain/outline-features/types';
 import {
   createColoredOutlineDocument,
   validateColoredOutlineDocument,
 } from './colored-outline-document';
 import { coloredResult } from './colored-outline-test-fixture';
+
+function allLayerHoleOmissionResult() {
+  const result = coloredResult();
+  const coloredLayers = result.coloredLayers.map((layer) => ({
+    ...layer,
+    centralHole: undefined,
+    diagnostics: { ...layer.diagnostics, hole: { status: 'omitted' as const } },
+  }));
+  const omitted = {
+    ...result,
+    status: 'warning' as const,
+    coloredLayers,
+    featureWarnings: [CENTRAL_HOLE_OMISSION_WARNING],
+    preview: { ...result.preview, layers: coloredLayers },
+  };
+  return { ...omitted, featureEvidenceFingerprint: featureEvidenceFingerprint(omitted) };
+}
 
 describe('canonical colored outline document', () => {
   it('preserves ordered physical layers and exact canonical role identity', () => {
@@ -27,6 +46,28 @@ describe('canonical colored outline document', () => {
     expect(document.layers[2].roles.DEEP_RED).toHaveLength(1);
     expect(document.layers[2].roles.LIGHT_BLUE).toHaveLength(1);
     expect(() => validateColoredOutlineDocument(document, result)).not.toThrow();
+  });
+
+  it('carries the bounded sanitized all-layer central-hole omission safety note', () => {
+    const result = allLayerHoleOmissionResult();
+    const document = createColoredOutlineDocument(result);
+
+    expect(document).toHaveProperty('safetyNotes', [CENTRAL_HOLE_OMISSION_WARNING]);
+    const safetyNotes = (document as typeof document & { readonly safetyNotes?: readonly string[] }).safetyNotes ?? [];
+    for (const note of safetyNotes) expect(note).not.toMatch(/[\\/@\r\n\0]|[\w.+-]+@[\w.-]+/);
+    expect(() => validateColoredOutlineDocument(document, result)).not.toThrow();
+  });
+
+  it.each([
+    ['private note', ['/Users/private/source.stl']],
+    ['too many notes', Array.from({ length: 17 }, (_, index) => `Safety note ${index}`)],
+    ['oversized note', ['x'.repeat(201)]],
+  ])('rejects canonical %s before it can reach an artifact', (_label, safetyNotes) => {
+    const result = allLayerHoleOmissionResult();
+    const document = structuredClone(createColoredOutlineDocument(result));
+    Object.assign(document, { safetyNotes });
+
+    expect(() => validateColoredOutlineDocument(document, result)).toThrow(/safety note.*(?:private|contact|bound|length|invalid)/i);
   });
 
   it.each([

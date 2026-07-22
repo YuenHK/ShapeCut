@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { createGeometryWorkerClient, type GeometryClient } from '../workers/geometry-client';
+import { OutlineArtifactError, type OutlineArtifactId } from '../workers/geometry-api';
 import { OneClickConverter, type OneClickConverterServices, type OutlineDownloads } from './OneClickConverter';
 
 function objectUrl(content: BlobPart, type: string, fileName: string) {
@@ -16,7 +17,9 @@ export type OutlineDownloadContents = {
 
 export function createDownloadUrls(files: OutlineDownloadContents, _fileName?: string): OutlineDownloads {
   const created: string[] = [];
-  const make = (content: BlobPart, type: string, name: string) => {
+  let activeArtifact: OutlineArtifactId = 'shapecut-files.zip';
+  const make = (content: BlobPart, type: string, name: OutlineArtifactId) => {
+    activeArtifact = name;
     const download = objectUrl(content, type, name);
     created.push(download.href);
     return download;
@@ -33,7 +36,8 @@ export function createDownloadUrls(files: OutlineDownloadContents, _fileName?: s
     for (const href of created) {
       try { URL.revokeObjectURL(href); } catch { /* Preserve the creation failure after best-effort cleanup. */ }
     }
-    throw error;
+    if (error instanceof OutlineArtifactError) throw error;
+    throw new OutlineArtifactError(activeArtifact, { cause: error });
   }
 }
 

@@ -280,6 +280,19 @@ describe('geometry worker boundary', () => {
     });
   });
 
+  it('returns a bounded artifact identity for a non-timeout packaging failure', async () => {
+    const client = createGeometryWorkerClient();
+    clients.push(client);
+    const runtime = await client.convertAutomatically({ bytes: writeBinarySTL(scaledOpenTetrahedron(), 'safe') });
+    Object.assign(runtime, { featureEvidenceFingerprint: 'f'.repeat(32) });
+
+    await expect(client.packageOutline(runtime)).rejects.toMatchObject({
+      name: 'OutlineArtifactError',
+      code: 'ARTIFACT_FAILURE',
+      artifact: 'colored-outline-document',
+    });
+  });
+
   it('maps a real over-30-second maximum-layer packaging workload to typed TIME_LIMIT', async () => {
     const client = createGeometryWorkerClient();
     clients.push(client);

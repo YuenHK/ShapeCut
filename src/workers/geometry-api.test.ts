@@ -3,8 +3,15 @@ import { proxyMarker } from 'comlink';
 import type { AutomaticOutlineResult } from '../domain/pipeline/automatic-outline-pipeline';
 import { featureEvidenceFingerprint, validateAutomaticColoredResult } from '../domain/outline-features/types';
 import { tetrahedron } from '../test/mesh-builders';
-import type { GeometryApi, ImportRepairAnalysis, MeshAnalysis } from './geometry-api';
 import {
+  OUTLINE_ARTIFACT_IDS,
+  OutlineArtifactError,
+  type GeometryApi,
+  type ImportRepairAnalysis,
+  type MeshAnalysis,
+} from './geometry-api';
+import {
+  isSerializedOutlineArtifactError,
   isSerializedAutomaticOutlineError,
   makeGeometryClient,
   SupersededError,
@@ -169,6 +176,30 @@ function importRepairAnalysis(sourceHash: string): ImportRepairAnalysis {
 }
 
 describe('geometry worker client', () => {
+  it('accepts only the bounded structured non-timeout artifact error contract', () => {
+    expect(OUTLINE_ARTIFACT_IDS).toEqual([
+      'colored-outline-document',
+      'cut-and-engrave.svg',
+      'cut-and-engrave.dxf',
+      'preview.pdf',
+      'exploded-view.pdf',
+      'shapecut-files.zip',
+      'package-verification',
+    ]);
+    for (const artifact of OUTLINE_ARTIFACT_IDS) {
+      const error = new OutlineArtifactError(artifact);
+      expect(isSerializedOutlineArtifactError({
+        name: error.name, code: error.code, artifact: error.artifact, message: error.message,
+      })).toBe(true);
+    }
+    expect(isSerializedOutlineArtifactError({
+      name: 'OutlineArtifactError', code: 'ARTIFACT_FAILURE', artifact: 'private.stl', message: 'forged',
+    })).toBe(false);
+    expect(isSerializedOutlineArtifactError({
+      name: 'OutlineArtifactError', code: 'ARTIFACT_FAILURE', artifact: 'preview.pdf', message: '/Users/private/source.stl',
+    })).toBe(false);
+  });
+
   it('keeps the colored result and preview contract stable across structured clone', () => {
     const cloned = structuredClone(automaticResult('automatic'));
 

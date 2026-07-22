@@ -18,6 +18,7 @@ export type ColoredOutlineDocument = {
   readonly sourceHash: string;
   readonly featureEvidenceFingerprint: string;
   readonly diagnosticsFingerprint: string;
+  readonly safetyNotes: readonly string[];
   readonly layers: readonly {
     readonly id: string;
     readonly order: number;
@@ -38,6 +39,9 @@ export type ColoredDocumentDeadlineOptions = {
 };
 
 export type ColoredDocumentCheckpoint = (label: string) => void;
+
+const MAX_SAFETY_NOTES = 16;
+const MAX_SAFETY_NOTE_LENGTH = 200;
 
 export function coloredDocumentCheckpoint(
   deadline: number,
@@ -64,6 +68,25 @@ function copyContour(contour: FeatureContour, checkpoint: ColoredDocumentCheckpo
     boundsMm: { ...contour.boundsMm },
     areaMm2: contour.areaMm2,
   };
+}
+
+function copySafetyNotes(
+  notes: readonly string[],
+  checkpoint: ColoredDocumentCheckpoint,
+): readonly string[] {
+  if (!Array.isArray(notes) || notes.length > MAX_SAFETY_NOTES) {
+    throw new RangeError('Colored canonical safety note count is out of bounds or invalid');
+  }
+  const seen = new Set<string>();
+  return notes.map((note) => {
+    checkpoint('canonical:safety-note-loop');
+    if (typeof note !== 'string' || note.length === 0 || note.length > MAX_SAFETY_NOTE_LENGTH
+      || /[\\/@\r\n\0]/.test(note) || /[\w.+-]+@[\w.-]+/.test(note) || seen.has(note)) {
+      throw new RangeError('Colored canonical safety note is private, contact-bearing, out of bounds, or invalid');
+    }
+    seen.add(note);
+    return note;
+  });
 }
 
 function documentFromValidatedResult(
@@ -93,6 +116,7 @@ function documentFromValidatedResult(
     sourceHash: result.sourceHash,
     featureEvidenceFingerprint: result.featureEvidenceFingerprint,
     diagnosticsFingerprint: diagnosticsFingerprint(result.diagnostics),
+    safetyNotes: copySafetyNotes(result.featureWarnings, checkpoint),
     layers,
   };
 }
@@ -124,6 +148,7 @@ function assertCanonicalShape(
     || document.layers.length > 24) {
     throw new RangeError('Colored canonical document fingerprint or layer count is invalid');
   }
+  copySafetyNotes(document.safetyNotes, checkpoint);
   const layerIds = new Set<string>(), featureIds = new Set<string>();
   for (const [position, layer] of document.layers.entries()) {
     checkpoint('canonical:validate-layer-loop');

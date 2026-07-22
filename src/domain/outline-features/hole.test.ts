@@ -166,6 +166,47 @@ describe('selectCentralHole', () => {
 });
 
 describe('selectSharedCentralHole', () => {
+  test('keeps each source central reliability band before comparing globally safe candidates', () => {
+    const exterior = square(30);
+    const result = selectSharedCentralHole([
+      {
+        ...request(exterior, [circularHole(8, 9), circularHole(4, 0.2)]),
+        layerWidthMm: 30,
+        planarDiameterMm: Math.hypot(30, 30),
+      },
+      {
+        ...request(exterior, [circularHole(7, 8), circularHole(3, 0.1)]),
+        layerWidthMm: 30,
+        planarDiameterMm: Math.hypot(30, 30),
+      },
+    ]);
+
+    expect(result[0].hole?.equivalentDiameterMm).toBeCloseTo(4, 2);
+    expect(result[1]).toEqual(result[0]);
+  });
+
+  test('recenters offset source evidence on the first request axis before shared containment', () => {
+    const exterior = square(40);
+    const result = selectSharedCentralHole([
+      { ...request(exterior, []), axisPoint: [2, -3] },
+      {
+        ...request(exterior, [{ outer: square(4, 6.25, 4.75) }]),
+        axisPoint: [6, 5],
+      },
+    ]);
+
+    expect(result[0].hole).toMatchObject({
+      boundsMm: { minX: 0, minY: -5, maxX: 4, maxY: -1 },
+      areaMm2: 16,
+      axisDistanceMm: 0,
+    });
+    expect(result[0].hole?.equivalentDiameterMm).toBeCloseTo(2 * Math.sqrt(16 / Math.PI), 10);
+    expect(result[0].hole?.outer).toEqual([
+      [4, -5], [4, -1], [0, -1], [0, -5],
+    ]);
+    expect(result[1]).toEqual(result[0]);
+  });
+
   test('copies the exact largest globally safe contour to every layer', () => {
     const outer = [[-10, -10], [10, -10], [10, 10], [-10, 10]] as const;
     const large = { outer: [[-3, -3], [3, -3], [3, 3], [-3, 3]] as const };

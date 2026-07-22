@@ -11,6 +11,34 @@ import type { MeshInspection, TriangleMesh } from '../domain/mesh/types';
 import type { MeshProblemReport, MeshRepairResult } from '../domain/mesh/types';
 import type { STLRepairMode } from '../domain/mesh/write-stl';
 
+export const OUTLINE_ARTIFACT_IDS = Object.freeze([
+  'colored-outline-document',
+  'cut-and-engrave.svg',
+  'cut-and-engrave.dxf',
+  'preview.pdf',
+  'exploded-view.pdf',
+  'shapecut-files.zip',
+  'package-verification',
+] as const);
+
+export type OutlineArtifactId = typeof OUTLINE_ARTIFACT_IDS[number];
+
+export function outlineArtifactFailureMessage(artifact: OutlineArtifactId): string {
+  return `Outline artifact ${artifact} could not be created.`;
+}
+
+export class OutlineArtifactError extends Error {
+  readonly name = 'OutlineArtifactError';
+  readonly code = 'ARTIFACT_FAILURE';
+
+  constructor(readonly artifact: OutlineArtifactId, options?: ErrorOptions) {
+    if (!(OUTLINE_ARTIFACT_IDS as readonly string[]).includes(artifact)) {
+      throw new RangeError('Outline artifact identity is outside the bounded public contract');
+    }
+    super(outlineArtifactFailureMessage(artifact), options);
+  }
+}
+
 export type SerializedMesh = TriangleMesh;
 export type AutomaticOutlineProgressTransport = AutomaticOutlineProgress | MessagePort;
 export type OutlinePackageTransfer = {

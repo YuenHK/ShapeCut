@@ -38,7 +38,10 @@ export type CentralHoleSelection =
   };
 
 type Segment = readonly [Point2, Point2];
-type QualifiedCandidate = SelectedCentralHole & { readonly minimum: Point2 };
+type QualifiedCandidate = SelectedCentralHole & {
+  readonly minimum: Point2;
+  readonly evidenceAreaMm2: number;
+};
 
 function checkDeadline(deadline: number, checkpoint?: () => void): void {
   checkpoint?.();
@@ -273,9 +276,18 @@ function qualifyCandidates(request: CentralHoleRequest, deadline: number): Quali
       equivalentDiameterMm,
       axisDistanceMm,
       minimum: [candidateBounds.minX, candidateBounds.minY],
+      evidenceAreaMm2: evidenceArea,
     });
   }
   return qualified;
+}
+
+function qualifyCentralCandidates(request: CentralHoleRequest, deadline: number): QualifiedCandidate[] {
+  const qualified = qualifyCandidates(request, deadline);
+  if (qualified.length === 0) return qualified;
+  const nearest = Math.min(...qualified.map((candidate) => candidate.axisDistanceMm));
+  const centralBand = Math.max(0.5, request.layerWidthMm * 0.02);
+  return qualified.filter((candidate) => candidate.axisDistanceMm <= nearest + centralBand + 1e-12);
 }
 
 function compareQualifiedCandidates(left: QualifiedCandidate, right: QualifiedCandidate): number {
@@ -286,8 +298,35 @@ function compareQualifiedCandidates(left: QualifiedCandidate, right: QualifiedCa
 }
 
 function withoutPrivateSortEvidence(candidate: QualifiedCandidate): SelectedCentralHole {
-  const { minimum: _minimum, ...hole } = candidate;
+  const { minimum: _minimum, evidenceAreaMm2: _evidenceAreaMm2, ...hole } = candidate;
   return hole;
+}
+
+function alignCandidateToAxis(
+  candidate: QualifiedCandidate,
+  axisPoint: Point2,
+  deadline: number,
+): QualifiedCandidate {
+  const sourceArea = signedArea(candidate.outer, deadline);
+  const sourceCenter = centroid(candidate.outer, sourceArea, deadline);
+  const offsetX = axisPoint[0] - sourceCenter[0], offsetY = axisPoint[1] - sourceCenter[1];
+  const outer = candidate.outer.map(([x, y], index): Point2 => {
+    if ((index & 63) === 0) checkDeadline(deadline);
+    return [x + offsetX, y + offsetY];
+  });
+  const alignedArea = signedArea(outer, deadline);
+  const areaMm2 = Math.abs(alignedArea);
+  const alignedCenter = centroid(outer, alignedArea, deadline);
+  const candidateBounds = bounds(outer, deadline);
+  return {
+    outer,
+    boundsMm: candidateBounds,
+    areaMm2,
+    equivalentDiameterMm: 2 * Math.sqrt(candidate.evidenceAreaMm2 / Math.PI),
+    axisDistanceMm: Math.hypot(alignedCenter[0] - axisPoint[0], alignedCenter[1] - axisPoint[1]),
+    minimum: [candidateBounds.minX, candidateBounds.minY],
+    evidenceAreaMm2: candidate.evidenceAreaMm2,
+  };
 }
 
 function contourKey(points: readonly Point2[], deadline: number): string {
@@ -305,11 +344,8 @@ function contourKey(points: readonly Point2[], deadline: number): string {
 
 export function selectCentralHole(request: CentralHoleRequest): CentralHoleSelection {
   const deadline = request.deadline ?? Infinity;
-  const qualified = qualifyCandidates(request, deadline);
-  if (qualified.length === 0) return omission();
-  const nearest = Math.min(...qualified.map((candidate) => candidate.axisDistanceMm));
-  const centralBand = Math.max(0.5, request.layerWidthMm * 0.02);
-  const central = qualified.filter((candidate) => candidate.axisDistanceMm <= nearest + centralBand + 1e-12);
+  const central = qualifyCentralCandidates(request, deadline);
+  if (central.length === 0) return omission();
   central.sort(compareQualifiedCandidates);
   checkDeadline(deadline);
   return { hole: withoutPrivateSortEvidence(central[0]) };
@@ -322,7 +358,11 @@ export function selectSharedCentralHole(
     throw new RangeError('Shared central hole selection requires between one and twenty-four layers');
   }
   const deadline = Math.min(...requests.map((request) => request.deadline ?? Infinity));
-  const candidates = requests.flatMap((request) => qualifyCandidates(request, deadline));
+  // Ordered extraction requests share one coordinate space. The first layer's axis is canonical
+  // when request evidence differs; every source contour is recentered there before safety checks.
+  const commonAxisPoint = requests[0].axisPoint;
+  const candidates = requests.flatMap((request) => qualifyCentralCandidates(request, deadline))
+    .map((candidate) => alignCandidateToAxis(candidate, commonAxisPoint, deadline));
   candidates.sort(compareQualifiedCandidates);
   const contourKeys = new Set<string>();
   const uniqueCandidates = candidates.filter((candidate) => {

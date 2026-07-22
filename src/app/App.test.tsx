@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { AutomaticOutlineResult } from '../domain/pipeline/automatic-outline-pipeline';
 import type { OneClickConverterServices, OutlineDownloads } from './OneClickConverter';
+import { OutlineArtifactError } from '../workers/geometry-api';
 import { App, createDownloadUrls } from './App';
 
 const services: OneClickConverterServices = {
@@ -28,10 +29,17 @@ describe('App', () => {
     Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: create });
     Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revoke });
 
-    expect(() => createDownloadUrls({
-      zip: new Uint8Array([1]), cutSvg: '<svg/>', cutDxf: 'DXF',
-      previewPdf: new Uint8Array([2]), explodedViewPdf: new Uint8Array([3]),
-    }, 'spinner.stl')).toThrow('URL quota');
+    let failure: unknown;
+    try {
+      createDownloadUrls({
+        zip: new Uint8Array([1]), cutSvg: '<svg/>', cutDxf: 'DXF',
+        previewPdf: new Uint8Array([2]), explodedViewPdf: new Uint8Array([3]),
+      }, 'spinner.stl');
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(OutlineArtifactError);
+    expect(failure).toMatchObject({ artifact: 'cut-and-engrave.dxf' });
     expect(revoke).toHaveBeenNthCalledWith(1, 'blob:zip');
     expect(revoke).toHaveBeenNthCalledWith(2, 'blob:svg');
     expect(revoke).toHaveBeenCalledTimes(2);
@@ -67,7 +75,7 @@ describe('App', () => {
     expect(() => createDownloadUrls({
       zip: new Uint8Array([1]), cutSvg: '<svg/>', cutDxf: 'DXF',
       previewPdf: new Uint8Array([2]), explodedViewPdf: new Uint8Array([3]),
-    })).toThrow('URL quota');
+    })).toThrow(OutlineArtifactError);
     expect(revoke).toHaveBeenCalledTimes(2);
     expect(revoke).toHaveBeenNthCalledWith(2, 'blob:svg');
   });

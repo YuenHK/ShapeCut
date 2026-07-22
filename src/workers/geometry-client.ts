@@ -20,6 +20,12 @@ import type {
   OutlinePackageTransfer,
   SerializedMesh,
 } from './geometry-api';
+import {
+  OUTLINE_ARTIFACT_IDS,
+  OutlineArtifactError,
+  outlineArtifactFailureMessage,
+  type OutlineArtifactId,
+} from './geometry-api';
 
 export class SupersededError extends Error {
   readonly name = 'SupersededError';
@@ -230,6 +236,7 @@ function dynamicApi(
       try { return await getRemote().packageOutline(result, deadline); }
       catch (error) {
         if (isSerializedAutomaticOutlineError(error)) throw new AutomaticOutlineError(error.code, error.message);
+        if (isSerializedOutlineArtifactError(error)) throw new OutlineArtifactError(error.artifact);
         throw error;
       }
     },
@@ -279,4 +286,24 @@ export function isSerializedAutomaticOutlineError(
     && typeof (error as { readonly code?: unknown }).code === 'string'
     && AUTOMATIC_OUTLINE_ERROR_CODES.has((error as { readonly code: string }).code)
     && typeof (error as { readonly message?: unknown }).message === 'string';
+}
+
+const OUTLINE_ARTIFACT_ID_SET: ReadonlySet<string> = new Set(OUTLINE_ARTIFACT_IDS);
+
+export function isSerializedOutlineArtifactError(
+  error: unknown,
+): error is {
+  readonly name: 'OutlineArtifactError';
+  readonly code: 'ARTIFACT_FAILURE';
+  readonly artifact: OutlineArtifactId;
+  readonly message: string;
+} {
+  if (typeof error !== 'object' || error === null
+    || (error as { readonly name?: unknown }).name !== 'OutlineArtifactError'
+    || (error as { readonly code?: unknown }).code !== 'ARTIFACT_FAILURE'
+    || typeof (error as { readonly artifact?: unknown }).artifact !== 'string'
+    || !OUTLINE_ARTIFACT_ID_SET.has((error as { readonly artifact: string }).artifact)
+    || typeof (error as { readonly message?: unknown }).message !== 'string') return false;
+  const artifact = (error as { readonly artifact: OutlineArtifactId }).artifact;
+  return (error as { readonly message: string }).message === outlineArtifactFailureMessage(artifact);
 }

@@ -17,7 +17,14 @@ import { writeBinarySTL } from '../domain/mesh/write-stl';
 import { createOutlinePackage } from '../export/outline-package';
 import { nearLimitColoredResult } from '../export/colored-outline-test-fixture';
 import { setHoleCandidateProbeForTesting } from '../domain/outline-2.5d/extract';
-import type { GeometryApi, ImportRepairAnalysis, MeshAnalysis, OutlinePackageTransfer } from './geometry-api';
+import {
+  OutlineArtifactError,
+  type GeometryApi,
+  type ImportRepairAnalysis,
+  type MeshAnalysis,
+  type OutlineArtifactId,
+  type OutlinePackageTransfer,
+} from './geometry-api';
 
 let nearLimitPackageWorkload: ReturnType<typeof nearLimitColoredResult> | undefined;
 const acceptanceProbeEnabled = new URL(globalThis.location.href).searchParams.get('shapecut-acceptance') === '1';
@@ -103,11 +110,13 @@ const geometryApi: GeometryApi = {
   async packageOutline(result, deadline = Date.now() + 30_000) {
     let output: Awaited<ReturnType<typeof createOutlinePackage>>;
     let acknowledgedPdfStart = false;
+    let activeArtifact: OutlineArtifactId = 'colored-outline-document';
     try {
       const packageInput = nearLimitPackageWorkload ?? result;
       nearLimitPackageWorkload = undefined;
       output = await createOutlinePackage(packageInput, deadline, {
         onCheckpoint: (label) => {
+          activeArtifact = artifactForPackageCheckpoint(label, activeArtifact);
           if (acknowledgedPdfStart || label !== 'pdf:create:before') return;
           acknowledgedPdfStart = true;
           globalThis.postMessage({ type: 'SHAPECUT_PACKAGE_CHECKPOINT', label });
@@ -117,7 +126,13 @@ const geometryApi: GeometryApi = {
       if (error instanceof Error && /deadline|runtime|time limit/i.test(error.message)) {
         throw { name: 'AutomaticOutlineError', code: 'TIME_LIMIT', message: '模型處理超出時間上限' };
       }
-      throw error;
+      const artifactError = new OutlineArtifactError(activeArtifact, { cause: error });
+      throw {
+        name: artifactError.name,
+        code: artifactError.code,
+        artifact: artifactError.artifact,
+        message: artifactError.message,
+      };
     }
     const packaged: OutlinePackageTransfer = {
       zip: output.zip,
@@ -200,6 +215,22 @@ const geometryApi: GeometryApi = {
     return quantizeHeightField(field, levels, options);
   },
 };
+
+function artifactForPackageCheckpoint(
+  label: string,
+  current: OutlineArtifactId,
+): OutlineArtifactId {
+  if (label.startsWith('colored-package:verify')) return 'package-verification';
+  if (label === 'colored-package:svg:before') return 'cut-and-engrave.svg';
+  if (label === 'colored-package:dxf:before') return 'cut-and-engrave.dxf';
+  if (label === 'colored-package:preview-pdf:before') return 'preview.pdf';
+  if (label === 'colored-package:exploded-pdf:before') return 'exploded-view.pdf';
+  if (label === 'colored-package:zip:before') return 'shapecut-files.zip';
+  if (label === 'colored-package:create:start' || label.startsWith('canonical:')) {
+    return 'colored-outline-document';
+  }
+  return current;
+}
 
 function meshBuffers(...meshes: readonly TriangleMesh[]): Transferable[] {
   return meshes.flatMap((mesh) => [mesh.positions.buffer, mesh.indices.buffer]);

@@ -7,6 +7,7 @@ import {
 } from '../domain/pipeline/automatic-outline-pipeline';
 import type { OutlinePreviewPayload } from '../domain/outline-features/types';
 import { SupersededError } from '../workers/geometry-client';
+import { OutlineArtifactError, type OutlineArtifactId } from '../workers/geometry-api';
 import { MAX_STL_BYTES } from '../domain/mesh/parse-stl';
 import { OutlineProcessViewport } from '../preview/OutlineProcessViewport';
 import { shutdownOutlineProcessRendererPool, warmOutlineProcessRenderer } from '../preview/outline-process-scene';
@@ -24,7 +25,14 @@ export type OneClickViewState =
   | { readonly kind: 'upload' }
   | { readonly kind: 'processing'; readonly fileName: string; readonly stage: AutomaticOutlineProgressStage; readonly preview?: OutlinePreviewPayload }
   | { readonly kind: 'result'; readonly fileName: string; readonly result: AutomaticOutlineResult; readonly downloads: OutlineDownloads }
-  | { readonly kind: 'failure'; readonly fileName?: string; readonly message: string };
+  | {
+    readonly kind: 'failure';
+    readonly fileName?: string;
+    readonly message: string;
+    readonly artifact?: OutlineArtifactId;
+    readonly result?: AutomaticOutlineResult;
+    readonly preview?: OutlinePreviewPayload;
+  };
 
 export type OneClickConverterServices = {
   readonly convert: (
@@ -53,8 +61,21 @@ function failureMessage(error: unknown): string {
       TIME_LIMIT: '處理時間過長，已安全停止。請先簡化模型再試。',
     }[error.code];
   }
+  if (error instanceof OutlineArtifactError) {
+    return '輸出檔案未能完成；模型分析及安全提示已保留。';
+  }
   return '轉換未能完成，請選擇另一個 STL 再試。';
 }
+
+const ARTIFACT_LABELS: Readonly<Record<OutlineArtifactId, string>> = Object.freeze({
+  'colored-outline-document': '所有輸出檔案',
+  'cut-and-engrave.svg': 'cut-and-engrave.svg',
+  'cut-and-engrave.dxf': 'cut-and-engrave.dxf',
+  'preview.pdf': 'preview.pdf',
+  'exploded-view.pdf': 'exploded-view.pdf',
+  'shapecut-files.zip': 'shapecut-files.zip',
+  'package-verification': '輸出套件驗證',
+});
 
 function revokeDownloads(downloads: OutlineDownloads | undefined): void {
   if (!downloads) return;
@@ -212,6 +233,7 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
     setView({ kind: 'processing', fileName: file.name, stage: 'reading' });
     let lastProgressIndex = 0;
     let latestPreview: OutlinePreviewPayload | undefined;
+    let completedResult: AutomaticOutlineResult | undefined;
     try {
       const bytes = await readFile(file);
       if (current !== requestId.current) return;
@@ -223,6 +245,7 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
         setView({ kind: 'processing', fileName: file.name, stage: event.stage, preview: latestPreview });
       });
       if (current !== requestId.current) return;
+      completedResult = result;
       const downloads = await services.package(result, file.name);
       if (current !== requestId.current) {
         revokeDownloads(downloads);
@@ -232,7 +255,19 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
       setView({ kind: 'result', fileName: file.name, result, downloads });
     } catch (error) {
       if (current !== requestId.current || error instanceof SupersededError) return;
-      setView({ kind: 'failure', fileName: file.name, message: failureMessage(error) });
+      const artifact = completedResult
+        ? error instanceof OutlineArtifactError ? error.artifact : 'package-verification'
+        : undefined;
+      setView({
+        kind: 'failure',
+        fileName: file.name,
+        message: failureMessage(error),
+        ...(artifact ? { artifact } : {}),
+        ...(completedResult ? {
+          result: completedResult,
+          preview: completedResult.preview,
+        } : {}),
+      });
     }
   }, [releaseCurrentDownloads, services]);
 
@@ -291,7 +326,19 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
         <p className="result-badge failure">失敗</p>
         <h1 id="failure-title">這次未能完成</h1>
         <p>{view.message}</p>
+        {view.artifact && <p>受影響輸出：<strong>{ARTIFACT_LABELS[view.artifact]}</strong></p>}
       </div>
+      {view.preview && (
+        <div className="result-viewport failure-retained-preview">
+          <OutlineProcessViewport payload={view.preview} stage="packaging" />
+        </div>
+      )}
+      {view.result && presentationWarnings(view.result).length > 0 && (
+        <section className="warning-panel" aria-label="模型處理提示">
+          <strong>已保留的處理提示</strong>
+          <ul>{presentationWarnings(view.result).map((item) => <li key={item}>{item}</li>)}</ul>
+        </section>
+      )}
       <button className="primary-button" type="button" onClick={reset}>選擇另一個模型</button>
     </section>
   );
