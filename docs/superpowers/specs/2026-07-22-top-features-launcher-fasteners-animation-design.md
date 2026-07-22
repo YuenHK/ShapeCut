@@ -16,7 +16,30 @@ This design adds four coordinated capabilities to the existing automatic outline
 3. A safe, automatically degrading 3/2/1/0 screw-hole pattern through every layer.
 4. A minimum eight-second staged processing presentation with half-speed rotation.
 
-All geometry remains automatic. No new user-facing geometry controls are added.
+All geometry remains automatic. Material confirmation is required for every uploaded model, but no user-facing geometry controls are added.
+
+## Required Material Selection
+
+The current one-click request contains only STL bytes. This feature changes the flow so material evidence is available before kerf-sensitive geometry is created.
+
+1. The user selects or drops an STL.
+2. The tool validates the file name and size but does not start geometry processing.
+3. The tool shows a required material-profile chooser containing built-in profiles and saved profiles that already pass the existing material-safety schema.
+4. The user explicitly chooses one profile for this upload.
+5. Selection immediately starts automatic conversion; no separate geometry settings or start button are added.
+
+Changing the STL cancels the active job, clears the current material confirmation, and requires a new explicit material choice, even when the user intends to reuse the previous material. Invalid, forbidden, unknown-composition, or unapproved profiles remain unavailable under the existing material-safety rules.
+
+The worker request receives a bounded immutable manufacturing subset rather than the complete editable profile:
+
+- profile ID and display name;
+- thickness in millimetres;
+- kerf in millimetres;
+- minimum feature in millimetres;
+- minimum web in millimetres;
+- fit allowances needed by the existing compensation kernel.
+
+The worker validates this subset again after structured cloning. No operator name, batch notes, signature, contact data, or local repository metadata enters geometry fingerprints, warnings, or exports.
 
 ## Definitions
 
@@ -182,7 +205,7 @@ Lower-priority geometry cannot invalidate or shrink higher-priority geometry. La
 
 ### Cancellation
 
-Selecting another file cancels the previous worker job, preview, timers, delayed stage transitions, and final hold. No event or delayed completion from the old job may update the new job.
+Selecting another file cancels the previous worker job, preview, timers, delayed stage transitions, and final hold. No event or delayed completion from the old job may update the new job. File replacement also clears the previous material confirmation; the new job cannot start until a material is explicitly selected again.
 
 Reduced-motion preference continues to disable continuous rotation while retaining staged geometry and progress information. Minimum timing still applies so stage text remains understandable.
 
@@ -230,6 +253,7 @@ Every artifact must contain the same launcher, screw-hole, central-hole, and eng
 - identical top-two-layer launcher geometry and all-or-none safety behavior;
 - 3/2/1/0 screw degradation, 120/180-degree symmetry, maximum safe radius, thickest single-hole location, all-layer containment, and warning provenance;
 - material kerf compensation for launcher and 3.00 mm finished screw holes;
+- required per-upload material selection, valid-profile filtering, worker-boundary revalidation, and replacement-file material reset;
 - top-layer 12-red/12-blue limits, deterministic ranking, clipping, omission, array migration, and budgets;
 - canonical validation rejecting mixed or inconsistent geometry;
 - animation minimum total/stage times, half-speed rotation, monotonic events, cancellation, reduced motion, and slow-job behavior;
@@ -262,3 +286,4 @@ Every artifact must contain the same launcher, screw-hole, central-hole, and eng
 8. Result summaries and both PDFs communicate assembly-relevant warnings.
 9. All five downloads reconcile to the same canonical decisions, and ZIP still contains exactly four files.
 10. User STL files and local paths remain private and uncommitted.
+11. Every upload requires an explicit valid material selection before processing, and only the bounded manufacturing subset crosses the worker boundary.
