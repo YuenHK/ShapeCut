@@ -208,51 +208,84 @@ async function zipWithArtifacts(value: ColoredArtifactPayloads): Promise<Uint8Ar
   return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
 }
 
-function sharedHoleLayers(): WorkerResultSummary['coloredLayers'] {
+const CENTRAL_HOLE_OMISSION_WARNING = 'No reliable central axle hole was found; the hole was omitted.';
+
+function sharedHoleSummary(): WorkerResultSummary {
   const points = [[-2, -2], [2, -2], [2, 2], [-2, 2]] as const;
-  return Array.from({ length: 6 }, (_, index) => ({
-    id: `layer-${index + 1}`,
-    widthMm: 20,
-    planarDiameterMm: Math.hypot(20, 20),
-    cellSizeMm: 0.25,
-    exteriorPoints: [[-10, -10], [-10, 10], [10, 10], [10, -10]] as const,
-    hole: { status: 'retained' as const, points },
-    hasDeep: false,
-    hasLight: false,
-  }));
+  return {
+    mode: 'exact',
+    status: 'success',
+    removedComponentCount: 0,
+    featureWarnings: [],
+    coloredLayers: Array.from({ length: 6 }, (_, index) => ({
+      id: `layer-${index + 1}`,
+      widthMm: 20,
+      planarDiameterMm: Math.hypot(20, 20),
+      cellSizeMm: 0.25,
+      exteriorPoints: [[-10, -10], [-10, 10], [10, 10], [10, -10]] as const,
+      hole: { status: 'retained' as const, points },
+      hasDeep: false,
+      hasLight: false,
+    })),
+  };
 }
 
 describe('release E2E colored artifact parsers', () => {
   it('accepts six identical retained central holes in bounded model-space evidence', () => {
-    expect(() => expectSharedCentralHoleGeometry(sharedHoleLayers())).not.toThrow();
+    expect(() => expectSharedCentralHoleGeometry(sharedHoleSummary())).not.toThrow();
   });
 
   it('accepts a warned all-layer central-hole omission', () => {
-    const omitted = sharedHoleLayers().map((layer) => ({
-      ...layer,
-      hole: { status: 'omitted' as const },
-    }));
+    const summary = sharedHoleSummary();
+    const omitted: WorkerResultSummary = {
+      ...summary,
+      status: 'warning',
+      featureWarnings: [CENTRAL_HOLE_OMISSION_WARNING],
+      coloredLayers: summary.coloredLayers.map((layer) => ({
+        ...layer,
+        hole: { status: 'omitted' as const },
+      })),
+    };
     expect(() => expectSharedCentralHoleGeometry(omitted)).not.toThrow();
   });
 
+  it('rejects all-layer central-hole omission without the canonical warning', () => {
+    const summary = sharedHoleSummary();
+    const missingWarning: WorkerResultSummary = {
+      ...summary,
+      status: 'warning',
+      coloredLayers: summary.coloredLayers.map((layer) => ({
+        ...layer,
+        hole: { status: 'omitted' as const },
+      })),
+    };
+    expect(() => expectSharedCentralHoleGeometry(missingWarning)).toThrow(/omission warning|required/i);
+  });
+
   it('rejects a mixed retained and omitted central-hole decision', () => {
-    const layers = sharedHoleLayers();
-    const mixed = layers.map((layer, index) => index === layers.length - 1 ? {
-      ...layer,
-      hole: { status: 'omitted' as const },
-    } : layer);
+    const summary = sharedHoleSummary();
+    const mixed: WorkerResultSummary = {
+      ...summary,
+      coloredLayers: summary.coloredLayers.map((layer, index) => index === summary.coloredLayers.length - 1 ? {
+        ...layer,
+        hole: { status: 'omitted' as const },
+      } : layer),
+    };
     expect(() => expectSharedCentralHoleGeometry(mixed)).toThrow(/retain every layer|omit every layer|shared/i);
   });
 
   it('rejects one shifted retained central hole before artifact layout', () => {
-    const layers = sharedHoleLayers();
-    const shifted = layers.map((layer, index) => index === layers.length - 1 ? {
-      ...layer,
-      hole: {
-        ...layer.hole,
-        points: layer.hole.points?.map(([x, y]) => [x + 1, y] as const),
-      },
-    } : layer);
+    const summary = sharedHoleSummary();
+    const shifted: WorkerResultSummary = {
+      ...summary,
+      coloredLayers: summary.coloredLayers.map((layer, index) => index === summary.coloredLayers.length - 1 ? {
+        ...layer,
+        hole: {
+          ...layer.hole,
+          points: layer.hole.points?.map(([x, y]) => [x + 1, y] as const),
+        },
+      } : layer),
+    };
 
     expect(() => expectSharedCentralHoleGeometry(shifted))
       .toThrow(/central hole.*identical|shared/i);

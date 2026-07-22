@@ -156,6 +156,7 @@ export type WorkerResultSummary = {
   readonly mode: 'exact' | 'outline-2.5d';
   readonly status: 'success' | 'warning';
   readonly removedComponentCount: number;
+  readonly featureWarnings: readonly string[];
   readonly coloredLayers: readonly {
     readonly id: string;
     readonly widthMm: number;
@@ -177,6 +178,9 @@ export type WorkerResultSummary = {
 
 const MAX_SHARED_HOLE_LAYER_COUNT = 24;
 const MAX_SHARED_HOLE_POINT_COUNT = 4096;
+const MAX_FEATURE_WARNING_COUNT = 16;
+const MAX_FEATURE_WARNING_LENGTH = 200;
+const CENTRAL_HOLE_OMISSION_WARNING = 'No reliable central axle hole was found; the hole was omitted.';
 
 function contourSignature(points: readonly (readonly [number, number])[]): string {
   if (points.length < 3 || points.length > MAX_SHARED_HOLE_POINT_COUNT
@@ -187,10 +191,16 @@ function contourSignature(points: readonly (readonly [number, number])[]): strin
 }
 
 export function expectSharedCentralHoleGeometry(
-  layers: WorkerResultSummary['coloredLayers'],
+  summary: Pick<WorkerResultSummary, 'coloredLayers' | 'featureWarnings'>,
 ): void {
+  const { coloredLayers: layers, featureWarnings } = summary;
   if (layers.length === 0 || layers.length > MAX_SHARED_HOLE_LAYER_COUNT) {
     throw new Error('Shared central-hole evidence exceeds the bounded layer contract');
+  }
+  if (featureWarnings.length > MAX_FEATURE_WARNING_COUNT
+    || featureWarnings.some((warning) => typeof warning !== 'string'
+      || warning.length === 0 || warning.length > MAX_FEATURE_WARNING_LENGTH)) {
+    throw new Error('Shared central-hole evidence exceeds the bounded feature-warning contract');
   }
   const retainedHoleSignatures = layers.flatMap((layer) => {
     if (layer.hole.status !== 'retained') return [];
@@ -202,6 +212,9 @@ export function expectSharedCentralHoleGeometry(
   }
   if (retainedHoleSignatures.length !== 0 && retainedHoleSignatures.length !== layers.length) {
     throw new Error('Shared central-hole decision must retain every layer or omit every layer');
+  }
+  if (retainedHoleSignatures.length === 0 && !featureWarnings.includes(CENTRAL_HOLE_OMISSION_WARNING)) {
+    throw new Error('All-layer central-hole omission requires the canonical omission warning');
   }
 }
 
@@ -1505,6 +1518,7 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
       mode: 'exact' | 'outline-2.5d';
       status: 'success' | 'warning';
       removedComponentCount: number;
+      featureWarnings: string[];
       coloredLayers: Array<{
         id: string;
         widthMm: number;
@@ -1556,6 +1570,12 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
         && (value.status === 'success' || value.status === 'warning')
         && Number.isSafeInteger(value.removedComponentCount)
         && Array.isArray(value.coloredLayers)) {
+        const featureWarnings = Array.isArray(value.featureWarnings)
+          && value.featureWarnings.length <= 16
+          && value.featureWarnings.every((warning) => typeof warning === 'string'
+            && warning.length > 0 && warning.length <= 200)
+          ? value.featureWarnings as string[]
+          : undefined;
         const layers = value.coloredLayers.flatMap((item): ProbeSummary['coloredLayers'] => {
           if (typeof item !== 'object' || item === null) return [];
           const layer = item as Record<string, unknown>;
@@ -1597,10 +1617,11 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
             hasLight: typeof layer.lightFeature === 'object' && layer.lightFeature !== null,
           }];
         });
-        if (layers.length === value.coloredLayers.length) state.results.push({
+        if (featureWarnings && layers.length === value.coloredLayers.length) state.results.push({
           mode: value.mode,
           status: value.status,
           removedComponentCount: value.removedComponentCount as number,
+          featureWarnings: [...featureWarnings],
           coloredLayers: layers,
         });
         return;

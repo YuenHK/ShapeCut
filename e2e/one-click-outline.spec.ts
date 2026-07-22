@@ -38,7 +38,7 @@ for (const fixture of fixtures) {
     const probe = await readWorkerProbeState(page);
     await expect(viewport).toHaveAttribute('data-layer-count', String(output.layers.length));
     expectFiniteClosedSingleContours(output);
-    expectSharedCentralHoleGeometry(runtime.coloredLayers);
+    expectSharedCentralHoleGeometry(runtime);
     expect(output.zipRecords.map(({ name }) => name).sort()).toEqual([
       'cut-and-engrave.dxf',
       'cut-and-engrave.svg',

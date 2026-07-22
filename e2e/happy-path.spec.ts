@@ -94,7 +94,7 @@ test('synthetic holed and stepped geometry reconciles black, red, and blue roles
   const output = await downloadAndInspectOutline(page);
   const runtime = await readLatestWorkerResultSummary(page);
   expect(output.layers).toHaveLength(6);
-  expectSharedCentralHoleGeometry(runtime.coloredLayers);
+  expectSharedCentralHoleGeometry(runtime);
   const blackByLayer = output.layers.map((layer) => output.entities.filter((entity) => (
     entity.physicalLayerId === layer.id && entity.role === 'CUT_BLACK'
   )).length);
