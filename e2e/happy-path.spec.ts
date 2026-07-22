@@ -1,7 +1,15 @@
 import { expect, test } from '@playwright/test';
 import { writeBinarySTL } from '../src/domain/mesh/write-stl';
 import type { TriangleMesh } from '../src/domain/mesh/types';
-import { downloadAndInspectOutline, expectFiniteClosedSingleContours, expectResult, selectModel } from './helpers';
+import {
+  downloadAndInspectOutline,
+  expectFiniteClosedSingleContours,
+  expectResult,
+  expectSharedCentralHoleGeometry,
+  installWorkerResultProbe,
+  readLatestWorkerResultSummary,
+  selectModel,
+} from './helpers';
 
 function holedSteppedPlate(): TriangleMesh {
   const positions: number[] = [];
@@ -76,6 +84,7 @@ test('synthetic holed and stepped geometry reconciles black, red, and blue roles
       return original(callback);
     };
   });
+  await installWorkerResultProbe(page);
   await page.goto('/');
   await selectModel(page, syntheticFixture);
   await expectResult(page, '需注意', '精確切片');
@@ -83,10 +92,14 @@ test('synthetic holed and stepped geometry reconciles black, red, and blue roles
   expect(await page.evaluate(() => (window as unknown as { __shapeCutAnimationFrames: number }).__shapeCutAnimationFrames)).toBe(0);
 
   const output = await downloadAndInspectOutline(page);
+  const runtime = await readLatestWorkerResultSummary(page);
+  expect(output.layers).toHaveLength(6);
+  expectSharedCentralHoleGeometry(runtime.coloredLayers);
   const blackByLayer = output.layers.map((layer) => output.entities.filter((entity) => (
     entity.physicalLayerId === layer.id && entity.role === 'CUT_BLACK'
   )).length);
-  expect(blackByLayer.filter((count) => count === 2)).toHaveLength(1);
+  expect(blackByLayer).toEqual(Array.from({ length: 6 }, () => 2));
+  expect(output.entityCounts.CUT_BLACK).toBe(12);
   expect(output.entityCounts.DEEP_RED).toBeGreaterThanOrEqual(1);
   expect(output.entityCounts.LIGHT_BLUE).toBeGreaterThanOrEqual(1);
   expect(output.previewPdf.geometryRecords.map(({ role }) => role))
@@ -103,7 +116,7 @@ test('synthetic holed and stepped geometry has an actual no-WebGL SVG fallback',
   await expectResult(page, '需注意', '精確切片');
   const fallback = page.getByRole('img', { name: /SVG fallback/ });
   await expect(fallback).toBeVisible();
-  await expect(fallback.locator('path[data-role="CUT_BLACK"]')).toHaveCount(7);
+  await expect(fallback.locator('path[data-role="CUT_BLACK"]')).toHaveCount(12);
   await expect(fallback.locator('path[data-role="DEEP_RED"]')).not.toHaveCount(0);
   await expect(fallback.locator('path[data-role="LIGHT_BLUE"]')).not.toHaveCount(0);
 });

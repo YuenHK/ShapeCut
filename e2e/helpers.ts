@@ -175,6 +175,36 @@ export type WorkerResultSummary = {
   }[];
 };
 
+const MAX_SHARED_HOLE_LAYER_COUNT = 24;
+const MAX_SHARED_HOLE_POINT_COUNT = 4096;
+
+function contourSignature(points: readonly (readonly [number, number])[]): string {
+  if (points.length < 3 || points.length > MAX_SHARED_HOLE_POINT_COUNT
+    || points.some((point) => point.length !== 2 || !point.every(Number.isFinite))) {
+    throw new Error('Shared central-hole evidence exceeds the bounded point geometry contract');
+  }
+  return points.map(([x, y]) => `${x.toFixed(6)},${y.toFixed(6)}`).join(';');
+}
+
+export function expectSharedCentralHoleGeometry(
+  layers: WorkerResultSummary['coloredLayers'],
+): void {
+  if (layers.length === 0 || layers.length > MAX_SHARED_HOLE_LAYER_COUNT) {
+    throw new Error('Shared central-hole evidence exceeds the bounded layer contract');
+  }
+  const retainedHoleSignatures = layers.flatMap((layer) => {
+    if (layer.hole.status !== 'retained') return [];
+    if (!layer.hole.points) throw new Error('Retained central-hole evidence is missing point geometry');
+    return [contourSignature(layer.hole.points)];
+  });
+  if (new Set(retainedHoleSignatures).size > 1) {
+    throw new Error('Retained central holes must be identical in model space');
+  }
+  if (retainedHoleSignatures.length !== 0 && retainedHoleSignatures.length !== layers.length) {
+    throw new Error('Shared central-hole decision must retain every layer or omit every layer');
+  }
+}
+
 export type WorkerHoleCandidateEvidence = {
   readonly extractionMode: 'exact' | 'projected';
   readonly layerId: string;

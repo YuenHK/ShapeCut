@@ -2,12 +2,14 @@ import JSZip from 'jszip';
 import { decodePDFRawStream, PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFNumber, PDFRawStream, PDFRef, PDFString, rgb } from 'pdf-lib';
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
+  expectSharedCentralHoleGeometry,
   inspectColoredArtifacts,
   parseColoredOutlineDxfArtifact,
   parseColoredOutlinePdf,
   parseColoredOutlineSvgArtifact,
   parseColoredZipRecords,
   type ColoredArtifactPayloads,
+  type WorkerResultSummary,
 } from '../../e2e/helpers';
 import { coloredResult } from '../export/colored-outline-test-fixture';
 import { createOutlinePackage, type ColoredOutlinePackage } from '../export/outline-package';
@@ -206,7 +208,56 @@ async function zipWithArtifacts(value: ColoredArtifactPayloads): Promise<Uint8Ar
   return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
 }
 
+function sharedHoleLayers(): WorkerResultSummary['coloredLayers'] {
+  const points = [[-2, -2], [2, -2], [2, 2], [-2, 2]] as const;
+  return Array.from({ length: 6 }, (_, index) => ({
+    id: `layer-${index + 1}`,
+    widthMm: 20,
+    planarDiameterMm: Math.hypot(20, 20),
+    cellSizeMm: 0.25,
+    exteriorPoints: [[-10, -10], [-10, 10], [10, 10], [10, -10]] as const,
+    hole: { status: 'retained' as const, points },
+    hasDeep: false,
+    hasLight: false,
+  }));
+}
+
 describe('release E2E colored artifact parsers', () => {
+  it('accepts six identical retained central holes in bounded model-space evidence', () => {
+    expect(() => expectSharedCentralHoleGeometry(sharedHoleLayers())).not.toThrow();
+  });
+
+  it('accepts a warned all-layer central-hole omission', () => {
+    const omitted = sharedHoleLayers().map((layer) => ({
+      ...layer,
+      hole: { status: 'omitted' as const },
+    }));
+    expect(() => expectSharedCentralHoleGeometry(omitted)).not.toThrow();
+  });
+
+  it('rejects a mixed retained and omitted central-hole decision', () => {
+    const layers = sharedHoleLayers();
+    const mixed = layers.map((layer, index) => index === layers.length - 1 ? {
+      ...layer,
+      hole: { status: 'omitted' as const },
+    } : layer);
+    expect(() => expectSharedCentralHoleGeometry(mixed)).toThrow(/retain every layer|omit every layer|shared/i);
+  });
+
+  it('rejects one shifted retained central hole before artifact layout', () => {
+    const layers = sharedHoleLayers();
+    const shifted = layers.map((layer, index) => index === layers.length - 1 ? {
+      ...layer,
+      hole: {
+        ...layer.hole,
+        points: layer.hole.points?.map(([x, y]) => [x + 1, y] as const),
+      },
+    } : layer);
+
+    expect(() => expectSharedCentralHoleGeometry(shifted))
+      .toThrow(/central hole.*identical|shared/i);
+  });
+
   it('parses every SVG role group/entity and every DXF layer/entity in encounter order', () => {
     const svg = parseColoredOutlineSvgArtifact(output.cutSvg);
     const dxf = parseColoredOutlineDxfArtifact(output.cutDxf);
