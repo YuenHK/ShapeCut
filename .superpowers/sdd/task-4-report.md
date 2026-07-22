@@ -1,130 +1,90 @@
-# Task 4 Report: Expose the Real Model Behind a Compact Upper-Left Status Overlay
+# Task 4 Report — Colored ShapeCut Artifact Set
 
-## Files changed
+## Status
 
-- `src/app/OneClickConverter.tsx`
-  - Split processing markup into a neutral pre-geometry `.processing-loading-panel` and a post-preview `.processing-status-overlay`.
-  - Kept exactly one `processing-title` label target in either branch.
-  - Kept status announcements and progress only once real preview geometry exists.
-- `src/app/OneClickConverter.test.tsx`
-  - Added assertions proving that no preview/overlay is fabricated before preview emission.
-  - Added assertions proving the real viewport and compact status overlay replace the neutral loader after preview emission.
-  - Updated progress coverage for the truthful neutral pre-geometry phase.
-- `src/app/App.browser.test.tsx`
-  - Holds conversion at the processing stage and measures real Chromium layout at 1024×768 and 390×844.
-  - Verifies upper-left placement, less than 35% card-area coverage, mobile offsets/width, reachable file-change stacking, and the default non-drag cursor.
-  - Imports the production stylesheet so geometry assertions exercise the actual layout.
-- `src/styles.css`
-  - Replaced the centered near-opaque foreground with the approved compact upper-left overlay and mobile override.
-  - Added the neutral loading panel and placed the file-change control in a reachable lower-right stacking layer.
-  - Removed obsolete foreground/progress-checklist styles and the stale WebGL `ew-resize`/focus-visible rules left after manual camera controls were removed.
+Complete on base `8f0b4ee`. Commit subject: `feat: export colored ShapeCut artifact set`; the resulting hash is reported in the handoff.
 
-## TDD evidence
+## Implemented
 
-### Baseline
+- Added schema-v2 `ColoredOutlineDocument` creation and validation from the validated runtime `AutomaticOutlineResult`. It reconciles source, feature-evidence, removal-evidence, and diagnostics fingerprints; ordered layer identity/Z spans; role cardinality; contour IDs/orientation/containment; and direct diagnostics evidence.
+- Enforced the exact physical roles `CUT_BLACK`, `DEEP_RED`, and `LIGHT_BLUE`. Each layer has one black exterior, at most one black central hole, and at most one red/blue feature.
+- Added one shared ordered entity stream used by SVG and DXF. SVG emits exact `#000000`, `#E5484D`, and `#3A78D4`; DXF emits ACI `7`, `1`, and `5` plus matching true-color group `420` values.
+- Added deterministic `preview.pdf` with flat 1:1 sheet layout, role colors, layer labels, scale, and disclaimer.
+- Added deterministic `exploded-view.pdf` with one-page isometric separation, central axis, increasing layer order, thickness, X/Y dimensions, equivalent central-hole diameter (or `—`), and legend. Both PDFs use fixed fonts and fixed creation/modification dates.
+- Replaced the colored public package contract with exactly five payload keys: SVG, DXF, preview PDF, exploded PDF, and ZIP. The ZIP contains exactly `cut-and-engrave.svg`, `cut-and-engrave.dxf`, `preview.pdf`, and `exploded-view.pdf`; no JSON or manifest is returned or zipped.
+- Verification regenerates and parses canonical SVG/DXF, regenerates and loads both PDFs, scans public names/text/metadata, enumerates raw ZIP central-directory records and JSZip original/sanitized names, reads all four entries, and requires byte identity with the four individual downloads.
+- Preserved the one caller-owned absolute deadline through document validation, entity traversal, SVG/DXF parse loops, both PDF save/load phases, ZIP generation/raw enumeration/load/read, byte comparison, and final return checkpoints.
+- Updated worker transfer shape and transfer list for ZIP plus both PDF buffers. Browser coverage supersedes worst-case packaging, proves `SupersededError`, terminates/recreates the worker, and completes a replacement request.
 
-Command:
+## TDD Evidence
 
-```sh
-npm test
-```
+- Initial RED: the new canonical/PDF suites failed because `colored-outline-document` and `exploded-pdf` did not exist; package tests also exposed the legacy one-role, five-record JSON/manifest output and rejected central-hole semantics.
+- Canonical GREEN expanded through role/cardinality, identity/order, diagnostics/removal fingerprint, direct-span, containment/orientation, privacy, mutation, and deadline regressions.
+- Worker RED received the obsolete `manifestJson` field instead of `explodedViewPdf`; GREEN transfers the exact new shape and all three binary buffers.
+- Parser/deadline RED exposed missing loop checkpoints in SVG/DXF parsing and output byte comparisons; GREEN checks the shared deadline inside those loops.
+- Exploded-PDF RED exposed an average-bounds hole diameter; GREEN reports the area-equivalent diameter `2 * sqrt(area / pi)`, rounded to 3 decimals.
+- Review RED proved a forged fifth duplicate ZIP central-directory record was accepted because JSZip collapses duplicate names. GREEN directly parses the raw central directory, retains duplicate records, requires exactly four unique records, and shares the package deadline while scanning.
 
-Output before changes: 42 test files passed; 1104 tests passed.
+## Final Verification
 
-### Red
+- Focused unit/UI suite: 6 files, 438/438 tests passed.
+- Chromium worker suite: 1 file, 16/16 tests passed.
+- Full suite (run once after all fixes): 40 files, 1020/1020 tests passed.
+- `npm run typecheck`: exit 0, no diagnostics.
+- `git diff --check`: exit 0, no whitespace errors.
+- Hygiene check found no `__screenshots__` directory or generated user output under `src`.
 
-Command:
+## File-map Notes
 
-```sh
-npx vitest run src/app/OneClickConverter.test.tsx
-```
+- Added `src/export/colored-outline-test-fixture.ts` to share one authentic, validated colored runtime fixture across the new export/PDF tests.
+- The parent authorized the minimum UI contract ripple in `App`, `OneClickConverter`, and their tests: remove JSON, rename the existing PDF download to preview, add exploded PDF, use the exact artifact filenames, and clean up both PDF URLs. No Task 5 viewport or Task 6 visual/warning work was included.
+- `src/workers/geometry-client.ts` required no edit: its generic `GeometryApi` typing automatically adopts `OutlinePackageTransfer`, and its existing hard-cancellation/recreate behavior is exercised by the updated browser test.
+- Legacy `OutlinePackage` helpers remain exported only for the pre-existing safety/privacy regression suite; the worker and UI use the exact colored package and expose no legacy JSON/manifest payload.
 
-Output: 1 failed, 15 passed. The intended assertion failed because `.processing-loading-panel` was absent and the old shared `.processing-foreground` still rendered both phases.
+## Independent Review and Self-review
 
-### Green
-
-Command:
-
-```sh
-npx vitest run src/app/OneClickConverter.test.tsx
-```
-
-Output: 1 test file passed; 16 tests passed.
-
-Command:
-
-```sh
-npx vitest run src/app/OneClickConverter.test.tsx src/app/App.test.tsx
-```
-
-Output: 2 test files passed; 20 tests passed.
-
-### Review follow-up cycle
-
-The read-only reviewer identified that the truthful neutral loader had lost the prior live-region announcement. A new assertion for `role="status" aria-live="polite"` failed as intended (1 failed, 15 passed), then passed after the loading panel became a polite status. The same test now sends a backward `analyzing` event after visible `slicing` preview state and proves the overlay does not regress. Re-review found no remaining Critical or Important issues and returned **Ready to merge**.
-
-## Browser evidence
-
-Command:
-
-```sh
-npm run test:browser -- src/app/App.browser.test.tsx src/preview/OutlineProcessViewport.browser.test.tsx
-```
-
-Output: 2 Chromium test files passed; 13 tests passed.
-
-The app browser test measured the processing card and overlay from actual DOM rectangles. At desktop size it confirmed the overlay starts in the card's upper-left quadrant and occupies less than 35% of the card area. At 390×844 it confirmed the 10px top/left override, `calc(100% - 20px)` sizing (accounting for the card border), less than 35% area, and a visible file-change control above the viewport at z-index 3. It also confirmed the preview no longer advertises the removed drag interaction with an `ew-resize` cursor.
-
-The task brief's Playwright-like `page.locator().boundingBox()` sample is not implemented by the installed Vitest Browser runtime. The test therefore uses real-browser `getBoundingClientRect()` measurements for the same assertions; `page.viewport()` remains in use for responsive coverage.
-
-## Additional verification
-
-Command:
-
-```sh
-npm run typecheck
-```
-
-Output: exit 0.
-
-Command:
-
-```sh
-npm test
-```
-
-One standalone post-layout run passed all 42 test files and all 1104 tests. After the final accessibility-attribute change, two later full-suite runs each completed 1103/1104 but timed out in a different unrelated 5-second geometry test (`repair-mesh` once, `extract` once). Both complete files passed immediately in isolation: 17/17 and 34/34 respectively. The pre-change baseline also passed all 1104 tests. An earlier run executed concurrently with typecheck exhibited the same resource-sensitive timeout behavior.
-
-Command:
-
-```sh
-npm run build
-```
-
-Output: exit 0; TypeScript and Vite production build completed successfully.
-
-Command:
-
-```sh
-git diff --check
-```
-
-Output: clean.
-
-## Commit
-
-Included in `feat: keep processing model unobstructed`; the resulting commit hash is reported in the handoff.
-
-## Self-review
-
-- Confirmed `.processing-foreground`, `.progress-status`, and `.stage-list` are absent from production and tests.
-- Confirmed `.processing-status-overlay` only renders when `view.preview` is truthy and `.processing-loading-panel` only renders beforehand.
-- Confirmed the model viewport remains the full processing-card background and the compact overlay ignores pointer events.
-- Confirmed the file-change input remains keyboard focusable/reachable above the viewport stacking layer.
-- Confirmed both processing branches expose polite status announcements and visible preview stages reject backward progress.
-- Confirmed result-only layer selector behavior and user assets were not changed.
-- Confirmed the change is limited to the four Task 4 source/test/style files plus this required report.
+- Independent review reported one important finding and no critical/minor findings: duplicate ZIP central-directory records could be hidden by JSZip's name-keyed object. The raw central-directory verifier and regression above remediate it.
+- Self-review also added deadline-aware byte comparison, moved exploded-view bounds to trusted contours, tightened large-layer page scaling, confirmed fixed PDF metadata dates are inspected without load-time mutation, and removed an unused import.
+- Confirmed all public artifact text rejects machine power/speed/pass settings, material/production claims, source STL/JSON/manifest names, private paths, and email addresses.
 
 ## Concerns
 
-No Task 4 product concerns. The full suite has resource-sensitive 5-second geometry tests: final full-suite attempts timed out one unrelated test each, while both affected files passed immediately in isolation and the focused/component/browser/build gates are green. The browser suite continues to emit its existing expected WebGL context-loss diagnostic, and the app browser test emits two existing `null` stderr lines while still passing.
+- None blocking. The exporter intentionally fails closed on malformed, drifted, privacy-bearing, oversized, or deadline-exhausted input instead of emitting a partial package.
+
+---
+
+## Review Remediation (2026-07-21)
+
+This section supersedes the initial report where the review changed ZIP validation and the approved `LIGHT_BLUE` color.
+
+### Critical — Strict Raw ZIP Reconciliation
+
+- Replaced central-name-only inspection with a bounded canonical raw ZIP parser. It requires a final uncommented EOCD, one disk, exactly four non-ZIP64 central records, exact central offset/size/count reconciliation, and no archive bytes after EOCD.
+- Every central record now validates canonical raw filename bytes, flags, DEFLATE method, CRC32, compressed/uncompressed sizes, disk/attributes, and local-header offset. Only the four ASCII filename byte sequences emitted by ShapeCut are accepted; BOM, NUL, invalid encoding, noncanonical names, directory names, duplicate names, extra fields/comments, encryption, descriptors, and ZIP64 sentinels fail closed.
+- Every corresponding local header must have the expected signature and exactly match central version, flags, method, timestamp, raw name, CRC32, and sizes. Local data ranges must be contiguous from byte zero to the central directory, non-overlapping, in bounds, and free of gaps or hidden trailing records.
+- Each decompressed payload is read once as bytes, checked against the raw uncompressed size and a deadline-aware CRC32 calculation, then required byte-identical to its individual SVG/DXF/PDF download. Text payloads additionally require canonical UTF-8 before privacy scanning.
+- The canonical writer currently emits flags `0`, method `8`, complete local CRC/sizes, and no data descriptor/extra/comment; the verifier intentionally accepts only that known format.
+
+### Important — Approved Light Blue
+
+- Updated `LIGHT_BLUE` everywhere to `#3A78D4`: the canonical role map, SVG, DXF true-color `420` decimal `3832020`, preview/exploded PDF strokes, metadata, legends, and assertions.
+- A full-repository `rg` check for the superseded hex, decimal, and RGB component literals returned `OLD_BLUE_ZERO_MATCHES`.
+
+### Review RED/GREEN Evidence
+
+- Raw ZIP RED: 4 of 12 mutation cases were incorrectly accepted—local encryption bit, zero local sizes, forged matching central/local CRC, and descriptor bit without a descriptor. Central BOM, local-name mismatch, overlapping/out-of-range offsets, and ZIP64 were already rejected indirectly.
+- Deadline RED: the new local-record and decompressed-CRC loop checkpoint tests completed instead of expiring because those phases did not yet exist.
+- GREEN: all 12 mutations (including BOM, NUL, invalid UTF-8, directory name, encryption, size, CRC, name, overlap, range, ZIP64, and descriptor cases) are rejected, and both new deadline checkpoints expire inside the intended loops.
+- Blue RED: SVG, DXF, preview metadata, and exploded legend still emitted the superseded color. GREEN emits only `#3A78D4` / `3832020` and preserves ACI `5`.
+
+### Fresh Review Verification
+
+- Required export command: exit 0; 4 files, 438/438 tests passed.
+- Chromium worker command: exit 0; 1 file, 16/16 tests passed.
+- `npm run typecheck`: exit 0; no diagnostics.
+- Fresh `npm test`: exit 0; 40 files, 1034/1034 tests passed.
+- `git diff --check`: exit 0; no whitespace errors.
+
+### Remaining Concern
+
+- None blocking. ZIP acceptance is deliberately narrower than the general ZIP specification: archives not emitted in ShapeCut's canonical JSZip format are rejected even if another unzip tool could read them.
