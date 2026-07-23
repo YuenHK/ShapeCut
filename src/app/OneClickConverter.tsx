@@ -28,6 +28,7 @@ import {
   OutlineProcessViewport,
 } from '../preview/OutlineProcessViewport';
 import { shutdownOutlineProcessRendererPool, warmOutlineProcessRenderer } from '../preview/outline-process-scene';
+import { createStlPresentationPayload } from '../preview/stl-presentation';
 import {
   createProcessingTimeline,
   type ProcessingTimeline,
@@ -222,6 +223,7 @@ function launcherSummary(status: AutomaticOutlineResult['assembly']['launcher'][
 type ModelInputProps = Readonly<{
   compact?: boolean;
   dragActive?: boolean;
+  level: EffectLevel;
   onDragEnter?: () => void;
   onDragLeave?: () => void;
   onDrop?: () => void;
@@ -231,12 +233,39 @@ type ModelInputProps = Readonly<{
 function ModelInput({
   compact = false,
   dragActive = false,
+  level,
   onDragEnter,
   onDragLeave,
   onDrop,
   onFile,
 }: ModelInputProps) {
   const input = useRef<HTMLInputElement>(null);
+  const zone = useRef<HTMLLabelElement>(null);
+  const clearDragAttraction = useCallback(() => {
+    zone.current?.style.removeProperty('--drag-attract-x');
+    zone.current?.style.removeProperty('--drag-attract-y');
+  }, []);
+  const updateDragAttraction = useCallback((event: DragEvent<HTMLLabelElement>) => {
+    if (level === 'static') {
+      clearDragAttraction();
+      return;
+    }
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const x = Math.max(-12, Math.min(12, (event.clientX - (bounds.left + bounds.width / 2)) * 0.08));
+    const y = Math.max(-12, Math.min(12, (event.clientY - (bounds.top + bounds.height / 2)) * 0.08));
+    event.currentTarget.style.setProperty('--drag-attract-x', `${Number(x.toFixed(2))}px`);
+    event.currentTarget.style.setProperty('--drag-attract-y', `${Number(y.toFixed(2))}px`);
+  }, [clearDragAttraction, level]);
+  useEffect(() => {
+    if (!dragActive || level === 'static') clearDragAttraction();
+  }, [clearDragAttraction, dragActive, level]);
+  useEffect(() => {
+    const element = zone.current;
+    return () => {
+      element?.style.removeProperty('--drag-attract-x');
+      element?.style.removeProperty('--drag-attract-y');
+    };
+  }, []);
   const select = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (file) onFile(file);
@@ -250,23 +279,29 @@ function ModelInput({
   );
   const drop = (event: DragEvent<HTMLLabelElement>) => {
     event.preventDefault();
+    clearDragAttraction();
     onDrop?.();
     const file = event.dataTransfer.files[0];
     if (file) onFile(file);
   };
   return (
     <label
+      ref={zone}
       className="upload-zone"
       data-drag-active={String(dragActive)}
       onDragEnter={(event) => {
         event.preventDefault();
+        updateDragAttraction(event);
         onDragEnter?.();
       }}
       onDragLeave={(event) => {
         event.preventDefault();
         onDragLeave?.();
       }}
-      onDragOver={(event) => event.preventDefault()}
+      onDragOver={(event) => {
+        event.preventDefault();
+        updateDragAttraction(event);
+      }}
       onDrop={drop}
     >
       <span className="upload-icon" aria-hidden="true">↑</span>
@@ -279,10 +314,17 @@ function ModelInput({
   );
 }
 
-export function OneClickConverter({ services }: { readonly services: OneClickConverterServices }) {
+export function OneClickConverter({
+  services,
+  chromeTarget,
+}: {
+  readonly services: OneClickConverterServices;
+  readonly chromeTarget?: Element | null;
+}) {
   const [view, setView] = useState<OneClickViewState>({ kind: 'upload' });
   const [dragActive, setDragActive] = useState(false);
-  const effectLevel = useEffectLevel();
+  const [presentationPreview, setPresentationPreview] = useState<OutlinePreviewPayload | undefined>(undefined);
+  const effectLevel = useEffectLevel(view.kind === 'processing');
   const materials = selectableMaterials(services.materialProfiles);
   const requestId = useRef(0);
   const downloadsRef = useRef<OutlineDownloads | undefined>(undefined);
@@ -310,6 +352,22 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
     if (dragDepthRef.current === 0) setDragActive(false);
   }, []);
 
+  const clearPresentationPreview = useCallback(() => {
+    setPresentationPreview(undefined);
+  }, []);
+
+  const schedulePresentationPreview = useCallback((bytes: ArrayBuffer, current: number) => {
+    queueMicrotask(() => {
+      if (current !== requestId.current) return;
+      try {
+        const preview = createStlPresentationPayload(bytes);
+        if (current === requestId.current) setPresentationPreview(preview);
+      } catch {
+        if (current === requestId.current) setPresentationPreview(undefined);
+      }
+    });
+  }, []);
+
   useEffect(() => {
     warmOutlineProcessRenderer();
     return shutdownOutlineProcessRendererPool;
@@ -328,6 +386,15 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
     runtimeServices.cancel();
     releaseCurrentDownloads();
   }, [releaseCurrentDownloads, runtimeServices]);
+
+  useEffect(() => {
+    if (!presentationPreview) return;
+    if ((view.kind === 'processing' && view.preview)
+      || view.kind === 'result'
+      || (view.kind === 'failure' && view.preview)) {
+      clearPresentationPreview();
+    }
+  }, [clearPresentationPreview, presentationPreview, view]);
 
   const processFile = useCallback(async (fileName: string, bytes: ArrayBuffer, material: ManufacturingGeometryProfile) => {
     const current = ++requestId.current;
@@ -399,6 +466,7 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
 
   const selectFile = useCallback(async (file: File) => {
     const current = ++requestId.current;
+    clearPresentationPreview();
     timelineRef.current?.cancel();
     timelineRef.current = undefined;
     runtimeServices.cancel();
@@ -416,11 +484,12 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
       const bytes = await readFile(file);
       if (current !== requestId.current) return;
       setView({ kind: 'material', fileName: file.name, bytes });
+      schedulePresentationPreview(bytes, current);
     } catch (error) {
       if (current !== requestId.current) return;
       setView({ kind: 'failure', fileName: file.name, message: failureMessage(error) });
     }
-  }, [releaseCurrentDownloads, runtimeServices]);
+  }, [clearPresentationPreview, releaseCurrentDownloads, runtimeServices, schedulePresentationPreview]);
 
   const selectMaterial = useCallback((id: string) => {
     if (view.kind !== 'material') return;
@@ -430,6 +499,7 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
 
   const reset = () => {
     clearDrag();
+    clearPresentationPreview();
     requestId.current += 1;
     timelineRef.current?.cancel();
     timelineRef.current = undefined;
@@ -444,6 +514,7 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
       stage={stage}
       fileName={'fileName' in view ? view.fileName : undefined}
       level={effectLevel}
+      chromeTarget={chromeTarget}
     >
       {content}
     </AppleWorkbench>
@@ -457,6 +528,7 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
         <p>放入 STL，ShapeCut 會自動分析、簡化和切片，然後準備好通用外形檔案。</p>
       </div>
       <ModelInput
+        level={effectLevel}
         dragActive={dragActive}
         onDragEnter={enterDrag}
         onDragLeave={leaveDrag}
@@ -474,6 +546,11 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
       <p className="eyebrow">選擇製作材料</p>
       <h1 id="material-title">{view.fileName}</h1>
       <p>請選擇本次製作的材料，系統只會把所需的幾何資料傳送到處理程序。</p>
+      {presentationPreview && (
+        <div className="material-presentation-preview">
+          <OutlineProcessViewport payload={presentationPreview} stage="reading" effectLevel={effectLevel} />
+        </div>
+      )}
       <label className="material-picker">製作材料
         <select aria-label="選擇製作材料" defaultValue="" onChange={(event) => selectMaterial(event.target.value)}>
           <option value="" disabled>選擇製作材料</option>
@@ -482,7 +559,7 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
           ))}
         </select>
       </label>
-      <ModelInput compact onFile={(file) => void selectFile(file)} />
+      <ModelInput compact level={effectLevel} onFile={(file) => void selectFile(file)} />
     </section>
   );
 
@@ -493,18 +570,23 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
         <h1 id="reading-title">正在讀取模型</h1>
         <p className="file-name">{view.fileName}</p>
       </div>
-      <ModelInput compact onFile={(file) => void selectFile(file)} />
+      <ModelInput compact level={effectLevel} onFile={(file) => void selectFile(file)} />
     </section>
   );
 
   if (view.kind === 'processing') {
     const active = STAGES.indexOf(view.stage);
+    const visiblePreview = view.preview ?? presentationPreview;
     return frame(
-      <section className={`converter-card processing-card ${view.preview ? 'has-preview' : ''}`} aria-labelledby="processing-title">
-        {view.preview ? (
+      <section className={`converter-card processing-card ${visiblePreview ? 'has-preview' : ''}`} aria-labelledby="processing-title">
+        {visiblePreview ? (
           <>
             <div className="processing-viewport">
-              <OutlineProcessViewport payload={view.preview} stage={view.stage} effectLevel={effectLevel} />
+              <OutlineProcessViewport
+                payload={visiblePreview}
+                stage={view.preview ? view.stage : 'reading'}
+                effectLevel={effectLevel}
+              />
             </div>
             <div className="processing-status-overlay" role="status" aria-live="polite">
               <strong id="processing-title">{STAGE_LABELS[view.stage]}</strong>
@@ -519,37 +601,44 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
             <p className="file-name">{view.fileName}</p>
           </div>
         )}
-        <ModelInput compact onFile={(file) => void selectFile(file)} />
+        <ModelInput compact level={effectLevel} onFile={(file) => void selectFile(file)} />
       </section>,
       view.stage,
     );
   }
 
-  if (view.kind === 'failure') return frame(
-    <section className="converter-card failure-card" aria-labelledby="failure-title">
-      <div className="result-symbol failure" aria-hidden="true">!</div>
-      <div role="alert">
-        <p className="result-badge failure">失敗</p>
-        <h1 id="failure-title">這次未能完成</h1>
-        <p>{view.message}</p>
-        {view.artifact && <p>受影響輸出：<strong>{ARTIFACT_LABELS[view.artifact]}</strong></p>}
-      </div>
-      {view.preview && (
-        <div className="result-viewport failure-retained-preview">
-          <OutlineProcessViewport payload={view.preview} stage="packaging" effectLevel={effectLevel} />
+  if (view.kind === 'failure') {
+    const retainedPreview = view.preview ?? presentationPreview;
+    return frame(
+      <section className="converter-card failure-card" aria-labelledby="failure-title">
+        <div className="result-symbol failure" aria-hidden="true">!</div>
+        <div role="alert">
+          <p className="result-badge failure">失敗</p>
+          <h1 id="failure-title">這次未能完成</h1>
+          <p>{view.message}</p>
+          {view.artifact && <p>受影響輸出：<strong>{ARTIFACT_LABELS[view.artifact]}</strong></p>}
         </div>
-      )}
-      {view.result && presentationWarnings(view.result).length > 0 && (
-        <section className="warning-panel" aria-label="模型處理提示">
-          <strong>已保留的處理提示</strong>
-          <ul>{presentationWarnings(view.result).map((item) => <li key={item}>{item}</li>)}</ul>
-        </section>
-      )}
-      <MotionSurface as="button" level={effectLevel} className="primary-button" type="button" onClick={reset}>
-        選擇另一個模型
-      </MotionSurface>
-    </section>
-  );
+        {retainedPreview && (
+          <div className="result-viewport failure-retained-preview">
+            <OutlineProcessViewport
+              payload={retainedPreview}
+              stage={view.preview ? 'packaging' : 'reading'}
+              effectLevel={effectLevel}
+            />
+          </div>
+        )}
+        {view.result && presentationWarnings(view.result).length > 0 && (
+          <section className="warning-panel" aria-label="模型處理提示">
+            <strong>已保留的處理提示</strong>
+            <ul>{presentationWarnings(view.result).map((item) => <li key={item}>{item}</li>)}</ul>
+          </section>
+        )}
+        <MotionSurface as="button" level={effectLevel} className="primary-button" type="button" onClick={reset}>
+          選擇另一個模型
+        </MotionSurface>
+      </section>,
+    );
+  }
 
   const { result, downloads } = view;
   const warnings = presentationWarnings(result);
@@ -659,7 +748,7 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
         {warnings.length > 0 ? <ul>{warnings.map((item) => <li key={item}>{item}</li>)}</ul> : <p>沒有額外提示。</p>}
         <p>ZIP 只內含 cut-and-engrave.svg、cut-and-engrave.dxf、preview.pdf 及 exploded-view.pdf 四項檔案。</p>
       </details>
-      <ModelInput compact onFile={(file) => void selectFile(file)} />
+      <ModelInput compact level={effectLevel} onFile={(file) => void selectFile(file)} />
     </section>
   );
 }

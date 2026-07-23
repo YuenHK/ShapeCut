@@ -20,6 +20,16 @@ import {
   type OutlineDownloads,
 } from './OneClickConverter';
 
+const VALID_PRESENTATION_STL = `solid preview
+facet normal 0 0 1
+  outer loop
+    vertex 0 0 0
+    vertex 10 0 0
+    vertex 0 6 2
+  endloop
+endfacet
+endsolid preview`;
+
 const coloredLayer: ColoredOutlineLayer = {
   id: 'layer-0', index: 0, zStart: 0, zEnd: 1,
   exterior: {
@@ -542,6 +552,65 @@ describe('OneClickConverter', () => {
     await screen.findByRole('heading', { name: '轉換完成' });
     await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['replacement'], 'replacement.stl'));
     expect(await screen.findByLabelText('選擇製作材料')).toHaveValue('');
+  });
+
+  it('shows the trustworthy uploaded mesh while material selection remains pending', async () => {
+    const user = userEvent.setup();
+    const api = services();
+    const { container } = render(<OneClickConverter services={api} />);
+
+    await user.upload(
+      screen.getByLabelText('選擇 STL 模型'),
+      new File([VALID_PRESENTATION_STL], 'trustworthy-preview.stl', { type: 'model/stl' }),
+    );
+
+    expect(await screen.findByLabelText('選擇製作材料')).toBeVisible();
+    expect(await screen.findByRole('img', { name: /模型分層預覽/ })).toBeVisible();
+    expect(container.querySelector('[data-preview-mesh]')).toBeInTheDocument();
+    expect(container.querySelector('.material-presentation-preview')).toBeInTheDocument();
+    expect(api.convert).not.toHaveBeenCalled();
+  });
+
+  it('keeps a malformed presentation parse neutral and lets the pipeline report its existing error', async () => {
+    const user = userEvent.setup();
+    const api = services({
+      convert: vi.fn().mockRejectedValue(new AutomaticOutlineError('INVALID_STL', 'worker parse failed')),
+    });
+    const { container } = render(<OneClickConverter services={api} />);
+
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['malformed'], 'malformed.stl'));
+    expect(await screen.findByLabelText('選擇製作材料')).toBeVisible();
+    expect(container.querySelector('.material-presentation-preview')).toBeNull();
+
+    await user.selectOptions(screen.getByLabelText('選擇製作材料'), READY_TEST_MATERIAL.id);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('這個檔案不是可讀取的 STL');
+    expect(api.convert).toHaveBeenCalledOnce();
+  });
+
+  it('clears an old presentation mesh as soon as replacement reading starts', async () => {
+    const user = userEvent.setup();
+    const replacementRead = deferred<ArrayBuffer>();
+    const replacement = new File(['malformed'], 'replacement.stl');
+    Object.defineProperty(replacement, 'arrayBuffer', { value: vi.fn(() => replacementRead.promise) });
+    const { container } = render(<OneClickConverter services={services()} />);
+
+    await user.upload(
+      screen.getByLabelText('選擇 STL 模型'),
+      new File([VALID_PRESENTATION_STL], 'old-preview.stl', { type: 'model/stl' }),
+    );
+    expect(await screen.findByRole('img', { name: /模型分層預覽/ })).toBeVisible();
+
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), replacement);
+
+    expect(container.querySelector('[data-preview-mesh]')).toBeNull();
+    expect(screen.getByRole('heading', { name: '正在讀取模型' })).toBeVisible();
+    await act(async () => {
+      replacementRead.resolve(new TextEncoder().encode('malformed').buffer);
+      await replacementRead.promise;
+    });
+    expect(await screen.findByLabelText('選擇製作材料')).toBeVisible();
+    expect(container.querySelector('.material-presentation-preview')).toBeNull();
   });
 
   it('does not leave an old material selection actionable while a replacement file is still reading', async () => {

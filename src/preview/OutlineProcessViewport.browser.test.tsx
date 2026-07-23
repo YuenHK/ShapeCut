@@ -19,6 +19,16 @@ import {
 } from './outline-process-scene';
 import '../styles.css';
 
+const PRESENTATION_STL = `solid preview
+facet normal 0 0 1
+  outer loop
+    vertex 0 0 0
+    vertex 10 0 0
+    vertex 0 6 2
+  endloop
+endfacet
+endsolid preview`;
+
 function browserPayload(): OutlinePreviewPayload {
   const exterior = {
     id: 'actual-exterior', role: 'CUT_BLACK' as const,
@@ -184,7 +194,7 @@ describe('OutlineProcessViewport in Chromium', () => {
     view.unmount();
   });
 
-  it('keeps the active converter workflow mounted through a live reduced-motion downgrade', async () => {
+  it('holds a live downgrade until active processing exits', async () => {
     const user = userEvent.setup();
     const active = activeConversionServices();
     const view = render(<OneClickConverter services={active.services} />);
@@ -213,6 +223,52 @@ describe('OutlineProcessViewport in Chromium', () => {
     });
     expect(view.container.querySelector('.outline-process-viewport canvas')).toBe(canvas);
     expect(active.services.convert).toHaveBeenCalledOnce();
+
+    await cdp().send('Emulation.setEmulatedMedia', { features: [] });
+    await waitFor(() => {
+      expect(window.matchMedia('(prefers-reduced-motion: reduce)').matches).toBe(false);
+      expect(workbench).toHaveAttribute('data-state', 'processing');
+      expect(workbench).toHaveAttribute('data-effect-level', 'static');
+      expect(screen.getByRole('figure')).toHaveAttribute('data-effect-level', 'static');
+    });
+
+    fireEvent.change(screen.getByLabelText('選擇 STL 模型'), {
+      target: { files: [new File(['not an stl'], 'replacement.txt')] },
+    });
+    await waitFor(() => {
+      expect(workbench).toHaveAttribute('data-state', 'failure');
+      expect(workbench).toHaveAttribute('data-effect-level', 'full');
+    });
+    view.unmount();
+  });
+
+  it('shows and disposes the presentation-only mesh across material replacement', async () => {
+    const user = userEvent.setup();
+    const geometryDispose = vi.spyOn(BufferGeometry.prototype, 'dispose');
+    const active = activeConversionServices();
+    const view = render(<OneClickConverter services={active.services} />);
+
+    await user.upload(
+      screen.getByLabelText('選擇 STL 模型'),
+      new File([PRESENTATION_STL], 'presentation.stl', { type: 'model/stl' }),
+    );
+    const canvas = await waitFor(() => {
+      expect(screen.getByLabelText('選擇製作材料')).toBeVisible();
+      const candidate = view.container.querySelector<HTMLCanvasElement>('.material-presentation-preview canvas');
+      expect(candidate).not.toBeNull();
+      return candidate!;
+    });
+    expect(view.container.querySelector('.material-presentation-preview [data-layer-count="0"]')).not.toBeNull();
+    const disposeCount = geometryDispose.mock.calls.length;
+
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['malformed'], 'replacement.stl'));
+    await waitFor(() => {
+      expect(screen.getByLabelText('選擇製作材料')).toBeVisible();
+      expect(view.container.querySelector('.material-presentation-preview')).toBeNull();
+      expect(canvas.isConnected).toBe(false);
+      expect(geometryDispose.mock.calls.length).toBeGreaterThan(disposeCount);
+    });
+    expect(active.services.convert).not.toHaveBeenCalled();
     view.unmount();
   });
 

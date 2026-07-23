@@ -112,6 +112,50 @@ a {
   letter-spacing: .018em;
 }
 
+.current-step-slot {
+  display: flex;
+  min-width: 0;
+  justify-content: flex-end;
+}
+
+.current-step {
+  display: grid;
+  min-width: 0;
+  color: var(--ink);
+  text-align: right;
+  line-height: 1.2;
+}
+
+.current-step-kicker {
+  color: var(--muted);
+  font-size: .68rem;
+  font-weight: 720;
+  letter-spacing: .08em;
+}
+
+.current-step strong {
+  font-size: .9rem;
+  font-weight: 760;
+  letter-spacing: -.008em;
+}
+
+.current-step-file {
+  max-width: 15rem;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: .72rem;
+  font-weight: 540;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.apple-workbench > .current-step {
+  position: absolute;
+  top: 1rem;
+  right: 1.25rem;
+  z-index: 2;
+}
+
 .brand {
   display: inline-flex;
   align-items: center;
@@ -404,11 +448,26 @@ h1 {
   box-shadow:
     0 0 0 .25rem rgba(10, 132, 255, .08),
     0 1.25rem 3.5rem rgba(45, 104, 172, .1) inset;
-  transform: translateY(-.125rem);
+  transform: translate3d(
+    var(--drag-attract-x, 0px),
+    calc(var(--drag-attract-y, 0px) - .125rem),
+    0
+  );
 }
 
 .upload-zone:active {
-  transform: scale(.995);
+  transform: translate3d(
+    var(--drag-attract-x, 0px),
+    var(--drag-attract-y, 0px),
+    0
+  ) scale(.995);
+}
+
+.apple-workbench[data-effect-level="static"] .upload-zone:hover,
+.apple-workbench[data-effect-level="static"] .upload-zone:focus-within,
+.apple-workbench[data-effect-level="static"] .upload-zone[data-drag-active="true"],
+.apple-workbench[data-effect-level="static"] .upload-zone:active {
+  transform: none;
 }
 
 .upload-icon {
@@ -677,6 +736,25 @@ progress::-webkit-progress-value {
   display: grid;
   gap: 1rem;
   text-align: center;
+}
+
+.material-presentation-preview {
+  min-height: 19rem;
+  overflow: hidden;
+  border: 1px solid rgba(96, 137, 184, .2);
+  border-radius: 1.5rem;
+  background: rgba(239, 246, 254, .72);
+}
+
+.material-presentation-preview .outline-process-viewport {
+  min-height: 19rem;
+  margin: 0;
+}
+
+.material-presentation-preview .outline-process-webgl,
+.material-presentation-preview .outline-process-canvas,
+.material-presentation-preview .outline-process-fallback {
+  min-height: 17rem;
 }
 
 .material-card > .change-file-button {
@@ -1189,8 +1267,17 @@ progress::-webkit-progress-value {
     border-radius: 1.125rem;
   }
 
-  .site-header p {
+  .privacy-status {
     display: none;
+  }
+
+  .current-step-file {
+    display: none;
+  }
+
+  .current-step strong {
+    max-width: 11rem;
+    font-size: .78rem;
   }
 
   .brand span {

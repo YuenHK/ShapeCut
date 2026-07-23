@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 export type EffectLevel = 'full' | 'energy-saving' | 'static';
 export type EffectSignals = Readonly<{
@@ -23,10 +23,21 @@ function browserSignals(): EffectSignals {
   };
 }
 
-export function useEffectLevel(): EffectLevel {
-  const [level, setLevel] = useState<EffectLevel>(() =>
-    typeof window === 'undefined' ? 'static' : resolveEffectLevel(browserSignals()),
-  );
+const EFFECT_LEVEL_PRIORITY: Readonly<Record<EffectLevel, number>> = Object.freeze({
+  static: 0,
+  'energy-saving': 1,
+  full: 2,
+});
+
+function mayApplyLevel(current: EffectLevel, next: EffectLevel, holdAutomaticUpgrades: boolean): boolean {
+  return !holdAutomaticUpgrades || EFFECT_LEVEL_PRIORITY[next] <= EFFECT_LEVEL_PRIORITY[current];
+}
+
+export function useEffectLevel(holdAutomaticUpgrades = false): EffectLevel {
+  const initialLevel = typeof window === 'undefined' ? 'static' : resolveEffectLevel(browserSignals());
+  const [level, setLevel] = useState<EffectLevel>(initialLevel);
+  const heldRef = useRef(holdAutomaticUpgrades);
+  heldRef.current = holdAutomaticUpgrades;
 
   useEffect(() => {
     if (typeof window.matchMedia !== 'function') {
@@ -35,7 +46,10 @@ export function useEffectLevel(): EffectLevel {
     }
     const motion = window.matchMedia('(prefers-reduced-motion: reduce)');
     const pointer = window.matchMedia('(pointer: coarse)');
-    const update = () => setLevel(resolveEffectLevel(browserSignals()));
+    const update = () => {
+      const next = resolveEffectLevel(browserSignals());
+      setLevel((current) => mayApplyLevel(current, next, heldRef.current) ? next : current);
+    };
 
     motion.addEventListener?.('change', update);
     pointer.addEventListener?.('change', update);
@@ -46,6 +60,12 @@ export function useEffectLevel(): EffectLevel {
       pointer.removeEventListener?.('change', update);
     };
   }, []);
+
+  useEffect(() => {
+    if (holdAutomaticUpgrades) return;
+    const next = typeof window === 'undefined' ? 'static' : resolveEffectLevel(browserSignals());
+    setLevel(next);
+  }, [holdAutomaticUpgrades]);
 
   return level;
 }

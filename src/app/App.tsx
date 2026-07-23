@@ -74,6 +74,7 @@ export function App({
   );
   const [storedProfiles, setStoredProfiles] = useState<readonly MaterialProfileV1[]>([]);
   const [materialLoadFailed, setMaterialLoadFailed] = useState(false);
+  const [chromeTarget, setChromeTarget] = useState<HTMLDivElement | null>(null);
   useEffect(() => {
     let active = true;
     setStoredProfiles([]);
@@ -97,10 +98,14 @@ export function App({
   useEffect(() => () => geometryRef.current?.dispose(), []);
   return (
     <div className="app-shell">
-      <header className="site-header floating-chrome"><a className="brand" href="./" aria-label="ShapeCut 首頁"><span aria-hidden="true">S</span>ShapeCut</a><p>私隱優先 · 本機處理</p></header>
+      <header className="site-header floating-chrome">
+        <a className="brand" href="./" aria-label="ShapeCut 首頁"><span aria-hidden="true">S</span>ShapeCut</a>
+        <p className="privacy-status">私隱優先 · 本機處理</p>
+        <div className="current-step-slot" ref={setChromeTarget} />
+      </header>
       <main>
         {materialLoadFailed && <p role="alert">已儲存的材料設定檔未能載入；請稍後重試。</p>}
-        <OneClickConverter services={oneClickServices} />
+        <OneClickConverter services={oneClickServices} chromeTarget={chromeTarget} />
       </main>
       <footer>輸出為通用外形，不包含雷射功率或速度。正式製作前請先試切。</footer>
     </div>

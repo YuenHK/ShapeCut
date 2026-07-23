@@ -1,4 +1,4 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { AutomaticOutlineResult } from '../domain/pipeline/automatic-outline-pipeline';
@@ -32,8 +32,11 @@ describe('App', () => {
   it('keeps local processing visible in floating chrome', () => {
     render(<App services={services} />);
 
-    expect(screen.getByText('私隱優先 · 本機處理')).toBeVisible();
-    expect(screen.getByRole('banner')).toHaveClass('floating-chrome');
+    const chrome = screen.getByRole('banner');
+    expect(within(chrome).getByText('私隱優先 · 本機處理')).toBeVisible();
+    expect(within(chrome).getByRole('navigation', { name: '目前步驟' })).toHaveTextContent('上載 STL 模型');
+    expect(screen.getAllByText('私隱優先 · 本機處理')).toHaveLength(1);
+    expect(chrome).toHaveClass('floating-chrome');
   });
 
   it('loads only approved stored material profiles through the production App catalog path', async () => {

@@ -130,6 +130,51 @@ describe('Apple workbench visual contracts', () => {
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
   });
 
+  it('tracks bounded drag attraction and clears it on leave, drop, static mode, and unmount', async () => {
+    const view = render(<App services={services()} />);
+    const target = screen.getByText('拖放 STL 到這裏').closest('label')!;
+    await waitFor(() => {
+      expect(screen.getByTestId('apple-workbench')).not.toHaveAttribute('data-effect-level', 'static');
+    });
+    const bounds = target.getBoundingClientRect();
+    const enterAtEdge = () => fireEvent.dragEnter(target, {
+      clientX: bounds.right + 1_000,
+      clientY: bounds.top - 1_000,
+    });
+
+    enterAtEdge();
+    expect(target.style.getPropertyValue('--drag-attract-x')).toBe('12px');
+    expect(target.style.getPropertyValue('--drag-attract-y')).toBe('-12px');
+
+    fireEvent.dragLeave(target);
+    expect(target.style.getPropertyValue('--drag-attract-x')).toBe('');
+    expect(target.style.getPropertyValue('--drag-attract-y')).toBe('');
+
+    enterAtEdge();
+    fireEvent.drop(target, { dataTransfer: new DataTransfer() });
+    expect(target.style.getPropertyValue('--drag-attract-x')).toBe('');
+    expect(target.style.getPropertyValue('--drag-attract-y')).toBe('');
+
+    enterAtEdge();
+    await cdp().send('Emulation.setEmulatedMedia', {
+      features: [{ name: 'prefers-reduced-motion', value: 'reduce' }],
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('apple-workbench')).toHaveAttribute('data-effect-level', 'static');
+      expect(target.style.getPropertyValue('--drag-attract-x')).toBe('');
+      expect(target.style.getPropertyValue('--drag-attract-y')).toBe('');
+    });
+
+    await cdp().send('Emulation.setEmulatedMedia', { features: [] });
+    await waitFor(() => {
+      expect(screen.getByTestId('apple-workbench')).not.toHaveAttribute('data-effect-level', 'static');
+    });
+    enterAtEdge();
+    view.unmount();
+    expect(target.style.getPropertyValue('--drag-attract-x')).toBe('');
+    expect(target.style.getPropertyValue('--drag-attract-y')).toBe('');
+  });
+
   it('makes reduced motion authoritative for the rendered effect level', async () => {
     await cdp().send('Emulation.setEmulatedMedia', {
       features: [{ name: 'prefers-reduced-motion', value: 'reduce' }],
