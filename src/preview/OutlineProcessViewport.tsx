@@ -74,29 +74,41 @@ function explodedOffset(order: number, count: number, stage: OutlineProcessViewp
 
 type FallbackPoint = readonly [number, number];
 
-function projectedMeshPoints(payload: OutlinePreviewPayload): readonly FallbackPoint[] {
+const MAX_FALLBACK_WIREFRAME_TRIANGLES = 2_048;
+const EMPTY_FALLBACK_MESH = Object.freeze({ points: [] as readonly FallbackPoint[], path: '' });
+
+function projectedMeshPoint(payload: OutlinePreviewPayload, vertexIndex: number): FallbackPoint | undefined {
   const { origin, planeX, planeY } = payload.axis;
-  const points: FallbackPoint[] = [];
-  for (let index = 0; index < payload.mesh.positions.length; index += 3) {
-    const dx = payload.mesh.positions[index] - origin[0];
-    const dy = payload.mesh.positions[index + 1] - origin[1];
-    const dz = payload.mesh.positions[index + 2] - origin[2];
-    const x = dx * planeX[0] + dy * planeX[1] + dz * planeX[2];
-    const y = dx * planeY[0] + dy * planeY[1] + dz * planeY[2];
-    if (Number.isFinite(x) && Number.isFinite(y)) points.push([x, y]);
-  }
-  return points;
+  const offset = vertexIndex * 3;
+  if (!Number.isInteger(vertexIndex) || offset < 0 || offset + 2 >= payload.mesh.positions.length) return undefined;
+  const dx = payload.mesh.positions[offset] - origin[0];
+  const dy = payload.mesh.positions[offset + 1] - origin[1];
+  const dz = payload.mesh.positions[offset + 2] - origin[2];
+  const x = dx * planeX[0] + dy * planeX[1] + dz * planeX[2];
+  const y = dx * planeY[0] + dy * planeY[1] + dz * planeY[2];
+  return Number.isFinite(x) && Number.isFinite(y) ? [x, y] : undefined;
 }
 
-function meshPath(payload: OutlinePreviewPayload, points: readonly FallbackPoint[]): string {
+function sampledFallbackMesh(payload: OutlinePreviewPayload): Readonly<{
+  points: readonly FallbackPoint[];
+  path: string;
+}> {
+  const triangleTotal = Math.floor(payload.mesh.indices.length / 3);
+  const sampleCount = Math.min(triangleTotal, MAX_FALLBACK_WIREFRAME_TRIANGLES);
+  if (sampleCount === 0) return EMPTY_FALLBACK_MESH;
+  const points: FallbackPoint[] = [];
   const commands: string[] = [];
-  for (let index = 0; index + 2 < payload.mesh.indices.length; index += 3) {
-    const a = points[payload.mesh.indices[index]];
-    const b = points[payload.mesh.indices[index + 1]];
-    const c = points[payload.mesh.indices[index + 2]];
-    if (a && b && c) commands.push(`M ${a[0]} ${a[1]} L ${b[0]} ${b[1]} L ${c[0]} ${c[1]} Z`);
+  for (let sample = 0; sample < sampleCount; sample += 1) {
+    const triangle = Math.floor(sample * triangleTotal / sampleCount);
+    const indexOffset = triangle * 3;
+    const a = projectedMeshPoint(payload, payload.mesh.indices[indexOffset]);
+    const b = projectedMeshPoint(payload, payload.mesh.indices[indexOffset + 1]);
+    const c = projectedMeshPoint(payload, payload.mesh.indices[indexOffset + 2]);
+    if (!a || !b || !c) continue;
+    points.push(a, b, c);
+    commands.push(`M ${a[0]} ${a[1]} L ${b[0]} ${b[1]} L ${c[0]} ${c[1]} Z`);
   }
-  return commands.join(' ');
+  return { points, path: commands.join(' ') };
 }
 
 function fallbackViewBox(points: readonly FallbackPoint[]): string {
@@ -124,10 +136,11 @@ function SvgFallback({
   readonly stage: OutlineProcessViewportStage;
   readonly selectedLayerId: string | undefined;
 }) {
-  const meshPoints = useMemo(() => projectedMeshPoints(payload), [payload]);
-  const meshD = useMemo(() => meshPath(payload, meshPoints), [payload, meshPoints]);
+  const fallbackMesh = useMemo(() => (
+    payload.layers.length === 0 ? sampledFallbackMesh(payload) : EMPTY_FALLBACK_MESH
+  ), [payload]);
   const points = useMemo(() => payload.layers.length === 0
-    ? meshPoints
+    ? fallbackMesh.points
     : payload.layers.flatMap((layer, order) => {
       const offset = explodedOffset(order, payload.layers.length, stage);
       return [
@@ -139,7 +152,7 @@ function SvgFallback({
         ...layer.lightFeatures,
       ]
         .flatMap((contour) => contour.outer.map(([x, y]): FallbackPoint => [x, y + offset]));
-    }), [meshPoints, payload.layers, stage]);
+    }), [fallbackMesh.points, payload.layers, stage]);
   return (
     <svg
       className="outline-process-fallback"
@@ -150,7 +163,7 @@ function SvgFallback({
       preserveAspectRatio="xMidYMid meet"
     >
       {payload.layers.length === 0 && (
-        <path data-preview-mesh d={meshD} fill="none" stroke="#22A77D" vectorEffect="non-scaling-stroke" />
+        <path data-preview-mesh d={fallbackMesh.path} fill="none" stroke="#22A77D" vectorEffect="non-scaling-stroke" />
       )}
       {payload.layers.map((layer, order) => (
         <g
@@ -199,6 +212,7 @@ export function OutlineProcessViewport({
 }: OutlineProcessViewportProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<OutlineProcessScene | undefined>(undefined);
+  const degradeSceneRef = useRef<(() => void) | undefined>(undefined);
   const appliedPayloadRef = useRef<OutlinePreviewPayload | undefined>(undefined);
   const mediaReduced = useReducedMotion(undefined);
   const reducedMotion = reducedMotionOverride ?? mediaReduced;
@@ -223,29 +237,45 @@ export function OutlineProcessViewport({
       return;
     }
     let controller: OutlineProcessScene | undefined;
+    let released = false;
+    const releaseController = (): void => {
+      if (released || !controller) return;
+      released = true;
+      controller.dispose();
+    };
+    const degradeToFallback = (): void => {
+      if (sceneRef.current !== controller) return;
+      sceneRef.current = undefined;
+      appliedPayloadRef.current = undefined;
+      releaseController();
+      setFallback(true);
+    };
     try {
       controller = (createScene ?? createOutlineProcessScene)(hostRef.current, payload, {
         stage: renderedSceneStage,
         effectLevel: requestedLevel,
         reducedMotion,
         createRenderer: webglFactory,
+        onDegrade: degradeToFallback,
       });
       sceneRef.current = controller;
+      degradeSceneRef.current = degradeToFallback;
       appliedPayloadRef.current = payload;
       setFallback(false);
     } catch (error) {
       const partialScene = (error as Error & { partialScene?: Pick<OutlineProcessScene, 'dispose'> }).partialScene;
       partialScene?.dispose();
-      controller?.dispose();
+      releaseController();
       sceneRef.current = undefined;
       setFallback(true);
     }
     return () => {
-      controller?.dispose();
+      if (degradeSceneRef.current === degradeToFallback) degradeSceneRef.current = undefined;
       if (sceneRef.current === controller) {
         sceneRef.current = undefined;
         appliedPayloadRef.current = undefined;
       }
+      releaseController();
     };
     // Payload, stage, and motion are synchronized by the focused effects below.
   }, [canUseWebGL, createScene, webglFactory]);
@@ -256,10 +286,7 @@ export function OutlineProcessViewport({
       sceneRef.current.setPayload(payload);
       appliedPayloadRef.current = payload;
     } catch {
-      sceneRef.current.dispose();
-      sceneRef.current = undefined;
-      appliedPayloadRef.current = undefined;
-      setFallback(true);
+      degradeSceneRef.current?.();
     }
   }, [payload, canUseWebGL, createScene, webglFactory]);
   useEffect(() => { sceneRef.current?.setStage(renderedSceneStage); }, [renderedSceneStage, canUseWebGL, createScene, webglFactory]);
@@ -290,7 +317,7 @@ export function OutlineProcessViewport({
           data-layer-count={payload.layers.length}
         />
       )}
-      <figcaption id={descriptionId} className="outline-process-caption" role="status" aria-live="polite">
+      <figcaption id={descriptionId} className="outline-process-caption">
         {fallback
           ? payload.layers.length === 0
             ? 'WebGL 不可用，現以實際模型線框 SVG 顯示。'

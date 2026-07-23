@@ -53,6 +53,7 @@ function analysis(sourceHash: string): MeshAnalysis {
 
 function inspectOnly(inspect: GeometryApi['inspect']): GeometryApi {
   return {
+    createStlPresentation: vi.fn(),
     inspect,
     convertAutomatically: vi.fn(),
     packageOutline: vi.fn(),

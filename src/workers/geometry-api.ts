@@ -11,6 +11,7 @@ import type {
 import type { MeshInspection, TriangleMesh } from '../domain/mesh/types';
 import type { MeshProblemReport, MeshRepairResult } from '../domain/mesh/types';
 import type { STLRepairMode } from '../domain/mesh/write-stl';
+import type { OutlinePreviewPayload } from '../domain/outline-features/types';
 
 export const OUTLINE_ARTIFACT_IDS = Object.freeze([
   'colored-outline-document',
@@ -81,6 +82,7 @@ export type EngravingRequest = {
 
 /** Structured-clone-safe boundary for all CPU-heavy geometry operations. */
 export type GeometryApi = {
+  createStlPresentation(input: ArrayBuffer): Promise<OutlinePreviewPayload>;
   inspect(input: ArrayBuffer): Promise<MeshAnalysis>;
   convertAutomatically(
     request: AutomaticOutlineRequest,

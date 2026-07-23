@@ -52,6 +52,38 @@ afterEach(() => {
 });
 
 describe('geometry worker boundary', () => {
+  it('derives presentation data behind the cancellable worker boundary without detaching caller-owned STL bytes', async () => {
+    const client = createGeometryWorkerClient();
+    clients.push(client);
+    const source = writeBinarySTL(tetrahedron(), 'safe');
+    const sourceLength = source.byteLength;
+
+    const presentation = await client.createStlPresentation(source);
+
+    expect(source.byteLength).toBe(sourceLength);
+    expect(presentation).toMatchObject({
+      mesh: {
+        positions: expect.any(Float32Array),
+        indices: expect.any(Uint32Array),
+      },
+      layers: [],
+    });
+
+    const largeSource = new ArrayBuffer(84 + 500_000 * 50);
+    new DataView(largeSource).setUint32(80, 500_000, true);
+    const workerMessages = vi.spyOn(Worker.prototype, 'postMessage');
+    const messageCount = workerMessages.mock.calls.length;
+    const pending = client.createStlPresentation(largeSource);
+    await vi.waitFor(() => expect(workerMessages.mock.calls.length).toBeGreaterThan(messageCount));
+    client.cancelActive();
+    await expect(pending).rejects.toMatchObject({ name: 'SupersededError', code: 'SUPERSEDED' });
+    workerMessages.mockRestore();
+
+    const replacement = await client.createStlPresentation(source);
+    expect(replacement.mesh.indices.length).toBe(12);
+    expect(source.byteLength).toBe(sourceLength);
+  });
+
   it.each([
     ['unknown keys', { ...testMaterial, operatorName: 'private operator' }, /unrecognized key/i],
     ['non-finite values', { ...testMaterial, kerfMm: Infinity }, /number|NaN/i],

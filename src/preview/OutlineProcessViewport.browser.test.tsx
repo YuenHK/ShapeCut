@@ -8,12 +8,15 @@ import type { AutomaticOutlineProgressEvent } from '../domain/pipeline/automatic
 import type { ColoredOutlineLayer, OutlinePreviewPayload } from '../domain/outline-features/types';
 import { coloredResult } from '../export/colored-outline-test-fixture';
 import { READY_TEST_MATERIAL } from '../test/ready-material';
+import { OutlineArtifactError } from '../workers/geometry-api';
 import { OneClickConverter, type OneClickConverterServices } from '../app/OneClickConverter';
 import { OutlineProcessViewport } from './OutlineProcessViewport';
+import { createStlPresentationPayload } from './stl-presentation';
 import {
   createOutlineProcessScene,
   disposeOutlineProcessRendererPool,
   shutdownOutlineProcessRendererPool,
+  type OutlineProcessRenderer,
   type OutlineProcessScene,
   warmOutlineProcessRenderer,
 } from './outline-process-scene';
@@ -69,6 +72,7 @@ function browserPayload(): OutlinePreviewPayload {
 function activeConversionServices() {
   let report: ((event: AutomaticOutlineProgressEvent) => void) | undefined;
   const services: OneClickConverterServices = {
+    present: vi.fn(async (bytes) => createStlPresentationPayload(bytes)),
     materialProfiles: [READY_TEST_MATERIAL],
     cancel: vi.fn(),
     createTimeline: (clock) => {
@@ -95,6 +99,7 @@ function activeConversionServices() {
 
 function completedConversionServices(): OneClickConverterServices {
   return {
+    present: vi.fn(async (bytes) => createStlPresentationPayload(bytes)),
     materialProfiles: [READY_TEST_MATERIAL],
     cancel: vi.fn(),
     createTimeline: (clock) => ({
@@ -269,6 +274,37 @@ describe('OutlineProcessViewport in Chromium', () => {
       expect(geometryDispose.mock.calls.length).toBeGreaterThan(disposeCount);
     });
     expect(active.services.convert).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
+  it('settles and dims a retained failure preview without rotation, pulse RAF, or blocking retry', async () => {
+    const user = userEvent.setup();
+    const requestFrame = vi.spyOn(window, 'requestAnimationFrame');
+    const services: OneClickConverterServices = {
+      ...completedConversionServices(),
+      package: vi.fn().mockRejectedValue(new OutlineArtifactError('preview.pdf')),
+    };
+    const view = render(<OneClickConverter services={services} />);
+
+    await user.upload(
+      screen.getByLabelText('選擇 STL 模型'),
+      new File([PRESENTATION_STL], 'settled-failure.stl', { type: 'model/stl' }),
+    );
+    await user.selectOptions(await screen.findByLabelText('選擇製作材料'), READY_TEST_MATERIAL.id);
+    await screen.findByRole('alert');
+
+    const retained = view.container.querySelector<HTMLElement>('.failure-retained-preview')!;
+    const figure = retained.querySelector<HTMLElement>('.outline-process-viewport')!;
+    expect(retained).toHaveAttribute('data-settled', 'true');
+    expect(figure).toHaveAttribute('data-effect-level', 'static');
+    expect(Number.parseFloat(getComputedStyle(figure).opacity)).toBeLessThan(1);
+    requestFrame.mockClear();
+    await new Promise((resolve) => window.setTimeout(resolve, 100));
+    expect(requestFrame).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: '選擇另一個模型' }));
+    expect(screen.getByRole('heading', { name: '把 3D 模型變成 Laser Cut 切片' })).toBeVisible();
+    requestFrame.mockRestore();
     view.unmount();
   });
 
@@ -497,6 +533,90 @@ describe('OutlineProcessViewport in Chromium', () => {
     const dispose = vi.spyOn(scene!, 'dispose');
     view.unmount();
     expect(dispose).toHaveBeenCalledOnce();
+  });
+
+  it('degrades a live viewport to a static SVG exactly once after a runtime render exception', async () => {
+    const canvas = document.createElement('canvas');
+    let failRender = false;
+    const renderer: OutlineProcessRenderer = {
+      domElement: canvas,
+      setPixelRatio: vi.fn(),
+      setSize: vi.fn(),
+      render: vi.fn(() => {
+        if (failRender) throw new Error('synthetic runtime render failure');
+      }),
+      dispose: vi.fn(),
+      forceContextLoss: vi.fn(),
+    };
+    const createScene = (host: HTMLElement, payload: OutlinePreviewPayload, options: Parameters<typeof createOutlineProcessScene>[2]) =>
+      createOutlineProcessScene(host, payload, { ...options, createRenderer: () => renderer });
+    const source = browserPayload();
+    const view = render(
+      <OutlineProcessViewport payload={source} stage="analyzing" reducedMotion createScene={createScene} />,
+    );
+    await waitFor(() => expect(view.container.querySelector('canvas')).toBe(canvas));
+
+    failRender = true;
+    view.rerender(
+      <OutlineProcessViewport payload={source} stage="slicing" reducedMotion createScene={createScene} />,
+    );
+
+    await waitFor(() => expect(screen.getByRole('figure')).toHaveAttribute('data-renderer', 'fallback'));
+    expect(screen.getByRole('figure')).toHaveAttribute('data-effect-level', 'static');
+    expect(renderer.dispose).toHaveBeenCalledOnce();
+    expect(renderer.forceContextLoss).toHaveBeenCalledOnce();
+    view.unmount();
+    expect(renderer.dispose).toHaveBeenCalledOnce();
+  });
+
+  it('poisons and destroys the default renderer after a runtime render exception instead of pooling it', async () => {
+    const source = browserPayload();
+    const view = render(<OutlineProcessViewport payload={source} stage="analyzing" reducedMotion />);
+    const canvas = await waitFor(() => {
+      const candidate = view.container.querySelector<HTMLCanvasElement>('canvas');
+      expect(candidate).not.toBeNull();
+      return candidate!;
+    });
+    const context = canvas.getContext('webgl2') ?? canvas.getContext('webgl');
+    expect(context).not.toBeNull();
+    const renderFailure = vi.spyOn(context!, 'drawElements')
+      .mockImplementationOnce(() => { throw new Error('poison default renderer'); });
+
+    view.rerender(<OutlineProcessViewport payload={source} stage="slicing" reducedMotion />);
+
+    await waitFor(() => expect(screen.getByRole('figure')).toHaveAttribute('data-renderer', 'fallback'));
+    await waitFor(() => expect(context!.isContextLost()).toBe(true));
+    renderFailure.mockRestore();
+    view.unmount();
+  });
+
+  it('degrades a live viewport to a static SVG exactly once on webglcontextlost', async () => {
+    const canvas = document.createElement('canvas');
+    const renderer: OutlineProcessRenderer = {
+      domElement: canvas,
+      setPixelRatio: vi.fn(),
+      setSize: vi.fn(),
+      render: vi.fn(),
+      dispose: vi.fn(),
+      forceContextLoss: vi.fn(),
+    };
+    const createScene = (host: HTMLElement, payload: OutlinePreviewPayload, options: Parameters<typeof createOutlineProcessScene>[2]) =>
+      createOutlineProcessScene(host, payload, { ...options, createRenderer: () => renderer });
+    const view = render(
+      <OutlineProcessViewport payload={browserPayload()} stage="analyzing" reducedMotion createScene={createScene} />,
+    );
+    await waitFor(() => expect(view.container.querySelector('canvas')).toBe(canvas));
+
+    const loss = new Event('webglcontextlost', { cancelable: true });
+    canvas.dispatchEvent(loss);
+
+    expect(loss.defaultPrevented).toBe(true);
+    await waitFor(() => expect(screen.getByRole('figure')).toHaveAttribute('data-renderer', 'fallback'));
+    expect(screen.getByRole('figure')).toHaveAttribute('data-effect-level', 'static');
+    expect(renderer.dispose).toHaveBeenCalledOnce();
+    expect(renderer.forceContextLoss).toHaveBeenCalledOnce();
+    view.unmount();
+    expect(renderer.dispose).toHaveBeenCalledOnce();
   });
 
   it('selects an ordered result layer with keyboard-accessible opacity highlighting', async () => {

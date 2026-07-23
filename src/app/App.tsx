@@ -51,6 +51,7 @@ export function createOneClickServices(
 ): OneClickConverterServices {
   return {
     cancel,
+    present: (bytes: ArrayBuffer) => getGeometry().createStlPresentation(bytes),
     convert: (bytes: ArrayBuffer, material: ManufacturingGeometryProfile, onProgress) => getGeometry().convertAutomatically({ bytes, material }, onProgress),
     package: (result, fileName) => getGeometry().packageOutline(result).then((files) => createDownloadUrls(files, fileName)),
   };

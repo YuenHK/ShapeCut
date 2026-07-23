@@ -5,6 +5,7 @@ import type { EngravingMap } from '../domain/engraving/height-field';
 import { validateManufacturingGeometryProfile } from '../domain/materials/manufacturing-profile';
 import type { MeshRepairResult } from '../domain/mesh/types';
 import type { STLRepairMode } from '../domain/mesh/write-stl';
+import type { OutlinePreviewPayload } from '../domain/outline-features/types';
 import {
   AutomaticOutlineError,
   type AutomaticOutlineProgress,
@@ -53,6 +54,7 @@ export type GeometryClientOptions = {
 
 export type GeometryClient = {
   readonly latestJobId: number;
+  createStlPresentation(input: ArrayBuffer): Promise<OutlinePreviewPayload>;
   analyze(input: ArrayBuffer): Promise<MeshAnalysis>;
   convertAutomatically(
     request: AutomaticOutlineRequest,
@@ -112,6 +114,9 @@ export function makeGeometryClient(api: GeometryApi, options: GeometryClientOpti
 
   return {
     get latestJobId() { return latestJobId; },
+    // Deliberately structured-clone without transfer: the caller retains the
+    // only STL buffer needed if material selection starts a conversion later.
+    createStlPresentation: (input) => run(() => api.createStlPresentation(input)),
     analyze: (input) => run(() => api.inspect(options.transferInput?.(input) ?? input)),
     convertAutomatically: (request, onProgress) => run((job) => {
       const validatedRequest: AutomaticOutlineRequest = {
@@ -218,6 +223,7 @@ function dynamicApi(
   progressCleanups: Set<() => void>,
 ): GeometryApi {
   return {
+    createStlPresentation: (input) => getRemote().createStlPresentation(input),
     inspect: (input) => getRemote().inspect(input),
     convertAutomatically: async (request, onProgress) => {
       let progressBridge: ReturnType<typeof createProgressBridge> | undefined;

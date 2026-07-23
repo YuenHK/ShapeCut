@@ -130,6 +130,18 @@ describe('Apple workbench visual contracts', () => {
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
   });
 
+  it('keeps a compact local-processing privacy status visible in mobile chrome', async () => {
+    await page.viewport(390, 844);
+    render(<App services={services()} />);
+
+    const privacy = screen.getByText('私隱優先 · 本機處理');
+    const style = getComputedStyle(privacy);
+    expect(privacy).toBeVisible();
+    expect(style.display).not.toBe('none');
+    expect(Number.parseFloat(style.fontSize)).toBeLessThanOrEqual(12);
+    expect(privacy.getBoundingClientRect().right).toBeLessThanOrEqual(window.innerWidth);
+  });
+
   it('tracks bounded drag attraction and clears it on leave, drop, static mode, and unmount', async () => {
     const view = render(<App services={services()} />);
     const target = screen.getByText('拖放 STL 到這裏').closest('label')!;

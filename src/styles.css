@@ -676,8 +676,10 @@ summary:focus-visible {
   pointer-events: none;
 }
 
-.processing-status-overlay strong {
+.processing-status-overlay h1 {
+  margin: 0;
   color: var(--accent-strong);
+  font-size: 1rem;
 }
 
 .processing-loading-panel {
@@ -1170,6 +1172,11 @@ progress::-webkit-progress-value {
   margin-top: 1.25rem;
 }
 
+.failure-retained-preview .outline-process-viewport {
+  opacity: .58;
+  filter: saturate(.45);
+}
+
 .failure-card .primary-button {
   margin-top: .75rem;
 }
@@ -1267,8 +1274,12 @@ progress::-webkit-progress-value {
     border-radius: 1.125rem;
   }
 
-  .privacy-status {
-    display: none;
+  .site-header .privacy-status {
+    display: block;
+    max-width: 4.75rem;
+    font-size: .625rem;
+    line-height: 1.15;
+    text-align: center;
   }
 
   .current-step-file {

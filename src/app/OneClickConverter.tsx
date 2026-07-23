@@ -28,7 +28,6 @@ import {
   OutlineProcessViewport,
 } from '../preview/OutlineProcessViewport';
 import { shutdownOutlineProcessRendererPool, warmOutlineProcessRenderer } from '../preview/outline-process-scene';
-import { createStlPresentationPayload } from '../preview/stl-presentation';
 import {
   createProcessingTimeline,
   type ProcessingTimeline,
@@ -63,6 +62,7 @@ export type OneClickViewState =
   };
 
 export type OneClickConverterServices = {
+  readonly present?: (bytes: ArrayBuffer) => Promise<OutlinePreviewPayload>;
   readonly convert: (
     bytes: ArrayBuffer,
     material: ManufacturingGeometryProfile,
@@ -331,11 +331,12 @@ export function OneClickConverter({
   const timelineRef = useRef<ProcessingTimeline | undefined>(undefined);
   const dragDepthRef = useRef(0);
   const runtimeServices = useMemo(() => ({
+    present: services.present,
     convert: services.convert,
     package: services.package,
     cancel: services.cancel,
     createTimeline: services.createTimeline,
-  }), [services.cancel, services.convert, services.createTimeline, services.package]);
+  }), [services.cancel, services.convert, services.createTimeline, services.package, services.present]);
 
   const clearDrag = useCallback(() => {
     dragDepthRef.current = 0;
@@ -357,16 +358,14 @@ export function OneClickConverter({
   }, []);
 
   const schedulePresentationPreview = useCallback((bytes: ArrayBuffer, current: number) => {
-    queueMicrotask(() => {
+    if (!runtimeServices.present) return;
+    void runtimeServices.present(bytes).then((preview) => {
       if (current !== requestId.current) return;
-      try {
-        const preview = createStlPresentationPayload(bytes);
-        if (current === requestId.current) setPresentationPreview(preview);
-      } catch {
-        if (current === requestId.current) setPresentationPreview(undefined);
-      }
+      setPresentationPreview(preview);
+    }).catch(() => {
+      if (current === requestId.current) setPresentationPreview(undefined);
     });
-  }, []);
+  }, [runtimeServices]);
 
   useEffect(() => {
     warmOutlineProcessRenderer();
@@ -565,7 +564,7 @@ export function OneClickConverter({
 
   if (view.kind === 'reading') return frame(
     <section className="converter-card processing-card" aria-labelledby="reading-title">
-      <div className="processing-loading-panel" role="status" aria-live="polite">
+      <div className="processing-loading-panel">
         <div className="neutral-loading" aria-hidden="true"><span /><span /><span /></div>
         <h1 id="reading-title">正在讀取模型</h1>
         <p className="file-name">{view.fileName}</p>
@@ -588,14 +587,14 @@ export function OneClickConverter({
                 effectLevel={effectLevel}
               />
             </div>
-            <div className="processing-status-overlay" role="status" aria-live="polite">
-              <strong id="processing-title">{STAGE_LABELS[view.stage]}</strong>
+            <div className="processing-status-overlay">
+              <h1 id="processing-title">{STAGE_LABELS[view.stage]}</h1>
               <span className="file-name">{view.fileName}</span>
               <progress value={active + 1} max={STAGES.length} aria-label="轉換進度" />
             </div>
           </>
         ) : (
-          <div className="processing-loading-panel" role="status" aria-live="polite">
+          <div className="processing-loading-panel">
             <div className="neutral-loading" aria-hidden="true"><span /><span /><span /></div>
             <h1 id="processing-title">正在讀取模型</h1>
             <p className="file-name">{view.fileName}</p>
@@ -619,11 +618,11 @@ export function OneClickConverter({
           {view.artifact && <p>受影響輸出：<strong>{ARTIFACT_LABELS[view.artifact]}</strong></p>}
         </div>
         {retainedPreview && (
-          <div className="result-viewport failure-retained-preview">
+          <div className="result-viewport failure-retained-preview" data-settled="true">
             <OutlineProcessViewport
               payload={retainedPreview}
               stage={view.preview ? 'packaging' : 'reading'}
-              effectLevel={effectLevel}
+              effectLevel="static"
             />
           </div>
         )}

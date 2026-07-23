@@ -1845,7 +1845,12 @@ export async function inspectColoredArtifacts(payloads: ColoredArtifactPayloads)
   };
 }
 
-export async function selectModel(page: Page, fixture: string | { name: string; mimeType: string; buffer: Buffer }, beforeSetInput?: () => Promise<void>) {
+export async function selectModel(
+  page: Page,
+  fixture: string | { name: string; mimeType: string; buffer: Buffer },
+  beforeSetInput?: () => Promise<void>,
+  beforeMaterialSelection?: () => Promise<void>,
+) {
   await page.evaluate((profile) => new Promise<void>((resolve, reject) => {
     const open = indexedDB.open('spinner-laser-kit');
     open.onerror = () => reject(open.error ?? new Error('Failed to open the test material database'));
@@ -1861,6 +1866,10 @@ export async function selectModel(page: Page, fixture: string | { name: string; 
   await page.reload();
   await beforeSetInput?.();
   await page.getByLabel('選擇 STL 模型').setInputFiles(fixture);
+  if (beforeMaterialSelection) {
+    await expect(page.locator('.material-presentation-preview canvas')).toBeVisible({ timeout: 30_000 });
+    await beforeMaterialSelection();
+  }
   await page.getByLabel('選擇製作材料').selectOption(READY_TEST_MATERIAL.id);
 }
 
@@ -2136,10 +2145,6 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
           inspect(event.data);
         });
         super.postMessage({ type: 'SHAPECUT_TEST_HOLE_PROBE_ENABLE' });
-        if (state.nearLimitPackageArmed) {
-          state.nearLimitPackageArmed = false;
-          super.postMessage({ type: 'SHAPECUT_TEST_NEAR_LIMIT_PACKAGE' });
-        }
       }
 
       override terminate(): void {
@@ -2155,6 +2160,10 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
           state.applyPaths.push(path);
           if (path.endsWith('packageOutline')) {
             state.packageRequests += 1;
+            if (state.nearLimitPackageArmed) {
+              state.nearLimitPackageArmed = false;
+              super.postMessage({ type: 'SHAPECUT_TEST_NEAR_LIMIT_PACKAGE' });
+            }
           }
         }
         if (transferOrOptions === undefined) super.postMessage(message);
@@ -2179,8 +2188,7 @@ export async function armWorkerPackageReplacement(
       };
     }).__shapeCutWorkerProbe;
     state.replacement = { name, mimeType, bytes };
-    if (state.activeWorker) state.activeWorker.postMessage({ type: 'SHAPECUT_TEST_NEAR_LIMIT_PACKAGE' });
-    else state.nearLimitPackageArmed = true;
+    state.nearLimitPackageArmed = true;
   }, { name: fixture.name, mimeType: fixture.mimeType, bytes: Array.from(fixture.buffer) });
 }
 

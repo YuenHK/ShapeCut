@@ -100,7 +100,7 @@ test('100k triangle selection stays off the main thread and reaches a bounded re
   await selectModel(page, fixturePath, async () => {
     await installLongTaskObserver(page);
     await mark(page, 'selectedAt');
-  });
+  }, () => mark(page, 'previewAt'));
   const alert = page.getByRole('alert');
   await expect(alert).toBeVisible({ timeout: 35_000 });
   await expect(alert).toContainText(/模型太複雜|處理時間過長/);
@@ -110,6 +110,7 @@ test('100k triangle selection stays off the main thread and reaches a bounded re
   const probe = await readWorkerProbeState(page);
   await testInfo.attach('100k-performance.json', { body: JSON.stringify({ elapsedMs, outcome: await alert.textContent(), errorCodes: probe.errorCodes, ...evidence }), contentType: 'application/json' });
   expect(elapsedMs).toBeLessThan(35_000);
+  expect(evidence.previewAt).toBeGreaterThanOrEqual(evidence.selectedAt);
   expect(evidence.entries.filter(({ duration }) => duration >= 100)).toEqual([]);
   expect(probe.errorCodes).toContainEqual(expect.stringMatching(/^(?:RESOURCE_LIMIT|TIME_LIMIT)$/));
 });

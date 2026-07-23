@@ -153,7 +153,7 @@ describe('OutlineProcessViewport', () => {
     expect(fallback.querySelector('[data-feature-id="exterior-0"]')).toHaveAttribute('d', 'M 0 0 L 20 0 L 20 10 L 0 10 Z');
     expect(screen.getByText(/WebGL.*SVG/)).toBeVisible();
     expect(screen.queryByRole('group', { name: '模型預覽控制' })).not.toBeInTheDocument();
-    expect(screen.getByRole('status')).toHaveAttribute('aria-live', 'polite');
+    expect(screen.getByText(/WebGL.*SVG/)).not.toHaveAttribute('aria-live');
   });
 
   it('projects the bounded mesh when analyzing has no layers in SVG fallback', () => {
@@ -163,8 +163,46 @@ describe('OutlineProcessViewport', () => {
     const fallback = screen.getByRole('img', { name: /SVG/ });
     expect(fallback.querySelector('[data-preview-mesh]')).toHaveAttribute('d', expect.stringContaining('M'));
     expect(fallback.getAttribute('viewBox')).not.toBe('0 0 1 1');
-    expect(screen.getByRole('status')).toHaveTextContent('實際模型線框');
-    expect(screen.getByRole('status')).not.toHaveTextContent('實際輪廓');
+    expect(screen.getByText(/實際模型線框/)).toBeVisible();
+    expect(screen.queryByText(/實際分層輪廓/)).toBeNull();
+  });
+
+  it('does not inspect mesh positions when real layer contours already define the SVG fallback', () => {
+    const source = payload();
+    const mesh = Object.defineProperties({}, {
+      positions: {
+        get: () => { throw new Error('layer fallback must not project the source mesh'); },
+      },
+      indices: {
+        get: () => { throw new Error('layer fallback must not traverse source triangles'); },
+      },
+    }) as OutlinePreviewPayload['mesh'];
+
+    expect(() => render(
+      <OutlineProcessViewport payload={{ ...source, mesh }} stage="slicing" reducedMotion />,
+    )).not.toThrow();
+    expect(screen.getByRole('img', { name: /SVG/ }).querySelector('[data-preview-mesh]')).toBeNull();
+  });
+
+  it('samples the legal 500k-triangle presentation fallback to an explicit segment budget', () => {
+    const triangleCount = 500_000;
+    const indices = new Uint32Array(triangleCount * 3);
+    for (let offset = 0; offset < indices.length; offset += 3) indices.set([0, 1, 2], offset);
+    const source: OutlinePreviewPayload = {
+      ...payload(),
+      mesh: {
+        positions: Float32Array.from([0, 0, 0, 10, 0, 0, 0, 10, 0]),
+        indices,
+      },
+      layers: [],
+    };
+
+    render(<OutlineProcessViewport payload={source} stage="analyzing" reducedMotion />);
+
+    const wireframe = screen.getByRole('img', { name: /SVG/ }).querySelector('[data-preview-mesh]');
+    const commandCount = wireframe?.getAttribute('d')?.match(/\bM\b/gu)?.length ?? 0;
+    expect(commandCount).toBeGreaterThan(0);
+    expect(commandCount).toBeLessThanOrEqual(2_048);
   });
 
   it('announces a completed result without manual controls while retaining the layer selector', () => {
@@ -175,7 +213,7 @@ describe('OutlineProcessViewport', () => {
     );
 
     expect(container.querySelector('.outline-process-viewport')).toHaveAttribute('data-stage', 'result');
-    expect(screen.getByRole('status')).toHaveTextContent(/轉換完成.*模型分層預覽/);
+    expect(screen.getByText(/轉換完成.*模型分層預覽/)).toBeVisible();
     expect(screen.queryByRole('group', { name: '模型預覽控制' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /旋轉|縮小|放大|重設/ })).not.toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: '選擇預覽切片' })).toBeInTheDocument();

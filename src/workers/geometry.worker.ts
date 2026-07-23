@@ -18,6 +18,7 @@ import { writeBinarySTL } from '../domain/mesh/write-stl';
 import { createOutlinePackage } from '../export/outline-package';
 import { nearLimitColoredResult } from '../export/colored-outline-test-fixture';
 import { setHoleCandidateProbeForTesting } from '../domain/outline-2.5d/extract';
+import { createStlPresentationPayload } from '../preview/stl-presentation';
 import {
   OutlineArtifactError,
   type GeometryApi,
@@ -89,6 +90,13 @@ function hashBuffer(input: ArrayBuffer): string {
 }
 
 const geometryApi: GeometryApi = {
+  async createStlPresentation(input) {
+    const presentation = createStlPresentationPayload(input);
+    return transfer(presentation, [
+      presentation.mesh.positions.buffer,
+      presentation.mesh.indices.buffer,
+    ]);
+  },
   async convertAutomatically(request, onProgress) {
     let progressProxy: Remote<AutomaticOutlineProgress> | undefined;
     let progress: AutomaticOutlineProgress | undefined;

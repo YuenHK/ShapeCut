@@ -220,6 +220,7 @@ export type OutlineProcessSceneOptions = {
   readonly effectLevel?: EffectLevel;
   readonly reducedMotion?: boolean;
   readonly createRenderer?: OutlineWebGLFactory;
+  readonly onDegrade?: () => void;
 };
 
 export interface OutlineProcessScene {
@@ -697,6 +698,8 @@ export function createOutlineProcessScene(
   let removeResizeFallback: (() => void) | undefined;
   let rafId: number | undefined;
   let disposed = false;
+  let degraded = false;
+  let runtimeReady = false;
   let reducedMotion = options.reducedMotion ?? false;
   let manualVisible = true;
   let intersectionVisible = false;
@@ -706,8 +709,27 @@ export function createOutlineProcessScene(
   let selectedLayerId: string | undefined;
   const usesDefaultRenderer = options.createRenderer === undefined;
 
-  const render = (): void => renderer?.render(scene, camera);
+  const stopFrames = (): void => {
+    if (rafId !== undefined) window.cancelAnimationFrame(rafId);
+    rafId = undefined;
+    lastFrameTime = undefined;
+  };
+  const degrade = (): void => {
+    if (disposed || degraded) return;
+    degraded = true;
+    stopFrames();
+    options.onDegrade?.();
+  };
+  const render = (): void => {
+    try {
+      renderer?.render(scene, camera);
+    } catch (error) {
+      if (!runtimeReady) throw error;
+      degrade();
+    }
+  };
   const shouldAnimate = (): boolean => !disposed
+    && !degraded
     && !reducedMotion
     && effectLevel !== 'static'
     && manualVisible
@@ -782,11 +804,6 @@ export function createOutlineProcessScene(
     render();
     scheduleFrame();
   }
-  const stopFrames = (): void => {
-    if (rafId !== undefined) window.cancelAnimationFrame(rafId);
-    rafId = undefined;
-    lastFrameTime = undefined;
-  };
   const refreshAnimation = (): void => {
     if (shouldAnimate()) scheduleFrame();
     else stopFrames();
@@ -802,12 +819,17 @@ export function createOutlineProcessScene(
     render();
   };
   const onVisibilityChange = (): void => refreshAnimation();
+  const onContextLost = (event: Event): void => {
+    event.preventDefault();
+    if (runtimeReady) degrade();
+  };
 
   try {
     renderer = options.createRenderer?.() ?? acquireDefaultRenderer();
     if (!usesDefaultRenderer) renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     renderer.domElement.setAttribute('aria-hidden', 'true');
     renderer.domElement.classList.add('outline-process-canvas');
+    renderer.domElement.addEventListener('webglcontextlost', onContextLost);
     host.append(renderer.domElement);
 
     resources = createPayloadResources(initialPayload, effectLevel);
@@ -834,12 +856,14 @@ export function createOutlineProcessScene(
     document.addEventListener('visibilitychange', onVisibilityChange);
     render();
     refreshAnimation();
+    runtimeReady = true;
   } catch (error) {
     stopFrames();
     resizeObserver?.disconnect();
     intersectionObserver?.disconnect();
     removeResizeFallback?.();
     document.removeEventListener('visibilitychange', onVisibilityChange);
+    renderer?.domElement.removeEventListener('webglcontextlost', onContextLost);
     if (resources) disposePayloadResources(resources);
     if (renderer && usesDefaultRenderer) releaseDefaultRenderer(renderer as WebGLRenderer);
     else {
@@ -942,11 +966,15 @@ export function createOutlineProcessScene(
       intersectionObserver?.disconnect();
       removeResizeFallback?.();
       document.removeEventListener('visibilitychange', onVisibilityChange);
+      renderer?.domElement.removeEventListener('webglcontextlost', onContextLost);
       if (resources) {
         rotatingGroup.remove(resources.root);
         disposePayloadResources(resources);
       }
-      if (renderer && usesDefaultRenderer) releaseDefaultRenderer(renderer as WebGLRenderer);
+      if (renderer && usesDefaultRenderer) {
+        if (degraded) disposeDefaultRenderer(renderer as WebGLRenderer);
+        else releaseDefaultRenderer(renderer as WebGLRenderer);
+      }
       else {
         renderer?.dispose();
         renderer?.forceContextLoss?.();

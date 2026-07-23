@@ -13,6 +13,7 @@ import { defaultPendingMaterialProfile } from '../domain/materials/default-profi
 import { SupersededError } from '../workers/geometry-client';
 import { OutlineArtifactError } from '../workers/geometry-api';
 import * as outlineProcessScene from '../preview/outline-process-scene';
+import { createStlPresentationPayload } from '../preview/stl-presentation';
 import { BLOCKED_TEST_MATERIAL, READY_TEST_MATERIAL } from '../test/ready-material';
 import {
   OneClickConverter,
@@ -120,6 +121,7 @@ function deferred<T>() {
 
 function services(overrides: Partial<OneClickConverterServices> = {}): OneClickConverterServices {
   return {
+    present: vi.fn(async (bytes) => createStlPresentationPayload(bytes)),
     convert: vi.fn().mockResolvedValue(result),
     package: vi.fn().mockResolvedValue(downloads),
     cancel: vi.fn(),
@@ -726,8 +728,9 @@ describe('OneClickConverter', () => {
 
     await uploadAndSelectMaterial(user, new File(['mesh'], 'busy.stl'));
     expect(screen.getByRole('heading', { name: '正在讀取模型' })).toBeVisible();
-    expect(container.querySelector('.processing-loading-panel')).toHaveAttribute('role', 'status');
-    expect(container.querySelector('.processing-loading-panel')).toHaveAttribute('aria-live', 'polite');
+    expect(container.querySelector('.processing-loading-panel')).not.toHaveAttribute('role');
+    expect(container.querySelector('.processing-loading-panel')).not.toHaveAttribute('aria-live');
+    expect(container.querySelectorAll('[aria-live="polite"]')).toHaveLength(1);
     expect(container.querySelector('.processing-status-overlay')).toBeNull();
     report?.({ stage: 'simplifying' });
     await vi.waitFor(() => expect(screen.getByRole('heading', { name: '正在讀取模型' })).toBeVisible());
@@ -735,12 +738,12 @@ describe('OneClickConverter', () => {
     report?.({ stage: 'reading' });
     await vi.waitFor(() => expect(container.querySelector('.processing-status-overlay')).toBeNull());
     report?.({ stage: 'slicing', preview: result.preview });
-    await vi.waitFor(() => expect(container.querySelector('.processing-status-overlay > strong')).toHaveTextContent('正在產生切片'));
-    expect(container.querySelector('.processing-status-overlay')).toHaveAttribute('role', 'status');
+    await vi.waitFor(() => expect(screen.getByRole('heading', { name: '正在產生切片' })).toBeVisible());
+    expect(container.querySelectorAll('[aria-live="polite"]')).toHaveLength(1);
     report?.({ stage: 'analyzing', preview: result.preview });
-    await vi.waitFor(() => expect(container.querySelector('.processing-status-overlay > strong')).toHaveTextContent('正在產生切片'));
+    await vi.waitFor(() => expect(screen.getByRole('heading', { name: '正在產生切片' })).toBeVisible());
     report?.({ stage: 'packaging' });
-    await vi.waitFor(() => expect(container.querySelector('.processing-status-overlay > strong')).toHaveTextContent('正在準備下載'));
+    await vi.waitFor(() => expect(screen.getByRole('heading', { name: '正在準備下載' })).toBeVisible());
   });
 
   it('stays neutral until parsed preview data arrives, then uses the real viewport through packaging', async () => {
@@ -1036,8 +1039,13 @@ describe('OneClickConverter', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('preview.pdf');
     expect(screen.getByRole('img', { name: /模型分層預覽/ })).toBeVisible();
     expect(document.querySelector('.failure-card .outline-process-viewport')).toHaveAttribute('data-stage', 'packaging');
+    expect(document.querySelector('.failure-card .outline-process-viewport')).toHaveAttribute('data-effect-level', 'static');
+    expect(document.querySelector('.failure-retained-preview')).toHaveAttribute('data-settled', 'true');
     expect(screen.getByRole('region', { name: '模型處理提示' })).toHaveTextContent('所有切片未偵測到可靠中央孔');
     expect(screen.queryByRole('link', { name: /下載/ })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: '選擇另一個模型' }));
+    expect(screen.getByRole('heading', { name: '把 3D 模型變成 Laser Cut 切片' })).toBeVisible();
   });
 
   it('retains completed evidence without inventing an artifact identity for a packaging timeout', async () => {
