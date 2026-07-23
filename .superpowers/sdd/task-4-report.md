@@ -1,339 +1,102 @@
-# Task 4 report: Three-hook detection and versioned Knight fallback
+# Task 4 Report: Migrate Workflow States into the Workbench
 
-## Status and commit
+## Status
 
-- Completed and committed as `e0b96ca` (`feat: detect launcher clearance with safe fallback`).
-- Base was `d354020`.
-- The two supplied STL files remained outside this worktree and were never staged, modified, or committed.
+Implemented and committed Task 4 as `c65bcc8` (`feat: present conversion in one workbench`).
+
+`OneClickConverter` remains the sole owner of file reading, material selection, conversion, timeline progression, cancellation, packaging, URL ownership, downloads, reset, and failure/result publication.
 
 ## Implementation
 
-- Added bounded `detectLauncherTemplate()` for projected three-loop candidate groups. It requires finite simple closed loops, at most 4,096 points per loop, successive inclusive 112--128 degree center gaps, a common radial band, finite support, and a shared deadline/checkpoint. It scores central alignment, threefold gap quality, radial consistency, and source support, then chooses the strongest candidate deterministically.
-- Added rigid normalization that translates to the common center, rotates one deterministic first hook to +X, sorts hook order, canonicalizes winding/vertex rotation, and never scales.
-- Added `planLauncherClearance()` with detected-first/versioned-fallback selection, existing inside-cut kerf compensation plus the fixed 0.20 mm radial assembly allowance, three `CUT_BLACK` contours, and all-or-none validation against both top and second layer exteriors, central holes, inter-hook clearance, and minimum web. One tuple is returned for identical use on both layers.
-- Added strict two-reference fallback compatibility: exactly three loops, at most 5% corresponding center-radius difference, at most 10% corresponding area difference, and at most 0.50 mm symmetric mean point distance. Any incompatible reference fails before averaging.
-- Added deterministic common-count arc-length resampling and pointwise averaging. The published V1 fallback has three 96-point normalized numeric loops and two SHA-256 provenance hashes only.
-- Added `scripts/generate-launcher-template.ts`. It reads only the two opt-in environment paths, projects using the existing outline basis, searches 48 bounded axial slabs for reliable three-loop void evidence, simplifies each candidate once, generates the compatible numeric template, and prints no source path or metadata.
-- Extended `scripts/validate-fixtures.ts` so supplying both environment variables regenerates the fallback in a bounded child process and requires byte-for-byte equality with the committed numeric initializer. Supplying only one input fails closed.
+- Resolved one central `effectLevel` with `useEffectLevel()`.
+- Wrapped upload, reading, material, processing, failure, and result in exactly one `AppleWorkbench`.
+- Passed `state`, processing `stage`, available `fileName`, and `level` through the workbench frame.
+- Passed the effect level into processing, retained-failure, and result preview boundaries. The prop is staged through a local typed compatibility boundary until Task 5 adds it to `OutlineProcessViewportProps` and consumes it.
+- Replaced the failure reset button, primary ZIP anchor, and four secondary download anchors with `MotionSurface` while preserving native tags, callbacks, hrefs, download filenames, labels, and immediate action availability.
+- Added upload drag attraction with a depth counter. Nested child enter/leave events no longer clear attraction early; drop and reset clear both depth and presentation state, and unmount clears the retained depth.
+- Added a capability-safe `useEffectLevel` fallback to `static` when `window.matchMedia` is unavailable. This was required when the new workflow consumer first exercised the hook; no geometry, output, or workflow code changed.
 
-## TDD evidence
+## TDD Evidence
 
-### Initial detector/template RED
-
-Command:
-
-```sh
-npx vitest run src/domain/outline-assembly/launcher.test.ts src/domain/outline-assembly/launcher-template.test.ts
-```
-
-Observed expected failure: both suites failed import resolution because `launcher.ts` and `launcher-template.ts` did not exist.
-
-The first implementation run then exposed four meaningful geometry mismatches in the new tests. Root-cause analysis corrected percent-denominator semantics and floating tolerances, preserved already-common point samples, and changed the rotated-rectangle allowance assertion from an axis-aligned bounding width to invariant area. This was not treated as completion until the focused suite passed.
-
-### Generator RED
-
-Adding the numeric-only renderer test failed because `scripts/generate-launcher-template.ts` did not exist. After the initial script was created, the first real fixture command exited 0 with empty stdout because vite-node entry-module detection did not execute `main`. A regression proved the path heuristic issue; the design was simplified so the CLI file is an unconditional executable entry while the pure renderer remains in the tested template module.
-
-### Runtime-bound RED
-
-The first real mesh search was stopped manually with exit 130 after it exceeded its intended deadline and had produced no output. Investigation showed O(n^2) polygon validation was not receiving the detector checkpoint and raster loops were being revalidated across combinations.
-
-New tests then failed as expected:
-
-- detector inner-loop checkpoint: expected `mid-loop checkpoint`, but the invalid candidate returned omitted;
-- template inner-loop checkpoint: expected `template inner-loop checkpoint`, but validation returned the generic invalid-loop error.
-
-GREEN propagates the same deadline/checkpoint through detector and template polygon validation, symmetric point distance, planner offset/containment/clearance loops, caches detector loop validity, and simplifies each real-fixture void once to at most 96 points. Real generation then completed in seconds rather than running past the budget.
-
-### Common-point-count RED
-
-The published-template regression initially received loop counts `{96, 87, 86}` instead of one common count. Averaging now chooses one bounded maximum across all six reference loops, producing three 96-point loops.
-
-## Fresh focused and build verification
-
-Final focused command:
-
-```sh
-npx vitest run src/domain/outline-assembly/launcher.test.ts src/domain/outline-assembly/launcher-template.test.ts
-```
-
-Result: 2 files passed, 21 tests passed.
-
-```sh
-npm run typecheck
-npm run build
-```
-
-Result: both exited 0; Vite transformed 141 modules and completed the production build.
-
-`git diff --check` and the staged diff check both exited 0 before commit.
-
-## Deterministic generator and real-fixture evidence
-
-Both final runs used the brief's source-root pattern:
-
-```sh
-source_fixture_root=$(git -C "$(git rev-parse --git-common-dir)/.." rev-parse --show-toplevel)
-KNIGHT_FORTRESS_STL="$source_fixture_root/Copy of Beyblade X Knight Fortress.stl" \
-KNIGHT_FORTRESS_GROUP_STL="$source_fixture_root/Copy of Beyblade X Knight Fortress Group.stl" \
-npx vite-node scripts/generate-launcher-template.ts
-```
-
-The two complete stdout files compared byte-for-byte equal. Both SHA-256 values were:
-
-```text
-a62907554809ab8554c57cc2716908c6f00ac83c0812b915aa503519c202f5e2
-```
-
-The stdout privacy scan returned `PRIVACY_SCAN_ZERO_MATCHES` for absolute Unix/Windows paths, `.stl`, `Copy of`, and email-like metadata.
-
-Opt-in fixture validation returned:
-
-```text
-autoSuccess: 8
-outputComparisonPass: true
-launcherTemplatePass: true
-```
-
-## Full suite (run once)
+### Initial RED
 
 Command:
 
 ```sh
-npm test
+npx vitest run src/app/OneClickConverter.test.tsx
 ```
 
-Result: 46 test files / 1,181 tests; 1,180 passed and 1 failed. Every Task 4 test passed, as did the automatic outline pipeline and Knight repair regression.
+Observed expected result:
 
-The sole failure was outside Task 4: `OneClickConverter > requires material selection before conversion and resets the chooser for a replacement file`. The test synchronously queried `選擇製作材料` while the DOM still showed the replacement file's `正在讀取模型` state. This replacement-read race is documented in earlier task reports and no UI or unrelated test was changed to mask it. Per the brief, the full suite was not rerun.
+```text
+src/app/OneClickConverter.test.tsx (32 tests | 2 failed)
+Unable to find an element by: [data-testid="apple-workbench"]
+Expected data-drag-active="true"; received null
+30 passed, 2 failed
+```
 
-## Self-review and concerns
+The 30 pre-existing tests remained green. The two new tests failed specifically because the workbench and drag-depth contracts did not exist.
 
-- Confirmed no production string or generated stdout contains either private fixture path or filename; only the approved normalized numeric fallback and two SHA-256 hashes are committed.
-- Confirmed all detector/template compatibility quadratic loops receive bounded checkpoints; planner containment and pairwise clearance also share the caller deadline.
-- Confirmed fallback generation fails rather than averaging topology, radius, area, or point-distance incompatibility.
-- Confirmed planning does not scale geometry and omits the complete three-cut group if either layer rejects any cut.
-- An independent read-only review was requested under the review skill, but its scan of the large generated numeric block did not return before the parent-requested conclusion; it was interrupted rather than delaying the task. The local requirements audit and fresh verification above found no Task 4 blocker.
-- Only known concern is the unrelated full-suite UI race described above.
+### Integration RED and root cause
 
----
+After adding the first consumer of `useEffectLevel`, the focused suite failed 32/32 at `effect-level.ts:32` with:
 
-## Review remediation (2026-07-22)
+```text
+TypeError: window.matchMedia is not a function
+```
 
-This follow-up addresses every critical, important, and minor review finding. The follow-up commit subject is `fix: harden launcher fallback safety`.
+The call path was reproducible on every converter mount. The hook initializer already treated absent capabilities safely, while its effect unconditionally called `matchMedia`. A minimal capability guard made absence resolve to `static`; the workflow test itself was the regression test that failed before this fix.
 
-### Safety geometry and reliability
+### Focused GREEN
 
-- Planning now constructs the required finished opening as the normalized hook plus `0.20 mm`, validates that envelope, then derives the emitted inside-cut path by offsetting it by `-kerf / 2`. Exterior, central-hole, and inter-hook minimum-web checks use the finished envelope on both layers; the returned cuts remain the exact kerf-compensated paths.
-- The polygon offset adapter accepts the caller checkpoint and propagates it through input validation, vertex construction, and output validation. Planner deadline exhaustion and arbitrary cancellation both propagate instead of being converted into an omission.
-- Detector evidence now has explicit nonzero loop/group reliability floors and a final score floor. A bounded size term breaks otherwise equal evidence in favor of the larger credible geometry; unreliable detection still selects the fallback.
-- Regressions cover exact nonzero-kerf output bounds/area, finished-envelope exterior rejection, central-hole clearance rejection, inter-hook clearance rejection, zero/tiny evidence, equal-score size selection, fallback selection, deadline expiry, and cancellation.
+```text
+npx vitest run src/app/OneClickConverter.test.tsx
+32/32 passed
+```
 
-### Canonicalization, sampling, and provenance
+### Required workflow regression and typecheck
 
-- Normalization evaluates all three cyclic hook starts and chooses the lexicographically smallest canonical group. Tests cover asymmetric hooks rotated past 120 degrees and across the `atan2` branch.
-- Both references are uniformly arc-length resampled to one common bounded count before distance comparison and averaging. Cyclic point phase is aligned deterministically, the best cyclic group correspondence is selected without scaling, and every averaged loop is revalidated after numeric rounding.
-- Tests cover different tessellations and phases, forward/reverse deterministic averaging, and an averaged loop that becomes invalid after canonical numeric rounding.
-- Averaging and rendering now require exactly two lowercase 64-character hexadecimal provenance hashes at runtime. Uppercase, short, and extra hashes fail closed.
+Command:
 
-### One caller-owned generator budget
+```sh
+npx vitest run src/app/OneClickConverter.test.tsx src/app/App.test.tsx && npm run typecheck
+```
 
-- The importable generator core is separated into `scripts/launcher-template-generator.ts`; the CLI remains a thin executable.
-- Environment generation establishes one 120-second deadline before file loading. The same deadline/checkpoint is used before and after axis discovery and projection, through raster/simplification candidate work, detector geometry kernels, template compatibility, and averaging. No per-reference or per-stage deadline is reset.
-- RED first failed because the importable generator module did not exist. GREEN proves an already-expired deadline is checked exactly once before mesh analysis and arbitrary cancellation propagates before analysis begins.
+Result:
 
-### Review RED/GREEN evidence
+```text
+2 files passed
+40/40 tests passed
+TypeScript exit 0
+```
 
-- Launcher RED: 7 expected failures exposed zero/tiny evidence acceptance, missing size tie-breaking, missing fallback selection, safety checks against kerf-shrunken paths, and swallowed cancellation. GREEN: 19/19 launcher tests passed.
-- Template RED exposed noncanonical cyclic starts, tessellation-sensitive comparison, invalid averaged-loop acceptance, and permissive provenance hashes. GREEN: 13/13 template tests passed.
-- Generator RED failed module resolution for the new importable core. GREEN: 2/2 generator deadline/cancellation tests passed.
-- Final focused command passed 3 files / 34 tests.
+### Fresh pre-commit dependency verification
 
-### Determinism, fixtures, privacy, and final verification
+Command:
 
-- Two complete real-STL generator runs compared byte-for-byte equal. Both generated-output SHA-256 values were `32a4ae7dca2619fbd0f2be2c1527f5e3a2d3bd0692d4056e91addcd79d80f810`.
-- The regenerated numeric V1 template remains three 96-point loops with exactly two SHA-256 provenance hashes. The stdout scan found zero absolute Unix/Windows paths, `.stl`, supplied filenames, or email-like strings.
-- Opt-in fixture validation passed with `autoSuccess: 8`, `outputComparisonPass: true`, and `launcherTemplatePass: true`.
-- `npm run typecheck`: exit 0.
-- `npm run build`: exit 0; Vite transformed 141 modules.
-- Fresh full suite, run once after all remediation: 47 files / 1,196 tests passed. The formerly observed unrelated `OneClickConverter` race did not recur.
-- `git diff --check`: exit 0 after removing the generated trailing blank line.
+```sh
+npx vitest run src/app/effect-level.test.ts src/app/MotionSurface.test.tsx src/app/AppleWorkbench.test.tsx src/app/OneClickConverter.test.tsx src/app/App.test.tsx && npm run typecheck
+```
 
-No review-remediation blocker remains. The two private STL inputs remain outside the worktree and are neither staged nor committed.
+Result:
 
----
+```text
+5 files passed
+53/53 tests passed
+TypeScript exit 0
+```
 
-## In-flight cancellation remediation (2026-07-22)
+`git diff --check` and `git diff --cached --check` both exited 0 immediately before the commit.
 
-### Root cause
+## Self-review
 
-- The launcher generator owned one top-level deadline, but `findAxisCandidates`, `projectMesh`, and `rasterProjectLayer` had no caller-checkpoint API. `simplifyClosedLoop` already accepted a checkpoint, but the generator did not pass it.
-- Axis work could therefore continue through mesh compaction, mass properties, covariance, sample selection, eigensolving, and radial scoring without seeing caller cancellation.
-- Projection and raster helpers checked only wall-clock deadlines. Their vertex, triangle, supercover, morphology, flood-fill, component, boundary, void, hull, and source-evidence loops did not invoke the caller checkpoint.
-- `launcherReferencesAreCompatible` converted every non-budget `RangeError` into `false`, so a caller `RangeError('cancelled')` was indistinguishable from invalid geometry.
-- Generator raster/simplification recovery caught arbitrary exceptions and continued searching; this also converted in-flight checkpoint interruptions into the generic no-reliable-geometry failure.
+- All six render branches use the same frame helper and preserve their existing headings, live regions, warnings, native inputs/labels, and test-visible Traditional Chinese copy.
+- The new end-to-end state test observes one workbench through upload, reading, material, processing, result, and failure. It also verifies one convert call, one package call, and exactly five download links.
+- The drag test proves nested child leave does not flicker the target inactive and proves full leave, drop, and reset clear attraction.
+- All three real preview sites receive the resolved effect level.
+- Motion feedback does not await a timer, disable a control, prevent anchor activation, or gate reset/download actions.
+- No geometry, slicing, packaging, artifact generation/name, user file, output, dependency, or stylesheet file changed.
 
-### TDD RED
+## Concern
 
-The first focused RED command ran axis, raster, simplification, and template compatibility tests. It produced 57 tests: 53 passed and 4 failed exactly at the missing boundaries:
-
-- axis-analysis checkpoint was never invoked;
-- projection checkpoint was never invoked;
-- raster checkpoint was never invoked;
-- compatibility swallowed the exact caller `RangeError` and returned normal incompatibility.
-
-The simplification inner-loop regression was already green because that API had bounded checkpoint support; it established that the missing link was the generator call site.
-
-A second stage-level RED used deterministic generator dependency seams and failed 2/2 cases: both raster and simplify caller cancellations were replaced by `Launcher reference did not contain reliable three-hook geometry`.
-
-### GREEN implementation
-
-- Added optional deadline/checkpoint plumbing to `findAxisCandidates`, radial surface sampling/scoring, and mass-property loops while preserving every existing caller default.
-- Added optional checkpoint plumbing to `projectMesh`, `rasterProjectLayer`, and their meaningful inner loops. Existing deadline messages and geometry outputs remain unchanged.
-- Passed the same generator-owned deadline/checkpoint into axis analysis, projection, every raster slice, simplification, detector work, compatibility, and averaging. No stage resets the deadline.
-- Added opaque caller-interruption sentinels at generator and compatibility boundaries. Geometry recovery catches only genuine geometry `RangeError` values; arbitrary caller errors, including `RangeError`, are unwrapped and rethrown as the original object.
-- Added deterministic prompt-interruption tests with exact checkpoint counts and object-identity assertions inside axis, projection, raster, simplification, compatibility, and generator raster/simplify stages.
-
-Final focused result: 7 files / 80 tests passed.
-
-### Final verification
-
-- `npm run typecheck`: exit 0.
-- `npm run build`: exit 0; Vite transformed 141 modules.
-- Opt-in fixture validation: `autoSuccess: 8`, `outputComparisonPass: true`, `launcherTemplatePass: true`; the published numeric template did not change.
-- Definitive full suite after the stage-level correction: 49 files / 1,203 tests passed.
-- `git diff --check`: exit 0.
-
-No remaining concern or blocker was found. The new parameters are optional, existing callers and output geometry remain compatible, and private STL inputs remain outside the worktree.
-
----
-
-## Input-sized checkpoint latency remediation (2026-07-22)
-
-### Root cause and RED evidence
-
-The remaining review found several paths where a checkpoint existed at the surrounding stage but input-sized array work could complete before the next poll. Four bounded synthetic regressions failed as expected in the initial 33-test RED run:
-
-- `meshNumerics` scanned 12,000 coordinate values without invoking its optional caller checkpoint; the expected late cancellation never occurred.
-- The generator's projected axial extraction used one native `map` followed by spread `Math.min`/`Math.max`; the test observed a single unchecked 4,096-vertex interval instead of the required maximum 256 vertices.
-- Raster source-evidence point conversion used a full spread/map before its next checkpoint; the test observed a 1,025-point interval instead of at most 256 points.
-- `resampleClosedLoop` had no deadline/checkpoint API, so its 4,096-point length, reduction, and output work could not be interrupted.
-
-All four failures asserted the same caller cancellation object by identity. The interval-specific failures returned diagnostic interval errors rather than the expected cancellation, proving that the tests exercised late loop latency rather than only an entry checkpoint.
-
-### GREEN implementation
-
-- `meshNumerics` now accepts optional deadline/checkpoint parameters and polls at most every 256 vertices (768 coordinate reads), including before and after the scan. `massProperties`, and therefore the axis caller, forwards the same deadline/checkpoint. Existing callers retain `Infinity`/no-op defaults.
-- The generator computes projected minimum/maximum axial values in one deterministic loop, polling at most every 256 vertices. It no longer allocates an unchecked axial-value array or spreads it into native extrema calls.
-- Raster source evidence now polls throughout parent initialization, triangle ownership/group setup, group extraction, evidence-point conversion, scoring, hull preparation, area calculation, candidate collection/sorting/flattening, and final bounds accumulation.
-- Convex-hull deduplication/preparation is manual and periodic. Unavoidable native sorts poll immediately before and after, plus every 256 comparator calls. Reverse preparation and both hull halves are also periodically checked.
-- Source-evidence area reductions and final bounds no longer use unchecked native reductions/maps/spread extrema.
-- `resampleClosedLoop` now has optional deadline/checkpoint parameters. Length scanning, perimeter reduction, advancing segments, and output sampling poll at most every 256 iterations, and every compatibility/averaging call passes the existing caller budget through.
-- All geometry arithmetic and iteration order were preserved; no template number or fixture geometry changed.
-
-Final focused result: 8 files / 84 tests passed. The late tests prove exact original-error identity and maximum intervals of 256 items, or 768 coordinate reads for xyz vertex scanning.
-
-### Final verification
-
-- `npm run typecheck`: exit 0.
-- `npm run build`: exit 0; Vite transformed 141 modules.
-- Opt-in fixture validation: `autoSuccess: 8`, `outputComparisonPass: true`, `launcherTemplatePass: true`.
-- Full suite, run once: 50 files / 1,207 tests; 1,206 passed and 1 unrelated test failed. Every Task 4, numerics, axis, raster, simplification, template, and generator test passed.
-- The sole failure was the previously documented `OneClickConverter > requires material selection before conversion and resets the chooser for a replacement file` race: the test synchronously queried `選擇製作材料` while the replacement UI was still in `正在讀取模型`. No UI or unrelated test was changed, and the full suite was not rerun.
-- `git diff --check`: exit 0.
-
-No Task 4 blocker remains. The only concern is the unrelated pre-existing UI test race described above.
-
----
-
-## Residual nested-loop polling remediation (2026-07-22)
-
-### Root cause and RED evidence
-
-- Convex-hull construction polled its outer input loop, but a single point could trigger thousands of consecutive `result.pop()` operations before the next checkpoint.
-- Union-find used a recursive `find`, so a deep parent chain could traverse and compress thousands of entries without polling and also risk stack exhaustion.
-- Launcher-template helpers still had unchecked input-sized passes in `signedArea`, `centroid`, `canonicalLoop`, `compareLoops`, phase copying/alignment, and compatible-loop averaging.
-
-The focused RED command ran 34 tests: 29 passed and 5 failed as expected because the new checkpoint-aware helpers did not yet exist. The regressions force late cancellation inside a 4,095-pop hull operation, a 4,096-entry parent chain, centroid/area work, canonicalization/comparison, and phase-copy/averaging work. Each test asserts that the exact caller error object is rethrown, rather than merely observing a proxy vertex access or an entry checkpoint.
-
-### GREEN implementation
-
-- Convex-hull half construction now polls during consecutive pops at intervals of at most 256 operations, while retaining the existing entry/outer-loop checks and arithmetic order.
-- Union-find root discovery and path compression are iterative and independently poll at most every 256 parent entries. The recursive implementation was removed without changing component results.
-- `signedArea`, `centroid`, `canonicalLoop`, and `compareLoops` now share the caller deadline/checkpoint and poll every 256 loop items or fewer.
-- Cyclic phase copying/alignment and compatible-reference averaging now use checkpoint-aware passes with the same 256-item bound; downstream canonicalization retains the same budget.
-- The cumulative Task 4 raster/template helpers were audited. Remaining native maps/reductions in the template operate only on fixed-size groups of two or three; every pass that can reach the 4,096-point limit now has bounded polling. Raster triangle maps are fixed at three entries, while the other input-sized flood, trace, evidence, hull, and union-find paths are periodically checked.
-
-Final focused result: 5 files / 58 tests passed, including raster, template, launcher, generator, and generator-stage coverage.
-
-### Final verification
-
-- `npx tsc -b --pretty false`: exit 0.
-- `npm run build`: exit 0; Vite transformed 141 modules.
-- Opt-in fixture validation: `autoSuccess: 8`, `outputComparisonPass: true`, `launcherTemplatePass: true`; the regenerated numeric initializer remained byte-identical.
-- Fresh full suite, run once: 50 files / 1,212 tests passed. The unrelated `OneClickConverter` race did not recur.
-- `git diff --check`: exit 0.
-
-No remaining cumulative Task 4 unchecked input-sized helper loop, output change, or blocker was found.
-
----
-
-## Launcher detection and planning polling closure (2026-07-22)
-
-### Root cause and RED evidence
-
-- The shared `signedArea` implementation already supported bounded deadline/checkpoint polling, but `evaluateCandidate` omitted those arguments for all three centroid area passes and all three scoring area passes.
-- `polygonCentroid` performed its own second input-sized point pass without any runtime check.
-- Copying the selected detection loops and translating planner loops each used a native `map`, leaving up to 4,096 points between caller checkpoints.
-
-The definitive public-API RED ran 23 launcher tests: 19 passed and 4 failed. Each failure used a 4,096-point loop, allowed validation to finish, and then targeted only the named centroid, scoring-area, selected-copy, or planner-translation stack. All four target poll counts remained zero. Distinct post-stage diagnostic errors prevented a missing target checkpoint from being mistaken for later validation, normalization, or kernel cancellation.
-
-The synthetic detection arrays expose four evenly spaced points only while the unrelated polygon validator is on the stack, avoiding three repeated quadratic self-intersection scans. They retain their full 4,096-point length and coordinates throughout every launcher helper under test; target-stack poll counts and post-stage guards prove that cancellation occurs in the intended pass.
-
-### GREEN implementation
-
-- `polygonCentroid` now has API-compatible optional deadline/checkpoint parameters, passes them into `signedArea`, and polls its second pass at most every 256 points.
-- `evaluateCandidate` passes its one deadline/checkpoint through all three centroids and all three standalone area scans.
-- Selected-loop copying and planner translation now use explicit, order-preserving point loops that poll at most every 256 items.
-- The public regressions cancel late in the third dense centroid, third dense scoring-area scan, selected dense-loop copy, and dense planner translation. Every assertion confirms that the exact opaque caller `RangeError` object is rethrown.
-- The rest of `launcher.ts` was audited. Remaining maps/reductions/some calls operate only on fixed groups of two or three; the candidate scan is bounded to 64 and checks every item; nested boundary-distance scans already poll every 64/256 points; downstream validation, containment, bounds, area, and kernel calls receive the same checkpoint.
-- Coordinate arithmetic, iteration order, outputs, and existing public request shapes remain unchanged; new helper arguments are optional.
-
-### Final verification
-
-- Launcher GREEN: 23 / 23 tests passed.
-- Launcher/kernel focused run: 2 files / 29 tests passed.
-- `npx tsc -b --pretty false`: exit 0.
-- `npm run build`: exit 0; Vite transformed 141 modules.
-- Fresh full suite, run once: 50 files / 1,216 tests passed.
-- `git diff --check`: exit 0.
-
-No launcher.ts polling gap, output change, or blocker remains.
-
----
-
-## Planner checkpoint recovery identity closure (2026-07-22)
-
-### Root cause and RED evidence
-
-`planLauncherClearance` recovered genuine offset failures by matching `RangeError` message prefixes. Its caller checkpoint was invoked directly inside the same recovery boundary, so a caller cancellation such as `RangeError('Offset caller cancellation')` was indistinguishable from an offset-kernel geometry error and was silently converted to the sanitized omitted result.
-
-The public planner RED ran 25 launcher tests: 24 passed and one failed as expected. The checkpoint threw one specific `RangeError` object on call four inside planner recovery; the call returned normally, so the captured exception was `undefined` instead of that object. A companion test proved that a genuine bow-tie offset error was and must remain safely omitted.
-
-### GREEN implementation
-
-- Added an opaque `LauncherPlanningCheckpointInterruption` sentinel around only caller-checkpoint exceptions inside planner recovery.
-- The guarded checkpoint is shared by translation, offset/kernel validation, contour bounds, and area work inside the `try` boundary.
-- The catch block unwraps and rethrows the exact original caller object before applying any geometry type/message recovery.
-- Runtime-budget errors remain directly classified as budget failures, while genuine offset and finished-opening geometry `RangeError` values still produce the sanitized omitted plan.
-
-### Final verification
-
-- Launcher GREEN: 25 / 25 tests passed.
-- Launcher/kernel focused run: 2 files / 31 tests passed.
-- `npx tsc -b --pretty false`: exit 0.
-- `npm run build`: exit 0; Vite transformed 141 modules.
-- Fresh full suite, run once: 50 files / 1,218 tests passed.
-- `git diff --check`: exit 0.
-
-No planner recovery ambiguity or blocker remains.
+Task 4 passes `effectLevel` through a local typed compatibility alias because Task 5, by plan order, is the task that adds and consumes `effectLevel` in `OutlineProcessViewportProps`. The prop is already present at runtime at all three call sites; Task 5 should remove the temporary alias when it formalizes the preview boundary contract.
