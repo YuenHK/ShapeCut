@@ -24,8 +24,12 @@ type ReleaseFixture = typeof fixtures[number];
 
 async function captureCompleteReleaseRun(page: Page, fixture: ReleaseFixture) {
   return measureCompleteReleaseRun(async () => {
+    await expect(page.getByTestId('apple-workbench')).toHaveAttribute('data-state', 'upload');
     await selectModel(page, fixture.path!);
+    await expect(page.getByTestId('apple-workbench')).toHaveAttribute('data-state', 'processing');
     await expectResult(page, '需注意', '2.5D 外形');
+    await expect(page.getByRole('link', { name: '下載 ZIP 製作套件' })).toBeVisible();
+    await expect(page.getByTestId('apple-workbench')).toHaveAttribute('data-state', 'result');
     await expect(page.getByRole('region', { name: '模型處理提示' }))
       .toContainText('模型已使用 2.5D 外形簡化');
     const viewport = page.getByRole('img', { name: /真實網格和爆炸圖/ });
