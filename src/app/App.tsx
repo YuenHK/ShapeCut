@@ -97,7 +97,7 @@ export function App({
   useEffect(() => () => geometryRef.current?.dispose(), []);
   return (
     <div className="app-shell">
-      <header className="site-header"><a className="brand" href="./" aria-label="ShapeCut 首頁"><span aria-hidden="true">S</span>ShapeCut</a><p>私隱優先 · 本機處理</p></header>
+      <header className="site-header floating-chrome"><a className="brand" href="./" aria-label="ShapeCut 首頁"><span aria-hidden="true">S</span>ShapeCut</a><p>私隱優先 · 本機處理</p></header>
       <main>
         {materialLoadFailed && <p role="alert">已儲存的材料設定檔未能載入；請稍後重試。</p>}
         <OneClickConverter services={oneClickServices} />

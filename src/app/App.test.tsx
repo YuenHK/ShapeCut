@@ -23,6 +23,13 @@ describe('App', () => {
     expect(screen.queryByText('材料設定')).toBeNull();
   });
 
+  it('keeps local processing visible in floating chrome', () => {
+    render(<App services={services} />);
+
+    expect(screen.getByText('私隱優先 · 本機處理')).toBeVisible();
+    expect(screen.getByRole('banner')).toHaveClass('floating-chrome');
+  });
+
   it('loads only approved stored material profiles through the production App catalog path', async () => {
     const user = userEvent.setup();
     const repository = {
