@@ -16,6 +16,9 @@ import {
   MeshBasicMaterial,
   PerspectiveCamera,
   PlaneGeometry,
+  Points,
+  PointsMaterial,
+  RingGeometry,
   Scene,
   Vector3,
   WebGLRenderer,
@@ -47,6 +50,9 @@ const MAX_PIXEL_RATIO = 2;
 const PREWARM_MAX_CSS_WIDTH = 1_280;
 const PREWARM_MAX_CSS_HEIGHT = 720;
 const MAX_RETAINED_PHYSICAL_PIXELS = 2_560 * 1_440;
+const FULL_PARTICLE_LIMIT = 240;
+const SAVING_PARTICLE_LIMIT = 72;
+const PLATFORM_OPACITY = 0.14;
 
 let availableRenderer: WebGLRenderer | undefined;
 let poolLifecycleInstalled = false;
@@ -246,6 +252,14 @@ type PayloadResources = {
   readonly wireframe: LineSegments<WireframeGeometry, LineBasicMaterial>;
   readonly scanPlane: Mesh<PlaneGeometry, MeshBasicMaterial>;
   readonly centralAxis: Line<BufferGeometry, LineBasicMaterial>;
+  readonly platform: Mesh<RingGeometry, MeshBasicMaterial>;
+  readonly particles: Points<BufferGeometry, PointsMaterial> | undefined;
+  readonly particlePositions: Readonly<{
+    full: Float32Array;
+    saving: Float32Array;
+  }>;
+  readonly roleTraceGroups: readonly Group[];
+  readonly traceMaterials: ReadonlyMap<FeatureRole, LineBasicMaterial>;
   readonly axialRange: readonly [number, number];
   readonly geometries: ReadonlySet<BufferGeometry>;
   readonly materials: Set<Material>;
@@ -303,6 +317,87 @@ function explosionForStage(stage: AutomaticOutlineProgressStage): number {
   return stage === 'slicing' || stage === 'packaging' ? 1 : 0;
 }
 
+function wireframeOpacityForStage(stage: AutomaticOutlineProgressStage): number {
+  switch (stage) {
+    case 'reading': return 0.48;
+    case 'analyzing': return 0.72;
+    case 'simplifying': return 0.42;
+    case 'slicing': return 0.26;
+    case 'packaging': return 0.2;
+  }
+}
+
+function contourOpacityForStage(stage: AutomaticOutlineProgressStage): number {
+  switch (stage) {
+    case 'reading': return 0.14;
+    case 'analyzing': return 0.24;
+    case 'simplifying': return 0.68;
+    case 'slicing': return 0.88;
+    case 'packaging': return 0.96;
+  }
+}
+
+function traceOpacityForStage(stage: AutomaticOutlineProgressStage): number {
+  switch (stage) {
+    case 'reading': return 0.03;
+    case 'analyzing': return 0.08;
+    case 'simplifying': return 0.18;
+    case 'slicing': return 0.4;
+    case 'packaging': return 0.58;
+  }
+}
+
+function effectOpacityMultiplier(effectLevel: EffectLevel): number {
+  switch (effectLevel) {
+    case 'full': return 1;
+    case 'energy-saving': return 0.62;
+    case 'static': return 0.44;
+  }
+}
+
+function sampledParticlePositions(
+  payload: OutlinePreviewPayload,
+  limit: number,
+): Float32Array {
+  const total = payload.layers.reduce((sum, layer) =>
+    sum + allContours(layer).reduce((layerSum, contour) => layerSum + contour.outer.length, 0), 0);
+  const count = Math.min(total, limit);
+  const positions = new Float32Array(count * 3);
+  if (count === 0) return positions;
+  const stride = total / count;
+  let sourceIndex = 0;
+  let sampledIndex = 0;
+  let nextSample = 0;
+  for (const layer of payload.layers) {
+    const axial = (layer.zStart + layer.zEnd) / 2;
+    for (const contour of allContours(layer)) {
+      for (const [x, y] of contour.outer) {
+        if (sourceIndex === Math.floor(nextSample)) {
+          positions.set([x, axial, y], sampledIndex * 3);
+          sampledIndex += 1;
+          nextSample = sampledIndex * stride;
+        }
+        sourceIndex += 1;
+      }
+    }
+  }
+  return positions;
+}
+
+function updateParticleBudget(resources: PayloadResources, effectLevel: EffectLevel): void {
+  if (!resources.particles) return;
+  const positions = effectLevel === 'full'
+    ? resources.particlePositions.full
+    : resources.particlePositions.saving;
+  const attribute = resources.particles.geometry.getAttribute('position') as BufferAttribute;
+  const array = attribute.array as Float32Array;
+  array.fill(0);
+  array.set(positions);
+  attribute.needsUpdate = true;
+  resources.particles.geometry.setDrawRange(0, positions.length / 3);
+  resources.particles.userData.count = positions.length / 3;
+}
+
 function normalizedDirection(direction: readonly [number, number, number]): Vector3 {
   const vector = new Vector3(...direction);
   return vector.lengthSq() > 0 && Number.isFinite(vector.lengthSq())
@@ -320,7 +415,7 @@ function planarBounds(layers: readonly ColoredOutlineLayer[]): Box3 {
   return bounds;
 }
 
-function createPayloadResources(payload: OutlinePreviewPayload): PayloadResources {
+function createPayloadResources(payload: OutlinePreviewPayload, effectLevel: EffectLevel): PayloadResources {
   const root = new Group();
   root.name = 'outline-process-payload';
   const geometries = new Set<BufferGeometry>();
@@ -360,6 +455,7 @@ function createPayloadResources(payload: OutlinePreviewPayload): PayloadResource
     root.add(manufacturingTransform);
 
     const roleMaterials = new Map<FeatureRole, LineBasicMaterial>();
+    const traceMaterials = new Map<FeatureRole, LineBasicMaterial>();
     const materialForRole = (role: FeatureRole): LineBasicMaterial => {
       const existing = roleMaterials.get(role);
       if (existing) return existing;
@@ -372,6 +468,22 @@ function createPayloadResources(payload: OutlinePreviewPayload): PayloadResource
       materials.add(material);
       return material;
     };
+    const traceMaterialForRole = (role: FeatureRole): LineBasicMaterial => {
+      const existing = traceMaterials.get(role);
+      if (existing) return existing;
+      const material = new LineBasicMaterial({
+        color: CANONICAL_ROLE_COLORS[role],
+        transparent: true,
+        opacity: 0.08,
+        depthWrite: false,
+        linewidth: 2,
+      });
+      traceMaterials.set(role, material);
+      materials.add(material);
+      return material;
+    };
+    const roleTraceRoot = new Group();
+    roleTraceRoot.name = 'role-traces';
     const layerGroups = payload.layers.map((layer, order) => {
       const group = new Group();
       group.name = layer.id;
@@ -381,12 +493,32 @@ function createPayloadResources(payload: OutlinePreviewPayload): PayloadResource
         order,
         baseAxial: (layer.zStart + layer.zEnd) / 2,
       };
+      const traceGroup = new Group();
+      traceGroup.name = `role-traces:${layer.id}`;
+      traceGroup.userData = {
+        layerId: layer.id,
+        order,
+        baseAxial: group.userData.baseAxial,
+      };
       for (const contour of allContours(layer)) {
-        group.add(contourLine(contour, materialForRole(contour.role), geometries));
+        const line = contourLine(contour, materialForRole(contour.role), geometries);
+        group.add(line);
+        const trace = new LineLoop(line.geometry, traceMaterialForRole(contour.role));
+        trace.name = `role-trace:${contour.id}`;
+        trace.userData = {
+          featureId: contour.id,
+          role: contour.role,
+          presentationTrace: true,
+        };
+        trace.renderOrder = 2;
+        traceGroup.add(trace);
       }
       root.add(group);
+      roleTraceRoot.add(traceGroup);
       return group;
     });
+    const roleTraceGroups = [...roleTraceRoot.children] as Group[];
+    root.add(roleTraceRoot);
 
     const bounds = planarBounds(payload.layers);
     const boundsSize = bounds.isEmpty() ? new Vector3(10, 0, 10) : bounds.getSize(new Vector3());
@@ -434,7 +566,49 @@ function createPayloadResources(payload: OutlinePreviewPayload): PayloadResource
     centralAxis.name = 'selected-manufacturing-axis';
     root.add(centralAxis);
 
-    return {
+    const platformGeometry = new RingGeometry(planarSize * 0.62, planarSize * 0.76, 64);
+    geometries.add(platformGeometry);
+    const platformMaterial = new MeshBasicMaterial({
+      color: SCAN_PLANE_COLOR,
+      opacity: PLATFORM_OPACITY,
+      transparent: true,
+      depthWrite: false,
+      side: DoubleSide,
+    });
+    materials.add(platformMaterial);
+    const platform = new Mesh(platformGeometry, platformMaterial);
+    platform.name = 'workbench-platform';
+    platform.rotation.x = -Math.PI / 2;
+    platform.position.y = axialMinimum - explosionMargin;
+    root.add(platform);
+
+    const particlePositions = {
+      full: sampledParticlePositions(payload, FULL_PARTICLE_LIMIT),
+      saving: sampledParticlePositions(payload, SAVING_PARTICLE_LIMIT),
+    };
+    let particles: Points<BufferGeometry, PointsMaterial> | undefined;
+    if (particlePositions.full.length > 0) {
+      const particleGeometry = new BufferGeometry();
+      geometries.add(particleGeometry);
+      particleGeometry.setAttribute(
+        'position',
+        new BufferAttribute(new Float32Array(particlePositions.full.length), 3),
+      );
+      const particleMaterial = new PointsMaterial({
+        color: SCAN_PLANE_COLOR,
+        opacity: 0.5,
+        transparent: true,
+        depthWrite: false,
+        size: Math.max(planarSize * 0.012, 0.08),
+        sizeAttenuation: true,
+      });
+      materials.add(particleMaterial);
+      particles = new Points(particleGeometry, particleMaterial);
+      particles.name = 'contour-particles';
+      root.add(particles);
+    }
+
+    const resources: PayloadResources = {
       root,
       manufacturingTransform,
       layerGroups,
@@ -442,11 +616,18 @@ function createPayloadResources(payload: OutlinePreviewPayload): PayloadResource
       wireframe,
       scanPlane,
       centralAxis,
+      platform,
+      particles,
+      particlePositions,
+      roleTraceGroups,
+      traceMaterials,
       axialRange: [axialMinimum, axialMaximum],
       geometries,
       materials,
       disposed: false,
     };
+    updateParticleBudget(resources, effectLevel);
+    return resources;
   } catch (error) {
     disposeOwnedResources(root, geometries, materials);
     throw error;
@@ -460,6 +641,9 @@ function disposePayloadResources(resources: PayloadResources): void {
 }
 
 function applyLayerHighlight(resources: PayloadResources, selectedLayerId: string | undefined): void {
+  for (const traceGroup of resources.roleTraceGroups) {
+    traceGroup.visible = selectedLayerId === undefined || traceGroup.userData.layerId === selectedLayerId;
+  }
   for (const group of resources.layerGroups) {
     if (selectedLayerId === undefined) {
       group.userData.selected = false;
@@ -495,7 +679,8 @@ export function createOutlineProcessScene(
   options: OutlineProcessSceneOptions = {},
 ): OutlineProcessScene {
   const scene = new Scene();
-  scene.userData.effectLevel = options.effectLevel ?? (options.reducedMotion ? 'static' : 'full');
+  let effectLevel = options.effectLevel ?? (options.reducedMotion ? 'static' : 'full');
+  scene.userData.effectLevel = effectLevel;
   const camera = new PerspectiveCamera(42, 1, 0.01, 100_000);
   const rotatingGroup = new Group();
   rotatingGroup.name = 'display-y-rotation';
@@ -516,7 +701,7 @@ export function createOutlineProcessScene(
   let manualVisible = true;
   let intersectionVisible = false;
   let stage = options.stage ?? 'analyzing';
-  let explosionAmount = reducedMotion ? explosionForStage(stage) : 0;
+  let explosionAmount = reducedMotion || effectLevel === 'static' ? explosionForStage(stage) : 0;
   let lastFrameTime: number | undefined;
   let selectedLayerId: string | undefined;
   const usesDefaultRenderer = options.createRenderer === undefined;
@@ -524,6 +709,7 @@ export function createOutlineProcessScene(
   const render = (): void => renderer?.render(scene, camera);
   const shouldAnimate = (): boolean => !disposed
     && !reducedMotion
+    && effectLevel !== 'static'
     && manualVisible
     && intersectionVisible
     && !document.hidden;
@@ -534,8 +720,34 @@ export function createOutlineProcessScene(
       const baseAxial = typeof group.userData.baseAxial === 'number' ? group.userData.baseAxial : 0;
       group.position.y = baseAxial + (order - middle) * EXPLODED_LAYER_GAP * explosionAmount;
     });
+    resources.roleTraceGroups.forEach((group, order) => {
+      const baseAxial = typeof group.userData.baseAxial === 'number' ? group.userData.baseAxial : 0;
+      group.position.y = baseAxial + (order - middle) * EXPLODED_LAYER_GAP * explosionAmount;
+    });
     const [minimum, maximum] = resources.axialRange;
     resources.scanPlane.position.y = minimum + stageProgress(stage) * (maximum - minimum);
+    resources.scanPlane.visible = stage === 'analyzing' || stage === 'simplifying';
+    resources.scanPlane.material.opacity = stage === 'analyzing' ? 0.16 : stage === 'simplifying' ? 0.07 : 0;
+    resources.wireframe.material.opacity = wireframeOpacityForStage(stage);
+    const contourOpacity = contourOpacityForStage(stage);
+    for (const group of resources.layerGroups) {
+      group.traverse((object) => {
+        if (!(object instanceof Line) || !(object.material instanceof LineBasicMaterial)) return;
+        object.userData.baseOpacity = contourOpacity;
+        object.material.opacity = selectedLayerId !== undefined && group.name !== selectedLayerId
+          ? Math.min(contourOpacity, 0.18)
+          : contourOpacity;
+      });
+    }
+    const traceOpacity = traceOpacityForStage(stage) * effectOpacityMultiplier(effectLevel);
+    for (const material of resources.traceMaterials.values()) material.opacity = traceOpacity;
+    resources.platform.scale.setScalar(1);
+    resources.platform.material.opacity = effectLevel === 'full'
+      ? PLATFORM_OPACITY
+      : effectLevel === 'energy-saving' ? PLATFORM_OPACITY * 0.72 : PLATFORM_OPACITY * 0.54;
+    if (resources.particles) {
+      resources.particles.material.opacity = effectLevel === 'full' ? 0.5 : effectLevel === 'energy-saving' ? 0.32 : 0.24;
+    }
   };
   const frame = (): void => {
     if (!resources) return;
@@ -554,13 +766,19 @@ export function createOutlineProcessScene(
   };
   function tick(time: number): void {
     rafId = undefined;
-    if (!shouldAnimate()) return;
+    if (!shouldAnimate() || !resources) return;
     const elapsed = lastFrameTime === undefined ? 0 : Math.min(Math.max(time - lastFrameTime, 0), 64);
     lastFrameTime = time;
-    rotatingGroup.rotation.y += elapsed * ROTATION_SPEED_RADIANS_PER_MS;
+    const rotationMultiplier = effectLevel === 'full' ? 1 : 0.45;
+    rotatingGroup.rotation.y += elapsed * ROTATION_SPEED_RADIANS_PER_MS * rotationMultiplier;
     const targetExplosion = explosionForStage(stage);
     explosionAmount += (targetExplosion - explosionAmount) * Math.min(elapsed / 180, 1);
     applyProcessState();
+    if (effectLevel === 'full') {
+      const pulse = Math.sin(time * 0.0018);
+      resources.platform.scale.setScalar(1 + pulse * 0.018);
+      resources.platform.material.opacity = PLATFORM_OPACITY + pulse * 0.025;
+    }
     render();
     scheduleFrame();
   }
@@ -592,7 +810,7 @@ export function createOutlineProcessScene(
     renderer.domElement.classList.add('outline-process-canvas');
     host.append(renderer.domElement);
 
-    resources = createPayloadResources(initialPayload);
+    resources = createPayloadResources(initialPayload, effectLevel);
     rotatingGroup.add(resources.root);
     frame();
     resize();
@@ -644,7 +862,7 @@ export function createOutlineProcessScene(
     get centralAxis() { return resources!.centralAxis; },
     setPayload(payload) {
       if (disposed) return;
-      const replacement = createPayloadResources(payload);
+      const replacement = createPayloadResources(payload, effectLevel);
       const previous = resources!;
       rotatingGroup.remove(previous.root);
       resources = replacement;
@@ -654,22 +872,27 @@ export function createOutlineProcessScene(
         selectedLayerId = undefined;
       }
       applyLayerHighlight(replacement, selectedLayerId);
-      explosionAmount = reducedMotion ? explosionForStage(stage) : 0;
+      explosionAmount = reducedMotion || effectLevel === 'static' ? explosionForStage(stage) : 0;
       frame();
       render();
     },
     setStage(nextStage) {
       if (disposed) return;
       stage = nextStage;
-      if (reducedMotion) explosionAmount = explosionForStage(stage);
+      if (reducedMotion || effectLevel === 'static') explosionAmount = explosionForStage(stage);
       applyProcessState();
       render();
       refreshAnimation();
     },
     setEffectLevel(level) {
       if (disposed) return;
+      effectLevel = level;
       scene.userData.effectLevel = level;
+      updateParticleBudget(resources!, effectLevel);
+      if (effectLevel === 'static') explosionAmount = explosionForStage(stage);
+      applyProcessState();
       render();
+      refreshAnimation();
     },
     setReducedMotion(reduced) {
       if (disposed) return;

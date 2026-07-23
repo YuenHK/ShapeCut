@@ -1,4 +1,14 @@
-import { BufferGeometry, Line, LineBasicMaterial, Material, Vector3 } from 'three';
+import {
+  BufferGeometry,
+  Line,
+  LineBasicMaterial,
+  Material,
+  Mesh,
+  MeshBasicMaterial,
+  Points,
+  PointsMaterial,
+  Vector3,
+} from 'three';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOutlineAxisBasis } from '../domain/outline-2.5d/raster';
 import type { ColoredOutlineLayer, FeatureContour, OutlinePreviewPayload } from '../domain/outline-features/types';
@@ -69,6 +79,33 @@ function blackOnlyPayload(): OutlinePreviewPayload {
       deepFeatures: [], lightFeatures: [],
       diagnostics: { ...item.diagnostics, hole: { status: 'omitted' as const } },
     })),
+  };
+}
+
+function denseContourPayload(vertexCount = 480): OutlinePreviewPayload {
+  const source = payload(1);
+  const outer = Array.from({ length: vertexCount }, (_, index) => {
+    const angle = index / vertexCount * Math.PI * 2;
+    return [12 * Math.cos(angle), 12 * Math.sin(angle)] as const;
+  });
+  return {
+    ...source,
+    layers: [{
+      ...source.layers[0],
+      exterior: {
+        ...source.layers[0].exterior,
+        outer,
+        boundsMm: { minX: -12, minY: -12, maxX: 12, maxY: 12 },
+        areaMm2: Math.PI * 12 * 12,
+      },
+      centralHole: undefined,
+      deepFeatures: [],
+      lightFeatures: [],
+      diagnostics: {
+        ...source.layers[0].diagnostics,
+        hole: { status: 'omitted' as const },
+      },
+    }],
   };
 }
 
@@ -160,6 +197,117 @@ describe('OutlineProcessScene', () => {
       expect.arrayContaining([expect.any(Number)]),
     );
     expect(Array.from(view.centralAxis.geometry.getAttribute('position').array).every(Number.isFinite)).toBe(true);
+    expect(view.scene.getObjectByName('contour-particles')).toBeUndefined();
+    view.dispose();
+  });
+
+  it('builds deterministic bounded showcase resources only from real contour vertices', () => {
+    globalThis.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+    globalThis.IntersectionObserver = IntersectionObserverStub as unknown as typeof IntersectionObserver;
+    const source = denseContourPayload();
+    const view = createOutlineProcessScene(document.createElement('div'), source, {
+      stage: 'slicing', effectLevel: 'full', reducedMotion: false, createRenderer: renderer,
+    });
+
+    const platform = view.scene.getObjectByName('workbench-platform');
+    expect(platform).toBeInstanceOf(Mesh);
+    expect((platform as Mesh<BufferGeometry, MeshBasicMaterial>).material).toMatchObject({
+      transparent: true,
+      depthWrite: false,
+    });
+
+    const particles = view.scene.getObjectByName('contour-particles') as Points<BufferGeometry, PointsMaterial>;
+    expect(particles).toBeInstanceOf(Points);
+    expect(particles.userData.count).toBe(240);
+    expect(particles.geometry.drawRange.count).toBe(240);
+    const particleAttribute = particles.geometry.getAttribute('position');
+    const fullPositions = Array.from(particleAttribute.array);
+    const realVertices = new Set(source.layers[0].exterior.outer.map(([x, y]) =>
+      `${Math.fround(x)},${Math.fround(0.5)},${Math.fround(y)}`));
+    for (let index = 0; index < 240; index += 1) {
+      expect(realVertices.has([
+        fullPositions[index * 3],
+        fullPositions[index * 3 + 1],
+        fullPositions[index * 3 + 2],
+      ].join(','))).toBe(true);
+    }
+
+    view.setEffectLevel('energy-saving');
+    expect(particles.geometry.getAttribute('position')).toBe(particleAttribute);
+    expect(particles.userData.count).toBe(72);
+    expect(particles.geometry.drawRange.count).toBe(72);
+    view.setEffectLevel('full');
+    expect(Array.from(particles.geometry.getAttribute('position').array)).toEqual(fullPositions);
+
+    view.setPayload(denseContourPayload());
+    const replacement = view.scene.getObjectByName('contour-particles') as Points<BufferGeometry, PointsMaterial>;
+    expect(Array.from(replacement.geometry.getAttribute('position').array)).toEqual(fullPositions);
+    view.dispose();
+  });
+
+  it('choreographs scan, wireframe, real role traces, and layer explosion by stage', () => {
+    globalThis.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+    const view = createOutlineProcessScene(document.createElement('div'), payload(), {
+      stage: 'analyzing', effectLevel: 'static', reducedMotion: false, createRenderer: renderer,
+    });
+    const firstLine = view.layerGroups[0].children[0] as Line<BufferGeometry, LineBasicMaterial>;
+    let trace: Line<BufferGeometry, LineBasicMaterial> | undefined;
+    view.scene.traverse((object) => {
+      if (trace || object.userData.presentationTrace !== true || !(object instanceof Line)) return;
+      trace = object as Line<BufferGeometry, LineBasicMaterial>;
+    });
+
+    expect(trace).toBeInstanceOf(Line);
+    expect(trace!.geometry).toBe(firstLine.geometry);
+    expect(`#${trace!.material.color.getHexString().toUpperCase()}`).toBe(CANONICAL_ROLE_COLORS.CUT_BLACK);
+    expect(view.scanPlane.visible).toBe(true);
+    expect(view.layerGroups.every((group) => group.position.y === group.userData.baseAxial)).toBe(true);
+    expect(view.wireframe.material.opacity).toBeGreaterThan(firstLine.material.opacity);
+    const analyzingScanOpacity = view.scanPlane.material.opacity;
+    const analyzingLineOpacity = firstLine.material.opacity;
+    const analyzingTraceOpacity = trace!.material.opacity;
+
+    view.setStage('simplifying');
+    expect(view.scanPlane.visible).toBe(true);
+    expect(view.scanPlane.material.opacity).toBeLessThan(analyzingScanOpacity);
+    expect(firstLine.material.opacity).toBeGreaterThan(analyzingLineOpacity);
+
+    view.setStage('slicing');
+    expect(view.scanPlane.visible).toBe(false);
+    expect(view.layerGroups.some((group) => group.position.y !== group.userData.baseAxial)).toBe(true);
+    expect(trace!.material.opacity).toBeGreaterThan(analyzingTraceOpacity);
+    const slicingTraceOpacity = trace!.material.opacity;
+
+    view.setStage('packaging');
+    expect(trace!.material.opacity).toBeGreaterThan(slicingTraceOpacity);
+    view.dispose();
+  });
+
+  it('renders static state changes without scheduling animation frames', () => {
+    globalThis.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+    globalThis.IntersectionObserver = IntersectionObserverStub as unknown as typeof IntersectionObserver;
+    const request = vi.spyOn(window, 'requestAnimationFrame');
+    const host = document.createElement('div');
+    const view = createOutlineProcessScene(host, payload(), {
+      stage: 'analyzing', effectLevel: 'static', reducedMotion: false, createRenderer: renderer,
+    });
+    const observer = IntersectionObserverStub.instances[0];
+    observer.callback([
+      { target: host, isIntersecting: true } as unknown as IntersectionObserverEntry,
+    ], observer as unknown as IntersectionObserver);
+
+    view.setStage('slicing');
+    view.setPayload(payload(7));
+    view.setVisible(true);
+    expect(request).not.toHaveBeenCalled();
+    expect(view.rotatingGroup.rotation.y).toBe(0);
+
+    view.setEffectLevel('full');
+    expect(request).toHaveBeenCalledOnce();
+    request.mockClear();
+    view.setEffectLevel('static');
+    view.setStage('packaging');
+    expect(request).not.toHaveBeenCalled();
     view.dispose();
   });
 
@@ -353,9 +501,9 @@ describe('OutlineProcessScene', () => {
     })).toThrow(/resize construction failure/i);
 
     const after = new Material();
-    expect((after as Material & { readonly id: number }).id - beforeId - 1).toBe(4);
-    expect(geometryDispose).toHaveBeenCalledTimes(10);
-    expect(materialDispose).toHaveBeenCalledTimes(4);
+    expect((after as Material & { readonly id: number }).id - beforeId - 1).toBe(7);
+    expect(geometryDispose).toHaveBeenCalledTimes(12);
+    expect(materialDispose).toHaveBeenCalledTimes(7);
     expect(output.dispose).toHaveBeenCalledOnce();
     expect(output.forceContextLoss).toHaveBeenCalledOnce();
     after.dispose();
@@ -392,5 +540,36 @@ describe('OutlineProcessScene', () => {
     expect(IntersectionObserverStub.instances[0].disconnect).toHaveBeenCalledOnce();
     expect(cancel).toHaveBeenCalledWith(41);
     expect(output.domElement).not.toBeInTheDocument();
+  });
+
+  it('disposes each added presentation geometry and material exactly once', () => {
+    globalThis.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+    const view = createOutlineProcessScene(document.createElement('div'), payload(), {
+      stage: 'slicing', effectLevel: 'full', reducedMotion: true, createRenderer: renderer,
+    });
+    const presentationResources = () => {
+      const platform = view.scene.getObjectByName('workbench-platform') as Mesh<BufferGeometry, MeshBasicMaterial>;
+      const particles = view.scene.getObjectByName('contour-particles') as Points<BufferGeometry, PointsMaterial>;
+      const traceMaterials = new Set<Material>();
+      view.scene.traverse((object) => {
+        if (object.userData.presentationTrace !== true || !(object instanceof Line)) return;
+        traceMaterials.add(object.material as Material);
+      });
+      return [
+        platform.geometry,
+        platform.material,
+        particles.geometry,
+        particles.material,
+        ...traceMaterials,
+      ];
+    };
+    const oldDisposals = presentationResources().map((resource) => vi.spyOn(resource, 'dispose'));
+
+    view.setPayload(payload(7));
+    for (const dispose of oldDisposals) expect(dispose).toHaveBeenCalledOnce();
+
+    const replacementDisposals = presentationResources().map((resource) => vi.spyOn(resource, 'dispose'));
+    view.dispose();
+    for (const dispose of replacementDisposals) expect(dispose).toHaveBeenCalledOnce();
   });
 });
