@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { page } from '@vitest/browser/context';
 import { describe, expect, it, vi } from 'vitest';
@@ -137,13 +137,30 @@ describe('App real browser one-click flow', () => {
         explodedPdf: { href: 'blob:exploded', fileName: 'exploded-view.pdf' },
       }),
     };
-    render(<App services={services} />);
+    const storedProfile = {
+      ...READY_TEST_MATERIAL,
+      id: 'browser-catalog-ready',
+      materialName: 'TEST ONLY browser catalog ready',
+    };
+    const catalog = deferred<(typeof storedProfile)[]>();
+    const materialRepository = {
+      list: vi.fn(() => catalog.promise),
+      get: vi.fn(),
+      importJson: vi.fn(),
+    };
+    render(<App services={services} materialRepository={materialRepository} />);
+    await act(async () => {
+      catalog.resolve([storedProfile]);
+      await catalog.promise;
+    });
 
     const input = screen.getByLabelText('選擇 STL 模型');
     input.focus();
     await user.upload(input, new File(['mesh'], 'keyboard.stl', { type: 'model/stl' }));
     expect(services.convert).not.toHaveBeenCalled();
-    await user.selectOptions(await screen.findByLabelText('選擇製作材料'), material.id);
+    const materialSelect = await screen.findByLabelText('選擇製作材料');
+    expect(await screen.findByRole('option', { name: /browser catalog ready/ })).toBeVisible();
+    await user.selectOptions(materialSelect, material.id);
     expect(services.convert).toHaveBeenCalledWith(expect.any(ArrayBuffer), material, expect.any(Function));
 
     expect(document.querySelector('.processing-loading-panel')).toBeInTheDocument();
@@ -174,6 +191,8 @@ describe('App real browser one-click flow', () => {
     const changeFile = document.querySelector<HTMLElement>('.processing-card > .change-file-button');
     expect(changeFile).toBeVisible();
     expect(getComputedStyle(changeFile!).zIndex).toBe('3');
+    expect(changeFile!.getBoundingClientRect().right).toBeLessThanOrEqual(window.innerWidth);
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
     await page.viewport(1024, 768);
 
     conversion.resolve(result);
