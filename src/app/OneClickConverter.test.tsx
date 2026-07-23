@@ -776,6 +776,32 @@ describe('OneClickConverter', () => {
     expect(screen.getByText(/顏色.*相對.*不代表.*雷射功率/)).toBeVisible();
   });
 
+  it('does not gate a ready download while completion feedback is materialized', async () => {
+    const user = userEvent.setup();
+    render(<OneClickConverter services={services()} />);
+    await uploadAndSelectMaterial(user, new File(['mesh'], 'ready-download.stl'));
+
+    const link = await screen.findByRole('link', { name: '下載 ZIP 製作套件' });
+    fireEvent.pointerDown(link, { pointerId: 1 });
+    expect(link).toHaveAttribute('data-pressed', 'true');
+    expect(link).toHaveAttribute('href', 'blob:zip');
+    expect(link).toHaveAttribute('download', 'shapecut-files.zip');
+    expect(link).not.toHaveAttribute('aria-disabled', 'true');
+
+    let componentPreventedClick: boolean | undefined;
+    const observeClick = (event: MouseEvent) => {
+      componentPreventedClick = event.defaultPrevented;
+      event.preventDefault();
+    };
+    document.addEventListener('click', observeClick, { once: true });
+    try {
+      fireEvent.click(link);
+    } finally {
+      document.removeEventListener('click', observeClick);
+    }
+    expect(componentPreventedClick).toBe(false);
+  });
+
   it('distinguishes omitted hole, deep, and light features and only shows measured technical values', async () => {
     const user = userEvent.setup();
     const retainedHole = {

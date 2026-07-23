@@ -202,9 +202,9 @@ export function OutlineProcessViewport({
   const appliedPayloadRef = useRef<OutlinePreviewPayload | undefined>(undefined);
   const mediaReduced = useReducedMotion(undefined);
   const reducedMotion = reducedMotionOverride ?? mediaReduced;
-  const requestedLevel = reducedMotionOverride
+  const requestedLevel = reducedMotionOverride === true || mediaReduced
     ? 'static'
-    : effectLevel ?? (mediaReduced ? 'static' : 'full');
+    : effectLevel ?? 'full';
   const hasInjectedFactory = createScene !== undefined || webglFactory !== undefined;
   const canUseWebGL = webGLIsAvailable(hasInjectedFactory);
   const [fallback, setFallback] = useState(!canUseWebGL);

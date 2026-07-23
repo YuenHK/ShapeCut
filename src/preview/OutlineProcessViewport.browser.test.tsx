@@ -1,8 +1,14 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { Line, type BufferGeometry, type LineBasicMaterial, type WebGLRenderer } from 'three';
+import { cdp } from '@vitest/browser/context';
+import type {} from '@vitest/browser/providers/playwright';
+import { BufferGeometry, Line, Material, type LineBasicMaterial, type WebGLRenderer } from 'three';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { AutomaticOutlineProgressEvent } from '../domain/pipeline/automatic-outline-pipeline';
 import type { ColoredOutlineLayer, OutlinePreviewPayload } from '../domain/outline-features/types';
+import { coloredResult } from '../export/colored-outline-test-fixture';
+import { READY_TEST_MATERIAL } from '../test/ready-material';
+import { OneClickConverter, type OneClickConverterServices } from '../app/OneClickConverter';
 import { OutlineProcessViewport } from './OutlineProcessViewport';
 import {
   createOutlineProcessScene,
@@ -50,8 +56,303 @@ function browserPayload(): OutlinePreviewPayload {
   };
 }
 
+function activeConversionServices() {
+  let report: ((event: AutomaticOutlineProgressEvent) => void) | undefined;
+  const services: OneClickConverterServices = {
+    materialProfiles: [READY_TEST_MATERIAL],
+    cancel: vi.fn(),
+    createTimeline: (clock) => {
+      let lastStage = -1;
+      return {
+        advance: (stage, preview) => {
+          const nextStage = ['reading', 'analyzing', 'simplifying', 'slicing', 'packaging'].indexOf(stage);
+          if (nextStage <= lastStage) return;
+          lastStage = nextStage;
+          clock.onStage(stage, preview);
+        },
+        finish: () => new Promise<never>(() => undefined),
+        cancel: vi.fn(),
+      };
+    },
+    convert: vi.fn((_bytes, _material, onProgress) => {
+      report = onProgress;
+      return new Promise<never>(() => undefined);
+    }),
+    package: vi.fn(() => new Promise<never>(() => undefined)),
+  };
+  return { services, report: () => report };
+}
+
+function completedConversionServices(): OneClickConverterServices {
+  return {
+    materialProfiles: [READY_TEST_MATERIAL],
+    cancel: vi.fn(),
+    createTimeline: (clock) => ({
+      advance: (stage, preview) => clock.onStage(stage, preview),
+      finish: () => Promise.resolve(),
+      cancel: vi.fn(),
+    }),
+    convert: vi.fn().mockResolvedValue(coloredResult()),
+    package: vi.fn().mockResolvedValue({
+      zip: { href: 'blob:browser-zip', fileName: 'shapecut-files.zip' },
+      svg: { href: 'blob:browser-svg', fileName: 'cut-and-engrave.svg' },
+      dxf: { href: 'blob:browser-dxf', fileName: 'cut-and-engrave.dxf' },
+      previewPdf: { href: 'blob:browser-preview', fileName: 'preview.pdf' },
+      explodedPdf: { href: 'blob:browser-exploded', fileName: 'exploded-view.pdf' },
+    }),
+  };
+}
+
 describe('OutlineProcessViewport in Chromium', () => {
-  afterEach(() => disposeOutlineProcessRendererPool());
+  afterEach(async () => {
+    disposeOutlineProcessRendererPool();
+    await cdp().send('Emulation.setEmulatedMedia', { features: [] });
+  });
+
+  it('mounts full effects in a bounded real WebGL canvas', async () => {
+    let scene: OutlineProcessScene | undefined;
+    const view = render(
+      <OutlineProcessViewport
+        payload={browserPayload()}
+        stage="slicing"
+        effectLevel="full"
+        reducedMotion={false}
+        createScene={(host, payload, options) => {
+          scene = createOutlineProcessScene(host, payload, options);
+          return scene;
+        }}
+      />,
+    );
+
+    const canvas = await waitFor(() => {
+      expect(scene).toBeDefined();
+      const candidate = view.container.querySelector('canvas');
+      expect(candidate).not.toBeNull();
+      return candidate!;
+    });
+    const figure = screen.getByRole('figure');
+    expect(figure).toHaveAttribute('data-renderer', 'webgl');
+    expect(figure).toHaveAttribute('data-effect-level', 'full');
+    expect(scene!.scene.userData.effectLevel).toBe('full');
+    expect(canvas.width).toBeGreaterThan(0);
+    expect(canvas.height).toBeGreaterThan(0);
+    expect(canvas.width * canvas.height).toBeLessThanOrEqual(2_560 * 1_440);
+    view.unmount();
+  });
+
+  it('downgrades a live full scene to static without remounting its viewport state', async () => {
+    await cdp().send('Emulation.setEmulatedMedia', { features: [] });
+    const scenes: OutlineProcessScene[] = [];
+    const createScene = vi.fn((host, payload, options) => {
+      const scene = createOutlineProcessScene(host, payload, options);
+      scenes.push(scene);
+      return scene;
+    });
+    const view = render(
+      <OutlineProcessViewport
+        payload={browserPayload()}
+        stage="result"
+        effectLevel="full"
+        createScene={createScene}
+      />,
+    );
+
+    const canvas = await waitFor(() => {
+      expect(scenes).toHaveLength(1);
+      const candidate = view.container.querySelector('canvas');
+      expect(candidate).not.toBeNull();
+      return candidate!;
+    });
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: '選擇預覽切片' }), 'actual-layer-2');
+    expect(screen.getByRole('figure')).toHaveAttribute('data-effect-level', 'full');
+
+    await cdp().send('Emulation.setEmulatedMedia', {
+      features: [{ name: 'prefers-reduced-motion', value: 'reduce' }],
+    });
+
+    await waitFor(() => {
+      expect(window.matchMedia('(prefers-reduced-motion: reduce)').matches).toBe(true);
+      expect(screen.getByRole('figure')).toHaveAttribute('data-effect-level', 'static');
+      expect(scenes[0].scene.userData.effectLevel).toBe('static');
+    });
+    expect(createScene).toHaveBeenCalledOnce();
+    expect(view.container.querySelector('canvas')).toBe(canvas);
+    expect(screen.getByRole('combobox', { name: '選擇預覽切片' })).toHaveValue('actual-layer-2');
+    const paused = scenes[0].rotatingGroup.rotation.y;
+    await new Promise((resolve) => window.setTimeout(resolve, 80));
+    expect(scenes[0].rotatingGroup.rotation.y).toBe(paused);
+    view.unmount();
+  });
+
+  it('keeps the active converter workflow mounted through a live reduced-motion downgrade', async () => {
+    const user = userEvent.setup();
+    const active = activeConversionServices();
+    const view = render(<OneClickConverter services={active.services} />);
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'live-motion.stl'));
+    await user.selectOptions(await screen.findByLabelText('選擇製作材料'), READY_TEST_MATERIAL.id);
+    await act(async () => {
+      active.report()?.({ stage: 'analyzing', preview: browserPayload() });
+    });
+
+    const canvas = await waitFor(() => {
+      const candidate = view.container.querySelector('.outline-process-viewport canvas');
+      expect(candidate).not.toBeNull();
+      return candidate!;
+    });
+    const workbench = screen.getByTestId('apple-workbench');
+    expect(workbench).toHaveAttribute('data-state', 'processing');
+
+    await cdp().send('Emulation.setEmulatedMedia', {
+      features: [{ name: 'prefers-reduced-motion', value: 'reduce' }],
+    });
+
+    await waitFor(() => {
+      expect(workbench).toHaveAttribute('data-state', 'processing');
+      expect(workbench).toHaveAttribute('data-effect-level', 'static');
+      expect(screen.getByRole('figure')).toHaveAttribute('data-effect-level', 'static');
+    });
+    expect(view.container.querySelector('.outline-process-viewport canvas')).toBe(canvas);
+    expect(active.services.convert).toHaveBeenCalledOnce();
+    view.unmount();
+  });
+
+  it('does not let an explicit false test seam opt out of live reduced motion', async () => {
+    await cdp().send('Emulation.setEmulatedMedia', {
+      features: [{ name: 'prefers-reduced-motion', value: 'reduce' }],
+    });
+    let scene: OutlineProcessScene | undefined;
+    const view = render(
+      <OutlineProcessViewport
+        payload={browserPayload()}
+        stage="slicing"
+        reducedMotion={false}
+        createScene={(host, payload, options) => {
+          scene = createOutlineProcessScene(host, payload, options);
+          return scene;
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(scene).toBeDefined();
+      expect(screen.getByRole('figure')).toHaveAttribute('data-effect-level', 'static');
+      expect(scene!.scene.userData.effectLevel).toBe('static');
+    });
+    view.unmount();
+  });
+
+  it('updates an existing scene when rerendered from energy-saving to full', async () => {
+    let scene: OutlineProcessScene | undefined;
+    const createScene = vi.fn((host, payload, options) => {
+      scene = createOutlineProcessScene(host, payload, options);
+      return scene;
+    });
+    const source = browserPayload();
+    const view = render(
+      <OutlineProcessViewport
+        payload={source}
+        stage="slicing"
+        effectLevel="energy-saving"
+        reducedMotion={false}
+        createScene={createScene}
+      />,
+    );
+
+    await waitFor(() => expect(scene).toBeDefined());
+    const setEffectLevel = vi.spyOn(scene!, 'setEffectLevel');
+    view.rerender(
+      <OutlineProcessViewport
+        payload={source}
+        stage="slicing"
+        effectLevel="full"
+        reducedMotion={false}
+        createScene={createScene}
+      />,
+    );
+
+    await waitFor(() => expect(setEffectLevel).toHaveBeenCalledWith('full'));
+    expect(createScene).toHaveBeenCalledOnce();
+    expect(screen.getByRole('figure')).toHaveAttribute('data-effect-level', 'full');
+    view.unmount();
+  });
+
+  it('keeps real converter downloads and replacement usable after scene construction failure', async () => {
+    const observeScene = vi.spyOn(ResizeObserver.prototype, 'observe')
+      .mockImplementation(() => { throw new Error('synthetic scene construction failure'); });
+    const user = userEvent.setup();
+    const services = completedConversionServices();
+    const view = render(<OneClickConverter services={services} />);
+    try {
+      await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'fallback-result.stl'));
+      await user.selectOptions(await screen.findByLabelText('選擇製作材料'), READY_TEST_MATERIAL.id);
+
+      const fallback = await screen.findByRole('img', { name: /SVG fallback/ });
+      expect(screen.getByRole('figure')).toHaveAttribute('data-renderer', 'fallback');
+      expect(screen.getByRole('figure')).toHaveAttribute('data-effect-level', 'static');
+      expect(fallback.querySelectorAll('path').length).toBeGreaterThan(0);
+
+      const link = screen.getByRole('link', { name: '下載 ZIP 製作套件' });
+      expect(link).toHaveAttribute('href', 'blob:browser-zip');
+      expect(link).toHaveAttribute('download', 'shapecut-files.zip');
+      let componentPreventedClick: boolean | undefined;
+      const observeClick = (event: MouseEvent) => {
+        componentPreventedClick = event.defaultPrevented;
+        event.preventDefault();
+      };
+      document.addEventListener('click', observeClick, { once: true });
+      try {
+        fireEvent.click(link);
+      } finally {
+        document.removeEventListener('click', observeClick);
+      }
+      expect(componentPreventedClick).toBe(false);
+
+      await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['replacement'], 'fallback-replacement.stl'));
+      expect(await screen.findByLabelText('選擇製作材料')).toBeVisible();
+      expect(screen.getByTestId('apple-workbench')).toHaveAttribute('data-state', 'material');
+    } finally {
+      view.unmount();
+      observeScene.mockRestore();
+    }
+  });
+
+  it('disposes an active converter scene and its RAF when a model replaces it', async () => {
+    const user = userEvent.setup();
+    const active = activeConversionServices();
+    const view = render(<OneClickConverter services={active.services} />);
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['old'], 'old-model.stl'));
+    await user.selectOptions(await screen.findByLabelText('選擇製作材料'), READY_TEST_MATERIAL.id);
+    await act(async () => {
+      active.report()?.({ stage: 'analyzing', preview: browserPayload() });
+    });
+
+    const oldCanvas = await waitFor(() => {
+      const candidate = view.container.querySelector('.outline-process-viewport canvas');
+      expect(candidate).not.toBeNull();
+      return candidate!;
+    });
+    const cancelFrame = vi.spyOn(window, 'cancelAnimationFrame');
+    const geometryDispose = vi.spyOn(BufferGeometry.prototype, 'dispose');
+    const materialDispose = vi.spyOn(Material.prototype, 'dispose');
+    try {
+      await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['replacement'], 'replacement-model.stl'));
+
+      await waitFor(() => {
+        expect(screen.getByTestId('apple-workbench')).toHaveAttribute('data-state', 'material');
+        expect(oldCanvas).not.toBeInTheDocument();
+        expect(cancelFrame).toHaveBeenCalled();
+        expect(geometryDispose).toHaveBeenCalled();
+        expect(materialDispose).toHaveBeenCalled();
+      });
+      expect(screen.getByLabelText('選擇製作材料')).toBeVisible();
+      expect(active.services.cancel).toHaveBeenCalledTimes(2);
+    } finally {
+      view.unmount();
+      cancelFrame.mockRestore();
+      geometryDispose.mockRestore();
+      materialDispose.mockRestore();
+    }
+  });
 
   it('reuses the warmed WebGL canvas across sequential processing and result viewports', async () => {
     warmOutlineProcessRenderer();
