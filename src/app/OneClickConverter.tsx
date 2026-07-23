@@ -4,7 +4,6 @@ import {
   useRef,
   useState,
   type ChangeEvent,
-  type ComponentType,
   type DragEvent,
   type ReactNode,
 } from 'react';
@@ -26,7 +25,6 @@ import {
 import { classifyMaterialReadiness, type MaterialProfileV1 } from '../domain/materials/schema';
 import {
   OutlineProcessViewport,
-  type OutlineProcessViewportProps,
 } from '../preview/OutlineProcessViewport';
 import { shutdownOutlineProcessRendererPool, warmOutlineProcessRenderer } from '../preview/outline-process-scene';
 import {
@@ -280,14 +278,6 @@ function ModelInput({
   );
 }
 
-type EffectAwareOutlineProcessViewportProps = OutlineProcessViewportProps & {
-  readonly effectLevel: EffectLevel;
-};
-
-// Task 5 consumes this staged presentation prop inside the preview boundary.
-const EffectAwareOutlineProcessViewport =
-  OutlineProcessViewport as ComponentType<EffectAwareOutlineProcessViewportProps>;
-
 export function OneClickConverter({ services }: { readonly services: OneClickConverterServices }) {
   const [view, setView] = useState<OneClickViewState>({ kind: 'upload' });
   const [dragActive, setDragActive] = useState(false);
@@ -507,7 +497,7 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
         {view.preview ? (
           <>
             <div className="processing-viewport">
-              <EffectAwareOutlineProcessViewport payload={view.preview} stage={view.stage} effectLevel={effectLevel} />
+              <OutlineProcessViewport payload={view.preview} stage={view.stage} effectLevel={effectLevel} />
             </div>
             <div className="processing-status-overlay" role="status" aria-live="polite">
               <strong id="processing-title">{STAGE_LABELS[view.stage]}</strong>
@@ -539,7 +529,7 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
       </div>
       {view.preview && (
         <div className="result-viewport failure-retained-preview">
-          <EffectAwareOutlineProcessViewport payload={view.preview} stage="packaging" effectLevel={effectLevel} />
+          <OutlineProcessViewport payload={view.preview} stage="packaging" effectLevel={effectLevel} />
         </div>
       )}
       {view.result && presentationWarnings(view.result).length > 0 && (
@@ -588,7 +578,7 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
       )}
       <div className="result-grid">
         <div className="result-viewport">
-          <EffectAwareOutlineProcessViewport payload={result.preview} stage="result" effectLevel={effectLevel} />
+          <OutlineProcessViewport payload={result.preview} stage="result" effectLevel={effectLevel} />
         </div>
         <dl className="result-summary">
           <div><dt>處理方式</dt><dd>{result.mode === 'exact' ? '精確切片' : '2.5D 外形'}</dd></div>

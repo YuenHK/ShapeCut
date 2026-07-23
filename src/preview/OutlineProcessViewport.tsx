@@ -1,4 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import type { EffectLevel } from '../app/effect-level';
 import type { AutomaticOutlineProgressStage } from '../domain/pipeline/automatic-outline-pipeline';
 import type { FeatureContour, OutlinePreviewPayload } from '../domain/outline-features/types';
 import {
@@ -19,6 +20,7 @@ export type OutlineProcessSceneFactory = (
 export type OutlineProcessViewportProps = {
   readonly payload: OutlinePreviewPayload;
   readonly stage: OutlineProcessViewportStage;
+  readonly effectLevel?: EffectLevel;
   readonly reducedMotion?: boolean;
   readonly createScene?: OutlineProcessSceneFactory;
   readonly webglFactory?: OutlineWebGLFactory;
@@ -190,6 +192,7 @@ function webGLIsAvailable(hasInjectedFactory: boolean): boolean {
 export function OutlineProcessViewport({
   payload,
   stage,
+  effectLevel,
   reducedMotion: reducedMotionOverride,
   createScene,
   webglFactory,
@@ -197,7 +200,11 @@ export function OutlineProcessViewport({
   const hostRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<OutlineProcessScene | undefined>(undefined);
   const appliedPayloadRef = useRef<OutlinePreviewPayload | undefined>(undefined);
-  const reducedMotion = useReducedMotion(reducedMotionOverride);
+  const mediaReduced = useReducedMotion(undefined);
+  const reducedMotion = reducedMotionOverride ?? mediaReduced;
+  const requestedLevel = reducedMotionOverride
+    ? 'static'
+    : effectLevel ?? (mediaReduced ? 'static' : 'full');
   const hasInjectedFactory = createScene !== undefined || webglFactory !== undefined;
   const canUseWebGL = webGLIsAvailable(hasInjectedFactory);
   const [fallback, setFallback] = useState(!canUseWebGL);
@@ -219,6 +226,7 @@ export function OutlineProcessViewport({
     try {
       controller = (createScene ?? createOutlineProcessScene)(hostRef.current, payload, {
         stage: renderedSceneStage,
+        effectLevel: requestedLevel,
         reducedMotion,
         createRenderer: webglFactory,
       });
@@ -255,6 +263,7 @@ export function OutlineProcessViewport({
     }
   }, [payload, canUseWebGL, createScene, webglFactory]);
   useEffect(() => { sceneRef.current?.setStage(renderedSceneStage); }, [renderedSceneStage, canUseWebGL, createScene, webglFactory]);
+  useEffect(() => { sceneRef.current?.setEffectLevel(requestedLevel); }, [requestedLevel, canUseWebGL, createScene, webglFactory]);
   useEffect(() => { sceneRef.current?.setReducedMotion(reducedMotion); }, [reducedMotion, canUseWebGL, createScene, webglFactory]);
   useEffect(() => {
     sceneRef.current?.setHighlightedLayer(stage === 'result' ? selectedLayerId : undefined);
@@ -263,7 +272,12 @@ export function OutlineProcessViewport({
   const descriptionId = useId();
   const showLayerSelector = stage === 'result' && payload.layers.length > 0;
   return (
-    <figure className="outline-process-viewport" data-stage={stage}>
+    <figure
+      className="outline-process-viewport"
+      data-stage={stage}
+      data-renderer={fallback ? 'fallback' : 'webgl'}
+      data-effect-level={fallback ? 'static' : requestedLevel}
+    >
       {fallback ? (
         <SvgFallback payload={payload} stage={stage} selectedLayerId={showLayerSelector ? selectedLayerId : undefined} />
       ) : (

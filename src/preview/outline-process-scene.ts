@@ -21,6 +21,7 @@ import {
   WebGLRenderer,
   WireframeGeometry,
 } from 'three';
+import type { EffectLevel } from '../app/effect-level';
 import type { AutomaticOutlineProgressStage } from '../domain/pipeline/automatic-outline-pipeline';
 import type {
   ColoredOutlineLayer,
@@ -210,6 +211,7 @@ export type OutlineWebGLFactory = () => OutlineProcessRenderer;
 
 export type OutlineProcessSceneOptions = {
   readonly stage?: AutomaticOutlineProgressStage;
+  readonly effectLevel?: EffectLevel;
   readonly reducedMotion?: boolean;
   readonly createRenderer?: OutlineWebGLFactory;
 };
@@ -226,6 +228,7 @@ export interface OutlineProcessScene {
   readonly centralAxis: Line<BufferGeometry, LineBasicMaterial>;
   setPayload(payload: OutlinePreviewPayload): void;
   setStage(stage: AutomaticOutlineProgressStage): void;
+  setEffectLevel(level: EffectLevel): void;
   setReducedMotion(reduced: boolean): void;
   setVisible(visible: boolean): void;
   setHighlightedLayer(layerId: string | undefined): void;
@@ -492,6 +495,7 @@ export function createOutlineProcessScene(
   options: OutlineProcessSceneOptions = {},
 ): OutlineProcessScene {
   const scene = new Scene();
+  scene.userData.effectLevel = options.effectLevel ?? (options.reducedMotion ? 'static' : 'full');
   const camera = new PerspectiveCamera(42, 1, 0.01, 100_000);
   const rotatingGroup = new Group();
   rotatingGroup.name = 'display-y-rotation';
@@ -661,6 +665,11 @@ export function createOutlineProcessScene(
       applyProcessState();
       render();
       refreshAnimation();
+    },
+    setEffectLevel(level) {
+      if (disposed) return;
+      scene.userData.effectLevel = level;
+      render();
     },
     setReducedMotion(reduced) {
       if (disposed) return;

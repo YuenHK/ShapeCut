@@ -76,11 +76,42 @@ function maximumFallbackPayload(): OutlinePreviewPayload {
 function fakeScene(): OutlineProcessScene {
   return {
     setPayload: vi.fn(), setStage: vi.fn(), setReducedMotion: vi.fn(), setVisible: vi.fn(),
-    setHighlightedLayer: vi.fn(), rotateBy: vi.fn(), zoomBy: vi.fn(), resetView: vi.fn(), dispose: vi.fn(),
+    setEffectLevel: vi.fn(), setHighlightedLayer: vi.fn(), rotateBy: vi.fn(), zoomBy: vi.fn(), resetView: vi.fn(), dispose: vi.fn(),
   } as unknown as OutlineProcessScene;
 }
 
 describe('OutlineProcessViewport', () => {
+  it('propagates effect level and exposes truthful fallback state', () => {
+    const scene = fakeScene();
+    const createScene = vi.fn<OutlineProcessSceneFactory>(() => scene);
+    render(
+      <OutlineProcessViewport
+        payload={payload()}
+        stage="slicing"
+        effectLevel="energy-saving"
+        createScene={createScene}
+      />,
+    );
+
+    expect(createScene.mock.calls[0][2]).toMatchObject({ effectLevel: 'energy-saving' });
+    expect(scene.setEffectLevel).toHaveBeenCalledWith('energy-saving');
+    expect(screen.getByRole('figure')).toHaveAttribute('data-effect-level', 'energy-saving');
+  });
+
+  it('marks SVG fallback static after scene construction failure', () => {
+    render(
+      <OutlineProcessViewport
+        payload={payload()}
+        stage="result"
+        effectLevel="full"
+        createScene={() => { throw new Error('webgl'); }}
+      />,
+    );
+
+    expect(screen.getByRole('figure')).toHaveAttribute('data-renderer', 'fallback');
+    expect(screen.getByRole('figure')).toHaveAttribute('data-effect-level', 'static');
+  });
+
   it('hydrates, replaces, and disposes the scene through an accessible boundary', () => {
     const scene = fakeScene();
     const createScene = vi.fn<OutlineProcessSceneFactory>(() => scene);
