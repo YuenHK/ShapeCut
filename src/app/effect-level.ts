@@ -29,6 +29,10 @@ export function useEffectLevel(): EffectLevel {
   );
 
   useEffect(() => {
+    if (typeof window.matchMedia !== 'function') {
+      setLevel('static');
+      return;
+    }
     const motion = window.matchMedia('(prefers-reduced-motion: reduce)');
     const pointer = window.matchMedia('(pointer: coarse)');
     const update = () => setLevel(resolveEffectLevel(browserSignals()));

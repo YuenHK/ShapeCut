@@ -137,6 +137,72 @@ async function uploadAndSelectMaterial(user: ReturnType<typeof userEvent.setup>,
 }
 
 describe('OneClickConverter', () => {
+  it('keeps every workflow state inside one workbench without changing actions', async () => {
+    const user = userEvent.setup();
+    const read = deferred<ArrayBuffer>();
+    const conversion = deferred<AutomaticOutlineResult>();
+    const api = services({ convert: vi.fn().mockReturnValue(conversion.promise) });
+    const file = new File(['mesh'], 'workbench.stl');
+    Object.defineProperty(file, 'arrayBuffer', { value: vi.fn().mockReturnValue(read.promise) });
+    render(<OneClickConverter services={api} />);
+    const expectState = (state: string) => {
+      expect(screen.getAllByTestId('apple-workbench')).toHaveLength(1);
+      expect(screen.getByTestId('apple-workbench')).toHaveAttribute('data-state', state);
+    };
+
+    expectState('upload');
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), file);
+    expectState('reading');
+
+    await act(async () => { read.resolve(new ArrayBuffer(4)); await read.promise; });
+    expect(await screen.findByLabelText('選擇製作材料')).toBeVisible();
+    expectState('material');
+
+    await user.selectOptions(screen.getByLabelText('選擇製作材料'), READY_TEST_MATERIAL.id);
+    expectState('processing');
+    expect(api.convert).toHaveBeenCalledOnce();
+
+    await act(async () => { conversion.resolve(result); await conversion.promise; });
+    expect(await screen.findByRole('heading', { name: '轉換完成' })).toBeVisible();
+    expectState('result');
+    expect(api.package).toHaveBeenCalledOnce();
+    expect(screen.getAllByRole('link', { name: /下載/ })).toHaveLength(5);
+
+    fireEvent.change(screen.getByLabelText('選擇 STL 模型'), {
+      target: { files: [new File(['bad'], 'not-stl.txt')] },
+    });
+    expect(await screen.findByRole('alert')).toBeVisible();
+    expectState('failure');
+    expect(api.convert).toHaveBeenCalledOnce();
+    expect(api.package).toHaveBeenCalledOnce();
+  });
+
+  it('shows depth-safe drag attraction and clears it on leave, drop, and reset', async () => {
+    const user = userEvent.setup();
+    render(<OneClickConverter services={services()} />);
+    const input = screen.getByLabelText('選擇 STL 模型');
+    const target = input.closest('label')!;
+    const child = screen.getByText('拖放 STL 到這裏');
+
+    fireEvent.dragEnter(target);
+    fireEvent.dragEnter(child);
+    expect(target).toHaveAttribute('data-drag-active', 'true');
+    fireEvent.dragLeave(child);
+    expect(target).toHaveAttribute('data-drag-active', 'true');
+    fireEvent.dragLeave(target);
+    expect(target).toHaveAttribute('data-drag-active', 'false');
+
+    fireEvent.dragEnter(target);
+    fireEvent.drop(target, { dataTransfer: { files: [] } });
+    expect(target).toHaveAttribute('data-drag-active', 'false');
+
+    fireEvent.dragEnter(target);
+    fireEvent.change(input, { target: { files: [new File(['bad'], 'not-stl.txt')] } });
+    expect(await screen.findByRole('alert')).toBeVisible();
+    await user.click(screen.getByRole('button', { name: '選擇另一個模型' }));
+    expect(screen.getByLabelText('選擇 STL 模型').closest('label')).toHaveAttribute('data-drag-active', 'false');
+  });
+
   it('holds a fast completed conversion behind the five-stage eight-second presentation', async () => {
     vi.useFakeTimers();
     try {
