@@ -149,17 +149,12 @@ describe('App real browser one-click flow', () => {
       importJson: vi.fn(),
     };
     render(<App services={services} materialRepository={materialRepository} />);
-    await act(async () => {
-      catalog.resolve([storedProfile]);
-      await catalog.promise;
-    });
 
     const input = screen.getByLabelText('選擇 STL 模型');
     input.focus();
     await user.upload(input, new File(['mesh'], 'keyboard.stl', { type: 'model/stl' }));
     expect(services.convert).not.toHaveBeenCalled();
     const materialSelect = await screen.findByLabelText('選擇製作材料');
-    expect(await screen.findByRole('option', { name: /browser catalog ready/ })).toBeVisible();
     await user.selectOptions(materialSelect, material.id);
     expect(services.convert).toHaveBeenCalledWith(expect.any(ArrayBuffer), material, expect.any(Function));
 
@@ -195,6 +190,10 @@ describe('App real browser one-click flow', () => {
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
     await page.viewport(1024, 768);
 
+    await act(async () => {
+      catalog.resolve([storedProfile]);
+      await catalog.promise;
+    });
     conversion.resolve(result);
 
     expect(await screen.findByRole(

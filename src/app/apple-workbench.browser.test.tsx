@@ -4,6 +4,7 @@ import type {} from '@vitest/browser/providers/playwright';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import stylesText from '../styles.css?raw';
 import '../styles.css';
+import { READY_TEST_MATERIAL } from '../test/ready-material';
 import { App } from './App';
 import type { OneClickConverterServices } from './OneClickConverter';
 
@@ -42,6 +43,52 @@ function expectWhiteTextContrast(element: HTMLElement): void {
   for (const stop of stops) {
     expect(contrastRatio([255, 255, 255], stop)).toBeGreaterThanOrEqual(4.5);
   }
+}
+
+async function renderProcessingSurfaces(): Promise<readonly HTMLElement[]> {
+  const activeServices: OneClickConverterServices = {
+    ...services(),
+    materialProfiles: [READY_TEST_MATERIAL],
+    createTimeline: (clock) => ({
+      advance: (stage, preview) => clock.onStage(stage, preview),
+      finish: () => Promise.resolve(),
+      cancel: vi.fn(),
+    }),
+    convert: vi.fn((_bytes, _material, onProgress) => {
+      void onProgress?.({
+        stage: 'analyzing',
+        preview: {
+          mesh: {
+            positions: new Float32Array([0, 0, 0, 10, 0, 0, 0, 5, 0]),
+            indices: new Uint32Array([0, 1, 2]),
+          },
+          axis: {
+            origin: [0, 0, 0],
+            direction: [0, 0, 1],
+            planeX: [0, 1, 0],
+            planeY: [-1, 0, 0],
+          },
+          layers: [],
+        },
+      });
+      return new Promise<never>(() => undefined);
+    }),
+  };
+  render(<App services={activeServices} />);
+  fireEvent.change(screen.getByLabelText('選擇 STL 模型'), {
+    target: { files: [new File(['mesh'], 'media-query.stl', { type: 'model/stl' })] },
+  });
+  fireEvent.change(await screen.findByLabelText('選擇製作材料'), {
+    target: { value: READY_TEST_MATERIAL.id },
+  });
+  await waitFor(() => {
+    expect(document.querySelector('.processing-status-overlay')).toBeTruthy();
+  });
+  return [
+    screen.getByRole('banner'),
+    document.querySelector<HTMLElement>('.converter-card')!,
+    document.querySelector<HTMLElement>('.processing-status-overlay')!,
+  ];
 }
 
 afterEach(async () => {
@@ -98,6 +145,32 @@ describe('Apple workbench visual contracts', () => {
     expect(orbit).toBeTruthy();
     expect(getComputedStyle(orbit!).animationName).toBe('none');
     expect(getComputedStyle(orbit!).transform).toBe('none');
+  });
+
+  it('uses solid glass and removes backdrop blur when reduced transparency is emulated', async () => {
+    await cdp().send('Emulation.setEmulatedMedia', {
+      features: [{ name: 'prefers-reduced-transparency', value: 'reduce' }],
+    });
+    expect(window.matchMedia('(prefers-reduced-transparency: reduce)').matches).toBe(true);
+
+    for (const surface of await renderProcessingSurfaces()) {
+      const style = getComputedStyle(surface);
+      expect(style.backgroundColor).toBe('rgba(255, 255, 255, 0.94)');
+      expect(style.backdropFilter).toBe('none');
+    }
+  });
+
+  it('uses solid white glass and a defined border when high contrast is emulated', async () => {
+    await cdp().send('Emulation.setEmulatedMedia', {
+      features: [{ name: 'prefers-contrast', value: 'more' }],
+    });
+    expect(window.matchMedia('(prefers-contrast: more)').matches).toBe(true);
+
+    for (const surface of await renderProcessingSurfaces()) {
+      const style = getComputedStyle(surface);
+      expect(style.backgroundColor).toBe('rgb(255, 255, 255)');
+      expect(style.borderColor).toBe('rgb(48, 67, 93)');
+    }
   });
 
   it('ships independent reduced-motion, reduced-transparency, and high-contrast CSS fallbacks', () => {

@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ChangeEvent,
@@ -287,6 +288,12 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
   const downloadsRef = useRef<OutlineDownloads | undefined>(undefined);
   const timelineRef = useRef<ProcessingTimeline | undefined>(undefined);
   const dragDepthRef = useRef(0);
+  const runtimeServices = useMemo(() => ({
+    convert: services.convert,
+    package: services.package,
+    cancel: services.cancel,
+    createTimeline: services.createTimeline,
+  }), [services.cancel, services.convert, services.createTimeline, services.package]);
 
   const clearDrag = useCallback(() => {
     dragDepthRef.current = 0;
@@ -318,9 +325,9 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
     requestId.current += 1;
     timelineRef.current?.cancel();
     timelineRef.current = undefined;
-    services.cancel();
+    runtimeServices.cancel();
     releaseCurrentDownloads();
-  }, [releaseCurrentDownloads, services]);
+  }, [releaseCurrentDownloads, runtimeServices]);
 
   const processFile = useCallback(async (fileName: string, bytes: ArrayBuffer, material: ManufacturingGeometryProfile) => {
     const current = ++requestId.current;
@@ -330,7 +337,7 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
     let completedResult: AutomaticOutlineResult | undefined;
     let ownedDownloads: OutlineDownloads | undefined;
     let workerFinished = false;
-    const timeline = (services.createTimeline ?? createProcessingTimeline)({
+    const timeline = (runtimeServices.createTimeline ?? createProcessingTimeline)({
       now: () => Date.now(),
       setTimeout: (callback, delay) => window.setTimeout(callback, delay),
       clearTimeout: (timer) => window.clearTimeout(timer as number),
@@ -342,7 +349,7 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
     timelineRef.current = timeline;
     timeline.advance('reading');
     try {
-      const result = await services.convert(bytes, material, (event) => {
+      const result = await runtimeServices.convert(bytes, material, (event) => {
         if (current !== requestId.current || workerFinished) return;
         if ('preview' in event) latestPreview = event.preview;
         timeline.advance(event.stage, latestPreview);
@@ -350,7 +357,7 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
       if (current !== requestId.current) return;
       workerFinished = true;
       completedResult = result;
-      const packaged = services.package(result, fileName).then((downloads) => {
+      const packaged = runtimeServices.package(result, fileName).then((downloads) => {
         if (current !== requestId.current) {
           revokeDownloads(downloads);
           throw new SupersededError(current);
@@ -388,13 +395,13 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
         } : {}),
       });
     }
-  }, [releaseCurrentDownloads, services]);
+  }, [releaseCurrentDownloads, runtimeServices]);
 
   const selectFile = useCallback(async (file: File) => {
     const current = ++requestId.current;
     timelineRef.current?.cancel();
     timelineRef.current = undefined;
-    services.cancel();
+    runtimeServices.cancel();
     releaseCurrentDownloads();
     if (!/\.stl$/iu.test(file.name)) {
       setView({ kind: 'failure', message: '只支援 STL 檔案，請選擇副檔名為 .stl 的模型。' });
@@ -413,7 +420,7 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
       if (current !== requestId.current) return;
       setView({ kind: 'failure', fileName: file.name, message: failureMessage(error) });
     }
-  }, [releaseCurrentDownloads, services]);
+  }, [releaseCurrentDownloads, runtimeServices]);
 
   const selectMaterial = useCallback((id: string) => {
     if (view.kind !== 'material') return;
@@ -426,7 +433,7 @@ export function OneClickConverter({ services }: { readonly services: OneClickCon
     requestId.current += 1;
     timelineRef.current?.cancel();
     timelineRef.current = undefined;
-    services.cancel();
+    runtimeServices.cancel();
     releaseCurrentDownloads();
     setView({ kind: 'upload' });
   };

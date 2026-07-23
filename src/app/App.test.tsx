@@ -14,6 +14,12 @@ const services: OneClickConverterServices = {
   cancel: vi.fn(),
 };
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((ok) => { resolve = ok; });
+  return { promise, resolve };
+}
+
 describe('App', () => {
   it('renders only the ShapeCut one-click experience', () => {
     render(<App services={services} />);
@@ -46,6 +52,41 @@ describe('App', () => {
     expect(await screen.findByRole('option', { name: /TEST ONLY ready birch plywood/ })).toBeVisible();
     expect(screen.queryByRole('option', { name: /pending/i })).toBeNull();
     expect(screen.queryByRole('option', { name: /unknown composition/i })).toBeNull();
+  });
+
+  it('does not cancel an active conversion when the stored material catalog resolves', async () => {
+    const user = userEvent.setup();
+    const catalog = deferred<(typeof READY_TEST_MATERIAL)[]>();
+    const conversion = deferred<AutomaticOutlineResult>();
+    const activeServices: OneClickConverterServices = {
+      convert: vi.fn(() => conversion.promise),
+      package: vi.fn(() => new Promise<OutlineDownloads>(() => undefined)),
+      cancel: vi.fn(),
+      materialProfiles: [READY_TEST_MATERIAL],
+    };
+    const repository = {
+      list: vi.fn(() => catalog.promise),
+      get: vi.fn(),
+      importJson: vi.fn(),
+    };
+    render(<App services={activeServices} materialRepository={repository} />);
+
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'catalog-race.stl'));
+    await user.selectOptions(await screen.findByLabelText('選擇製作材料'), READY_TEST_MATERIAL.id);
+    expect(activeServices.convert).toHaveBeenCalledOnce();
+    vi.mocked(activeServices.cancel).mockClear();
+
+    await act(async () => {
+      catalog.resolve([{
+        ...READY_TEST_MATERIAL,
+        id: 'late-catalog-ready',
+        materialName: 'TEST ONLY late catalog ready',
+      }]);
+      await catalog.promise;
+    });
+
+    expect(activeServices.cancel).not.toHaveBeenCalled();
+    expect(activeServices.convert).toHaveBeenCalledOnce();
   });
 
   it('fails safely with a sanitized message when the stored material catalog cannot load', async () => {

@@ -177,6 +177,113 @@ describe('OneClickConverter', () => {
     expect(api.package).toHaveBeenCalledOnce();
   });
 
+  it('keeps an active conversion alive when only material profiles refresh', async () => {
+    const user = userEvent.setup();
+    const conversion = deferred<AutomaticOutlineResult>();
+    const api = services({ convert: vi.fn(() => conversion.promise) });
+    const view = render(<OneClickConverter services={api} />);
+
+    await uploadAndSelectMaterial(user, new File(['mesh'], 'profile-refresh.stl'));
+    expect(api.convert).toHaveBeenCalledOnce();
+    vi.mocked(api.cancel).mockClear();
+
+    view.rerender(<OneClickConverter services={{
+      ...api,
+      materialProfiles: [
+        ...(api.materialProfiles ?? []),
+        {
+          ...READY_TEST_MATERIAL,
+          id: 'late-ready-profile',
+          materialName: 'TEST ONLY late ready profile',
+        },
+      ],
+    }} />);
+
+    expect(api.cancel).not.toHaveBeenCalled();
+    await act(async () => {
+      conversion.resolve(result);
+      await conversion.promise;
+    });
+    expect(await screen.findByRole('heading', { name: '轉換完成' })).toBeVisible();
+    expect(api.package).toHaveBeenCalledOnce();
+  });
+
+  it('cancels an active conversion when operational services actually swap', async () => {
+    const user = userEvent.setup();
+    const conversion = deferred<AutomaticOutlineResult>();
+    const first = services({ convert: vi.fn(() => conversion.promise) });
+    const second = services();
+    const view = render(<OneClickConverter services={first} />);
+
+    await uploadAndSelectMaterial(user, new File(['mesh'], 'runtime-swap.stl'));
+    vi.mocked(first.cancel).mockClear();
+    view.rerender(<OneClickConverter services={second} />);
+
+    expect(first.cancel).toHaveBeenCalledOnce();
+    await act(async () => {
+      conversion.resolve(result);
+      await conversion.promise;
+    });
+    expect(first.package).not.toHaveBeenCalled();
+    expect(screen.queryByRole('heading', { name: '轉換完成' })).toBeNull();
+  });
+
+  it('cancels the presentation hold and releases its URLs when operational services swap', async () => {
+    vi.useFakeTimers();
+    try {
+      const packaged = deferred<OutlineDownloads>();
+      const revoke = vi.fn();
+      Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revoke });
+      const first = services({
+        createTimeline: undefined,
+        convert: vi.fn((_bytes, _material, onProgress) => {
+          onProgress?.({ stage: 'reading' });
+          onProgress?.({ stage: 'analyzing', preview: result.preview });
+          onProgress?.({ stage: 'simplifying' });
+          onProgress?.({ stage: 'slicing', preview: result.preview });
+          onProgress?.({ stage: 'packaging' });
+          return Promise.resolve(result);
+        }),
+        package: vi.fn().mockReturnValue(packaged.promise),
+      });
+      const second = services();
+      const view = render(<OneClickConverter services={first} />);
+      const file = new File(['mesh'], 'runtime-swap-held.stl');
+      Object.defineProperty(file, 'arrayBuffer', { value: vi.fn().mockResolvedValue(new ArrayBuffer(4)) });
+
+      await act(async () => {
+        fireEvent.change(screen.getByLabelText('選擇 STL 模型'), { target: { files: [file] } });
+      });
+      await act(async () => {
+        fireEvent.change(screen.getByLabelText('選擇製作材料'), { target: { value: READY_TEST_MATERIAL.id } });
+      });
+      await act(async () => { await Promise.resolve(); });
+      packaged.resolve(packageDownloads('runtime-swap-held'));
+      await act(async () => { await Promise.resolve(); });
+      await vi.advanceTimersByTimeAsync(7_999);
+      expect(vi.getTimerCount()).toBeGreaterThan(0);
+      vi.mocked(first.cancel).mockClear();
+
+      await act(async () => {
+        view.rerender(<OneClickConverter services={second} />);
+      });
+
+      expect(first.cancel).toHaveBeenCalledOnce();
+      expect(revoke.mock.calls.map(([href]) => href)).toEqual([
+        'blob:runtime-swap-held-zip',
+        'blob:runtime-swap-held-svg',
+        'blob:runtime-swap-held-dxf',
+        'blob:runtime-swap-held-preview',
+        'blob:runtime-swap-held-exploded',
+      ]);
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(screen.queryByRole('heading', { name: '轉換完成' })).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('shows depth-safe drag attraction and clears it on leave, drop, and reset', async () => {
     const user = userEvent.setup();
     render(<OneClickConverter services={services()} />);
