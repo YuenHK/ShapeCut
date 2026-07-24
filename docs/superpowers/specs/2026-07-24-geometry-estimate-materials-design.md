@@ -10,14 +10,13 @@ The one-click material selector is empty on a fresh installation. All current bu
 
 ## Chosen Design
 
-Add six built-in geometry-estimate choices directly to the one-click conversion flow:
+Add five built-in geometry-estimate choices directly to the one-click conversion flow:
 
 - 3 mm plywood
 - 5 mm plywood
 - 3 mm cast acrylic
 - 5 mm cast acrylic
 - 2 mm cardboard
-- 3 mm cork
 
 These choices provide only the manufacturing geometry values needed for slicing and clearance:
 
@@ -32,7 +31,7 @@ They do not represent calibrated machine recipes, operator approval, physical co
 
 ## Selection and Precedence
 
-- A fresh installation always shows the six geometry-estimate choices.
+- A fresh installation always shows the five geometry-estimate choices.
 - Labels explicitly include `幾何估算` and the nominal thickness.
 - Stored profiles classified as ready remain selectable.
 - A ready stored profile with the same ID replaces, rather than duplicates, a built-in estimate.
@@ -56,10 +55,9 @@ They do not represent calibrated machine recipes, operator approval, physical co
 
 ## Verification
 
-- A fresh `OneClickConverter` exposes exactly the six estimates and can start conversion after one is selected.
+- A fresh `OneClickConverter` exposes exactly the five estimates and can start conversion after one is selected.
 - Both 3 mm and 5 mm plywood and cast acrylic choices pass their exact thickness into conversion.
 - Ready stored profiles remain available and deterministically deduplicated.
 - Pending, blocked, and forbidden stored profiles remain unavailable.
 - No estimate exposes laser power, speed, passes, calibration, or operator approval in visible or packaged output.
 - Existing model replacement, cancellation, material refresh, browser flow, and artifact tests remain green.
-
