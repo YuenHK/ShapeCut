@@ -15,7 +15,7 @@ function estimate(
   name: string,
   thicknessMm: number,
 ): ManufacturingGeometryProfile {
-  return Object.freeze(validateManufacturingGeometryProfile({
+  const profile = validateManufacturingGeometryProfile({
     id,
     name,
     thicknessMm,
@@ -23,7 +23,9 @@ function estimate(
     minFeatureMm: 0.8,
     minWebMm: 0.4,
     fitAllowanceMm: FIT_ALLOWANCE_MM,
-  }));
+  });
+  Object.freeze(profile.fitAllowanceMm);
+  return Object.freeze(profile);
 }
 
 export const GEOMETRY_ESTIMATE_MATERIALS: readonly ManufacturingGeometryProfile[] =

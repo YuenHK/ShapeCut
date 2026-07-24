@@ -710,6 +710,40 @@ describe('OneClickConverter', () => {
     );
   });
 
+  it('deduplicates every ready stored ID and deterministically selects the last ready profile', async () => {
+    const user = userEvent.setup();
+    const first = {
+      ...READY_TEST_MATERIAL,
+      id: 'duplicate-ready-profile',
+      materialName: 'TEST ONLY first duplicate ready profile',
+      thicknessMm: 3.1,
+    };
+    const last = {
+      ...READY_TEST_MATERIAL,
+      id: first.id,
+      materialName: 'TEST ONLY last duplicate ready profile',
+      thicknessMm: 3.2,
+    };
+    const api = services({ materialProfiles: [first, last] });
+    render(<OneClickConverter services={api} />);
+
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'duplicate-ready.stl'));
+    const picker = await screen.findByLabelText('選擇製作材料');
+    const matchingOptions = within(picker).getAllByRole('option').filter(
+      (option) => (option as HTMLOptionElement).value === first.id,
+    );
+
+    expect(matchingOptions).toHaveLength(1);
+    expect(matchingOptions[0]).toHaveTextContent('TEST ONLY last duplicate ready profile (3.2 mm)');
+
+    await user.selectOptions(picker, first.id);
+    expect(api.convert).toHaveBeenCalledWith(
+      expect.any(ArrayBuffer),
+      manufacturingGeometryProfile(last),
+      expect.any(Function),
+    );
+  });
+
   it.each([
     ['file input', async (file: File) => userEvent.setup().upload(screen.getByLabelText('選擇 STL 模型'), file)],
     ['drag and drop', async (file: File) => fireEvent.drop(screen.getByText('拖放 STL 到這裏').closest('label')!, {

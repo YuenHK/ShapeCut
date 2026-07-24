@@ -37,4 +37,12 @@ describe('GEOMETRY_ESTIMATE_MATERIALS', () => {
       expect.objectContaining({ id: 'cardboard-2', thicknessMm: 2, kerfMm: 0.15, minFeatureMm: 0.8, minWebMm: 0.4 }),
     ]);
   });
+
+  it('deeply freezes the catalogue, every profile, and every fit allowance map', () => {
+    expect(Object.isFrozen(GEOMETRY_ESTIMATE_MATERIALS)).toBe(true);
+    for (const profile of GEOMETRY_ESTIMATE_MATERIALS) {
+      expect(Object.isFrozen(profile)).toBe(true);
+      expect(Object.isFrozen(profile.fitAllowanceMm)).toBe(true);
+    }
+  });
 });

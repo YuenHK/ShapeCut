@@ -223,3 +223,84 @@ Until those conditions are met, default/pending/forged readiness cannot unlock p
 - Software findings C1-C3, I1-I6, M1-M3 and final re-review R1-R2: closed.
 - Fresh test/build/fixture matrix: green, with zero failing checks.
 - Production manufacturing approval: blocked pending the required physical material, coupon, and qualified-operator evidence.
+
+---
+
+# Geometry Estimate Materials Final Review Fixes
+
+Date: 2026-07-24
+
+## Scope and root cause
+
+- The legacy pending catalog owns `plywood-3`, `acrylic-3`, and `cardboard-2`. `listMaterialCatalog` filtered every stored collision, `saveStoredMaterialJson` rejected every collision, and `resolveMaterialProfile` returned the pending built-in first. A readiness-approved same-ID profile therefore could not travel from the real repository through App to OneClickConverter.
+- OneClickConverter used a last-wins map only for built-in estimate collisions, then appended all other ready stored profiles without deduplication.
+- Zod clones `fitAllowanceMm`; freezing only the parsed profile left the nested clone mutable.
+
+## RED evidence
+
+Command:
+
+```sh
+npm test -- src/app/material-catalog.test.ts src/app/App.test.tsx src/app/OneClickConverter.test.tsx src/domain/materials/geometry-estimates.test.ts
+```
+
+Result: expected failure, exit 1. Four test files failed; 5 tests failed and 56 passed.
+
+- Ready `plywood-3` was rejected as a reserved built-in ID.
+- App displayed the geometry estimate instead of the repository-supplied ready same-ID profile.
+- Two ready non-built-in profiles with the same ID rendered two options and a duplicate React key warning.
+- `Object.isFrozen(profile.fitAllowanceMm)` returned false.
+- The non-ready collision test initially received the old unconditional reserved-ID error instead of a readiness gate.
+
+## GREEN evidence
+
+Focused regression command:
+
+```sh
+npm test -- src/app/material-catalog.test.ts src/app/App.test.tsx src/app/OneClickConverter.test.tsx src/domain/materials/geometry-estimates.test.ts
+```
+
+Result: exit 0; 4 files and 61/61 tests passed.
+
+Required catalog/App/Wizard/repository command:
+
+```sh
+npm test -- src/app/material-catalog.test.ts src/app/OneClickConverter.test.tsx src/app/App.test.tsx src/app/Wizard.test.tsx src/persistence/material-repository.test.ts src/domain/materials/geometry-estimates.test.ts
+```
+
+Result: exit 0; 6 files and 95/95 tests passed.
+
+Full serial unit/integration command:
+
+```sh
+npm test -- --maxWorkers=1
+```
+
+Result: exit 0; 61/61 files passed, with 1357 tests passed and 1 conditional test skipped.
+
+TypeScript command:
+
+```sh
+npm run typecheck
+```
+
+Result: exit 0; `tsc -b --pretty false` completed with no diagnostics.
+
+## Implemented policy
+
+- Only a stored profile whose ID is both a legacy built-in collision and an approved geometry-estimate ID may replace that pending built-in, and only when `classifyMaterialReadiness(...).status === 'ready'`.
+- Pending, blocked, malformed, and non-estimate reserved collisions are rejected before repository persistence. A ready `cork-3` remains reserved and unavailable.
+- Catalog listing and profile resolution prefer an approved stored same-ID replacement; otherwise they retain the pending built-in behavior.
+- OneClickConverter keeps the five geometry-estimate slots in catalogue order. For repeated ready stored IDs, the first occurrence determines the extra-profile display position and the last ready occurrence supplies the exact selected profile. Thus every rendered ID is unique and the winner is deterministic.
+- Every Zod-produced `fitAllowanceMm` map is frozen before its containing estimate profile; the estimate array, each profile, and each nested map are explicitly tested as frozen.
+- The approved five estimates, visible `幾何估算` labels and thicknesses, readiness-only stored flow, and replacement-file chooser reset remain covered. No geometry, export, worker, or artifact source was changed.
+
+## Commit
+
+This report is included in the single final-fix commit. The exact commit hash is recorded in the task handoff because a commit cannot contain its own final hash.
+
+## Concerns
+
+The default parallel `npm test` run hit two existing load-sensitive timing assertions outside this patch: the genuine package reconciliation test exceeded its 5 s timeout, and the 10k-sample decomposition benchmark measured 1516.68 ms against 1500 ms. The exact tests passed immediately in isolation at 2836 ms and 375 ms, and the full serial run passed 61/61 files. No changed file touches either geometry or artifact path.
+
+Independent final review returned no Critical, Important, or Minor findings. It confirmed the five-ID same-ID replacement policy against the approved design, the deterministic last-ready-wins merge, test adequacy, and the absence of geometry, export, worker, or artifact source changes.

@@ -86,19 +86,23 @@ const STAGE_LABELS: Record<AutomaticOutlineProgressStage, string> = {
 };
 
 function selectableMaterials(savedProfiles: readonly MaterialProfileV1[] = []): readonly ManufacturingGeometryProfile[] {
-  const readyStored = savedProfiles.flatMap((profile) => (
-    classifyMaterialReadiness(profile).status === 'ready'
-      ? [manufacturingGeometryProfile(profile)]
-      : []
-  ));
-  const readyById = new Map(readyStored.map((profile) => [profile.id, profile]));
+  const readyById = new Map<string, ManufacturingGeometryProfile>();
+  const storedIdOrder: string[] = [];
+  for (const profile of savedProfiles) {
+    if (classifyMaterialReadiness(profile).status !== 'ready') continue;
+    const projected = manufacturingGeometryProfile(profile);
+    if (!readyById.has(projected.id)) storedIdOrder.push(projected.id);
+    readyById.set(projected.id, projected);
+  }
   const builtins = GEOMETRY_ESTIMATE_MATERIALS.map(
     (profile) => readyById.get(profile.id) ?? profile,
   );
   const builtinIds = new Set(GEOMETRY_ESTIMATE_MATERIALS.map(({ id }) => id));
   return [
     ...builtins,
-    ...readyStored.filter(({ id }) => !builtinIds.has(id)),
+    ...storedIdOrder
+      .filter((id) => !builtinIds.has(id))
+      .map((id) => readyById.get(id)!),
   ];
 }
 

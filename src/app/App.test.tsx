@@ -7,6 +7,7 @@ import { OutlineArtifactError } from '../workers/geometry-api';
 import { App, createDownloadUrls } from './App';
 import { BLOCKED_TEST_MATERIAL, READY_TEST_MATERIAL } from '../test/ready-material';
 import { defaultPendingMaterialProfile } from '../domain/materials/default-profiles';
+import { manufacturingGeometryProfile } from '../domain/materials/manufacturing-profile';
 
 const services: OneClickConverterServices = {
   convert: vi.fn(() => new Promise<AutomaticOutlineResult>(() => undefined)),
@@ -55,6 +56,45 @@ describe('App', () => {
     expect(await screen.findByRole('option', { name: /TEST ONLY ready birch plywood/ })).toBeVisible();
     expect(screen.queryByRole('option', { name: /pending/i })).toBeNull();
     expect(screen.queryByRole('option', { name: /unknown composition/i })).toBeNull();
+  });
+
+  it('uses a ready same-ID replacement from the production App catalog path', async () => {
+    const user = userEvent.setup();
+    const replacement = {
+      ...READY_TEST_MATERIAL,
+      id: 'plywood-3',
+      materialName: 'TEST ONLY App catalog calibrated plywood',
+    };
+    const activeServices: OneClickConverterServices = {
+      convert: vi.fn(() => new Promise<AutomaticOutlineResult>(() => undefined)),
+      package: vi.fn(() => new Promise<OutlineDownloads>(() => undefined)),
+      cancel: vi.fn(),
+    };
+    const repository = {
+      list: vi.fn().mockResolvedValue([
+        replacement,
+        { ...BLOCKED_TEST_MATERIAL, id: 'acrylic-3' },
+        defaultPendingMaterialProfile('cardboard-2')!,
+      ]),
+      get: vi.fn(),
+      importJson: vi.fn(),
+    };
+    render(<App services={activeServices} materialRepository={repository} />);
+
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'catalog-replacement.stl'));
+    const picker = await screen.findByLabelText('選擇製作材料');
+
+    expect(await screen.findByRole('option', { name: /TEST ONLY App catalog calibrated plywood/ })).toBeVisible();
+    expect(within(picker).getAllByRole('option', { name: /plywood|木夾板/i })).toHaveLength(2);
+    expect(screen.queryByRole('option', { name: /unknown composition/i })).toBeNull();
+    expect(screen.queryByRole('option', { name: /pending/i })).toBeNull();
+
+    await user.selectOptions(picker, replacement.id);
+    expect(activeServices.convert).toHaveBeenCalledWith(
+      expect.any(ArrayBuffer),
+      manufacturingGeometryProfile(replacement),
+      expect.any(Function),
+    );
   });
 
   it('does not cancel an active conversion when the stored material catalog resolves', async () => {
