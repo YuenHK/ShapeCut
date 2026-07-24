@@ -18,7 +18,7 @@ import type { OutlinePreviewPayload } from '../domain/outline-features/types';
 import { SupersededError } from '../workers/geometry-client';
 import { OutlineArtifactError, type OutlineArtifactId } from '../workers/geometry-api';
 import { MAX_STL_BYTES } from '../domain/mesh/parse-stl';
-import { DEFAULT_PENDING_MATERIAL_PROFILES } from '../domain/materials/default-profiles';
+import { GEOMETRY_ESTIMATE_MATERIALS } from '../domain/materials/geometry-estimates';
 import {
   manufacturingGeometryProfile,
   type ManufacturingGeometryProfile,
@@ -86,13 +86,20 @@ const STAGE_LABELS: Record<AutomaticOutlineProgressStage, string> = {
 };
 
 function selectableMaterials(savedProfiles: readonly MaterialProfileV1[] = []): readonly ManufacturingGeometryProfile[] {
-  const seen = new Set<string>();
-  return [...DEFAULT_PENDING_MATERIAL_PROFILES, ...savedProfiles].flatMap((profile) => {
-    if (seen.has(profile.id)) return [];
-    seen.add(profile.id);
-    if (classifyMaterialReadiness(profile).status !== 'ready') return [];
-    return [manufacturingGeometryProfile(profile)];
-  });
+  const readyStored = savedProfiles.flatMap((profile) => (
+    classifyMaterialReadiness(profile).status === 'ready'
+      ? [manufacturingGeometryProfile(profile)]
+      : []
+  ));
+  const readyById = new Map(readyStored.map((profile) => [profile.id, profile]));
+  const builtins = GEOMETRY_ESTIMATE_MATERIALS.map(
+    (profile) => readyById.get(profile.id) ?? profile,
+  );
+  const builtinIds = new Set(GEOMETRY_ESTIMATE_MATERIALS.map(({ id }) => id));
+  return [
+    ...builtins,
+    ...readyStored.filter(({ id }) => !builtinIds.has(id)),
+  ];
 }
 
 function failureMessage(error: unknown): string {

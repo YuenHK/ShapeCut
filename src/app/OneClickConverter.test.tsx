@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -556,6 +556,46 @@ describe('OneClickConverter', () => {
     expect(await screen.findByLabelText('選擇製作材料')).toHaveValue('');
   });
 
+  it('offers exactly five geometry estimates on a fresh installation', async () => {
+    const user = userEvent.setup();
+    render(<OneClickConverter services={services({ materialProfiles: [] })} />);
+
+    await user.upload(
+      screen.getByLabelText('選擇 STL 模型'),
+      new File(['mesh'], 'fresh-install.stl'),
+    );
+
+    const picker = await screen.findByLabelText('選擇製作材料');
+    expect(within(picker).getAllByRole('option').map((option) => option.textContent)).toEqual([
+      '選擇製作材料',
+      '木夾板（幾何估算） (3 mm)',
+      '木夾板（幾何估算） (5 mm)',
+      '鑄造壓克力（幾何估算） (3 mm)',
+      '鑄造壓克力（幾何估算） (5 mm)',
+      '紙板（幾何估算） (2 mm)',
+    ]);
+  });
+
+  it.each([
+    ['plywood-3', 3],
+    ['plywood-5', 5],
+    ['acrylic-3', 3],
+    ['acrylic-5', 5],
+  ] as const)('passes %s with exact thickness %s into conversion', async (id, thicknessMm) => {
+    const user = userEvent.setup();
+    const api = services({ materialProfiles: [] });
+    render(<OneClickConverter services={api} />);
+
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], `${id}.stl`));
+    await user.selectOptions(await screen.findByLabelText('選擇製作材料'), id);
+
+    expect(api.convert).toHaveBeenCalledWith(
+      expect.any(ArrayBuffer),
+      expect.objectContaining({ id, thicknessMm }),
+      expect.any(Function),
+    );
+  });
+
   it('shows the trustworthy uploaded mesh while material selection remains pending', async () => {
     const user = userEvent.setup();
     const api = services();
@@ -641,11 +681,16 @@ describe('OneClickConverter', () => {
 
   it('only exposes profiles classified ready and never starts from pending or blocked material evidence', async () => {
     const user = userEvent.setup();
+    const readyReplacement = {
+      ...READY_TEST_MATERIAL,
+      id: 'plywood-3',
+      materialName: '已校準 3 mm 木夾板',
+    };
     const api = services({
       materialProfiles: [
         defaultPendingMaterialProfile('cardboard-2')!,
         BLOCKED_TEST_MATERIAL,
-        READY_TEST_MATERIAL,
+        readyReplacement,
       ],
     });
     render(<OneClickConverter services={api} />);
@@ -655,12 +700,13 @@ describe('OneClickConverter', () => {
 
     expect(screen.queryByRole('option', { name: /pending/i })).toBeNull();
     expect(screen.queryByRole('option', { name: /unknown composition/i })).toBeNull();
-    expect(screen.getByRole('option', { name: /TEST ONLY ready birch plywood/ })).toBeVisible();
+    expect(within(picker).getAllByRole('option', { name: /3 mm 木夾板|木夾板.*3 mm/ })).toHaveLength(1);
+    expect(screen.getByRole('option', { name: /已校準 3 mm 木夾板/ })).toBeVisible();
     expect(api.convert).not.toHaveBeenCalled();
 
-    await user.selectOptions(picker, READY_TEST_MATERIAL.id);
+    await user.selectOptions(picker, readyReplacement.id);
     expect(api.convert).toHaveBeenCalledWith(
-      expect.any(ArrayBuffer), manufacturingGeometryProfile(READY_TEST_MATERIAL), expect.any(Function),
+      expect.any(ArrayBuffer), manufacturingGeometryProfile(readyReplacement), expect.any(Function),
     );
   });
 
