@@ -19,6 +19,7 @@ import {
   OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
   OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
 } from '../domain/outline-assembly/launcher-template';
+import { sha256Hex } from '../persistence/project-repository';
 import {
   OneClickConverter,
   type OneClickConverterServices,
@@ -165,6 +166,48 @@ async function uploadAndSelectMaterial(user: ReturnType<typeof userEvent.setup>,
 }
 
 describe('OneClickConverter', () => {
+  it('keeps reopened downloads gated after source reattachment until explicit canonical regeneration', async () => {
+    const user = userEvent.setup();
+    const bytes = new TextEncoder().encode('saved mesh');
+    const convert = vi.fn().mockResolvedValue(result);
+    const saveProject = vi.fn().mockResolvedValue(undefined);
+    render(<OneClickConverter services={services({
+      convert,
+      saveProject,
+      savedProject: {
+        schemaVersion: 1,
+        id: 'one-click-current',
+        updatedAt: '2026-07-28T00:00:00.000Z',
+        sourceSha256: await sha256Hex(bytes),
+        material: manufacturingGeometryProfile(READY_TEST_MATERIAL),
+        launcherFitOffsetMm: 0.05,
+        launcherTemplateVersion: OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+        launcherTemplateFingerprint: OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
+        canonicalSourceHash: result.sourceHash,
+        status: 'regeneration-required',
+      },
+    })} />);
+    const file = new File([bytes], 'reattached.stl');
+
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), file);
+
+    expect(await screen.findByRole('button', { name: '重新產生正式輸出' })).toBeEnabled();
+    expect(convert).not.toHaveBeenCalled();
+    expect(screen.queryByRole('link', { name: /下載/ })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '重新產生正式輸出' }));
+    expect(await screen.findByRole('heading', { name: '轉換完成' })).toBeVisible();
+    expect(convert).toHaveBeenCalledWith(
+      expect.any(ArrayBuffer),
+      expect.objectContaining({ id: READY_TEST_MATERIAL.id }),
+      0.05,
+      expect.any(Function),
+    );
+    expect(saveProject).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'ready',
+      launcherTemplateFingerprint: OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
+    }));
+  });
+
   it('keeps every workflow state inside one workbench without changing actions', async () => {
     const user = userEvent.setup();
     const read = deferred<ArrayBuffer>();

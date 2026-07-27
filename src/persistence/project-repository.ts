@@ -2,7 +2,10 @@ import { z } from 'zod';
 import type { Axis, WorkflowStep } from '../domain/types';
 import type { WizardSettings } from '../app/project-store';
 import { validateLauncherFitOffsetMm } from '../domain/outline-assembly/launcher-fit';
-import { OFFICIAL_THREE_PRONG_TEMPLATE_VERSION } from '../domain/outline-assembly/launcher-template';
+import {
+  OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
+  OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+} from '../domain/outline-assembly/launcher-template';
 import { createMaterialDatabase, type MaterialDatabase } from './database';
 
 const Vec3Schema = z.tuple([z.number().finite(), z.number().finite(), z.number().finite()]);
@@ -34,7 +37,9 @@ const SettingsSchema = LegacySettingsSchema.extend({
     }
   }),
   launcherTemplateVersion: z.number().int().positive(),
+  launcherTemplateFingerprint: z.string().regex(/^[0-9a-f]{32}$/i),
 }).strict();
+const VersionOnlySettingsSchema = SettingsSchema.omit({ launcherTemplateFingerprint: true }).strict();
 const StoredProjectFields = {
   schemaVersion: z.literal(1), id: z.string().trim().min(1).max(500), name: z.string().trim().min(1).max(500),
   step: z.enum(['import', 'axis', 'decomposition', 'engraving', 'export']), axis: AxisSchema.optional(),
@@ -45,7 +50,7 @@ const StoredProjectFields = {
 const StoredProjectBaseSchema = z.object({ ...StoredProjectFields, settings: SettingsSchema }).strict();
 const StoredProjectReadSchema = z.object({
   ...StoredProjectFields,
-  settings: z.union([SettingsSchema, LegacySettingsSchema]),
+  settings: z.union([SettingsSchema, VersionOnlySettingsSchema, LegacySettingsSchema]),
 }).strict();
 const StoredProjectSchema = StoredProjectBaseSchema.superRefine((project, context) => {
   if (['decomposition', 'engraving', 'export'].includes(project.step) && project.axis?.confirmed !== true) {
@@ -69,16 +74,20 @@ export type StoredProjectV1 = {
 
 function parseStoredProject(value: unknown): StoredProjectV1 {
   const stored = StoredProjectReadSchema.parse(value);
-  const settings = 'launcherFitOffsetMm' in stored.settings
+  const settings = 'launcherTemplateFingerprint' in stored.settings
     ? stored.settings
+    : 'launcherFitOffsetMm' in stored.settings
+      ? { ...stored.settings, launcherTemplateFingerprint: OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT }
     : {
       ...stored.settings,
       launcherFitOffsetMm: 0,
       launcherTemplateVersion: OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+      launcherTemplateFingerprint: OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
     };
   const parsed = { ...stored, settings } as StoredProjectV1;
   if (parsed.step !== 'import' && (!parsed.repair
-    || parsed.settings.launcherTemplateVersion !== OFFICIAL_THREE_PRONG_TEMPLATE_VERSION)) {
+    || parsed.settings.launcherTemplateVersion !== OFFICIAL_THREE_PRONG_TEMPLATE_VERSION
+    || parsed.settings.launcherTemplateFingerprint !== OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT)) {
     return { ...parsed, step: 'import', axis: undefined };
   }
   return StoredProjectSchema.parse(parsed) as StoredProjectV1;

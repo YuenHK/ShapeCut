@@ -6,7 +6,7 @@ import { defaultPendingMaterialProfile } from '../domain/materials/default-profi
 import { classifyMaterialReadiness, type MaterialProfileV1 } from '../domain/materials/schema';
 import type { MeshProblemReport, MeshRepairResult, TriangleMesh } from '../domain/mesh/types';
 import type { ManufacturingArtifacts } from '../domain/pipeline/manufacturing-pipeline';
-import { OFFICIAL_THREE_PRONG_TEMPLATE_VERSION } from '../domain/outline-assembly/launcher-template';
+import { OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT, OFFICIAL_THREE_PRONG_TEMPLATE_VERSION } from '../domain/outline-assembly/launcher-template';
 import { SourceFingerprintError, type StoredProjectV1 } from '../persistence/project-repository';
 import type { ImportRepairAnalysis } from '../workers/geometry-api';
 import { Wizard, type WizardServices } from './Wizard';
@@ -225,6 +225,7 @@ function storedProject(overrides: Partial<StoredProjectV1> = {}): StoredProjectV
       splitPositionPercent: 50, ribCount: 10, ringLayers: 2, shaftMm: 3, fit: 'snug', materialId: 'plywood-3',
       engravingLevels: 4, textureStrength: 0.6, sheetWidthMm: 300, sheetHeightMm: 200,
       launcherFitOffsetMm: 0, launcherTemplateVersion: OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+      launcherTemplateFingerprint: OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
     },
     sourceSha256: 'a'.repeat(64),
     repair: { mode: 'safe', algorithmVersion: 'safe-repair-v1', meshSha256: 'c'.repeat(64) },

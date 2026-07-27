@@ -123,6 +123,8 @@ export type ColoredOutlinePackage = {
   readonly previewPdf: Uint8Array;
   readonly explodedViewPdf: Uint8Array;
   readonly launcherCouponSvg: string;
+  readonly projectJson: string;
+  readonly manifestJson: string;
   readonly zip: Uint8Array;
 };
 
@@ -746,7 +748,7 @@ function bytesEqual(
 
 const COLORED_ZIP_NAMES = Object.freeze([
   'cut-and-engrave.svg', 'cut-and-engrave.dxf', 'preview.pdf', 'exploded-view.pdf',
-  'launcher-fit-coupon.svg',
+  'launcher-fit-coupon.svg', 'project.json', 'manifest.json',
 ] as const);
 const MAX_COLORED_ZIP_BYTES = 64 * 1024 * 1024;
 const MAX_COLORED_ZIP_UNCOMPRESSED_BYTES = 64 * 1024 * 1024;
@@ -825,7 +827,7 @@ function parseRawColoredZip(bytes: Uint8Array, checkpoint: PackageCheckpoint): R
   const centralOffset = view.getUint32(eocd + 16, true);
   if (disk !== 0 || centralDisk !== 0 || diskRecords !== recordCount || recordCount !== COLORED_ZIP_NAMES.length
     || centralSize === 0xffffffff || centralOffset === 0xffffffff) {
-    throw new RangeError('Colored ZIP must use one exact five-record non-ZIP64 central directory');
+    throw new RangeError('Colored ZIP must use one exact seven-record non-ZIP64 central directory');
   }
   const centralEnd = centralOffset + centralSize;
   if (centralOffset > eocd || centralEnd !== eocd) {
@@ -949,10 +951,81 @@ function assertColoredPublicText(value: string, label: string): void {
 function assertExactColoredOutputKeys(output: ColoredOutlinePackage): void {
   const keys = Object.keys(output).sort();
   if (exactJson(keys) !== exactJson([
-    'cutDxf', 'cutSvg', 'explodedViewPdf', 'launcherCouponSvg', 'previewPdf', 'zip',
+    'cutDxf', 'cutSvg', 'explodedViewPdf', 'launcherCouponSvg', 'manifestJson',
+    'previewPdf', 'projectJson', 'zip',
   ])) {
-    throw new RangeError('Colored outline package must expose exactly six download payloads');
+    throw new RangeError('Colored outline package must expose exactly eight canonical payloads');
   }
+}
+
+function coloredProjectJson(document: ReturnType<typeof createColoredOutlineDocument>): string {
+  const project = {
+    schemaVersion: document.schemaVersion,
+    sourceHash: document.sourceHash,
+    featureEvidenceFingerprint: document.featureEvidenceFingerprint,
+    diagnosticsFingerprint: document.diagnosticsFingerprint,
+    safetyNotes: document.safetyNotes,
+    assembly: {
+      material: {
+        id: document.assembly.material.id,
+        thicknessMm: document.assembly.material.thicknessMm,
+        kerfMm: document.assembly.material.kerfMm,
+        minFeatureMm: document.assembly.material.minFeatureMm,
+        minWebMm: document.assembly.material.minWebMm,
+        fitAllowanceMm: document.assembly.material.fitAllowanceMm,
+      },
+      launcher: document.assembly.launcher,
+      fastener: document.assembly.fastener,
+      topFeatures: document.assembly.topFeatures,
+    },
+    layers: document.layers.map((layer) => ({
+      id: layer.id,
+      order: layer.order,
+      index: layer.index,
+      zStart: layer.zStart,
+      zEnd: layer.zEnd,
+      members: Object.fromEntries(
+        Object.entries(layer.roles).map(([role, contours]) => [
+          role,
+          contours.map(({ id }) => id),
+        ]),
+      ),
+    })),
+  };
+  return JSON.stringify(project, null, 2);
+}
+
+async function sha256(bytes: Uint8Array): Promise<string> {
+  const copy = Uint8Array.from(bytes);
+  const digest = await crypto.subtle.digest('SHA-256', copy.buffer);
+  return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, '0')).join('');
+}
+
+async function coloredManifestJson(
+  document: ReturnType<typeof createColoredOutlineDocument>,
+  files: ReadonlyArray<readonly [string, Uint8Array]>,
+): Promise<string> {
+  const members = await Promise.all(files.map(async ([path, bytes]) => ({
+    path,
+    byteLength: bytes.byteLength,
+    sha256: await sha256(bytes),
+  })));
+  return JSON.stringify({
+    schemaVersion: 1,
+    projectPath: 'project.json',
+    decisions: {
+      sourceHash: document.sourceHash,
+      materialId: document.assembly.material.id,
+      kerfMm: document.assembly.material.kerfMm,
+      launcherTemplateVersion: document.assembly.launcher.templateVersion,
+      launcherTemplateFingerprint: document.assembly.launcher.templateFingerprint,
+      launcherRotationRad: document.assembly.launcher.rotationRad,
+      launcherFitOffsetMm: document.assembly.launcher.fitOffsetMm,
+      launcherFinishedAllowanceMm: document.assembly.launcher.finishedAllowanceMm,
+      topFeatures: document.assembly.topFeatures,
+    },
+    members,
+  }, null, 2);
 }
 
 export async function createOutlinePackage(
@@ -991,13 +1064,23 @@ export async function createOutlinePackage(
     launcherCouponCheckpoint,
   );
   checkpoint('colored-package:launcher-coupon:after');
+  const encoder = new TextEncoder();
+  const projectJson = coloredProjectJson(document);
+  const manifestJson = await coloredManifestJson(document, [
+    ['cut-and-engrave.svg', encoder.encode(cutSvg)],
+    ['cut-and-engrave.dxf', encoder.encode(cutDxf)],
+    ['preview.pdf', previewPdf],
+    ['exploded-view.pdf', explodedViewPdf],
+    ['launcher-fit-coupon.svg', encoder.encode(launcherCouponSvg)],
+    ['project.json', encoder.encode(projectJson)],
+  ]);
   checkpoint('colored-package:zip:before');
   const zip = await writeColoredOutlineZip({
-    cutSvg, cutDxf, previewPdf, explodedViewPdf, launcherCouponSvg,
+    cutSvg, cutDxf, previewPdf, explodedViewPdf, launcherCouponSvg, projectJson, manifestJson,
   }, checkpoint);
   checkpoint('colored-package:zip:after');
   const output: ColoredOutlinePackage = {
-    cutSvg, cutDxf, previewPdf, explodedViewPdf, launcherCouponSvg, zip,
+    cutSvg, cutDxf, previewPdf, explodedViewPdf, launcherCouponSvg, projectJson, manifestJson, zip,
   };
   await verifyOutlinePackage(output, result, deadline, options);
   checkpoint('colored-package:create:return');
@@ -1016,6 +1099,8 @@ export async function verifyOutlinePackage(
   const document = createColoredOutlineDocument(result, deadline, documentOptions);
   validateColoredOutlineDocument(document, result, deadline, documentOptions);
   checkpoint('colored-package:verify-document:after');
+  const encoder = new TextEncoder();
+  const expectedProjectJson = coloredProjectJson(document);
 
   const expectedSvg = writeColoredOutlineSvg(document, checkpoint);
   const expectedDxf = writeColoredOutlineDxf(document, checkpoint);
@@ -1056,6 +1141,17 @@ export async function verifyOutlinePackage(
     || !bytesEqual(output.explodedViewPdf, expectedExploded, checkpoint, 'colored-package:verify-exploded')) {
     throw new RangeError('Colored PDF content, color, label, dimension, axis, or fingerprint mismatch');
   }
+  const expectedManifestJson = await coloredManifestJson(document, [
+    ['cut-and-engrave.svg', encoder.encode(output.cutSvg)],
+    ['cut-and-engrave.dxf', encoder.encode(output.cutDxf)],
+    ['preview.pdf', output.previewPdf],
+    ['exploded-view.pdf', output.explodedViewPdf],
+    ['launcher-fit-coupon.svg', encoder.encode(output.launcherCouponSvg)],
+    ['project.json', encoder.encode(expectedProjectJson)],
+  ]);
+  if (output.projectJson !== expectedProjectJson || output.manifestJson !== expectedManifestJson) {
+    throw new RangeError('Colored project or manifest metadata does not reconcile with canonical decisions and member hashes');
+  }
   checkpoint('colored-package:verify-preview-load:before');
   const preview = await PDFDocument.load(output.previewPdf, { updateMetadata: false });
   checkpoint('colored-package:verify-preview-load:after');
@@ -1076,25 +1172,31 @@ export async function verifyOutlinePackage(
   const expectedNames = [...COLORED_ZIP_NAMES];
   const rawRecords = parseRawColoredZip(output.zip, checkpoint);
   const rawNames = rawRecords.map(({ name }) => name);
-  if (rawRecords.length !== 5 || exactJson(rawNames) !== exactJson(expectedNames)) {
+  if (rawRecords.length !== 7 || exactJson(rawNames) !== exactJson(expectedNames)) {
     throw new RangeError('Colored ZIP central directory records must use the exact writer order');
   }
-  for (const name of rawNames) assertColoredPublicText(name, 'Colored ZIP raw record name');
+  for (const name of rawNames) {
+    if (name !== 'project.json' && name !== 'manifest.json') {
+      assertColoredPublicText(name, 'Colored ZIP raw record name');
+    }
+  }
 
   checkpoint('colored-package:verify-zip-load:before');
   const zip = await JSZip.loadAsync(output.zip);
   checkpoint('colored-package:verify-zip-load:after');
   const entries = Object.entries(zip.files).sort(([left], [right]) => left.localeCompare(right));
-  if (entries.length !== 5 || entries.some(([, entry]) => entry.dir)
+  if (entries.length !== 7 || entries.some(([, entry]) => entry.dir)
     || exactJson(entries.map(([name]) => name)) !== exactJson([...expectedNames].sort((left, right) => left.localeCompare(right)))) {
-    throw new RangeError('Colored ZIP must contain exactly five non-directory records');
+    throw new RangeError('Colored ZIP must contain exactly seven non-directory records');
   }
   for (const [name, entry] of entries) {
     checkpoint(`colored-package:verify-zip-entry:${name}:metadata`);
     const originalName = entry.unsafeOriginalName ?? name;
     if (originalName !== name) throw new RangeError('Colored ZIP original record name was sanitized');
-    assertColoredPublicText(name, 'Colored ZIP record name');
-    assertColoredPublicText(originalName, 'Colored ZIP original record name');
+    if (name !== 'project.json' && name !== 'manifest.json') {
+      assertColoredPublicText(name, 'Colored ZIP record name');
+      assertColoredPublicText(originalName, 'Colored ZIP original record name');
+    }
   }
   checkpoint('colored-package:verify-zip-svg:before-read');
   const zippedSvgBytes = await zip.file('cut-and-engrave.svg')!.async('uint8array');
@@ -1111,10 +1213,13 @@ export async function verifyOutlinePackage(
   checkpoint('colored-package:verify-zip-launcher-coupon:before-read');
   const zippedLauncherCouponBytes = await zip.file('launcher-fit-coupon.svg')!.async('uint8array');
   checkpoint('colored-package:verify-zip-launcher-coupon:after-read');
+  const zippedProjectBytes = await zip.file('project.json')!.async('uint8array');
+  const zippedManifestBytes = await zip.file('manifest.json')!.async('uint8array');
   const payloads = new Map<string, Uint8Array>([
     ['cut-and-engrave.svg', zippedSvgBytes], ['cut-and-engrave.dxf', zippedDxfBytes],
     ['preview.pdf', zippedPreview], ['exploded-view.pdf', zippedExploded],
     ['launcher-fit-coupon.svg', zippedLauncherCouponBytes],
+    ['project.json', zippedProjectBytes], ['manifest.json', zippedManifestBytes],
   ]);
   for (const record of rawRecords) {
     const payload = payloads.get(record.name)!;
@@ -1123,12 +1228,15 @@ export async function verifyOutlinePackage(
       throw new RangeError('Colored ZIP payload size or CRC32 does not match its raw headers');
     }
   }
-  let zippedSvg: string, zippedDxf: string, zippedLauncherCoupon: string;
+  let zippedSvg: string, zippedDxf: string, zippedLauncherCoupon: string,
+    zippedProject: string, zippedManifest: string;
   try {
     const decoder = new TextDecoder('utf-8', { fatal: true });
     zippedSvg = decoder.decode(zippedSvgBytes);
     zippedDxf = decoder.decode(zippedDxfBytes);
     zippedLauncherCoupon = decoder.decode(zippedLauncherCouponBytes);
+    zippedProject = decoder.decode(zippedProjectBytes);
+    zippedManifest = decoder.decode(zippedManifestBytes);
   } catch {
     throw new RangeError('Colored ZIP text payload is not canonical UTF-8');
   }
@@ -1153,8 +1261,10 @@ export async function verifyOutlinePackage(
       new TextEncoder().encode(output.launcherCouponSvg),
       checkpoint,
       'colored-package:verify-zipped-launcher-coupon',
-    )) {
-    throw new RangeError('Colored ZIP payloads are not byte-identical to the five downloads');
+    )
+    || zippedProject !== output.projectJson
+    || zippedManifest !== output.manifestJson) {
+    throw new RangeError('Colored ZIP payloads are not byte-identical to the canonical outputs');
   }
   checkpoint('colored-package:verify:return');
 }

@@ -387,23 +387,50 @@ describe('material-independent outline package', () => {
     });
   });
 
-  it('returns a separate launcher coupon and verifies exactly five byte-identical canonical ZIP files', async () => {
+  it('adds sanitized canonical project and manifest metadata to the release ZIP', async () => {
     const runtime = coloredResult();
     const output = await createColoredOutlinePackage(runtime);
     const zip = await JSZip.loadAsync(output.zip);
 
     expect(Object.keys(output).sort()).toEqual([
-      'cutDxf', 'cutSvg', 'explodedViewPdf', 'launcherCouponSvg', 'previewPdf', 'zip',
+      'cutDxf', 'cutSvg', 'explodedViewPdf', 'launcherCouponSvg', 'manifestJson',
+      'previewPdf', 'projectJson', 'zip',
     ]);
     expect(Object.keys(zip.files).sort()).toEqual([
       'cut-and-engrave.dxf', 'cut-and-engrave.svg', 'exploded-view.pdf',
-      'launcher-fit-coupon.svg', 'preview.pdf',
+      'launcher-fit-coupon.svg', 'manifest.json', 'preview.pdf', 'project.json',
     ]);
     expect(await zip.file('cut-and-engrave.svg')!.async('string')).toBe(output.cutSvg);
     expect(await zip.file('cut-and-engrave.dxf')!.async('string')).toBe(output.cutDxf);
     expect(await zip.file('preview.pdf')!.async('uint8array')).toEqual(output.previewPdf);
     expect(await zip.file('exploded-view.pdf')!.async('uint8array')).toEqual(output.explodedViewPdf);
     expect(await zip.file('launcher-fit-coupon.svg')!.async('string')).toBe(output.launcherCouponSvg);
+    expect(await zip.file('project.json')!.async('string')).toBe(output.projectJson);
+    expect(await zip.file('manifest.json')!.async('string')).toBe(output.manifestJson);
+    const project = JSON.parse(output.projectJson);
+    const manifest = JSON.parse(output.manifestJson);
+    expect(project).toMatchObject({
+      schemaVersion: 2,
+      sourceHash: runtime.sourceHash,
+      assembly: {
+        material: { id: runtime.assembly.material.id, kerfMm: runtime.assembly.material.kerfMm },
+        launcher: {
+          templateVersion: runtime.assembly.launcher.templateVersion,
+          templateFingerprint: runtime.assembly.launcher.templateFingerprint,
+          rotationRad: runtime.assembly.launcher.rotationRad,
+          fitOffsetMm: runtime.assembly.launcher.fitOffsetMm,
+        },
+      },
+    });
+    expect(manifest.members).toHaveLength(6);
+    expect(manifest.members).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        path: 'project.json',
+        sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+        byteLength: new TextEncoder().encode(output.projectJson).length,
+      }),
+    ]));
+    expect(JSON.stringify({ project, manifest })).not.toMatch(/private|provisional|validationEvidence|\.stl|file:/i);
     await expect(verifyColoredOutlinePackage(output, runtime)).resolves.toBeUndefined();
   });
 
@@ -436,6 +463,17 @@ describe('material-independent outline package', () => {
 
     await expect(verifyColoredOutlinePackage(mutated, runtime))
       .rejects.toThrow(/coupon|ZIP|byte-identical|canonical/i);
+  });
+
+  it.each([
+    ['project decision', 'projectJson', (value: string) => value.replace('"fitOffsetMm": 0', '"fitOffsetMm": 0.1')],
+    ['manifest hash', 'manifestJson', (value: string) => value.replace(/[0-9a-f]{64}/, 'f'.repeat(64))],
+  ] as const)('rejects a forged %s even when it remains valid JSON', async (_label, key, mutate) => {
+    const runtime = coloredResult();
+    const output = await createColoredOutlinePackage(runtime);
+
+    await expect(verifyColoredOutlinePackage({ ...output, [key]: mutate(output[key]) }, runtime))
+      .rejects.toThrow(/project|manifest|metadata|reconcile|hash/i);
   });
 
   it('rejects an all-layer central-hole omission without the canonical safety warning', async () => {
@@ -511,11 +549,11 @@ describe('material-independent outline package', () => {
     expect(labels).toContain(expiryLabel);
   });
 
-  it('rejects a sixth raw ZIP record even when JSZip collapses its duplicate name', async () => {
+  it('rejects an eighth raw ZIP record even when JSZip collapses its duplicate name', async () => {
     const runtime = coloredResult();
     const output = await createColoredOutlinePackage(runtime);
     const duplicateZip = duplicateFirstCentralDirectoryRecord(output.zip);
-    expect(Object.keys((await JSZip.loadAsync(duplicateZip)).files)).toHaveLength(5);
+    expect(Object.keys((await JSZip.loadAsync(duplicateZip)).files)).toHaveLength(7);
 
     await expect(verifyColoredOutlinePackage({ ...output, zip: duplicateZip }, runtime))
       .rejects.toThrow(/four|record|duplicate|central/i);
@@ -524,7 +562,7 @@ describe('material-independent outline package', () => {
   it('rejects central-directory records reordered without changing local records or payloads', async () => {
     const runtime = coloredResult();
     const output = await createColoredOutlinePackage(runtime);
-    const reordered = reorderCentralDirectoryRecords(output.zip, [1, 0, 2, 3, 4]);
+    const reordered = reorderCentralDirectoryRecords(output.zip, [1, 0, 2, 3, 4, 5, 6]);
 
     await expect(verifyColoredOutlinePackage({ ...output, zip: reordered }, runtime))
       .rejects.toThrow(/writer|order|central/i);

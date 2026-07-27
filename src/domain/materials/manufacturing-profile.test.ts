@@ -51,4 +51,24 @@ describe('manufacturing geometry profile', () => {
 
     expect(() => validateManufacturingGeometryProfile({ ...geometry, kerfMm: -1 })).toThrow(/kerf/i);
   });
+
+  it.each([
+    'contains space',
+    '木板-3',
+    `a${'b'.repeat(80)}`,
+  ])('rejects a material ID that cannot be emitted safely in the launcher coupon: %s', (id) => {
+    const geometry = manufacturingGeometryProfile(validProfile);
+
+    expect(() => validateManufacturingGeometryProfile({ ...geometry, id }))
+      .toThrow(/material id/i);
+  });
+
+  it.each(['a', 'A-0_ok.profile', `a${'b'.repeat(79)}`])(
+    'accepts every canonical public material-ID boundary: %s',
+    (id) => {
+      const geometry = manufacturingGeometryProfile(validProfile);
+
+      expect(validateManufacturingGeometryProfile({ ...geometry, id }).id).toBe(id);
+    },
+  );
 });

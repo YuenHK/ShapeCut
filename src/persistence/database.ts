@@ -2,6 +2,7 @@ import Dexie, { type Table } from 'dexie';
 
 import type { MaterialProfileV1 } from '../domain/materials/schema';
 import type { StoredProjectV1 } from './project-repository';
+import type { StoredOneClickProjectV1 } from './one-click-project-repository';
 
 export type StoredMaterialProfile = MaterialProfileV1 & {
   calibrationStatus: 'ready' | 'confirm' | 'block';
@@ -10,6 +11,7 @@ export type StoredMaterialProfile = MaterialProfileV1 & {
 export class MaterialDatabase extends Dexie {
   materials!: Table<StoredMaterialProfile, string>;
   projects!: Table<StoredProjectV1, string>;
+  oneClickProjects!: Table<StoredOneClickProjectV1, string>;
 
   constructor(name = 'spinner-laser-kit') {
     super(name);
@@ -19,6 +21,11 @@ export class MaterialDatabase extends Dexie {
     this.version(2).stores({
       materials: '&id,machine,materialCode,calibratedAt,calibrationStatus,physicalCouponVerified,[machine+materialCode]',
       projects: '&id,name,updatedAt,sourceSha256,step',
+    });
+    this.version(3).stores({
+      materials: '&id,machine,materialCode,calibratedAt,calibrationStatus,physicalCouponVerified,[machine+materialCode]',
+      projects: '&id,name,updatedAt,sourceSha256,step',
+      oneClickProjects: '&id,updatedAt,sourceSha256,status',
     });
   }
 }

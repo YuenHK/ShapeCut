@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto';
 import Dexie from 'dexie';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { OFFICIAL_THREE_PRONG_TEMPLATE_VERSION } from '../domain/outline-assembly/launcher-template';
+import { OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT, OFFICIAL_THREE_PRONG_TEMPLATE_VERSION } from '../domain/outline-assembly/launcher-template';
 import { createMaterialDatabase, type MaterialDatabase } from './database';
 import { createProjectAutosave, ProjectRepository, sha256Hex, type StoredProjectV1 } from './project-repository';
 
@@ -18,6 +18,7 @@ async function project(overrides: Partial<StoredProjectV1> = {}): Promise<Stored
       splitPositionPercent: 50, ribCount: 6, ringLayers: 2, shaftMm: 3, fit: 'snug', materialId: 'plywood-3',
       engravingLevels: 4, textureStrength: 0.6, sheetWidthMm: 300, sheetHeightMm: 200,
       launcherFitOffsetMm: 0, launcherTemplateVersion: OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+      launcherTemplateFingerprint: OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
     },
     sourceSha256: await sha256Hex(source),
     repair: { mode: 'safe', algorithmVersion: 'safe-repair-v1', meshSha256: 'b'.repeat(64) },
@@ -56,7 +57,12 @@ describe('ProjectRepository', () => {
 
   it('migrates legacy settings to the current fixed template and zero fit without writing during reads', async () => {
     const current = await project({ id: 'legacy-settings' });
-    const { launcherFitOffsetMm: _fit, launcherTemplateVersion: _template, ...legacySettings } = current.settings;
+    const {
+      launcherFitOffsetMm: _fit,
+      launcherTemplateVersion: _template,
+      launcherTemplateFingerprint: _fingerprint,
+      ...legacySettings
+    } = current.settings;
     await database.projects.put({ ...current, settings: legacySettings } as never);
     const put = vi.spyOn(database.projects, 'put');
 

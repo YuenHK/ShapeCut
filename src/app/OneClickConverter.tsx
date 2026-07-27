@@ -25,6 +25,8 @@ import {
 } from '../domain/materials/manufacturing-profile';
 import { classifyMaterialReadiness, type MaterialProfileV1 } from '../domain/materials/schema';
 import { validateLauncherFitOffsetMm } from '../domain/outline-assembly/launcher-fit';
+import { sha256Hex } from '../persistence/project-repository';
+import type { StoredOneClickProjectV1 } from '../persistence/one-click-project-repository';
 import {
   OutlineProcessViewport,
 } from '../preview/OutlineProcessViewport';
@@ -77,6 +79,8 @@ export type OneClickConverterServices = {
   readonly createTimeline?: (clock: ProcessingTimelineClock<number>) => ProcessingTimeline;
   /** Saved profiles supplied by the app's material store. Invalid profiles are never displayed. */
   readonly materialProfiles?: readonly MaterialProfileV1[];
+  readonly savedProject?: StoredOneClickProjectV1;
+  readonly saveProject?: (project: StoredOneClickProjectV1) => Promise<void>;
 };
 
 const STAGES: readonly AutomaticOutlineProgressStage[] = ['reading', 'analyzing', 'simplifying', 'slicing', 'packaging'];
@@ -354,6 +358,8 @@ export function OneClickConverter({
   const [presentationPreview, setPresentationPreview] = useState<OutlinePreviewPayload | undefined>(undefined);
   const [launcherFitInput, setLauncherFitInput] = useState('0.00');
   const [selectedMaterialId, setSelectedMaterialId] = useState('');
+  const [sourceSha256, setSourceSha256] = useState<string | undefined>();
+  const [savedSourceReattached, setSavedSourceReattached] = useState(false);
   const effectLevel = useEffectLevel(view.kind === 'processing');
   const materials = selectableMaterials(services.materialProfiles);
   const requestId = useRef(0);
@@ -474,6 +480,20 @@ export function OneClickConverter({
         return;
       }
       if (timelineRef.current === timeline) timelineRef.current = undefined;
+      if (sourceSha256 && services.saveProject) {
+        await services.saveProject({
+          schemaVersion: 1,
+          id: 'one-click-current',
+          updatedAt: new Date().toISOString(),
+          sourceSha256,
+          material,
+          launcherFitOffsetMm,
+          launcherTemplateVersion: result.assembly.launcher.templateVersion,
+          launcherTemplateFingerprint: result.assembly.launcher.templateFingerprint,
+          canonicalSourceHash: result.sourceHash,
+          status: 'ready',
+        });
+      }
       setView({ kind: 'result', fileName, result, downloads });
     } catch (error) {
       if (current !== requestId.current || error instanceof SupersededError) return;
@@ -496,7 +516,7 @@ export function OneClickConverter({
         } : {}),
       });
     }
-  }, [releaseCurrentDownloads, runtimeServices]);
+  }, [releaseCurrentDownloads, runtimeServices, services, sourceSha256]);
 
   const selectFile = useCallback(async (file: File) => {
     const current = ++requestId.current;
@@ -519,16 +539,31 @@ export function OneClickConverter({
     try {
       const bytes = await readFile(file);
       if (current !== requestId.current) return;
+      if (services.savedProject || services.saveProject) {
+        const fingerprint = await sha256Hex(bytes);
+        if (current !== requestId.current) return;
+        setSourceSha256(fingerprint);
+        if (services.savedProject && fingerprint !== services.savedProject.sourceSha256) {
+          setView({ kind: 'failure', fileName: file.name, message: 'STL 指紋不符；請重新連結原本的模型。' });
+          return;
+        }
+        if (services.savedProject) {
+          setLauncherFitInput(services.savedProject.launcherFitOffsetMm.toFixed(2));
+          setSelectedMaterialId(services.savedProject.material.id);
+          setSavedSourceReattached(true);
+        }
+      }
       setView({ kind: 'material', fileName: file.name, bytes });
       schedulePresentationPreview(bytes, current);
     } catch (error) {
       if (current !== requestId.current) return;
       setView({ kind: 'failure', fileName: file.name, message: failureMessage(error) });
     }
-  }, [clearPresentationPreview, releaseCurrentDownloads, runtimeServices, schedulePresentationPreview]);
+  }, [clearPresentationPreview, releaseCurrentDownloads, runtimeServices, schedulePresentationPreview, services.savedProject]);
 
   const selectMaterial = useCallback((id: string) => {
     if (view.kind !== 'material') return;
+    if (services.savedProject) return;
     const fitOffsetMm = parsedLauncherFitOffset(launcherFitInput);
     if (fitOffsetMm === undefined) {
       setSelectedMaterialId('');
@@ -539,7 +574,7 @@ export function OneClickConverter({
       setSelectedMaterialId(id);
       void processFile(view.fileName, view.bytes, material, fitOffsetMm);
     }
-  }, [launcherFitInput, materials, processFile, view]);
+  }, [launcherFitInput, materials, processFile, services.savedProject, view]);
 
   const reset = () => {
     clearDrag();
@@ -551,6 +586,8 @@ export function OneClickConverter({
     releaseCurrentDownloads();
     setLauncherFitInput('0.00');
     setSelectedMaterialId('');
+    setSourceSha256(undefined);
+    setSavedSourceReattached(false);
     setView({ kind: 'upload' });
   };
 
@@ -572,6 +609,9 @@ export function OneClickConverter({
         <p className="eyebrow">一鍵轉換工具</p>
         <h1 id="converter-title">把 3D 模型變成 Laser Cut 切片</h1>
         <p>放入 STL，ShapeCut 會自動分析、簡化和切片，然後準備好通用外形檔案。</p>
+        {services.savedProject && (
+          <p role="status">已儲存專案需要重新連結原本 STL，並明確重新產生正式輸出。</p>
+        )}
       </div>
       <ModelInput
         level={effectLevel}
@@ -592,6 +632,23 @@ export function OneClickConverter({
       <p className="eyebrow">選擇製作材料</p>
       <h1 id="material-title">{view.fileName}</h1>
       <p>請選擇本次製作的材料，系統只會把所需的幾何資料傳送到處理程序。</p>
+      {services.savedProject && (
+        <section aria-label="已儲存專案重新產生">
+          <p role="status">重新連結完成；下載仍被鎖定，直至 canonical 正式輸出重新產生。</p>
+          <button
+            type="button"
+            disabled={!savedSourceReattached}
+            onClick={() => void processFile(
+              view.fileName,
+              view.bytes,
+              services.savedProject!.material,
+              services.savedProject!.launcherFitOffsetMm,
+            )}
+          >
+            重新產生正式輸出
+          </button>
+        </section>
+      )}
       {presentationPreview && (
         <div className="material-presentation-preview">
           <OutlineProcessViewport payload={presentationPreview} stage="reading" effectLevel={effectLevel} />
@@ -621,6 +678,7 @@ export function OneClickConverter({
         <select
           aria-label="選擇製作材料"
           value={selectedMaterialId}
+          disabled={Boolean(services.savedProject)}
           onChange={(event) => selectMaterial(event.target.value)}
         >
           <option value="" disabled>選擇製作材料</option>

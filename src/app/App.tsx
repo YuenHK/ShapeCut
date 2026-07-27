@@ -6,6 +6,11 @@ import { OneClickConverter, type OneClickConverterServices, type OutlineDownload
 import { listMaterialCatalog, type MaterialRepositoryPort } from './material-catalog';
 import { MaterialRepository } from '../persistence/material-repository';
 import type { MaterialProfileV1 } from '../domain/materials/schema';
+import {
+  OneClickProjectRepository,
+  type OneClickProjectRepositoryPort,
+  type StoredOneClickProjectV1,
+} from '../persistence/one-click-project-repository';
 
 function objectUrl(content: BlobPart, type: string, fileName: string) {
   return { href: URL.createObjectURL(new Blob([content], { type })), fileName };
@@ -66,9 +71,11 @@ export function createOneClickServices(
 export function App({
   services: suppliedServices,
   materialRepository: suppliedMaterialRepository,
+  oneClickProjectRepository: suppliedOneClickProjectRepository,
 }: {
   readonly services?: OneClickConverterServices;
   readonly materialRepository?: MaterialRepositoryPort;
+  readonly oneClickProjectRepository?: OneClickProjectRepositoryPort;
 }) {
   const geometryRef = useRef<GeometryClient | undefined>(undefined);
   const services = useMemo(() => suppliedServices ?? createOneClickServices(
@@ -80,6 +87,11 @@ export function App({
     [suppliedMaterialRepository],
   );
   const [storedProfiles, setStoredProfiles] = useState<readonly MaterialProfileV1[]>([]);
+  const projectRepository = useMemo(
+    () => suppliedOneClickProjectRepository ?? new OneClickProjectRepository(),
+    [suppliedOneClickProjectRepository],
+  );
+  const [savedProject, setSavedProject] = useState<StoredOneClickProjectV1 | undefined>();
   const [materialLoadFailed, setMaterialLoadFailed] = useState(false);
   const [chromeTarget, setChromeTarget] = useState<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -98,10 +110,24 @@ export function App({
     });
     return () => { active = false; };
   }, [materialRepository]);
+  useEffect(() => {
+    let active = true;
+    void projectRepository.load().then((project) => {
+      if (active) setSavedProject(project);
+    }).catch(() => {
+      if (active) setSavedProject(undefined);
+    });
+    return () => { active = false; };
+  }, [projectRepository]);
   const oneClickServices = useMemo<OneClickConverterServices>(() => ({
     ...services,
     materialProfiles: [...(services.materialProfiles ?? []), ...storedProfiles],
-  }), [services, storedProfiles]);
+    savedProject,
+    saveProject: async (project) => {
+      await projectRepository.save(project);
+      setSavedProject(project);
+    },
+  }), [projectRepository, savedProject, services, storedProfiles]);
   useEffect(() => () => geometryRef.current?.dispose(), []);
   return (
     <div className="app-shell">

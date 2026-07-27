@@ -1,6 +1,9 @@
 import { simpleMiterPolygonKernel } from '../domain/layout/polygon-kernel';
 import type { ManufacturingGeometryProfile } from '../domain/materials/manufacturing-profile';
-import { validateManufacturingGeometryProfile } from '../domain/materials/manufacturing-profile';
+import {
+  SAFE_PUBLIC_MATERIAL_ID,
+  validateManufacturingGeometryProfile,
+} from '../domain/materials/manufacturing-profile';
 import { contourBounds, signedArea } from '../domain/outline-2.5d/simplify';
 import { LAUNCHER_ASSEMBLY_ALLOWANCE_MM } from '../domain/outline-assembly/launcher';
 import { validateLauncherFitOffsetMm } from '../domain/outline-assembly/launcher-fit';
@@ -26,7 +29,6 @@ export type LauncherFitCoupon = {
   }[];
 };
 
-const SAFE_PUBLIC_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$/;
 const LABELS = Object.freeze(['-0.10 mm', '-0.05 mm', '0.00 mm', '+0.05 mm', '+0.10 mm'] as const);
 const MARGIN_MM = 5;
 const OPENING_GAP_MM = 5;
@@ -115,7 +117,7 @@ function validateLauncherFitCoupon(
     || coupon.templateVersion !== OFFICIAL_THREE_PRONG_TEMPLATE_VERSION
     || coupon.templateFingerprint !== OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT
     || typeof coupon.materialId !== 'string'
-    || !SAFE_PUBLIC_ID.test(coupon.materialId)
+    || !SAFE_PUBLIC_MATERIAL_ID.test(coupon.materialId)
     || !Number.isFinite(coupon.kerfMm)
     || coupon.kerfMm < 0
     || !Array.isArray(coupon.openings)
@@ -148,7 +150,7 @@ export function createLauncherFitCoupon(
 ): LauncherFitCoupon {
   checkDeadline(deadline, checkpoint, 'create-start');
   const validated = validateManufacturingGeometryProfile(material);
-  if (!SAFE_PUBLIC_ID.test(validated.id)) {
+  if (!SAFE_PUBLIC_MATERIAL_ID.test(validated.id)) {
     throw new RangeError('Launcher fit coupon material identity is not safe for a public artifact');
   }
   const coupon: LauncherFitCoupon = {
