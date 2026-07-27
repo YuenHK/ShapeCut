@@ -33,7 +33,11 @@ function createGeometryWorkerClient(): TestGeometryClient {
   const client = createActualGeometryWorkerClient();
   return {
     ...client,
-    convertAutomatically: (request, onProgress) => client.convertAutomatically({ ...request, material: testMaterial }, onProgress),
+    convertAutomatically: (request, onProgress) => client.convertAutomatically({
+      ...request,
+      material: testMaterial,
+      launcherFitOffsetMm: 0,
+    }, onProgress),
   };
 }
 function createRawGeometryWorkerApi(): Remote<GeometryApi> {

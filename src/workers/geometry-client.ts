@@ -3,6 +3,7 @@ import type { AxisCandidate } from '../domain/axis/find-axis';
 import type { SpinnerKit } from '../domain/decomposition/types';
 import type { EngravingMap } from '../domain/engraving/height-field';
 import { validateManufacturingGeometryProfile } from '../domain/materials/manufacturing-profile';
+import { validateLauncherFitOffsetMm } from '../domain/outline-assembly/launcher-fit';
 import type { MeshRepairResult } from '../domain/mesh/types';
 import type { STLRepairMode } from '../domain/mesh/write-stl';
 import type { OutlinePreviewPayload } from '../domain/outline-features/types';
@@ -122,6 +123,7 @@ export function makeGeometryClient(api: GeometryApi, options: GeometryClientOpti
       const validatedRequest: AutomaticOutlineRequest = {
         ...request,
         material: validateManufacturingGeometryProfile(request.material),
+        launcherFitOffsetMm: validateLauncherFitOffsetMm(request.launcherFitOffsetMm),
       };
       let gatedProgress: AutomaticOutlineProgress | undefined;
       if (onProgress) {

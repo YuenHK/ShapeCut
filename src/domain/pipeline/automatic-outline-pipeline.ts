@@ -22,6 +22,7 @@ import {
   planFixedLauncherClearance,
   type FixedLauncherPlan,
 } from '../outline-assembly/launcher';
+import { validateLauncherFitOffsetMm } from '../outline-assembly/launcher-fit';
 import {
   materializeFastenerHoles,
   planFastenerHoles,
@@ -93,7 +94,7 @@ export type AutomaticOutlineDiagnostics = {
 export type AutomaticOutlineRequest = {
   readonly bytes: ArrayBuffer;
   readonly material: ManufacturingGeometryProfile;
-  readonly launcherFitOffsetMm?: number;
+  readonly launcherFitOffsetMm: number;
 };
 export type AutomaticOutlineProgress = (event: AutomaticOutlineProgressEvent) => void | Promise<void>;
 export type AutomaticOutlineErrorCode =
@@ -446,7 +447,7 @@ export async function convertAutomatically(
   onProgress?: AutomaticOutlineProgress,
 ): Promise<AutomaticOutlineResult> {
   const material = validateManufacturingGeometryProfile(request.material);
-  const launcherFitOffsetMm = request.launcherFitOffsetMm ?? 0;
+  const launcherFitOffsetMm = validateLauncherFitOffsetMm(request.launcherFitOffsetMm);
   if (request.bytes.byteLength > MAX_STL_BYTES) {
     throw new AutomaticOutlineError('RESOURCE_LIMIT', '模型超出安全處理資源上限');
   }

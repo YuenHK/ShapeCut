@@ -52,7 +52,11 @@ export function createOneClickServices(
   return {
     cancel,
     present: (bytes: ArrayBuffer) => getGeometry().createStlPresentation(bytes),
-    convert: (bytes: ArrayBuffer, material: ManufacturingGeometryProfile, onProgress) => getGeometry().convertAutomatically({ bytes, material }, onProgress),
+    convert: (bytes: ArrayBuffer, material: ManufacturingGeometryProfile, onProgress) => getGeometry().convertAutomatically({
+      bytes,
+      material,
+      launcherFitOffsetMm: 0,
+    }, onProgress),
     package: (result, fileName) => getGeometry().packageOutline(result).then((files) => createDownloadUrls(files, fileName)),
   };
 }

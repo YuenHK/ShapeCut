@@ -31,7 +31,7 @@ import {
 
 const testMaterial = { id: 'test-material', name: 'Test material', thicknessMm: 3, kerfMm: 0.1, minFeatureMm: 0.8, minWebMm: 0.5, fitAllowanceMm: { loose: 0.2, slip: 0.1, snug: 0, press: -0.1 } } as const;
 function convertAutomatically(client: ReturnType<typeof makeGeometryClient>, request: { readonly bytes: ArrayBuffer }, onProgress?: Parameters<ReturnType<typeof makeGeometryClient>['convertAutomatically']>[1]) {
-  return client.convertAutomatically({ ...request, material: testMaterial }, onProgress);
+  return client.convertAutomatically({ ...request, material: testMaterial, launcherFitOffsetMm: 0 }, onProgress);
 }
 
 function deferred<T>() {
@@ -214,7 +214,10 @@ describe('geometry worker client', () => {
 
     await expect(convertAutomatically(client, { bytes }, onProgress)).resolves.toMatchObject({ sourceHash: 'automatic' });
 
-    expect(api.convertAutomatically).toHaveBeenCalledWith({ bytes, material: testMaterial }, expect.any(Function));
+    expect(api.convertAutomatically).toHaveBeenCalledWith(
+      { bytes, material: testMaterial, launcherFitOffsetMm: 0 },
+      expect.any(Function),
+    );
     const forwardedProgress = vi.mocked(api.convertAutomatically).mock.calls[0][1];
     expect((forwardedProgress as typeof forwardedProgress & { [proxyMarker]?: true })?.[proxyMarker]).toBeUndefined();
     expect(onProgress.mock.calls).toEqual([[{ stage: 'reading' }], [{ stage: 'packaging' }]]);
@@ -232,6 +235,34 @@ describe('geometry worker client', () => {
 
     expect(transferAutomaticRequest).not.toHaveBeenCalled();
     expect(api.convertAutomatically).not.toHaveBeenCalled();
+  });
+
+  it.each([NaN, Infinity, -0.21, 0.21, 0.005])('rejects fit offset %s before worker dispatch', async (launcherFitOffsetMm) => {
+    const api = inspectOnly(vi.fn());
+    const client = makeGeometryClient(api);
+
+    await expect(client.convertAutomatically({
+      bytes: new ArrayBuffer(4),
+      material: testMaterial,
+      launcherFitOffsetMm,
+    })).rejects.toThrow(RangeError);
+
+    expect(api.convertAutomatically).not.toHaveBeenCalled();
+  });
+
+  it('passes a normalized fit offset without mutating the caller request', async () => {
+    const api = inspectOnly(vi.fn());
+    api.convertAutomatically = vi.fn().mockResolvedValue(automaticResult('automatic'));
+    const client = makeGeometryClient(api);
+    const request = { bytes: new ArrayBuffer(4), material: testMaterial, launcherFitOffsetMm: -0 };
+
+    await client.convertAutomatically(request);
+
+    expect(api.convertAutomatically).toHaveBeenCalledWith(
+      expect.objectContaining({ launcherFitOffsetMm: 0 }),
+      undefined,
+    );
+    expect(Object.is(request.launcherFitOffsetMm, -0)).toBe(true);
   });
 
   it('supersedes an active automatic conversion before starting its replacement', async () => {

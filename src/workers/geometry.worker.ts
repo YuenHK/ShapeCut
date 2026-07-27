@@ -1,6 +1,7 @@
 import { expose, releaseProxy, transfer, wrap, type Remote } from 'comlink';
 import { findAxisCandidates } from '../domain/axis/find-axis';
 import { validateManufacturingGeometryProfile } from '../domain/materials/manufacturing-profile';
+import { validateLauncherFitOffsetMm } from '../domain/outline-assembly/launcher-fit';
 import { generateParts } from '../domain/decomposition/generate-parts';
 import { quantizeHeightField } from '../domain/engraving/quantize';
 import { repairMeshAdvanced } from '../domain/mesh/advanced-repair';
@@ -111,8 +112,9 @@ const geometryApi: GeometryApi = {
     }
     try {
       const internalResult = await convertAutomatically({
-        ...request,
+        bytes: request.bytes,
         material: validateManufacturingGeometryProfile(request.material),
+        launcherFitOffsetMm: validateLauncherFitOffsetMm(request.launcherFitOffsetMm),
       }, progress);
       internalResultCache.store(internalResult);
       return stripAutomaticOutlineInternalEvidence(internalResult);

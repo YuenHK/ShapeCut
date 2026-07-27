@@ -29,7 +29,7 @@ import { createColoredOutlineDocument } from './colored-outline-document';
 
 const testMaterial = { id: 'test-material', name: 'Test material', thicknessMm: 3, kerfMm: 0.1, minFeatureMm: 0.8, minWebMm: 0.5, fitAllowanceMm: { loose: 0.2, slip: 0.1, snug: 0, press: -0.1 } } as const;
 function convertAutomatically(request: { readonly bytes: ArrayBuffer }, onProgress?: Parameters<typeof convertAutomaticOutline>[1]) {
-  return convertAutomaticOutline({ ...request, material: testMaterial }, onProgress);
+  return convertAutomaticOutline({ ...request, material: testMaterial, launcherFitOffsetMm: 0 }, onProgress);
 }
 
 const SOURCE_HASH = '0123456789abcdef'.repeat(2);

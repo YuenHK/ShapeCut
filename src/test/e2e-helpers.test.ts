@@ -409,6 +409,7 @@ describe('release E2E colored artifact parsers', () => {
     const result = await convertAutomatically({
       bytes: writeBinarySTL(assemblyCylinder(), 'safe'),
       material: integrationMaterial,
+      launcherFitOffsetMm: 0,
     });
     expect(result.assembly.launcher.status).toBe('fixed');
     expect(result.assembly.fastener.count).toBe(3);
