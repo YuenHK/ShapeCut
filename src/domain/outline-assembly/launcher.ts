@@ -9,9 +9,13 @@ import {
   KNIGHT_FORTRESS_LAUNCHER_TEMPLATE,
   LAUNCHER_TEMPLATE_MAX_POINTS,
   normalizeLauncherLoops,
+  OFFICIAL_THREE_PRONG_TEMPLATE,
+  OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
+  OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
   type LauncherLoops,
   type LauncherTemplate,
 } from './launcher-template';
+import { validateLauncherFitOffsetMm } from './launcher-fit';
 import { finishedRemovalEnvelope } from './physical-cut-envelope';
 
 export const LAUNCHER_ASSEMBLY_ALLOWANCE_MM = 0.2 as const;
@@ -64,6 +68,27 @@ export type LauncherClearanceRequest = {
   readonly deadline?: number;
   readonly checkpoint?: () => void;
 };
+export type FixedLauncherPlan = {
+  readonly status: 'fixed';
+  readonly cuts: readonly [FeatureContour, FeatureContour, FeatureContour];
+  readonly templateVersion: number;
+  readonly templateFingerprint: string;
+  readonly rotationRad: number;
+  readonly fitOffsetMm: number;
+  readonly finishedAllowanceMm: number;
+};
+export type FixedLauncherClearanceRequest = {
+  readonly axisPoint: Point2;
+  readonly topExterior: FeatureContour;
+  readonly secondExterior: FeatureContour;
+  readonly topCentralHole?: FeatureContour;
+  readonly secondCentralHole?: FeatureContour;
+  readonly decorationContours?: readonly FeatureContour[];
+  readonly material: Pick<ManufacturingGeometryProfile, 'kerfMm' | 'minWebMm'>;
+  readonly fitOffsetMm: number;
+  readonly deadline?: number;
+  readonly checkpoint?: () => void;
+};
 export type LauncherPhysicalSafetyRequest = {
   readonly cuts: readonly FeatureContour[];
   readonly top: LauncherPlanningLayer;
@@ -72,6 +97,11 @@ export type LauncherPhysicalSafetyRequest = {
   readonly deadline?: number;
   readonly checkpoint?: (label?: string) => void;
 };
+
+export class LauncherCompatibilityError extends RangeError {
+  readonly name = 'LauncherCompatibilityError';
+  readonly code = 'LAUNCHER_INCOMPATIBLE';
+}
 
 function checkRuntime(deadline: number, checkpoint: () => void): void {
   checkpoint();
@@ -311,6 +341,213 @@ export function launcherCutsArePhysicallySafe(request: LauncherPhysicalSafetyReq
   const clearances = finishedSafetyClearances(request.material);
   return finishedCutsAreSafe(finished, request.top, clearances, deadline, checkpoint)
     && finishedCutsAreSafe(finished, request.second, clearances, deadline, checkpoint);
+}
+
+const LAUNCHER_ROTATION_STEPS = 120;
+
+function rotateLoop(loop: readonly Point2[], rotationRad: number, axis: Point2): readonly Point2[] {
+  const cosine = Math.cos(rotationRad), sine = Math.sin(rotationRad);
+  return loop.map(([x, y]): Point2 => [
+    axis[0] + x * cosine - y * sine,
+    axis[1] + x * sine + y * cosine,
+  ]);
+}
+
+type ScoredFixedLauncherPlan = FixedLauncherPlan & {
+  readonly minimumStructuralClearanceMm: number;
+  readonly decorationOverlapCount: number;
+};
+
+function fixedStructuralClearance(
+  finishedCuts: readonly FeatureContour[],
+  request: FixedLauncherClearanceRequest,
+  deadline: number,
+  checkpoint: () => void,
+): number {
+  const clearances = finishedSafetyClearances(request.material);
+  const layers = [
+    { exterior: request.topExterior, centralHole: request.topCentralHole },
+    { exterior: request.secondExterior, centralHole: request.secondCentralHole },
+  ];
+  let minimum = Infinity;
+  for (let index = 0; index < finishedCuts.length; index += 1) {
+    checkRuntime(deadline, checkpoint);
+    const cut = finishedCuts[index];
+    for (const layer of layers) {
+      minimum = Math.min(
+        minimum,
+        boundaryDistance(cut.outer, layer.exterior.outer, deadline, checkpoint)
+          - clearances.toolpathBoundaryMm,
+      );
+      if (layer.centralHole) {
+        minimum = Math.min(
+          minimum,
+          boundaryDistance(cut.outer, layer.centralHole.outer, deadline, checkpoint)
+            - clearances.toolpathBoundaryMm,
+        );
+      }
+    }
+    for (let other = 0; other < index; other += 1) {
+      minimum = Math.min(
+        minimum,
+        boundaryDistance(cut.outer, finishedCuts[other].outer, deadline, checkpoint)
+          - clearances.interLauncherMm,
+      );
+    }
+  }
+  return minimum;
+}
+
+function decorationOverlapCount(
+  finishedCuts: readonly FeatureContour[],
+  decorationContours: readonly FeatureContour[],
+  deadline: number,
+  checkpoint: () => void,
+): number {
+  let count = 0;
+  for (const decoration of decorationContours) {
+    checkRuntime(deadline, checkpoint);
+    if (finishedCuts.some((cut) => polygonsIntersectOrTouch(
+      { points: cut.outer },
+      { points: decoration.outer },
+      () => checkRuntime(deadline, checkpoint),
+    ))) count += 1;
+  }
+  return count;
+}
+
+function materializeFixedCuts(
+  loops: LauncherLoops,
+  request: FixedLauncherClearanceRequest,
+  fitOffsetMm: number,
+  rotationRad: number,
+): ScoredFixedLauncherPlan | undefined {
+  const deadline = request.deadline ?? Date.now() + 30_000;
+  const checkpoint = request.checkpoint ?? (() => undefined);
+  const guardedCheckpoint = (): void => {
+    try {
+      checkpoint();
+    } catch (error) {
+      throw new LauncherPlanningCheckpointInterruption(error);
+    }
+  };
+  const kernelCheckpoint = (): void => checkRuntime(deadline, guardedCheckpoint);
+  const finishedAllowanceMm = LAUNCHER_ASSEMBLY_ALLOWANCE_MM + fitOffsetMm;
+  const finishedCuts: FeatureContour[] = [];
+  const cuts: FeatureContour[] = [];
+  try {
+    for (let index = 0; index < 3; index += 1) {
+      checkRuntime(deadline, guardedCheckpoint);
+      const finished = simpleMiterPolygonKernel.offset(
+        { points: loops[index] }, finishedAllowanceMm, kernelCheckpoint,
+      );
+      if (finished.length !== 1 || !validatePolygon(finished[0], kernelCheckpoint)) return undefined;
+      const path = simpleMiterPolygonKernel.offset(
+        finished[0], -request.material.kerfMm / 2, kernelCheckpoint,
+      );
+      if (path.length !== 1 || !validatePolygon(path[0], kernelCheckpoint)) return undefined;
+      const finishedOuter = finished[0].points;
+      finishedCuts.push({
+        id: `fixed-launcher-finished-envelope-${index + 1}`,
+        role: 'CUT_BLACK',
+        outer: finishedOuter,
+        boundsMm: contourBounds(finishedOuter, deadline, guardedCheckpoint),
+        areaMm2: Math.abs(signedArea(finishedOuter, deadline, guardedCheckpoint)),
+      });
+      const pathOuter = path[0].points;
+      const outer = signedArea(pathOuter, deadline, guardedCheckpoint) > 0
+        ? pathOuter
+        : pathOuter.map((_, pointIndex) => {
+          if ((pointIndex & 63) === 0) guardedCheckpoint();
+          return pathOuter[pathOuter.length - 1 - pointIndex];
+        });
+      cuts.push({
+        id: `fixed-launcher-clearance-${index + 1}`,
+        role: 'CUT_BLACK',
+        outer,
+        boundsMm: contourBounds(outer, deadline, guardedCheckpoint),
+        areaMm2: Math.abs(signedArea(outer, deadline, guardedCheckpoint)),
+      });
+    }
+  } catch (error) {
+    if (error instanceof LauncherPlanningCheckpointInterruption) throw error.original;
+    if (error instanceof RangeError
+      && !/runtime budget/i.test(error.message)
+      && /^(?:Offset |Built-in offset|Launcher (?:finished opening|toolpath))/.test(error.message)) {
+      return undefined;
+    }
+    throw error;
+  }
+  const tuple = cuts as unknown as readonly [FeatureContour, FeatureContour, FeatureContour];
+  return {
+    status: 'fixed',
+    cuts: tuple,
+    templateVersion: OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+    templateFingerprint: OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
+    rotationRad,
+    fitOffsetMm,
+    finishedAllowanceMm,
+    minimumStructuralClearanceMm: fixedStructuralClearance(
+      finishedCuts, request, deadline, guardedCheckpoint,
+    ),
+    decorationOverlapCount: decorationOverlapCount(
+      finishedCuts, request.decorationContours ?? [], deadline, guardedCheckpoint,
+    ),
+  };
+}
+
+function withoutPrivatePlacementScore(plan: ScoredFixedLauncherPlan): FixedLauncherPlan {
+  const {
+    minimumStructuralClearanceMm: _minimumStructuralClearanceMm,
+    decorationOverlapCount: _decorationOverlapCount,
+    ...publicPlan
+  } = plan;
+  return publicPlan;
+}
+
+export function planFixedLauncherClearance(request: FixedLauncherClearanceRequest): FixedLauncherPlan {
+  const deadline = request.deadline ?? Date.now() + 30_000;
+  const checkpoint = request.checkpoint ?? (() => undefined);
+  checkRuntime(deadline, checkpoint);
+  if (request.axisPoint.some((value) => !Number.isFinite(value))
+    || !Number.isFinite(request.material.kerfMm) || request.material.kerfMm < 0
+    || !Number.isFinite(request.material.minWebMm) || request.material.minWebMm < 0) {
+    throw new RangeError('Fixed launcher planning requires finite non-negative material geometry');
+  }
+  const fitOffsetMm = validateLauncherFitOffsetMm(request.fitOffsetMm);
+  if (OFFICIAL_THREE_PRONG_TEMPLATE.loops.length !== 3
+    || OFFICIAL_THREE_PRONG_TEMPLATE.loops.some((loop) => !validatePolygon(
+      { points: loop }, () => checkRuntime(deadline, checkpoint),
+    ))) {
+    throw new LauncherCompatibilityError('官方三爪孔模板無效，已停止所有輸出');
+  }
+  const candidates: ScoredFixedLauncherPlan[] = [];
+  for (let step = 0; step < LAUNCHER_ROTATION_STEPS; step += 1) {
+    checkRuntime(deadline, checkpoint);
+    const rotationRad = step * Math.PI / 180;
+    const loops = OFFICIAL_THREE_PRONG_TEMPLATE.loops.map(
+      (loop) => rotateLoop(loop, rotationRad, request.axisPoint),
+    ) as unknown as LauncherLoops;
+    const planned = materializeFixedCuts(loops, request, fitOffsetMm, rotationRad);
+    if (planned) candidates.push(planned);
+  }
+  const ranked = candidates.sort(
+    (left, right) => right.minimumStructuralClearanceMm - left.minimumStructuralClearanceMm
+      || left.decorationOverlapCount - right.decorationOverlapCount
+      || left.rotationRad - right.rotationRad,
+  );
+  const selected = ranked.find((planned) => launcherCutsArePhysicallySafe({
+    cuts: planned.cuts,
+    top: { exterior: request.topExterior, centralHole: request.topCentralHole },
+    second: { exterior: request.secondExterior, centralHole: request.secondCentralHole },
+    material: request.material,
+    deadline,
+    checkpoint,
+  }));
+  if (!selected) throw new LauncherCompatibilityError(
+    '官方三爪孔會破壞外框或必要承托結構，已停止所有輸出',
+  );
+  return withoutPrivatePlacementScore(selected);
 }
 
 export function planLauncherClearance(request: LauncherClearanceRequest): LauncherPlan {

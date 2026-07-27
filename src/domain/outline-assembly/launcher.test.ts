@@ -7,12 +7,19 @@ import {
   validateLauncherFitOffsetMm,
 } from './launcher-fit';
 import {
+  OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
+  OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+} from './launcher-template';
+import {
   detectLauncherTemplate,
   LAUNCHER_OMISSION_WARNING,
+  LauncherCompatibilityError,
   launcherCutsArePhysicallySafe,
+  planFixedLauncherClearance,
   planLauncherClearance,
   type LauncherCandidateGroup,
   type LauncherDetection,
+  type FixedLauncherClearanceRequest,
 } from './launcher';
 
 function rectangle(center: Point2, width = 2, height = 1): readonly Point2[] {
@@ -134,6 +141,56 @@ describe('launcher fit contract', () => {
   it('publishes the inclusive fit-offset bounds', () => {
     expect(LAUNCHER_FIT_OFFSET_MIN_MM).toBe(-0.20);
     expect(LAUNCHER_FIT_OFFSET_MAX_MM).toBe(0.20);
+  });
+});
+
+describe('fixed three-prong launcher planning', () => {
+  const safeRequest = {
+    axisPoint: [0, 0],
+    topExterior: exterior('fixed-top', 30),
+    secondExterior: exterior('fixed-second', 30),
+    material: { kerfMm: 0.2, minWebMm: 0.3 },
+  } satisfies Omit<FixedLauncherClearanceRequest, 'fitOffsetMm'>;
+
+  it('uses the fixed template, applies fit then kerf once, and returns deterministic rotation', () => {
+    const first = planFixedLauncherClearance({ ...safeRequest, fitOffsetMm: 0.05 });
+    const second = planFixedLauncherClearance({ ...safeRequest, fitOffsetMm: 0.05 });
+    const equivalentNetOffset = planFixedLauncherClearance({
+      ...safeRequest,
+      material: { ...safeRequest.material, kerfMm: 0.1 },
+      fitOffsetMm: 0,
+    });
+
+    expect(first).toEqual(second);
+    expect(first).toMatchObject({
+      status: 'fixed',
+      templateVersion: OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+      templateFingerprint: OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
+      fitOffsetMm: 0.05,
+      finishedAllowanceMm: 0.25,
+    });
+    expect(first.rotationRad).toBeGreaterThanOrEqual(0);
+    expect(first.rotationRad).toBeLessThan(120 * Math.PI / 180);
+    expect(first.cuts).toHaveLength(3);
+    first.cuts.forEach((cut, index) => {
+      expect(cut.areaMm2).toBeCloseTo(equivalentNetOffset.cuts[index].areaMm2, 8);
+    });
+    expect(first).not.toHaveProperty('minimumStructuralClearanceMm');
+    expect(first).not.toHaveProperty('decorationOverlapCount');
+  });
+
+  it('blocks instead of omitting the fixed launcher when no rotation is structurally safe', () => {
+    const thrown = captureThrown(() => planFixedLauncherClearance({
+      ...safeRequest,
+      topExterior: exterior('fixed-small-top', 10),
+      secondExterior: exterior('fixed-small-second', 10),
+      fitOffsetMm: 0,
+    }));
+    expect(thrown).toBeInstanceOf(LauncherCompatibilityError);
+    expect(thrown).toMatchObject({
+      name: 'LauncherCompatibilityError',
+      code: 'LAUNCHER_INCOMPATIBLE',
+    });
   });
 });
 

@@ -1102,6 +1102,22 @@ describe('OneClickConverter', () => {
     expect(screen.getByRole('heading', { name: '把 3D 模型變成 Laser Cut 切片' })).toBeVisible();
   });
 
+  it('maps an incompatible fixed launcher to a blocking Traditional Chinese failure', async () => {
+    const user = userEvent.setup();
+    render(<OneClickConverter services={services({
+      convert: vi.fn().mockRejectedValue(new AutomaticOutlineError(
+        'LAUNCHER_INCOMPATIBLE',
+        'internal launcher geometry details',
+      )),
+    })} />);
+
+    await uploadAndSelectMaterial(user, new File(['mesh'], 'launcher-blocked.stl'));
+
+    expect(await screen.findByRole('alert'))
+      .toHaveTextContent('官方三爪孔會破壞外框或必要承托結構，已停止所有輸出。');
+    expect(screen.queryByRole('link', { name: /下載/ })).not.toBeInTheDocument();
+  });
+
   it('retains the real preview and shared-hole warning when preview PDF packaging fails', async () => {
     const user = userEvent.setup();
     const omissionResult = {

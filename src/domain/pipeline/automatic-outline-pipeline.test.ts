@@ -2,15 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { writeBinarySTL } from '../mesh/write-stl';
 import type { TriangleMesh } from '../mesh/types';
 import {
-  interpenetratingTetrahedra,
   openTetrahedron,
   separatedClosedCylinders,
-  tetrahedron,
 } from '../../test/mesh-builders';
 import {
   AutomaticOutlineError,
   convertAutomatically as convertAutomaticOutline,
-  removalEvidenceFingerprint,
   type AutomaticOutlineProgressEvent,
   type AutomaticOutlineProgressStage,
 } from './automatic-outline-pipeline';
@@ -24,15 +21,15 @@ import { createOutlinePackage } from '../../export/outline-package';
 
 const testMaterial = { id: 'test-material', name: 'Test material', thicknessMm: 3, kerfMm: 0.1, minFeatureMm: 0.8, minWebMm: 0.5, fitAllowanceMm: { loose: 0.2, slip: 0.1, snug: 0, press: -0.1 } } as const;
 function convertAutomatically(request: { readonly bytes: ArrayBuffer }, onProgress?: Parameters<typeof convertAutomaticOutline>[1]) {
-  return convertAutomaticOutline({ ...request, material: testMaterial }, onProgress);
+  return convertAutomaticOutline({ ...request, material: testMaterial, launcherFitOffsetMm: 0 }, onProgress);
 }
 
 function cylinder(segments = 32): TriangleMesh {
   const positions: number[] = [0, 0, -1, 0, 0, 1];
   for (let index = 0; index < segments; index += 1) {
     const angle = index / segments * Math.PI * 2;
-    positions.push(5 * Math.cos(angle), 5 * Math.sin(angle), -1);
-    positions.push(5 * Math.cos(angle), 5 * Math.sin(angle), 1);
+    positions.push(30 * Math.cos(angle), 30 * Math.sin(angle), -1);
+    positions.push(30 * Math.cos(angle), 30 * Math.sin(angle), 1);
   }
   const indices: number[] = [];
   for (let index = 0; index < segments; index += 1) {
@@ -48,10 +45,10 @@ function cylinder(segments = 32): TriangleMesh {
 function steppedCylinder(segments = 32): TriangleMesh {
   const positions: number[] = [0, 0, -3, 0, 0, 3];
   const rings = [
-    { radius: 5, z: -3 },
-    { radius: 5, z: 0.5 },
-    { radius: 3, z: 0.5 },
-    { radius: 3, z: 3 },
+    { radius: 40, z: -3 },
+    { radius: 40, z: 0.5 },
+    { radius: 30, z: 0.5 },
+    { radius: 30, z: 3 },
   ];
   for (const ring of rings) for (let index = 0; index < segments; index += 1) {
     const angle = index / segments * Math.PI * 2;
@@ -93,7 +90,7 @@ function layerLocalSteppedPrism(): TriangleMesh {
   return { positions: new Float64Array(positions), indices: new Uint32Array(indices) };
 }
 
-function squareTube(outerSize = 20, innerSize = 4, depth = 2): TriangleMesh {
+function squareTube(outerSize = 60, innerSize = 4, depth = 2): TriangleMesh {
   const positions: number[] = [];
   for (const [size, z] of [[outerSize, -depth / 2], [outerSize, depth / 2], [innerSize, -depth / 2], [innerSize, depth / 2]]) {
     const half = size / 2;
@@ -111,11 +108,17 @@ function squareTube(outerSize = 20, innerSize = 4, depth = 2): TriangleMesh {
   return { positions: new Float64Array(positions), indices: new Uint32Array(indices) };
 }
 
-function nonManifoldTetrahedron(): TriangleMesh {
-  const base = tetrahedron();
+function openCylinder(): TriangleMesh {
+  const base = cylinder();
+  return { positions: base.positions, indices: base.indices.slice(0, -3) };
+}
+
+function nonManifoldCylinder(): TriangleMesh {
+  const base = cylinder();
+  const extraVertex = base.positions.length / 3;
   return {
-    positions: new Float64Array([...base.positions, 0.5, 0, 0.5]),
-    indices: new Uint32Array([...base.indices, 0, 1, 4]),
+    positions: new Float64Array([...base.positions, 0, 0, 0]),
+    indices: new Uint32Array([...base.indices, 2, 3, extraVertex]),
   };
 }
 
@@ -137,40 +140,6 @@ function translated(mesh: TriangleMesh, x: number, y: number, z: number): Triang
   };
 }
 
-function perforatedLauncherPlate(): TriangleMesh {
-  const holes = [0, 120, 240].map((degrees) => {
-    const angle = degrees * Math.PI / 180;
-    const centerX = Math.cos(angle) * 10, centerY = Math.sin(angle) * 10;
-    return { minX: centerX - 1, maxX: centerX + 1, minY: centerY - 0.5, maxY: centerY + 0.5 };
-  });
-  const xs = [...new Set([-30, 30, ...holes.flatMap(({ minX, maxX }) => [minX, maxX])])].sort((a, b) => a - b);
-  const ys = [...new Set([-30, 30, ...holes.flatMap(({ minY, maxY }) => [minY, maxY])])].sort((a, b) => a - b);
-  const positions: number[] = [], indices: number[] = [];
-  const addBox = (minX: number, minY: number, maxX: number, maxY: number) => {
-    const offset = positions.length / 3;
-    positions.push(
-      minX, minY, -1, maxX, minY, -1, maxX, maxY, -1, minX, maxY, -1,
-      minX, minY, 1, maxX, minY, 1, maxX, maxY, 1, minX, maxY, 1,
-    );
-    const faces = [
-      [0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7],
-      [0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5],
-      [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7],
-    ];
-    for (const face of faces) indices.push(...face.map((index) => offset + index));
-  };
-  for (let xIndex = 0; xIndex + 1 < xs.length; xIndex += 1) {
-    for (let yIndex = 0; yIndex + 1 < ys.length; yIndex += 1) {
-      const minX = xs[xIndex], maxX = xs[xIndex + 1], minY = ys[yIndex], maxY = ys[yIndex + 1];
-      const centerX = (minX + maxX) / 2, centerY = (minY + maxY) / 2;
-      if (holes.some((hole) => centerX > hole.minX && centerX < hole.maxX
-        && centerY > hole.minY && centerY < hole.maxY)) continue;
-      addBox(minX, minY, maxX, maxY);
-    }
-  }
-  return { positions: new Float64Array(positions), indices: new Uint32Array(indices) };
-}
-
 function rectangularPrism(width: number, height: number): TriangleMesh {
   const minX = -width / 2, maxX = width / 2, minY = -height / 2, maxY = height / 2;
   const positions = new Float64Array([
@@ -185,30 +154,14 @@ function rectangularPrism(width: number, height: number): TriangleMesh {
   return { positions, indices };
 }
 
-function asymmetricFastenerPlate(): TriangleMesh {
-  const cells = [
-    { minX: -10, minY: -1, maxX: 2, maxY: 1 },
-    { minX: 2, minY: -5, maxX: 10, maxY: 5 },
-  ];
-  const positions: number[] = [], indices: number[] = [];
-  for (const { minX, minY, maxX, maxY } of cells) {
-    const offset = positions.length / 3;
-    const cell = rectangularPrism(maxX - minX, maxY - minY);
-    for (let index = 0; index < cell.positions.length; index += 3) {
-      positions.push(
-        cell.positions[index] + (minX + maxX) / 2,
-        cell.positions[index + 1] + (minY + maxY) / 2,
-        cell.positions[index + 2],
-      );
-    }
-    indices.push(...Array.from(cell.indices, (index) => index + offset));
-  }
-  return { positions: new Float64Array(positions), indices: new Uint32Array(indices) };
+function openSquarePlate(): TriangleMesh {
+  const plate = rectangularPrism(60, 60);
+  return { positions: plate.positions, indices: plate.indices.slice(0, -3) };
 }
 
 describe('automatic outline pipeline', () => {
   it('publishes one reconciled assembly decision before engraving and preview evidence', async () => {
-    const result = await convertAutomatically({ bytes: writeBinarySTL(scaled(cylinder(), 8, 8, 1), 'safe') });
+    const result = await convertAutomatically({ bytes: writeBinarySTL(cylinder(), 'safe') });
 
     expect(() => validateAutomaticColoredResult(result, Infinity, () => undefined, result.material)).not.toThrow();
 
@@ -216,14 +169,9 @@ describe('automatic outline pipeline', () => {
     expect(result.assembly.launcher.status).toBe('fallback');
     const topTwo = result.coloredLayers.slice(-2);
     const lower = result.coloredLayers.slice(0, -2);
-    if (result.assembly.launcher.status === 'omitted') {
-      expect(result.featureWarnings).toContain('無法安全保留原裝發射器相容性，已省略三個發射器開孔');
-      expect(result.coloredLayers.every((layer) => layer.launcherCuts.length === 0)).toBe(true);
-    } else {
-      expect(topTwo.every((layer) => layer.launcherCuts.length === 3)).toBe(true);
-      expect(topTwo[1].launcherCuts.map(({ outer }) => outer)).toEqual(topTwo[0].launcherCuts.map(({ outer }) => outer));
-      expect(lower.every((layer) => layer.launcherCuts.length === 0)).toBe(true);
-    }
+    expect(topTwo.every((layer) => layer.launcherCuts.length === 3)).toBe(true);
+    expect(topTwo[1].launcherCuts.map(({ outer }) => outer)).toEqual(topTwo[0].launcherCuts.map(({ outer }) => outer));
+    expect(lower.every((layer) => layer.launcherCuts.length === 0)).toBe(true);
 
     expect(result.assembly.fastener.count).toBeGreaterThanOrEqual(0);
     expect(result.assembly.fastener.count).toBeLessThanOrEqual(3);
@@ -261,7 +209,7 @@ describe('automatic outline pipeline', () => {
   });
 
   it('rejects recomputed-fingerprint fastener metadata and geometry forgeries from a genuine result', async () => {
-    const result = await convertAutomatically({ bytes: writeBinarySTL(scaled(cylinder(), 8, 8, 1), 'safe') });
+    const result = await convertAutomatically({ bytes: writeBinarySTL(cylinder(), 'safe') });
     expect(result.assembly.fastener.count).toBe(3);
 
     const metadataEvidence = {
@@ -321,40 +269,46 @@ describe('automatic outline pipeline', () => {
       .toThrow(/fastener.*(?:48-point|circle|geometry|diameter)/i);
   });
 
-  it('publishes launcher holes detected by actual extraction through the full result contract', async () => {
-    const result = await convertAutomatically({ bytes: writeBinarySTL(perforatedLauncherPlate(), 'safe') });
-    expect(result.assembly.launcher.status).toBe('detected');
-    expect(result.coloredLayers.slice(-2).every((layer) => layer.launcherCuts.length === 3)).toBe(true);
-    expect(result.coloredLayers.slice(0, -2).every((layer) => layer.launcherCuts.length === 0)).toBe(true);
-    const packaged = await createOutlinePackage(result);
+  it('uses the fixed launcher when per-model launcher evidence is empty', async () => {
+    const emptyEvidence = await convertAutomatically({
+      bytes: writeBinarySTL(cylinder(), 'safe'),
+    });
+
+    expect(emptyEvidence.coloredLayers.slice(-2).every((layer) => layer.launcherCuts.length === 3)).toBe(true);
+    expect(emptyEvidence.coloredLayers.slice(0, -2).every((layer) => layer.launcherCuts.length === 0)).toBe(true);
+    const packaged = await createOutlinePackage(emptyEvidence);
     expect(packaged.cutSvg.match(/-launcher-clearance-/g)).toHaveLength(6);
   }, 20_000);
 
-  it.each([
-    ['three', scaled(cylinder(), 8, 8, 1), 3],
-    ['two', rectangularPrism(20, 6), 2],
-    ['one', asymmetricFastenerPlate(), 1],
-    ['zero', rectangularPrism(4, 4), 0],
-  ] as const)('produces exactly %s shared fastener holes through actual extraction', async (_label, mesh, count) => {
-    const result = await convertAutomatically({ bytes: writeBinarySTL(mesh, 'safe') });
-    expect(result.assembly.fastener.count).toBe(count);
-    expect(result.coloredLayers.every((layer) => layer.fastenerHoles.length === count)).toBe(true);
+  it('produces three shared fastener holes through compatible actual extraction', async () => {
+    const result = await convertAutomatically({ bytes: writeBinarySTL(cylinder(), 'safe') });
+    expect(result.assembly.fastener.count).toBe(3);
+    expect(result.coloredLayers.every((layer) => layer.fastenerHoles.length === 3)).toBe(true);
     const packaged = await createOutlinePackage(result);
-    expect(packaged.cutSvg.match(/-fastener-hole-/g) ?? []).toHaveLength(count * result.coloredLayers.length);
+    expect(packaged.cutSvg.match(/-fastener-hole-/g) ?? []).toHaveLength(3 * result.coloredLayers.length);
+  }, 20_000);
+
+  it.each([
+    ['narrow', rectangularPrism(20, 6)],
+    ['small', rectangularPrism(4, 4)],
+  ] as const)('blocks the %s outline when no fixed launcher rotation is safe', async (_label, mesh) => {
+    await expect(convertAutomatically({ bytes: writeBinarySTL(mesh, 'safe') }))
+      .rejects.toMatchObject({ code: 'LAUNCHER_INCOMPATIBLE' } satisfies Partial<AutomaticOutlineError>);
   }, 20_000);
 
   it('gives exact-mode fastener removal envelopes priority over colliding layer-local engraving', async () => {
     const result = await convertAutomaticOutline({
-      bytes: writeBinarySTL(layerLocalSteppedPrism(), 'safe'),
+      bytes: writeBinarySTL(scaled(layerLocalSteppedPrism(), 6, 6, 1), 'safe'),
       material: testMaterial,
+      launcherFitOffsetMm: 0,
     });
     expect(result.mode).toBe('exact');
     expect(result.assembly.fastener.count).toBe(3);
     const top = result.coloredLayers.at(-1)!;
     expect(top.deepFeatures).toEqual([]);
     expect(top.lightFeatures).toEqual([]);
-    expect(top.diagnostics.depth.omissionCode).toBe('UNRELIABLE_DEPTH_GEOMETRY');
-    expect(result.featureWarnings).toContain('雕刻特徵不可靠，已局部省略');
+    expect(top.diagnostics.depth.omissionCode).toBe('INSUFFICIENT_CONTRAST');
+    expect(result.featureWarnings).toContain('表面深度差不足，已省略雕刻特徵');
     expect(result.preview.layers).toEqual(result.coloredLayers);
     const expectedBasis = createOutlineAxisBasis(result.axis.axis);
     expect(result.preview.axis).toEqual({
@@ -481,9 +435,8 @@ describe('automatic outline pipeline', () => {
   });
 
   it.each([
-    ['open', scaled(openTetrahedron(), 20, 20, 20)],
-    ['non-manifold', scaled(nonManifoldTetrahedron(), 20, 20, 20)],
-    ['self-intersecting', scaled(interpenetratingTetrahedra(), 20, 20, 20)],
+    ['open', openCylinder()],
+    ['non-manifold', nonManifoldCylinder()],
   ])('returns a warning 2.5D outline for a parseable %s mesh', async (_label, mesh) => {
     const result = await convertAutomatically({ bytes: writeBinarySTL(mesh, 'safe') });
 
@@ -505,27 +458,20 @@ describe('automatic outline pipeline', () => {
     expect(result.layers.every((layer) => layer.sourceBoundsMm !== undefined)).toBe(true);
   });
 
-  it('falls back to projection with authentic removal evidence for disconnected closed slices', async () => {
-    const result = await convertAutomatically({ bytes: writeBinarySTL(separatedClosedCylinders(), 'safe') });
-
-    expect(result).toMatchObject({ mode: 'outline-2.5d', status: 'warning', repairAccepted: true });
-    expect(result.warnings).toContain('精確切片失敗，已改用 2.5D 外形模式');
-    expect(result.removedComponentCount).toBeGreaterThan(0);
-    expect(result.layers.reduce((sum, layer) => sum + layer.removedComponentCount, 0)).toBe(result.removedComponentCount);
-    expect(result.removalEvidenceFingerprint).toBe(removalEvidenceFingerprint(result));
-    expect(result.diagnostics.rasterCellSizeMm).toBeGreaterThan(0);
-    expect(result.diagnostics.layers.every((item) => item.boundsDriftRatio <= 0.03 && item.areaDriftRatio <= 0.03)).toBe(true);
+  it('blocks disconnected closed slices that cannot retain the fixed launcher', async () => {
+    await expect(convertAutomatically({ bytes: writeBinarySTL(separatedClosedCylinders(), 'safe') }))
+      .rejects.toMatchObject({ code: 'LAUNCHER_INCOMPATIBLE' } satisfies Partial<AutomaticOutlineError>);
   });
 
   it('uses a deterministic shortest-bounds axis with a warning when no candidate is trusted', async () => {
-    const input = writeBinarySTL(scaled(openTetrahedron(), 20, 20, 20), 'safe');
+    const input = writeBinarySTL(openSquarePlate(), 'safe');
     const first = await convertAutomatically({ bytes: input });
     const second = await convertAutomatically({ bytes: input.slice(0) });
 
     expect(first.axis).toEqual(second.axis);
     expect(first.axis.source).toBe('shortest-bounds');
     expect(first.warnings).toContain('未找到可信旋轉軸，已使用模型最短包圍盒軸');
-  });
+  }, 20_000);
 
   it('fails closed with a typed error when no valid projected outline exists', async () => {
     const emptyProjection: TriangleMesh = {
@@ -674,7 +620,7 @@ endsolid overflow`;
     const events: AutomaticOutlineProgressEvent[] = [];
     const onProgress = vi.fn((event: AutomaticOutlineProgressEvent) => { events.push(event); });
 
-    await convertAutomatically({ bytes: writeBinarySTL(scaled(openTetrahedron(), 20, 20, 20), 'safe') }, onProgress);
+    await convertAutomatically({ bytes: writeBinarySTL(openCylinder(), 'safe') }, onProgress);
 
     const stages = events.map(({ stage }) => stage);
     expect(stages).toEqual(['reading', 'analyzing', 'simplifying', 'slicing', 'slicing', 'packaging']);

@@ -18,9 +18,10 @@ import {
   type OutlineLayer,
 } from '../outline-2.5d/extract';
 import {
-  detectLauncherTemplate,
-  planLauncherClearance,
-  type LauncherPlan,
+  LAUNCHER_ASSEMBLY_ALLOWANCE_MM,
+  LauncherCompatibilityError,
+  planFixedLauncherClearance,
+  type FixedLauncherPlan,
 } from '../outline-assembly/launcher';
 import {
   materializeFastenerHoles,
@@ -74,9 +75,14 @@ export type AutomaticOutlineDiagnostics = {
   readonly rasterCellSizeMm: number | null;
   readonly layers: readonly { readonly id: string; readonly simplificationToleranceMm: number; readonly boundsDriftRatio: number; readonly areaDriftRatio: number; readonly areaEvidenceBasis: 'exact-slice-pre-simplification' | 'retained-raster-pre-simplification' }[];
 };
-export type AutomaticOutlineRequest = { readonly bytes: ArrayBuffer; readonly material: ManufacturingGeometryProfile };
+export type AutomaticOutlineRequest = {
+  readonly bytes: ArrayBuffer;
+  readonly material: ManufacturingGeometryProfile;
+  readonly launcherFitOffsetMm?: number;
+};
 export type AutomaticOutlineProgress = (event: AutomaticOutlineProgressEvent) => void | Promise<void>;
-export type AutomaticOutlineErrorCode = 'INVALID_STL' | 'NO_OUTLINE' | 'RESOURCE_LIMIT' | 'TIME_LIMIT';
+export type AutomaticOutlineErrorCode =
+  | 'INVALID_STL' | 'NO_OUTLINE' | 'RESOURCE_LIMIT' | 'TIME_LIMIT' | 'LAUNCHER_INCOMPATIBLE';
 
 export class AutomaticOutlineError extends Error {
   readonly name = 'AutomaticOutlineError';
@@ -259,10 +265,10 @@ type PlannedAssembly = {
 };
 
 function materializeLauncherCuts(
-  plan: LauncherPlan,
+  plan: FixedLauncherPlan,
   layers: readonly ColoredOutlineLayer[],
 ): readonly (readonly import('../outline-features/types').FeatureContour[])[] {
-  return layers.map((layer, index) => index < layers.length - 2 || plan.status === 'omitted'
+  return layers.map((layer, index) => index < layers.length - 2
     ? []
     : plan.cuts.map((cut, cutIndex) => ({
       ...cut,
@@ -270,30 +276,28 @@ function materializeLauncherCuts(
     })));
 }
 
+type FixedLauncherPlanningContext = OutlineBlackCutPlanningContext & {
+  readonly launcherFitOffsetMm: number;
+};
+
 function planAssemblyBlackCuts(
-  context: OutlineBlackCutPlanningContext,
+  context: FixedLauncherPlanningContext,
   material: ManufacturingGeometryProfile,
 ): PlannedAssembly {
   const checkpoint = () => checkEvidenceDeadline(context.deadline);
   const bareLayers = colorizeExteriorLayers(
     context.layers, context.cellSizeMm, context.deadline, checkpoint, context.holeSelections,
   );
-  const detection = detectLauncherTemplate({
-    candidates: context.launcherCandidates,
-    axisPoint: [0, 0],
-    deadline: context.deadline,
-    checkpoint,
-  });
   const top = bareLayers.at(-1), second = bareLayers.at(-2);
   if (!top || !second) throw new RangeError('Assembly planning requires at least two ordered layers');
-  const launcher = planLauncherClearance({
-    detection,
+  const launcher = planFixedLauncherClearance({
     axisPoint: [0, 0],
     topExterior: top.exterior,
     secondExterior: second.exterior,
     topCentralHole: top.centralHole,
     secondCentralHole: second.centralHole,
     material,
+    fitOffsetMm: context.launcherFitOffsetMm,
     deadline: context.deadline,
     checkpoint,
   });
@@ -330,7 +334,6 @@ function planAssemblyBlackCuts(
     }),
   }));
   const warnings = [
-    ...(launcher.status === 'omitted' ? [launcher.warning] : []),
     ...(fastenerPlan.warning ? [fastenerPlan.warning] : []),
   ];
   return {
@@ -338,9 +341,11 @@ function planAssemblyBlackCuts(
     warnings,
     summary: {
       material,
-      launcher: launcher.status === 'omitted'
-        ? { status: 'omitted', cutCount: 0 }
-        : { status: launcher.status, cutCount: 3, assemblyAllowanceMm: launcher.assemblyAllowanceMm },
+      launcher: {
+        status: 'fallback',
+        cutCount: 3,
+        assemblyAllowanceMm: LAUNCHER_ASSEMBLY_ALLOWANCE_MM,
+      },
       fastener: fastenerSummary(fastenerPlan),
     },
   };
@@ -359,11 +364,12 @@ function fastenerSummary(plan: FastenerPlan): AutomaticOutlineAssembly['fastener
 
 function extractionOptions(
   material: ManufacturingGeometryProfile,
+  launcherFitOffsetMm: number,
   receive: (assembly: PlannedAssembly) => void,
 ): { readonly planBlackCuts: (context: OutlineBlackCutPlanningContext) => { readonly cuts: OutlineExtraction['blackCuts']; readonly warnings: readonly string[] } } {
   return {
     planBlackCuts: (context) => {
-      const assembly = planAssemblyBlackCuts(context, material);
+      const assembly = planAssemblyBlackCuts({ ...context, launcherFitOffsetMm }, material);
       receive(assembly);
       return { cuts: assembly.cuts, warnings: assembly.warnings };
     },
@@ -391,6 +397,9 @@ function automaticAxis(mesh: TriangleMesh): OutlineAxisSelection {
 
 function asAutomaticOutlineError(error: unknown, fallbackCode: AutomaticOutlineErrorCode): AutomaticOutlineError {
   if (error instanceof AutomaticOutlineError) return error;
+  if (error instanceof LauncherCompatibilityError) {
+    return new AutomaticOutlineError('LAUNCHER_INCOMPATIBLE', error.message, { cause: error });
+  }
   const message = error instanceof Error ? error.message : String(error);
   if (/runtime|deadline|time limit|timed out/i.test(message)) {
     return new AutomaticOutlineError('TIME_LIMIT', '模型處理超出時間上限', { cause: error });
@@ -409,6 +418,7 @@ export async function convertAutomatically(
   onProgress?: AutomaticOutlineProgress,
 ): Promise<AutomaticOutlineResult> {
   const material = validateManufacturingGeometryProfile(request.material);
+  const launcherFitOffsetMm = request.launcherFitOffsetMm ?? 0;
   if (request.bytes.byteLength > MAX_STL_BYTES) {
     throw new AutomaticOutlineError('RESOURCE_LIMIT', '模型超出安全處理資源上限');
   }
@@ -487,7 +497,7 @@ export async function convertAutomatically(
     try {
       exactExtraction = extractExactContours(
         extractionMesh, axis, specs, DEFAULT_OUTLINE_BUDGETS, deadline,
-        extractionOptions(material, (assembly) => { exactAssembly = assembly; }),
+        extractionOptions(material, launcherFitOffsetMm, (assembly) => { exactAssembly = assembly; }),
       );
     } catch (exactError) {
       const mappedExactError = asAutomaticOutlineError(exactError, 'NO_OUTLINE');
@@ -499,7 +509,7 @@ export async function convertAutomatically(
       try {
         projectedExtraction = extractProjectedContours(
           extractionMesh, axis, specs, DEFAULT_OUTLINE_BUDGETS, deadline,
-          extractionOptions(material, (assembly) => { projectedAssembly = assembly; }),
+          extractionOptions(material, launcherFitOffsetMm, (assembly) => { projectedAssembly = assembly; }),
         );
       } catch (projectedError) {
         throw asAutomaticOutlineError(projectedError, 'NO_OUTLINE');
@@ -542,7 +552,7 @@ export async function convertAutomatically(
   try {
     projectedExtraction = extractProjectedContours(
       originalMesh, axis, specs, DEFAULT_OUTLINE_BUDGETS, deadline,
-      extractionOptions(material, (assembly) => { projectedAssembly = assembly; }),
+      extractionOptions(material, launcherFitOffsetMm, (assembly) => { projectedAssembly = assembly; }),
     );
   } catch (error) {
     throw asAutomaticOutlineError(error, 'NO_OUTLINE');

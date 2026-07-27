@@ -5,7 +5,7 @@ import type { OutlineLayer } from '../domain/outline-2.5d/extract';
 import type { AutomaticOutlineResult } from '../domain/pipeline/automatic-outline-pipeline';
 import { convertAutomatically as convertAutomaticOutline, removalEvidenceFingerprint } from '../domain/pipeline/automatic-outline-pipeline';
 import { writeBinarySTL } from '../domain/mesh/write-stl';
-import { openTetrahedron, separatedClosedCylinders } from '../test/mesh-builders';
+import { openTetrahedron } from '../test/mesh-builders';
 import type { TriangleMesh } from '../domain/mesh/types';
 import {
   createOutlineDocument,
@@ -145,21 +145,70 @@ function result(overrides: Partial<AutomaticOutlineResult> = {}): AutomaticOutli
   return { ...value, removalEvidenceFingerprint: overrides.removalEvidenceFingerprint ?? removalEvidenceFingerprint(value) };
 }
 
+function cylinder(
+  radius = 30,
+  centerX = 0,
+  zStart = -1,
+  zEnd = 1,
+  segments = 32,
+): TriangleMesh {
+  const positions: number[] = [centerX, 0, zStart, centerX, 0, zEnd];
+  for (let index = 0; index < segments; index += 1) {
+    const angle = index / segments * Math.PI * 2;
+    positions.push(centerX + radius * Math.cos(angle), radius * Math.sin(angle), zStart);
+    positions.push(centerX + radius * Math.cos(angle), radius * Math.sin(angle), zEnd);
+  }
+  const indices: number[] = [];
+  for (let index = 0; index < segments; index += 1) {
+    const next = (index + 1) % segments;
+    const bottom = 2 + index * 2, top = bottom + 1;
+    const nextBottom = 2 + next * 2, nextTop = nextBottom + 1;
+    indices.push(0, bottom, nextBottom, 1, nextTop, top);
+    indices.push(bottom, top, nextTop, bottom, nextTop, nextBottom);
+  }
+  return { positions: new Float64Array(positions), indices: new Uint32Array(indices) };
+}
+
+function mergeMeshes(meshes: readonly TriangleMesh[]): TriangleMesh {
+  const positions: number[] = [];
+  const indices: number[] = [];
+  let vertexOffset = 0;
+  for (const mesh of meshes) {
+    positions.push(...mesh.positions);
+    indices.push(...Array.from(mesh.indices, (index) => index + vertexOffset));
+    vertexOffset += mesh.positions.length / 3;
+  }
+  return { positions: new Float64Array(positions), indices: new Uint32Array(indices) };
+}
+
+function launcherCompatibleSeparatedClosedCylinders(): TriangleMesh {
+  return mergeMeshes([
+    cylinder(),
+    cylinder(5, 40, -1, 1, 16),
+    cylinder(5, -40, -1, 1, 16),
+  ]);
+}
+
 function separatedOpenComponents(): TriangleMesh {
-  const first = openTetrahedron();
-  const transformed = (xOffset: number, zOffset: number, zScale: number, xyScale: number) => Array.from(first.positions, (value, index) => {
-    if (index % 3 === 0) return value * xyScale + xOffset;
-    if (index % 3 === 1) return value * xyScale;
-    return value * zScale + zOffset;
-  });
-  return {
-    positions: new Float64Array([
-      ...transformed(0, 0, 12, 30),
-      ...transformed(40, 1, 2, 2),
-      ...transformed(50, 8, 2, 2),
-    ]),
-    indices: new Uint32Array([...first.indices, ...Array.from(first.indices, (index) => index + 4), ...Array.from(first.indices, (index) => index + 8)]),
+  const dominantClosed = cylinder(30, 0, 0, 12);
+  const dominant: TriangleMesh = {
+    positions: dominantClosed.positions,
+    indices: dominantClosed.indices.slice(0, -3),
   };
+  const small = openTetrahedron();
+  const transformed = (xOffset: number, zOffset: number, zScale: number, xyScale: number): TriangleMesh => ({
+    positions: new Float64Array(Array.from(small.positions, (value, index) => {
+      if (index % 3 === 0) return value * xyScale + xOffset;
+      if (index % 3 === 1) return value * xyScale;
+      return value * zScale + zOffset;
+    })),
+    indices: small.indices,
+  });
+  return mergeMeshes([
+    dominant,
+    transformed(40, 1, 2, 2),
+    transformed(-42, 8, 2, 2),
+  ]);
 }
 
 async function synchronizedOutput(output: OutlinePackage, document: OutlinePackage['document']): Promise<OutlinePackage> {
@@ -329,7 +378,7 @@ const STRICT_RAW_ZIP_MUTATIONS = [
 
 describe('material-independent outline package', () => {
   it('packages a real material-bound pipeline result', async () => {
-    const runtime = await convertAutomatically({ bytes: writeBinarySTL(separatedClosedCylinders(), 'safe') });
+    const runtime = await convertAutomatically({ bytes: writeBinarySTL(cylinder(), 'safe') });
 
     await expect(createColoredOutlinePackage(runtime)).resolves.toMatchObject({
       cutSvg: expect.stringContaining('<svg'),
@@ -514,7 +563,9 @@ describe('material-independent outline package', () => {
   });
 
   it('reconciles exact-to-projected fallback evidence from disconnected closed slices', async () => {
-    const runtime = await convertAutomatically({ bytes: writeBinarySTL(separatedClosedCylinders(), 'safe') });
+    const runtime = await convertAutomatically({
+      bytes: writeBinarySTL(launcherCompatibleSeparatedClosedCylinders(), 'safe'),
+    });
     expect(runtime).toMatchObject({ mode: 'outline-2.5d', status: 'warning', repairAccepted: true });
     expect(runtime.warnings).toContain('精確切片失敗，已改用 2.5D 外形模式');
     expect(runtime.removedComponentCount).toBeGreaterThan(0);
