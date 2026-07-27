@@ -49,6 +49,7 @@ export type OutlinePackageTransfer = {
   readonly cutDxf: string;
   readonly previewPdf: Uint8Array;
   readonly explodedViewPdf: Uint8Array;
+  readonly launcherCouponSvg: string;
 };
 
 export type MeshAnalysis = {

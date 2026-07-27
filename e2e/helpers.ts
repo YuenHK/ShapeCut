@@ -55,6 +55,7 @@ const EXPECTED_ZIP_NAMES = Object.freeze([
   'cut-and-engrave.dxf',
   'preview.pdf',
   'exploded-view.pdf',
+  'launcher-fit-coupon.svg',
 ] as const);
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$/;
 const HASH = /^[0-9a-f]{32}$/i;
@@ -154,6 +155,9 @@ export type ColoredArtifactPayloads = {
   readonly explodedPdf: Uint8Array;
   readonly rawSvg?: Uint8Array;
   readonly rawDxf?: Uint8Array;
+  /** Added to the UI download set in Task 6; ZIP-only callers remain supported meanwhile. */
+  readonly launcherCouponSvg?: string;
+  readonly rawLauncherCouponSvg?: Uint8Array;
 };
 
 export type BoundedDownloadBytes = {
@@ -175,9 +179,20 @@ export type DownloadedOutline = ColoredFingerprints & {
   readonly entityCounts: Readonly<Record<ColoredRole, number>>;
   readonly previewPdf: ParsedColoredPdf;
   readonly explodedPdf: ParsedColoredPdf;
+  readonly launcherCoupon: ParsedLauncherFitCoupon;
   readonly zipRecords: readonly (ParsedColoredZipRecord & { readonly byteIdentical: boolean })[];
   readonly downloadBytes: BoundedDownloadBytes;
   readonly sha256: string;
+};
+
+export type ParsedLauncherFitCoupon = {
+  readonly templateVersion: 1;
+  readonly templateFingerprint: string;
+  readonly materialId: string;
+  readonly kerfMm: number;
+  readonly offsetsMm: readonly [-0.1, -0.05, 0, 0.05, 0.1];
+  readonly cutCount: 15;
+  readonly labels: readonly ['-0.10 mm', '-0.05 mm', '0.00 mm', '+0.05 mm', '+0.10 mm'];
 };
 
 export type WorkerResultSummary = {
@@ -1420,8 +1435,8 @@ export async function parseColoredZipRecords(bytes: Uint8Array): Promise<readonl
   const centralSize = view.getUint32(eocd + 12, true);
   const centralOffset = view.getUint32(eocd + 16, true);
   if (view.getUint16(eocd + 4, true) !== 0 || view.getUint16(eocd + 6, true) !== 0
-    || diskRecords !== recordCount || recordCount !== 4 || centralOffset + centralSize !== eocd) {
-    throw new Error('Colored ZIP must contain exactly four central-directory records');
+    || diskRecords !== recordCount || recordCount !== 5 || centralOffset + centralSize !== eocd) {
+    throw new Error('Colored ZIP must contain exactly five central-directory records');
   }
   const central: Array<{
     name: typeof EXPECTED_ZIP_NAMES[number];
@@ -1491,7 +1506,7 @@ export async function parseColoredZipRecords(bytes: Uint8Array): Promise<readonl
   if (localCursor !== centralOffset) throw new Error('Colored ZIP local record coverage contains an orphan or trailing gap');
   const zip = await JSZip.loadAsync(bytes, { checkCRC32: true });
   const entries = Object.entries(zip.files);
-  if (entries.length !== 4 || entries.some(([, entry]) => entry.dir)
+  if (entries.length !== 5 || entries.some(([, entry]) => entry.dir)
     || exact(entries.map(([name]) => name)) !== exact(EXPECTED_ZIP_NAMES)) {
     throw new Error('Colored ZIP contains an unsafe, duplicate, extra, or missing file');
   }
@@ -1507,6 +1522,81 @@ export async function parseColoredZipRecords(bytes: Uint8Array): Promise<readonl
 
 function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+export function parseLauncherFitCouponArtifact(svg: string): ParsedLauncherFitCoupon {
+  const root = svg.match(/^<\?xml version="1\.0" encoding="UTF-8"\?><svg xmlns="http:\/\/www\.w3\.org\/2000\/svg" width="([^"]+)mm" height="([^"]+)mm" viewBox="0 0 ([^"]+) ([^"]+)" data-template-version="([^"]+)" data-template-fingerprint="([^"]+)" data-material-id="([^"]+)" data-kerf-mm="([^"]+)" data-offsets-mm="([^"]+)">([\s\S]*)<\/svg>$/);
+  if (!root) throw new Error('Launcher fit coupon SVG root, metadata, or EOF is not canonical');
+  const dimensions = root.slice(1, 5).map(Number);
+  if (!dimensions.every(Number.isFinite) || dimensions[0] <= 0 || dimensions[1] <= 0
+    || dimensions[0] !== dimensions[2] || dimensions[1] !== dimensions[3]) {
+    throw new Error('Launcher fit coupon SVG dimensions are not canonical');
+  }
+  const templateVersion = Number(root[5]);
+  const templateFingerprint = root[6];
+  const materialId = root[7];
+  const kerfMm = Number(root[8]);
+  const offsets = root[9].split(',').map(Number);
+  if (templateVersion !== 1 || !HASH.test(templateFingerprint) || !SAFE_ID.test(materialId)
+    || !Number.isFinite(kerfMm) || kerfMm < 0
+    || exact(offsets) !== exact([-0.1, -0.05, 0, 0.05, 0.1])) {
+    throw new Error('Launcher fit coupon template, material, kerf, or offsets are not canonical');
+  }
+  const body = root[10];
+  const groups = body.match(/^<g id="CUT_BLACK" data-role="CUT_BLACK" data-color="#000000" data-entity-count="15">([\s\S]*)<\/g><g id="DEEP_RED" data-role="DEEP_RED" data-color="#E5484D" data-entity-count="5">([\s\S]*)<\/g>$/);
+  if (!groups) throw new Error('Launcher fit coupon role groups are not canonical');
+  const openingPattern = /<g id="launcher-coupon-opening-(\d+)" data-fit-offset-mm="([^"]+)">([\s\S]*?)<\/g>/g;
+  const openings = [...groups[1].matchAll(openingPattern)];
+  if (openings.length !== 5 || openings.map(({ 0: token }) => token).join('') !== groups[1]) {
+    throw new Error('Launcher fit coupon opening grammar is not fully consumed');
+  }
+  let cutCount = 0;
+  for (let openingIndex = 0; openingIndex < openings.length; openingIndex += 1) {
+    const opening = openings[openingIndex];
+    if (Number(opening[1]) !== openingIndex + 1 || Number(opening[2]) !== offsets[openingIndex]) {
+      throw new Error('Launcher fit coupon opening identity or offset is not canonical');
+    }
+    const polygonPattern = /<polygon id="launcher-coupon-opening-(\d+)-cut-(\d+)" data-role="CUT_BLACK" points="([^"]+)" fill="none" stroke="#000000"\/>/g;
+    const polygons = [...opening[3].matchAll(polygonPattern)];
+    if (polygons.length !== 3 || polygons.map(({ 0: token }) => token).join('') !== opening[3]) {
+      throw new Error('Launcher fit coupon cut grammar is not fully consumed');
+    }
+    for (let cutIndex = 0; cutIndex < polygons.length; cutIndex += 1) {
+      if (Number(polygons[cutIndex][1]) !== openingIndex + 1 || Number(polygons[cutIndex][2]) !== cutIndex + 1) {
+        throw new Error('Launcher fit coupon cut identity is not canonical');
+      }
+      const points = polygons[cutIndex][3].split(' ').map((pair) => pair.split(',').map(Number));
+      if (points.length < 3 || points.some((point) => point.length !== 2 || !point.every(Number.isFinite))
+        || new Set(points.map((point) => point.join(','))).size !== points.length) {
+        throw new Error('Launcher fit coupon cut geometry is invalid');
+      }
+      cutCount += 1;
+    }
+  }
+  const textPattern = /<text id="launcher-coupon-label-(\d+)" data-role="DEEP_RED" data-fit-offset-mm="([^"]+)" x="([^"]+)" y="([^"]+)" text-anchor="middle" font-size="2\.5" fill="#E5484D">([^<]+)<\/text>/g;
+  const textRecords = [...groups[2].matchAll(textPattern)];
+  const labels = ['-0.10 mm', '-0.05 mm', '0.00 mm', '+0.05 mm', '+0.10 mm'] as const;
+  if (textRecords.length !== 5 || textRecords.map(({ 0: token }) => token).join('') !== groups[2]) {
+    throw new Error('Launcher fit coupon label grammar is not fully consumed');
+  }
+  for (let index = 0; index < textRecords.length; index += 1) {
+    const record = textRecords[index];
+    if (Number(record[1]) !== index + 1 || Number(record[2]) !== offsets[index]
+      || ![Number(record[3]), Number(record[4])].every(Number.isFinite) || record[5] !== labels[index]) {
+      throw new Error('Launcher fit coupon label identity, position, offset, or text is not canonical');
+    }
+  }
+  const publicText = svg.replace(/\sdata-material-id="[^"]*"/, '');
+  assertPublicText(publicText, 'Launcher fit coupon SVG');
+  return {
+    templateVersion: 1,
+    templateFingerprint,
+    materialId,
+    kerfMm,
+    offsetsMm: [-0.1, -0.05, 0, 0.05, 0.1],
+    cutCount: cutCount as 15,
+    labels,
+  };
 }
 
 const DOWNLOAD_BYTE_KEYS = ['zip', 'svg', 'dxf', 'previewPdf', 'explodedPdf'] as const;
@@ -1857,18 +1947,36 @@ export async function inspectColoredArtifacts(payloads: ColoredArtifactPayloads)
   assertPublicText(payloads.svg, 'Colored SVG');
   assertPublicText(payloads.dxf, 'Colored DXF');
   const zipRecords = await parseColoredZipRecords(payloads.zip);
+  const couponRecord = zipRecords.find(({ name }) => name === 'launcher-fit-coupon.svg');
+  if (!couponRecord) throw new Error('Colored ZIP is missing the launcher fit coupon');
+  let zippedLauncherCouponSvg: string;
+  try {
+    zippedLauncherCouponSvg = new TextDecoder('utf-8', { fatal: true }).decode(couponRecord.payload);
+  } catch {
+    throw new Error('Launcher fit coupon SVG is not canonical UTF-8');
+  }
+  const launcherCoupon = parseLauncherFitCouponArtifact(zippedLauncherCouponSvg);
+  if (payloads.launcherCouponSvg !== undefined) {
+    const encoded = new TextEncoder().encode(payloads.launcherCouponSvg);
+    if ((payloads.rawLauncherCouponSvg && !bytesEqual(payloads.rawLauncherCouponSvg, encoded))
+      || !bytesEqual(couponRecord.payload, encoded)) {
+      throw new Error('Launcher fit coupon download and ZIP member are not byte-identical');
+    }
+    parseLauncherFitCouponArtifact(payloads.launcherCouponSvg);
+  }
   const individual = new Map<typeof EXPECTED_ZIP_NAMES[number], Uint8Array>([
     ['cut-and-engrave.svg', new TextEncoder().encode(payloads.svg)],
     ['cut-and-engrave.dxf', new TextEncoder().encode(payloads.dxf)],
     ['preview.pdf', payloads.previewPdf],
     ['exploded-view.pdf', payloads.explodedPdf],
+    ['launcher-fit-coupon.svg', couponRecord.payload],
   ]);
   const reconciledZip = zipRecords.map((record) => ({
     ...record,
     byteIdentical: bytesEqual(record.payload, individual.get(record.name)!),
   }));
   if (reconciledZip.some(({ byteIdentical }) => !byteIdentical)) {
-    throw new Error('Colored ZIP payloads are not byte-identical to the four individual downloads');
+    throw new Error('Colored ZIP payloads are not byte-identical to the five canonical artifacts');
   }
   return {
     ...fingerprints,
@@ -1877,6 +1985,7 @@ export async function inspectColoredArtifacts(payloads: ColoredArtifactPayloads)
     entityCounts: svg.entityCounts,
     previewPdf,
     explodedPdf,
+    launcherCoupon,
     zipRecords: reconciledZip,
     downloadBytes,
     sha256: createHash('sha256').update(payloads.zip).digest('hex'),

@@ -170,6 +170,7 @@ const geometryApi: GeometryApi = {
       cutDxf: output.cutDxf,
       previewPdf: output.previewPdf,
       explodedViewPdf: output.explodedViewPdf,
+      launcherCouponSvg: output.launcherCouponSvg,
     };
     return transfer(packaged, [
       packaged.zip.buffer,

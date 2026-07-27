@@ -234,12 +234,14 @@ export async function writeColoredOutlineZip(files: {
   readonly cutDxf: string;
   readonly previewPdf: Uint8Array;
   readonly explodedViewPdf: Uint8Array;
+  readonly launcherCouponSvg: string;
 }, checkpoint: ColoredDocumentCheckpoint = () => undefined): Promise<Uint8Array> {
   const zip = new JSZip(), fixedDate = new Date('2000-01-01T00:00:00.000Z');
   zip.file('cut-and-engrave.svg', files.cutSvg, { date: fixedDate });
   zip.file('cut-and-engrave.dxf', files.cutDxf, { date: fixedDate });
   zip.file('preview.pdf', files.previewPdf, { date: fixedDate });
   zip.file('exploded-view.pdf', files.explodedViewPdf, { date: fixedDate });
+  zip.file('launcher-fit-coupon.svg', files.launcherCouponSvg, { date: fixedDate });
   checkpoint('zip:generate:before');
   const output = await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
   checkpoint('zip:generate:after');
