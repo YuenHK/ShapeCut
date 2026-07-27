@@ -38,6 +38,10 @@ import {
   type OutlinePreviewPayload,
 } from '../outline-features/types';
 import {
+  copyInternalLauncherDecorationEvidence,
+  type InternalLauncherDecorationEvidence,
+} from '../outline-features/launcher-decoration-evidence';
+import {
   DEFAULT_OUTLINE_BUDGETS,
   type OutlineAxisSelection,
   type OutlineMode,
@@ -67,7 +71,19 @@ export type AutomaticOutlineResult = {
   readonly removedComponentCount: number;
   readonly removalEvidenceFingerprint: string;
   readonly diagnostics: AutomaticOutlineDiagnostics;
+  /** Internal-only evidence. Strip before any worker/public/package transfer. */
+  readonly internalValidationEvidence?: {
+    readonly launcherDecoration: InternalLauncherDecorationEvidence;
+  };
 };
+export type PublicAutomaticOutlineResult = Omit<AutomaticOutlineResult, 'internalValidationEvidence'>;
+
+export function stripAutomaticOutlineInternalEvidence(
+  result: AutomaticOutlineResult,
+): PublicAutomaticOutlineResult {
+  const { internalValidationEvidence: _internalValidationEvidence, ...publicResult } = result;
+  return publicResult;
+}
 export type AutomaticOutlineDiagnostics = {
   readonly topology: Readonly<Pick<MeshProblemReport['inspection'], 'triangleCount' | 'boundaryEdgeCount' | 'nonManifoldEdgeCount' | 'degenerateTriangleCount'>> & Readonly<Pick<MeshProblemReport, 'duplicateTriangleCount' | 'inconsistentWindingEdgeCount' | 'selfIntersectionCount' | 'selfIntersectionAnalysisComplete'>>;
   readonly repairDecision: 'accepted' | 'projected-original';
@@ -194,10 +210,10 @@ function clonePreviewPayload(preview: OutlinePreviewPayload): OutlinePreviewPayl
 }
 
 function withResultEvidence(
-  result: Omit<AutomaticOutlineResult, 'assembly' | 'coloredLayers' | 'featureWarnings' | 'featureEvidenceFingerprint' | 'preview' | 'removalEvidenceFingerprint'>,
+  result: Omit<AutomaticOutlineResult, 'assembly' | 'coloredLayers' | 'featureWarnings' | 'featureEvidenceFingerprint' | 'preview' | 'removalEvidenceFingerprint' | 'internalValidationEvidence'>,
   previewMesh: TriangleMesh,
   deadline: number,
-  extraction: Pick<OutlineExtraction, 'holeSelections' | 'depthFeatures' | 'blackCuts' | 'featureWarnings' | 'launcherDecorationOverlap'>,
+  extraction: Pick<OutlineExtraction, 'holeSelections' | 'depthFeatures' | 'blackCuts' | 'featureWarnings' | 'launcherDecorationOverlap' | 'launcherDecorationEvidence'>,
   material: ManufacturingGeometryProfile,
   assembly: Omit<AutomaticOutlineAssembly, 'topFeatures'>,
 ): AutomaticOutlineResult {
@@ -245,7 +261,14 @@ function withResultEvidence(
         launcherOverlap: extraction.launcherDecorationOverlap,
       },
     };
-    const completeEvidence = { ...coloredResult, material, assembly: assemblyEvidence };
+    const completeEvidence = {
+      ...coloredResult,
+      material,
+      assembly: assemblyEvidence,
+      internalValidationEvidence: {
+        launcherDecoration: copyInternalLauncherDecorationEvidence(extraction.launcherDecorationEvidence),
+      },
+    };
     const complete: AutomaticOutlineResult = {
       ...completeEvidence,
       removalEvidenceFingerprint: removalEvidenceFingerprint(result),

@@ -46,6 +46,8 @@ The processing order is:
 
 The existing runtime detector may remain available for reference extraction or migration, but it will not decide the launcher shape for newly converted models.
 
+Strict automatic-result validation may retain a sanitized, bounded copy of the top-layer provisional red/blue contours solely as internal `AutomaticOutlineResult` validation evidence. It must use that evidence, the final retained contours, and the finished launcher envelopes to recompute all four launcher-overlap counters exactly. This evidence is excluded from the feature fingerprint and must never enter preview state, the canonical colored document, worker/public transfer, SVG, DXF, either PDF, ZIP, manifest, project JSON, or persistence.
+
 ## Fixed Template Creation
 
 The template-generation tool will:

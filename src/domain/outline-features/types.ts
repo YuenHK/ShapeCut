@@ -25,6 +25,10 @@ import type { Vec3 } from '../types';
 import { CENTRAL_HOLE_OMISSION_WARNING, isStrictlyContainedLoop } from './hole';
 import type { DepthFeatureOmissionCode } from './depth-field';
 import { validateDepthFeatureContours } from './validate';
+import {
+  MAX_INTERNAL_PROVISIONAL_CONTOURS_PER_ROLE,
+  recomputeLauncherDecorationOverlap,
+} from './launcher-decoration-evidence';
 
 export type FeatureRole = 'CUT_BLACK' | 'DEEP_RED' | 'LIGHT_BLUE';
 export type FeatureContour = {
@@ -937,6 +941,7 @@ function assemblyReasons(
   layers: readonly ColoredOutlineLayer[],
   featureWarnings: readonly string[],
   material: ManufacturingGeometryProfile | undefined,
+  internalValidationEvidence: unknown,
   deadline: number,
   checkpoint: (label?: string) => void,
 ): string[] {
@@ -1134,6 +1139,94 @@ function assemblyReasons(
     || topFeatures.omitted.blue !== (top.diagnostics.depth.omitted?.blue ?? 0)) {
     reasons.push('Automatic assembly top-feature retained, omitted, or launcher-overlap counts are inconsistent');
   }
+  if (top && material && isRecord(topFeatures) && isRecord(launcherOverlap)
+    && isRecord(launcherOverlap.clipped) && isRecord(launcherOverlap.removed)) {
+    const internal = isRecord(internalValidationEvidence)
+      ? internalValidationEvidence.launcherDecoration
+      : undefined;
+    if (!isRecord(internalValidationEvidence)
+      || unexpectedKeys(internalValidationEvidence, new Set(['launcherDecoration']), 'Internal validation evidence').length > 0
+      || !isRecord(internal)
+      || unexpectedKeys(internal, new Set(['provisional', 'protectedCutClearanceMm']), 'Internal launcher decoration evidence').length > 0
+      || !isRecord(internal?.provisional)
+      || unexpectedKeys(internal.provisional, new Set(['red', 'blue']), 'Internal provisional launcher decoration evidence').length > 0
+      || !Array.isArray(internal.provisional.red) || !Array.isArray(internal.provisional.blue)
+      || internal.provisional.red.length > MAX_INTERNAL_PROVISIONAL_CONTOURS_PER_ROLE
+      || internal.provisional.blue.length > MAX_INTERNAL_PROVISIONAL_CONTOURS_PER_ROLE
+      || !Number.isFinite(internal.protectedCutClearanceMm)
+      || (internal.protectedCutClearanceMm as number) < 0) {
+      reasons.push('Internal launcher decoration validation evidence is missing, malformed, or exceeds its bound');
+    } else {
+      const provisionalRed = internal.provisional.red as readonly FeatureContour[];
+      const provisionalBlue = internal.provisional.blue as readonly FeatureContour[];
+      const sanitizedContourContract = [...provisionalRed, ...provisionalBlue].every((contour) => (
+        isRecord(contour)
+          && unexpectedKeys(contour, new Set(['id', 'role', 'outer', 'boundsMm', 'areaMm2']), 'Internal provisional contour').length === 0
+          && typeof contour.id === 'string'
+          && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$/.test(contour.id)
+      ));
+      if (!sanitizedContourContract) {
+        reasons.push('Internal provisional launcher decoration contour must use the sanitized contour contract');
+      } else {
+        const validation = validateDepthFeatureContours({
+          exterior: top.exterior.outer,
+          centralHole: top.centralHole?.outer,
+          red: provisionalRed,
+          blue: provisionalBlue,
+          clearanceMm: 0,
+          deadline,
+          checkpoint,
+        });
+        if (!validation.ok) {
+          reasons.push(`Internal provisional launcher decoration evidence is invalid: ${validation.reasons.join('; ')}`);
+        } else {
+          const protection = createPhysicalCutProtection({
+            centralHole: top.centralHole,
+            launcherCuts: top.launcherCuts,
+            fastenerHoles: top.fastenerHoles,
+            material,
+            deadline,
+            checkpoint,
+          });
+          if (!nearlyEqual(
+            internal.protectedCutClearanceMm as number,
+            protection.requiredClearanceMm,
+          )) {
+            reasons.push('Internal launcher decoration protected-cut clearance is inconsistent');
+          } else {
+            const launcherStart = top.centralHole ? 1 : 0;
+            const finishedLauncherEnvelopes = protection.removalEnvelopes
+              .slice(launcherStart, launcherStart + top.launcherCuts.length)
+              .map((outer, index): FeatureContour => ({
+                id: `internal-launcher-finished-envelope-${index + 1}`,
+                role: 'CUT_BLACK',
+                outer,
+                boundsMm: contourBounds(outer, deadline, checkpoint),
+                areaMm2: Math.abs(contourSignedArea(outer, deadline, checkpoint)),
+              }));
+            const recomputed = recomputeLauncherDecorationOverlap({
+              provisional: { red: provisionalRed, blue: provisionalBlue },
+            }, {
+              red: top.deepFeatures,
+              blue: top.lightFeatures,
+            }, finishedLauncherEnvelopes, deadline, checkpoint);
+            if (JSON.stringify(recomputed) !== JSON.stringify({
+              clipped: {
+                red: launcherOverlap.clipped.red,
+                blue: launcherOverlap.clipped.blue,
+              },
+              removed: {
+                red: launcherOverlap.removed.red,
+                blue: launcherOverlap.removed.blue,
+              },
+            })) {
+              reasons.push('Launcher overlap counters do not match exact internal evidence recomputation');
+            }
+          }
+        }
+      }
+    }
+  }
   return reasons;
 }
 
@@ -1275,7 +1368,8 @@ export function validateAutomaticColoredResult(
   }
   if (coloredLayersValid && featureWarnings) {
     reasons.push(...assemblyReasons(
-      value.assembly, coloredLayers, featureWarnings, validatedMaterial, deadline, checkpoint,
+      value.assembly, coloredLayers, featureWarnings, validatedMaterial,
+      value.internalValidationEvidence, deadline, checkpoint,
     ));
     if (validatedMaterial) {
       reasons.push(...physicalEngravingReasons(

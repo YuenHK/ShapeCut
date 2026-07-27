@@ -11,6 +11,9 @@ import { repairMeshSafe } from '../domain/mesh/repair-mesh';
 import {
   AutomaticOutlineError,
   convertAutomatically,
+  stripAutomaticOutlineInternalEvidence,
+  type AutomaticOutlineResult,
+  type PublicAutomaticOutlineResult,
   type AutomaticOutlineProgress,
 } from '../domain/pipeline/automatic-outline-pipeline';
 import type { MeshRepairResult, TriangleMesh } from '../domain/mesh/types';
@@ -29,7 +32,24 @@ import {
 } from './geometry-api';
 
 let nearLimitPackageWorkload: ReturnType<typeof nearLimitColoredResult> | undefined;
+const INTERNAL_RESULT_CACHE_LIMIT = 4;
+const internalResultCache = new Map<string, AutomaticOutlineResult>();
 const acceptanceProbeEnabled = new URL(globalThis.location.href).searchParams.get('shapecut-acceptance') === '1';
+
+function internalResultKey(
+  result: Pick<PublicAutomaticOutlineResult, 'sourceHash' | 'featureEvidenceFingerprint'>,
+): string {
+  return `${result.sourceHash}:${result.featureEvidenceFingerprint}`;
+}
+
+function cacheInternalResult(result: AutomaticOutlineResult): void {
+  const key = internalResultKey(result);
+  internalResultCache.delete(key);
+  internalResultCache.set(key, result);
+  while (internalResultCache.size > INTERNAL_RESULT_CACHE_LIMIT) {
+    internalResultCache.delete(internalResultCache.keys().next().value!);
+  }
+}
 
 globalThis.addEventListener('message', (event: MessageEvent<unknown>) => {
   if (!acceptanceProbeEnabled) return;
@@ -107,10 +127,12 @@ const geometryApi: GeometryApi = {
       progress = onProgress;
     }
     try {
-      return await convertAutomatically({
+      const internalResult = await convertAutomatically({
         ...request,
         material: validateManufacturingGeometryProfile(request.material),
       }, progress);
+      cacheInternalResult(internalResult);
+      return stripAutomaticOutlineInternalEvidence(internalResult);
     } catch (error) {
       if (error instanceof AutomaticOutlineError) {
         throw { name: error.name, code: error.code, message: error.message };
@@ -125,7 +147,17 @@ const geometryApi: GeometryApi = {
     let acknowledgedPdfStart = false;
     let activeArtifact: OutlineArtifactId = 'colored-outline-document';
     try {
-      const packageInput = nearLimitPackageWorkload ?? result;
+      if ('internalValidationEvidence' in result) {
+        throw new RangeError('Public package transfer must not contain internal validation evidence');
+      }
+      const cached = internalResultCache.get(internalResultKey(result));
+      if (!nearLimitPackageWorkload && !cached) {
+        throw new RangeError('Internal validation evidence is unavailable for this public package request');
+      }
+      const packageInput = nearLimitPackageWorkload ?? {
+        ...result,
+        internalValidationEvidence: cached!.internalValidationEvidence,
+      };
       nearLimitPackageWorkload = undefined;
       output = await createOutlinePackage(packageInput, deadline, {
         onCheckpoint: (label) => {

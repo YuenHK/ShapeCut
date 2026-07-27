@@ -1,28 +1,28 @@
 import type { ManufacturingGeometryProfile } from '../src/domain/materials/manufacturing-profile';
 import { validateManufacturingGeometryProfile } from '../src/domain/materials/manufacturing-profile';
-import {
-  launcherCandidateGroupsFromHoleCandidates,
-  type HoleCandidateProbeEvidence,
-} from '../src/domain/outline-2.5d/extract';
 import type { OutlineMode } from '../src/domain/outline-2.5d/types';
 import {
-  detectLauncherTemplate,
-  planLauncherClearance,
-  type LauncherPlan,
+  LAUNCHER_ASSEMBLY_ALLOWANCE_MM,
+  launcherCutsArePhysicallySafe,
+  launcherCutsMatchOfficialPlacement,
 } from '../src/domain/outline-assembly/launcher';
-import type { LauncherTemplate } from '../src/domain/outline-assembly/launcher-template';
-import type { FeatureContour } from '../src/domain/outline-features/types';
+import { validateLauncherFitOffsetMm } from '../src/domain/outline-assembly/launcher-fit';
+import {
+  OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
+  OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+} from '../src/domain/outline-assembly/launcher-template';
+import type {
+  AutomaticLauncherAssembly,
+  FeatureContour,
+} from '../src/domain/outline-features/types';
 
 const MAX_RUNTIME_LAYERS = 24;
-const MAX_ARTIFACT_LAUNCHER_CUTS = 6;
+const FIXED_ARTIFACT_LAUNCHER_CUTS = 6;
 
 export type LauncherRuntimeGeometry = {
   readonly mode: OutlineMode;
   readonly material?: ManufacturingGeometryProfile;
-  /** Independent legacy-plan gate input; canonical automatic output uses only fixed launcher evidence. */
-  readonly launcher:
-    | { readonly status: 'detected' | 'fallback'; readonly cutCount: 3; readonly assemblyAllowanceMm: 0.2 }
-    | { readonly status: 'omitted'; readonly cutCount: 0 };
+  readonly launcher: AutomaticLauncherAssembly;
   readonly layers: readonly {
     readonly id: string;
     readonly exterior: FeatureContour;
@@ -33,21 +33,21 @@ export type LauncherRuntimeGeometry = {
 
 export type LauncherRuntimeValidation = {
   readonly caseId: 'reference-a' | 'reference-b';
-  readonly runtimeStatus: 'detected' | 'fallback' | 'omitted';
-  readonly detectedPlan: 'safe' | 'unsafe' | 'unavailable';
-  readonly fallbackPlan: 'safe' | 'unsafe';
-  readonly safePlanCount: number;
-  readonly artifactCutCount: number;
+  readonly runtimeStatus: 'fixed';
+  readonly fixedPlan: 'safe';
+  readonly safePlanCount: 1;
+  readonly artifactCutCount: 6;
+  readonly templateVersion: number;
+  readonly templateFingerprint: string;
+  readonly fitOffsetMm: number;
+  readonly rotationRad: number;
   readonly justification: string;
 };
 
 export type LauncherRuntimeValidationRequest = {
   readonly caseId: LauncherRuntimeValidation['caseId'];
   readonly runtime: LauncherRuntimeGeometry;
-  readonly evidence: readonly HoleCandidateProbeEvidence[];
   readonly artifactLauncherCutCount: number;
-  /** Test seam for proving the gate's fallback-positive branch with synthetic geometry. */
-  readonly fallbackTemplate?: LauncherTemplate;
   readonly deadline?: number;
   readonly checkpoint?: () => void;
 };
@@ -79,11 +79,7 @@ function sameCuts(
   return true;
 }
 
-function planStatus(plan: LauncherPlan | undefined): 'safe' | 'unsafe' | 'unavailable' {
-  return plan === undefined ? 'unavailable' : plan.status === 'omitted' ? 'unsafe' : 'safe';
-}
-
-/** Recomputes launcher safety from runtime geometry instead of trusting the worker summary. */
+/** Independently revalidates the fixed official launcher from bounded runtime geometry. */
 export function validateLauncherRuntimeGeometry(
   request: LauncherRuntimeValidationRequest,
 ): LauncherRuntimeValidation {
@@ -93,90 +89,66 @@ export function validateLauncherRuntimeGeometry(
   if (request.runtime.layers.length < 2 || request.runtime.layers.length > MAX_RUNTIME_LAYERS) {
     throw new RangeError('Launcher runtime validation requires 2 to 24 ordered layers');
   }
-  if (!Number.isInteger(request.artifactLauncherCutCount)
-    || request.artifactLauncherCutCount < 0
-    || request.artifactLauncherCutCount > MAX_ARTIFACT_LAUNCHER_CUTS) {
-    throw new RangeError('Launcher artifact evidence exceeds the bounded cut count');
+  if (request.artifactLauncherCutCount !== FIXED_ARTIFACT_LAUNCHER_CUTS) {
+    throw new RangeError('Fixed launcher runtime requires exactly six packaged launcher cuts');
   }
   const material = validateManufacturingGeometryProfile(request.runtime.material);
+  const launcher = request.runtime.launcher;
+  let fitOffsetMm: number;
+  try {
+    fitOffsetMm = validateLauncherFitOffsetMm(launcher.fitOffsetMm);
+  } catch {
+    throw new RangeError('Fixed launcher runtime fit offset must use the bounded 0.01 mm contract');
+  }
+  if (launcher.status !== 'fixed'
+    || launcher.cutCount !== 3
+    || launcher.templateVersion !== OFFICIAL_THREE_PRONG_TEMPLATE_VERSION
+    || launcher.templateFingerprint !== OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT
+    || !Number.isFinite(launcher.rotationRad)
+    || launcher.rotationRad < 0
+    || launcher.rotationRad >= Math.PI * 2
+    || launcher.finishedAllowanceMm !== LAUNCHER_ASSEMBLY_ALLOWANCE_MM + fitOffsetMm) {
+    throw new RangeError('Fixed launcher runtime metadata does not match the official template contract');
+  }
   const top = request.runtime.layers.at(-1)!;
   const second = request.runtime.layers.at(-2)!;
-  const extractionMode = request.runtime.mode === 'exact' ? 'exact' : 'projected';
-  const matchingEvidence = request.evidence.filter((item) => (
-    item.extractionMode === extractionMode && item.layerId === top.id
-  ));
-  if (matchingEvidence.length !== 1) {
-    throw new RangeError('Launcher runtime validation requires exactly one top-layer candidate record');
+  const lower = request.runtime.layers.slice(0, -2);
+  if (top.launcherCuts.length !== 3 || second.launcherCuts.length !== 3
+    || lower.some(({ launcherCuts }) => launcherCuts.length !== 0)
+    || !sameCuts(top.launcherCuts, second.launcherCuts, deadline, checkpoint)) {
+    throw new RangeError('Fixed launcher runtime must expose three identical cuts on exactly the top two layers');
   }
-  const planningBase = {
-    axisPoint: [0, 0] as const,
-    topExterior: top.exterior,
-    secondExterior: second.exterior,
-    topCentralHole: top.centralHole,
-    secondCentralHole: second.centralHole,
+  if (!launcherCutsMatchOfficialPlacement({
+    cuts: top.launcherCuts,
+    axisPoint: [0, 0],
+    rotationRad: launcher.rotationRad,
+    fitOffsetMm,
     material,
     deadline,
     checkpoint,
-  };
-  const candidateGroups = launcherCandidateGroupsFromHoleCandidates(
-    matchingEvidence[0].candidates, deadline, checkpoint,
-  );
-  const detection = detectLauncherTemplate({
-    candidates: candidateGroups, axisPoint: [0, 0], deadline, checkpoint,
-  });
-  const detectedPlan = detection.status === 'detected'
-    ? planLauncherClearance({ ...planningBase, detection })
-    : undefined;
-  const fallbackPlan = planLauncherClearance({
-    ...planningBase,
-    detection: { status: 'omitted', reason: 'Independent fallback validation' },
-    fallback: request.fallbackTemplate,
-  });
-  const detectedStatus = planStatus(detectedPlan);
-  const fallbackStatus = planStatus(fallbackPlan) as 'safe' | 'unsafe';
-  const safePlanCount = Number(detectedStatus === 'safe') + Number(fallbackStatus === 'safe');
-  const runtimeStatus = request.runtime.launcher.status;
-  const expectedArtifactCuts = runtimeStatus === 'omitted' ? 0 : 6;
-  if (request.artifactLauncherCutCount !== expectedArtifactCuts) {
-    throw new RangeError('Launcher runtime summary does not match packaged artifact cut geometry');
+  })) {
+    throw new RangeError('Fixed launcher runtime geometry does not match official template placement');
   }
-  const activeLayers = request.runtime.layers.filter(({ launcherCuts }) => launcherCuts.length !== 0);
-  if (runtimeStatus === 'omitted') {
-    if (request.runtime.launcher.cutCount !== 0 || activeLayers.length !== 0) {
-      throw new RangeError('Omitted launcher runtime must contain no canonical launcher cuts');
-    }
-    if (detectedStatus === 'safe') {
-      throw new RangeError('Runtime omitted launcher geometry despite a safe detected plan');
-    }
-    if (fallbackStatus === 'safe') {
-      throw new RangeError('Runtime omitted launcher geometry despite a safe fallback plan');
-    }
-    return {
-      caseId: request.caseId, runtimeStatus, detectedPlan: detectedStatus,
-      fallbackPlan: fallbackStatus, safePlanCount, artifactCutCount: request.artifactLauncherCutCount,
-      justification: 'Independent detected and fallback geometry checks found no safe launcher plan.',
-    };
-  }
-  if (request.runtime.launcher.cutCount !== 3
-    || activeLayers.length !== 2
-    || activeLayers[0] !== second || activeLayers[1] !== top
-    || second.launcherCuts.length !== 3 || top.launcherCuts.length !== 3) {
-    throw new RangeError('Active launcher runtime must expose three identical cuts on exactly the top two layers');
-  }
-  const selectedPlan = runtimeStatus === 'detected' ? detectedPlan : fallbackPlan;
-  if (!selectedPlan || selectedPlan.status !== runtimeStatus
-    || !sameCuts(second.launcherCuts, selectedPlan.cuts, deadline, checkpoint)
-    || !sameCuts(top.launcherCuts, selectedPlan.cuts, deadline, checkpoint)) {
-    throw new RangeError(`Runtime ${runtimeStatus} launcher geometry does not match independent recomputation`);
-  }
-  if (runtimeStatus === 'fallback' && detectedStatus === 'safe') {
-    throw new RangeError('Runtime used fallback launcher geometry despite a safe detected plan');
+  if (!launcherCutsArePhysicallySafe({
+    cuts: top.launcherCuts,
+    top: { exterior: top.exterior, centralHole: top.centralHole },
+    second: { exterior: second.exterior, centralHole: second.centralHole },
+    material,
+    deadline,
+    checkpoint,
+  })) {
+    throw new RangeError('Fixed launcher runtime geometry fails independent physical safety validation');
   }
   return {
-    caseId: request.caseId, runtimeStatus, detectedPlan: detectedStatus,
-    fallbackPlan: fallbackStatus, safePlanCount, artifactCutCount: request.artifactLauncherCutCount,
-    justification: runtimeStatus === 'detected'
-      ? 'Runtime launcher geometry matches the independently recomputed safe detected plan.'
-      : 'Runtime launcher geometry matches the independently recomputed safe fallback plan.',
+    caseId: request.caseId,
+    runtimeStatus: 'fixed',
+    fixedPlan: 'safe',
+    safePlanCount: 1,
+    artifactCutCount: 6,
+    templateVersion: launcher.templateVersion,
+    templateFingerprint: launcher.templateFingerprint,
+    fitOffsetMm,
+    rotationRad: launcher.rotationRad,
+    justification: 'Runtime launcher geometry matches the independently revalidated fixed official template.',
   };
 }

@@ -475,7 +475,7 @@ In `extract.ts`, split depth extraction into two bounded passes:
 2. black-cut planning that receives the provisional top-two-layer red/blue contours as `decorationContours`; and
 3. the existing final pass protected by launcher and fastener removal envelopes.
 
-The provisional pass is private planning evidence. It is never returned, fingerprinted, previewed, persisted, or exported. Both passes share the existing absolute deadline and checkpoint budget.
+The provisional pass is private planning evidence. A sanitized maximum of 12 red and 12 blue top-layer contours may be retained only inside `AutomaticOutlineResult` for strict validation to recompute all four overlap counters from final contours and finished launcher envelopes. It is never fingerprinted, previewed, persisted, exported, or transferred across the public worker/package boundary, and it never enters `ColoredOutlineDocument`, SVG, DXF, either PDF, ZIP, manifest, or project JSON. Both passes share the existing absolute deadline and checkpoint budget.
 
 Before final `colorizeExteriorLayers()` output is fingerprinted, compare provisional features with the final launcher-protected features and return explicit decisions:
 

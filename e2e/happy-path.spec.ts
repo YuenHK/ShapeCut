@@ -9,8 +9,27 @@ import {
   expectSharedCentralHoleGeometry,
   installWorkerResultProbe,
   readLatestWorkerResultSummary,
+  readWorkerProbeState,
   selectModel,
 } from './helpers';
+
+function launcherCompatibleCylinder(segments = 32): TriangleMesh {
+  const positions: number[] = [0, 0, -1, 0, 0, 1];
+  const indices: number[] = [];
+  for (let index = 0; index < segments; index += 1) {
+    const angle = index / segments * Math.PI * 2;
+    positions.push(30 * Math.cos(angle), 30 * Math.sin(angle), -1);
+    positions.push(30 * Math.cos(angle), 30 * Math.sin(angle), 1);
+  }
+  for (let index = 0; index < segments; index += 1) {
+    const next = (index + 1) % segments;
+    const bottom = 2 + index * 2, top = bottom + 1;
+    const nextBottom = 2 + next * 2, nextTop = nextBottom + 1;
+    indices.push(0, bottom, nextBottom, 1, nextTop, top);
+    indices.push(bottom, top, nextTop, bottom, nextTop, nextBottom);
+  }
+  return { positions: new Float64Array(positions), indices: new Uint32Array(indices) };
+}
 
 function holedSteppedPlate(): TriangleMesh {
   const positions: number[] = [];
@@ -55,6 +74,24 @@ const syntheticFixture = {
   mimeType: 'model/stl',
   buffer: Buffer.from(writeBinarySTL(holedSteppedPlate(), 'safe')),
 };
+
+test('serialized worker probe accepts the fixed public result without internal evidence', async ({ page }) => {
+  test.setTimeout(60_000);
+  await installWorkerResultProbe(page);
+  await page.goto('/');
+  await selectModel(page, {
+    name: 'launcher-compatible-cylinder.stl',
+    mimeType: 'model/stl',
+    buffer: Buffer.from(writeBinarySTL(launcherCompatibleCylinder(), 'safe')),
+  });
+  await expectResult(page, '需注意', '精確切片');
+  const runtime = await readLatestWorkerResultSummary(page);
+  const probe = await readWorkerProbeState(page);
+
+  expect(runtime.assembly?.launcher.status).toBe('fixed');
+  expect(probe.results).toHaveLength(1);
+  expect(probe.errorCodes).toEqual([]);
+});
 
 test('one selection converts the safe single-loop model with real wireframe and exploded layers', async ({ page }) => {
   await installWorkerResultProbe(page);

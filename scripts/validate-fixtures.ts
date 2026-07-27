@@ -17,12 +17,7 @@ import { classifyMaterialReadiness } from '../src/domain/materials/schema';
 import { manufacturingGeometryProfile } from '../src/domain/materials/manufacturing-profile';
 import {
   convertAutomatically,
-  type AutomaticOutlineResult,
 } from '../src/domain/pipeline/automatic-outline-pipeline';
-import {
-  setHoleCandidateProbeForTesting,
-  type HoleCandidateProbeEvidence,
-} from '../src/domain/outline-2.5d/extract';
 import { createOutlinePackage } from '../src/export/outline-package';
 import { READY_TEST_MATERIAL } from '../src/test/ready-material';
 import {
@@ -151,14 +146,7 @@ if (!publicOnly) {
     try {
       const bytes = await readFile(launcherInputs[index]!);
       const source = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-      const evidence: HoleCandidateProbeEvidence[] = [];
-      let runtime: AutomaticOutlineResult;
-      setHoleCandidateProbeForTesting((item) => { evidence.push(item); });
-      try {
-        runtime = await convertAutomatically({ bytes: source, material });
-      } finally {
-        setHoleCandidateProbeForTesting(undefined);
-      }
+      const runtime = await convertAutomatically({ bytes: source, material });
       const packaged = await createOutlinePackage(runtime);
       const artifactLauncherCutCount = packaged.cutSvg.match(/-launcher-clearance-/g)?.length ?? 0;
       validations.push(validateLauncherRuntimeGeometry({
@@ -171,7 +159,6 @@ if (!publicOnly) {
             id, exterior, centralHole, launcherCuts,
           })),
         },
-        evidence,
         artifactLauncherCutCount,
       }));
     } catch {

@@ -14,8 +14,12 @@ import {
   extractAdaptiveDepthFeatures,
   type DepthFeatureResult,
 } from '../outline-features/depth-field';
-import { polygonsIntersectOrTouch, polygonsOverlapArea } from '../engraving/geometry';
 import { validateDepthFeatureContours } from '../outline-features/validate';
+import {
+  recomputeLauncherDecorationOverlap,
+  type InternalLauncherDecorationEvidence,
+  type LauncherDecorationOverlap,
+} from '../outline-features/launcher-decoration-evidence';
 import { projectMesh, rasterCellSize, rasterProjectLayer, type ProjectedMesh } from './raster';
 import { contourBounds, signedArea, simplifyClosedLoop, type Bounds2 } from './simplify';
 import { DEFAULT_OUTLINE_BUDGETS, type OutlineAxisSelection, type OutlineBudgets, type OutlineLayerSpec } from './types';
@@ -41,6 +45,8 @@ export type OutlineExtraction = {
   readonly depthFeatures: readonly DepthFeatureResult[];
   readonly blackCuts: readonly ExistingBlackCuts[];
   readonly launcherDecorationOverlap: LauncherDecorationOverlap;
+  /** Bounded provisional contours retained only for internal strict validation. */
+  readonly launcherDecorationEvidence: InternalLauncherDecorationEvidence;
   readonly featureWarnings: readonly string[];
   readonly cellSizeMm?: number;
   readonly removedComponentCount: number;
@@ -64,11 +70,6 @@ export type OutlineBlackCutPlanningContext = {
   readonly decorationContours: readonly FeatureContour[];
   readonly cellSizeMm: number;
   readonly deadline: number;
-};
-
-export type LauncherDecorationOverlap = {
-  readonly clipped: { readonly red: number; readonly blue: number };
-  readonly removed: { readonly red: number; readonly blue: number };
 };
 
 type LauncherDecorationDecision = LauncherDecorationOverlap & {
@@ -398,34 +399,15 @@ function protectLauncherFromDecoration(
   for (const envelope of finishedLauncherEnvelopes) {
     validateRemainders(final.red, final.blue, envelope.outer, protectedCutClearanceMm);
   }
-  const decision = {
-    clipped: { red: 0, blue: 0 },
-    removed: { red: 0, blue: 0 },
-  };
-  const classify = (
-    sources: readonly FeatureContour[],
-    remainders: readonly FeatureContour[],
-    role: 'red' | 'blue',
-  ): void => {
-    for (const source of sources) {
-      checkpoint();
-      checkDeadline(deadline);
-      const overlapsLauncher = finishedLauncherEnvelopes.some((envelope) => polygonsIntersectOrTouch(
-        { points: source.outer },
-        { points: envelope.outer },
-        checkpoint,
-      ));
-      if (!overlapsLauncher) continue;
-      const survives = remainders.some((remainder) => polygonsOverlapArea(
-        { points: source.outer },
-        { points: remainder.outer },
-        checkpoint,
-      ));
-      decision[survives ? 'clipped' : 'removed'][role] += 1;
-    }
-  };
-  classify(provisional?.red ?? [], final.red, 'red');
-  classify(provisional?.blue ?? [], final.blue, 'blue');
+  const decision = recomputeLauncherDecorationOverlap({
+    provisional: {
+      red: provisional?.red ?? [],
+      blue: provisional?.blue ?? [],
+    },
+  }, {
+    red: final.red,
+    blue: final.blue,
+  }, finishedLauncherEnvelopes, deadline, checkpoint);
   return {
     deepFeatures: final.red,
     lightFeatures: final.blue,
@@ -434,7 +416,7 @@ function protectLauncherFromDecoration(
   };
 }
 
-/** Test seam for the private provisional-to-final launcher decoration decision. */
+/** Test seam for the bounded internal provisional-to-final validation decision. */
 export const protectLauncherFromDecorationForTesting = protectLauncherFromDecoration;
 
 function withinDrift(sourceBounds: Bounds2, simplified: readonly Point2[], deadline: number): boolean {
@@ -588,6 +570,13 @@ export function extractProjectedContours(
     launcherDecorationOverlap: {
       clipped: launcherDecision.clipped,
       removed: launcherDecision.removed,
+    },
+    launcherDecorationEvidence: {
+      provisional: {
+        red: provisional.get(topIndex)?.red ?? [],
+        blue: provisional.get(topIndex)?.blue ?? [],
+      },
+      protectedCutClearanceMm: blackCuts[topIndex].engravingProtection?.requiredClearanceMm ?? 0,
     },
     featureWarnings: [...featureWarnings],
     cellSizeMm,
@@ -925,6 +914,13 @@ export function extractExactContours(
     launcherDecorationOverlap: {
       clipped: launcherDecision.clipped,
       removed: launcherDecision.removed,
+    },
+    launcherDecorationEvidence: {
+      provisional: {
+        red: provisional.get(topIndex)?.red ?? [],
+        blue: provisional.get(topIndex)?.blue ?? [],
+      },
+      protectedCutClearanceMm: blackCuts[topIndex].engravingProtection?.requiredClearanceMm ?? 0,
     },
     featureWarnings: [...featureWarnings],
     removedComponentCount: 0,

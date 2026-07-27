@@ -1,10 +1,10 @@
 import { describe, expect, test } from 'vitest';
 import type { ManufacturingGeometryProfile } from '../domain/materials/manufacturing-profile';
-import type { HoleCandidateProbeEvidence } from '../domain/outline-2.5d/extract';
-import { launcherCandidateGroupsFromHoleCandidates } from '../domain/outline-2.5d/extract';
+import {
+  planFixedLauncherClearance,
+  type FixedLauncherPlan,
+} from '../domain/outline-assembly/launcher';
 import type { FeatureContour } from '../domain/outline-features/types';
-import { detectLauncherTemplate, planLauncherClearance } from '../domain/outline-assembly/launcher';
-import { normalizeLauncherLoops, type LauncherTemplate } from '../domain/outline-assembly/launcher-template';
 import {
   validateLauncherRuntimeGeometry,
   type LauncherRuntimeGeometry,
@@ -12,119 +12,111 @@ import {
 
 const material: ManufacturingGeometryProfile = {
   id: 'test-ready', name: 'Test ready material', thicknessMm: 3,
-  kerfMm: 0.15, minFeatureMm: 0.5, minWebMm: 0.7,
-  fitAllowanceMm: { loose: 0.2, slip: 0.12, snug: 0.06, press: 0 },
-};
-
-const syntheticLoops = normalizeLauncherLoops([
-  [[19.5, -0.5], [20.5, -0.5], [20.5, 0.5], [19.5, 0.5]],
-  [[-10.5, 16.8205080767], [-9.5, 16.8205080767], [-9.5, 17.8205080767], [-10.5, 17.8205080767]],
-  [[-10.5, -17.8205080767], [-9.5, -17.8205080767], [-9.5, -16.8205080767], [-10.5, -16.8205080767]],
-]);
-const syntheticTemplate: LauncherTemplate = {
-  version: 1, loops: syntheticLoops,
-  provenanceHashes: ['a'.repeat(64), 'b'.repeat(64)] as [string, string],
+  kerfMm: 0.15, minFeatureMm: 0.8, minWebMm: 0.5,
+  fitAllowanceMm: { loose: 0.2, slip: 0.1, snug: 0, press: -0.1 },
 };
 
 function contour(id: string, extent: number): FeatureContour {
   return {
     id, role: 'CUT_BLACK',
-    outer: [[-extent, -extent], [extent, -extent], [extent, extent], [-extent, extent]],
+    outer: [[-extent, -extent], [-extent, extent], [extent, extent], [extent, -extent]],
     boundsMm: { minX: -extent, minY: -extent, maxX: extent, maxY: extent },
     areaMm2: extent * extent * 4,
   };
 }
 
-function runtime(
-  status: LauncherRuntimeGeometry['launcher']['status'],
-  cuts: readonly FeatureContour[],
-  extent = 100,
-): LauncherRuntimeGeometry {
+function hole(id: string, extent: number): FeatureContour {
+  const value = contour(id, extent);
+  return { ...value, outer: [...value.outer].reverse() };
+}
+
+function fixedPlan(fitOffsetMm = 0): FixedLauncherPlan {
+  return planFixedLauncherClearance({
+    axisPoint: [0, 0],
+    topExterior: contour('top-exterior', 30),
+    secondExterior: contour('second-exterior', 30),
+    topCentralHole: hole('top-hole', 2),
+    secondCentralHole: hole('second-hole', 2),
+    material,
+    fitOffsetMm,
+  });
+}
+
+function runtime(plan = fixedPlan()): LauncherRuntimeGeometry {
   return {
-    mode: 'exact', material,
-    launcher: status === 'omitted'
-      ? { status, cutCount: 0 }
-      : { status, cutCount: 3, assemblyAllowanceMm: 0.2 },
+    mode: 'exact',
+    material,
+    launcher: {
+      status: 'fixed',
+      cutCount: 3,
+      templateVersion: plan.templateVersion,
+      templateFingerprint: plan.templateFingerprint,
+      rotationRad: plan.rotationRad,
+      fitOffsetMm: plan.fitOffsetMm,
+      finishedAllowanceMm: plan.finishedAllowanceMm,
+    },
     layers: [
-      { id: 'lower', exterior: contour('lower-exterior', 100), launcherCuts: [] },
-      { id: 'second', exterior: contour('second-exterior', extent), launcherCuts: cuts },
-      { id: 'top', exterior: contour('top-exterior', extent), launcherCuts: cuts },
+      { id: 'lower', exterior: contour('lower-exterior', 30), launcherCuts: [] },
+      { id: 'second', exterior: contour('second-exterior', 30), centralHole: hole('second-hole', 2), launcherCuts: plan.cuts },
+      { id: 'top', exterior: contour('top-exterior', 30), centralHole: hole('top-hole', 2), launcherCuts: plan.cuts },
     ],
   };
 }
 
-function evidence(candidates: HoleCandidateProbeEvidence['candidates'] = []): readonly HoleCandidateProbeEvidence[] {
-  return [{
-    extractionMode: 'exact', layerId: 'top', candidates,
-    exterior: contour('ignored', 100).outer,
-    axisPoint: [0, 0], layerWidthMm: 200, planarDiameterMm: 200, cellSizeMm: 0,
-  }];
-}
-
-function plannedFallback(): readonly FeatureContour[] {
-  const plan = planLauncherClearance({
-    detection: { status: 'omitted', reason: 'test' },
-    axisPoint: [0, 0],
-    topExterior: contour('top-exterior', 100),
-    secondExterior: contour('second-exterior', 100),
-    material, fallback: syntheticTemplate,
-  });
-  if (plan.status === 'omitted') throw new Error('The synthetic fallback geometry must be safe');
-  return plan.cuts;
-}
-
 describe('private release launcher runtime geometry gate', () => {
-  test('accepts a non-mocked safe fallback plan reconciled with both runtime layers and artifacts', () => {
+  test('accepts the fixed official launcher reconciled with both runtime layers and artifacts', () => {
     const result = validateLauncherRuntimeGeometry({
-      caseId: 'reference-a', runtime: runtime('fallback', plannedFallback()),
-      evidence: evidence(), artifactLauncherCutCount: 6, fallbackTemplate: syntheticTemplate,
+      caseId: 'reference-a',
+      runtime: runtime(),
+      artifactLauncherCutCount: 6,
     });
-    expect(result).toEqual({
-      caseId: 'reference-a', runtimeStatus: 'fallback', detectedPlan: 'unavailable',
-      fallbackPlan: 'safe', safePlanCount: 1, artifactCutCount: 6,
-      justification: 'Runtime launcher geometry matches the independently recomputed safe fallback plan.',
-    });
-  });
 
-  test('accepts a non-mocked detected plan recomputed from bounded runtime candidate evidence', () => {
-    const candidates = syntheticLoops.map((outer) => ({
-      outer, occupiedCellCount: 100, closed: true,
-    }));
-    const detection = detectLauncherTemplate({
-      candidates: launcherCandidateGroupsFromHoleCandidates(candidates), axisPoint: [0, 0],
-    });
-    if (detection.status === 'omitted') throw new Error('The synthetic evidence must be detectable');
-    const detectedPlan = planLauncherClearance({
-      detection,
-      axisPoint: [0, 0], topExterior: contour('top-exterior', 100),
-      secondExterior: contour('second-exterior', 100), material,
-    });
-    if (detectedPlan.status === 'omitted') throw new Error('The synthetic detected geometry must be safe');
-
-    const result = validateLauncherRuntimeGeometry({
-      caseId: 'reference-b', runtime: runtime('detected', detectedPlan.cuts),
-      evidence: evidence(candidates), artifactLauncherCutCount: 6, fallbackTemplate: syntheticTemplate,
-    });
-    expect(result.runtimeStatus).toBe('detected');
-    expect(result.detectedPlan).toBe('safe');
-    expect(result.safePlanCount).toBe(2);
-  });
-
-  test('rejects a runtime omission whenever independent planning finds a safe fallback', () => {
-    expect(() => validateLauncherRuntimeGeometry({
-      caseId: 'reference-a', runtime: runtime('omitted', []),
-      evidence: evidence(), artifactLauncherCutCount: 0, fallbackTemplate: syntheticTemplate,
-    })).toThrow(/omitted.*safe fallback/i);
-  });
-
-  test('accepts omission only when detected evidence is unavailable and fallback geometry is unsafe', () => {
-    const result = validateLauncherRuntimeGeometry({
-      caseId: 'reference-a', runtime: runtime('omitted', [], 2),
-      evidence: evidence(), artifactLauncherCutCount: 0,
-    });
     expect(result).toMatchObject({
-      runtimeStatus: 'omitted', detectedPlan: 'unavailable', fallbackPlan: 'unsafe',
-      safePlanCount: 0, artifactCutCount: 0,
+      caseId: 'reference-a',
+      runtimeStatus: 'fixed',
+      fixedPlan: 'safe',
+      safePlanCount: 1,
+      artifactCutCount: 6,
+      fitOffsetMm: 0,
     });
+    expect(result.justification).toMatch(/fixed official template/i);
+  });
+
+  test.each([
+    ['template version', (candidate: LauncherRuntimeGeometry) => {
+      (candidate.launcher as { templateVersion: number }).templateVersion += 1;
+    }],
+    ['rotation range', (candidate: LauncherRuntimeGeometry) => {
+      (candidate.launcher as { rotationRad: number }).rotationRad = Math.PI * 2;
+    }],
+    ['fit range', (candidate: LauncherRuntimeGeometry) => {
+      (candidate.launcher as { fitOffsetMm: number }).fitOffsetMm = 0.21;
+    }],
+    ['fit step', (candidate: LauncherRuntimeGeometry) => {
+      (candidate.launcher as { fitOffsetMm: number }).fitOffsetMm = 0.005;
+    }],
+    ['finished allowance', (candidate: LauncherRuntimeGeometry) => {
+      (candidate.launcher as { finishedAllowanceMm: number }).finishedAllowanceMm += 0.01;
+    }],
+  ])('rejects invalid fixed %s metadata', (_label, mutate) => {
+    const candidate = structuredClone(runtime());
+    mutate(candidate);
+    expect(() => validateLauncherRuntimeGeometry({
+      caseId: 'reference-b',
+      runtime: candidate,
+      artifactLauncherCutCount: 6,
+    })).toThrow(/fixed launcher|fit offset|official template/i);
+  });
+
+  test('rejects artifact count and top-two geometry drift', () => {
+    expect(() => validateLauncherRuntimeGeometry({
+      caseId: 'reference-a', runtime: runtime(), artifactLauncherCutCount: 0,
+    })).toThrow(/six packaged/i);
+
+    const changed = structuredClone(runtime());
+    ((changed.layers.at(-1)!.launcherCuts[0].outer as [number, number][])[0])[0] += 0.01;
+    expect(() => validateLauncherRuntimeGeometry({
+      caseId: 'reference-a', runtime: changed, artifactLauncherCutCount: 6,
+    })).toThrow(/identical|placement/i);
   });
 });

@@ -44,6 +44,23 @@ const scaledOpenTetrahedron = () => {
   const mesh = openTetrahedron();
   return { ...mesh, positions: new Float64Array(Array.from(mesh.positions, (value) => value * 20)) };
 };
+const launcherCompatibleCylinder = (segments = 32): TriangleMesh => {
+  const positions: number[] = [0, 0, -1, 0, 0, 1];
+  const indices: number[] = [];
+  for (let index = 0; index < segments; index += 1) {
+    const angle = index / segments * Math.PI * 2;
+    positions.push(30 * Math.cos(angle), 30 * Math.sin(angle), -1);
+    positions.push(30 * Math.cos(angle), 30 * Math.sin(angle), 1);
+  }
+  for (let index = 0; index < segments; index += 1) {
+    const next = (index + 1) % segments;
+    const bottom = 2 + index * 2, top = bottom + 1;
+    const nextBottom = 2 + next * 2, nextTop = nextBottom + 1;
+    indices.push(0, bottom, nextBottom, 1, nextTop, top);
+    indices.push(bottom, top, nextTop, bottom, nextTop, nextBottom);
+  }
+  return { positions: new Float64Array(positions), indices: new Uint32Array(indices) };
+};
 
 afterEach(() => {
   for (const client of clients.splice(0)) client.dispose();
@@ -325,7 +342,8 @@ describe('geometry worker boundary', () => {
   it('transfers exactly the four colored artifacts plus ZIP across the worker boundary', async () => {
     const client = createGeometryWorkerClient();
     clients.push(client);
-    const runtime = await client.convertAutomatically({ bytes: writeBinarySTL(scaledOpenTetrahedron(), 'safe') });
+    const runtime = await client.convertAutomatically({ bytes: writeBinarySTL(launcherCompatibleCylinder(), 'safe') });
+    expect(runtime).not.toHaveProperty('internalValidationEvidence');
 
     const packaged = await client.packageOutline(runtime);
 
@@ -362,14 +380,14 @@ describe('geometry worker boundary', () => {
     });
   });
 
-  it('maps a real over-30-second maximum-layer packaging workload to typed TIME_LIMIT', async () => {
+  it('rejects internal validation evidence presented across the public package transfer', async () => {
     const client = createGeometryWorkerClient();
     clients.push(client);
 
     await expect(client.packageOutline(nearLimitColoredResult(1_024))).rejects.toMatchObject({
-      name: 'AutomaticOutlineError', code: 'TIME_LIMIT', message: '模型處理超出時間上限',
+      name: 'OutlineArtifactError', code: 'ARTIFACT_FAILURE', artifact: 'colored-outline-document',
     });
-  }, 40_000);
+  });
 
   it('still terminates and recreates when progress finalization throws during cancel', async () => {
     const terminate = vi.spyOn(Worker.prototype, 'terminate');

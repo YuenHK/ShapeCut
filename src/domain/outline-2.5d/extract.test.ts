@@ -317,7 +317,7 @@ describe('extractProjectedContours', () => {
     expect(decision.deepFeatures).toEqual(finalRed);
   });
 
-  test('feeds bounded provisional top-layer decoration to black-cut planning without returning it', () => {
+  test('retains only bounded provisional top-layer decoration as internal validation evidence', () => {
     const stepped = combine(
       box(-5, 0, 12, 20, 6),
       box(0, 0, 4, 20, 4),
@@ -337,7 +337,9 @@ describe('extractProjectedContours', () => {
     expect(decorationContours?.length).toBeGreaterThan(0);
     expect(decorationContours?.length).toBeLessThanOrEqual(24);
     expect(result).not.toHaveProperty('provisionalDepthFeatures');
-    expect(JSON.stringify(result)).not.toContain('provisional');
+    expect(result.launcherDecorationEvidence.provisional.red.length).toBeLessThanOrEqual(12);
+    expect(result.launcherDecorationEvidence.provisional.blue.length).toBeLessThanOrEqual(12);
+    expect(result.blackCuts).not.toHaveProperty('launcherDecorationEvidence');
   });
 
   test.each([0.1, 0.2, 1])('fails closed when a %s mm projected dimension cannot stay within three percent', (size) => {

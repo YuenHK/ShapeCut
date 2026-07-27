@@ -25,6 +25,7 @@ import {
 import { writeOutlineProjectJson } from './project-json';
 import { coloredResult } from './colored-outline-test-fixture';
 import { featureEvidenceFingerprint } from '../domain/outline-features/types';
+import { createColoredOutlineDocument } from './colored-outline-document';
 
 const testMaterial = { id: 'test-material', name: 'Test material', thicknessMm: 3, kerfMm: 0.1, minFeatureMm: 0.8, minWebMm: 0.5, fitAllowanceMm: { loose: 0.2, slip: 0.1, snug: 0, press: -0.1 } } as const;
 function convertAutomatically(request: { readonly bytes: ArrayBuffer }, onProgress?: Parameters<typeof convertAutomaticOutline>[1]) {
@@ -719,6 +720,80 @@ describe('material-independent outline package', () => {
     expect(publicText).not.toMatch(/slot|hole|engrave|power|speed|passes|material(?:Profile|Code|Name)|\/Users\/|[A-Z]:\\|\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b/i);
     expect(Object.keys(zip.files).some((path) => /\.stl$/i.test(path))).toBe(false);
     expect(JSON.parse(output.projectJson)).not.toHaveProperty('settings');
+  });
+
+  it('never discloses internal provisional launcher evidence to documents or any artifact', async () => {
+    const sentinelId = 'INTERNAL_PROVISIONAL_SENTINEL_7f2b';
+    const sentinelCoordinate = -27.314159;
+    const internalContour = {
+      id: sentinelId,
+      role: 'DEEP_RED' as const,
+      outer: [
+        [sentinelCoordinate, -28] as const,
+        [sentinelCoordinate, -27] as const,
+        [-26.314159, -27] as const,
+        [-26.314159, -28] as const,
+      ],
+      boundsMm: {
+        minX: sentinelCoordinate, minY: -28,
+        maxX: -26.314159, maxY: -27,
+      },
+      areaMm2: 1,
+    };
+    const colored = coloredResult();
+    const privateColored = {
+      ...colored,
+      internalValidationEvidence: {
+        launcherDecoration: {
+          provisional: { red: [internalContour], blue: [] },
+          protectedCutClearanceMm: colored.material!.minWebMm,
+        },
+      },
+    };
+    const coloredDocument = createColoredOutlineDocument(privateColored);
+    const coloredPackage = await createColoredOutlinePackage(privateColored);
+    const coloredZip = await JSZip.loadAsync(coloredPackage.zip);
+    const coloredZipPayloads = await Promise.all(Object.values(coloredZip.files)
+      .filter((entry) => !entry.dir)
+      .map((entry) => entry.async('uint8array')));
+
+    const legacy = await createOutlinePackage(result({
+      internalValidationEvidence: privateColored.internalValidationEvidence,
+    }));
+    const legacyZip = await JSZip.loadAsync(legacy.zip);
+    const legacyZipPayloads = await Promise.all(Object.values(legacyZip.files)
+      .filter((entry) => !entry.dir)
+      .map((entry) => entry.async('uint8array')));
+    const textPayloads = [
+      JSON.stringify(coloredDocument),
+      coloredPackage.cutSvg,
+      coloredPackage.cutDxf,
+      legacy.cutSvg,
+      legacy.cutDxf,
+      legacy.projectJson,
+      legacy.manifestJson,
+      JSON.stringify(legacy.document),
+      JSON.stringify(legacy.manifest),
+    ];
+    const binaryPayloads = [
+      coloredPackage.previewPdf,
+      coloredPackage.explodedViewPdf,
+      coloredPackage.zip,
+      ...coloredZipPayloads,
+      legacy.previewPdf,
+      legacy.zip,
+      ...legacyZipPayloads,
+    ];
+
+    for (const payload of textPayloads) {
+      expect(payload).not.toContain(sentinelId);
+      expect(payload).not.toContain(String(sentinelCoordinate));
+    }
+    for (const payload of binaryPayloads) {
+      const decoded = new TextDecoder('latin1').decode(payload);
+      expect(decoded).not.toContain(sentinelId);
+      expect(decoded).not.toContain(String(sentinelCoordinate));
+    }
   });
 
   it('rejects oversize geometry and privacy-bearing provenance instead of rescaling or leaking it', async () => {

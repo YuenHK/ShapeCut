@@ -199,6 +199,12 @@ function automaticResult(sourceLayers = coloredLayerSet(6)): AutomaticOutlineRes
       },
       layers: coloredLayers,
     },
+    internalValidationEvidence: {
+      launcherDecoration: {
+        provisional: { red: [], blue: [] },
+        protectedCutClearanceMm: material.minWebMm,
+      },
+    },
   };
   return { ...result, featureEvidenceFingerprint: featureEvidenceFingerprint(result) };
 }
@@ -501,6 +507,53 @@ describe('colored outline contracts', () => {
     const forged = structuredClone(safeLauncherResult());
     mutate(forged);
     expect(() => validateAutomaticColoredResult(forged)).toThrow(/launcher|fingerprint|assembly/i);
+  });
+
+  it.each([
+    ['clipped.red', 'clipped', 'red'],
+    ['clipped.blue', 'clipped', 'blue'],
+    ['removed.red', 'removed', 'red'],
+    ['removed.blue', 'removed', 'blue'],
+  ] as const)('rejects recomputed-fingerprint launcher overlap forgery at %s', (_label, decision, role) => {
+    const changed = structuredClone(safeLauncherResult()) as AutomaticOutlineResult & {
+      internalValidationEvidence: {
+        launcherDecoration: {
+          provisional: { red: readonly FeatureContour[]; blue: readonly FeatureContour[] };
+          protectedCutClearanceMm: number;
+        };
+      };
+    };
+    changed.internalValidationEvidence = {
+      launcherDecoration: {
+        provisional: { red: [], blue: [] },
+        protectedCutClearanceMm: changed.material!.minWebMm,
+      },
+    };
+    (changed.assembly.topFeatures.launcherOverlap[decision] as { red: number; blue: number })[role] = 1;
+    const forged = { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
+
+    expect(forged.featureEvidenceFingerprint).toBe(featureEvidenceFingerprint(forged));
+    expect(() => validateAutomaticColoredResult(forged)).toThrow(/launcher.*overlap.*recomput/i);
+  });
+
+  it.each([
+    ['per-role bound', (result: AutomaticOutlineResult) => {
+      const provisional = result.internalValidationEvidence!.launcherDecoration.provisional;
+      (provisional as unknown as { red: FeatureContour[] }).red = Array.from(
+        { length: 13 },
+        (_, index) => ({ ...square(1, `internal-red-${index}`), role: 'DEEP_RED' as const }),
+      );
+    }],
+    ['sanitized ID', (result: AutomaticOutlineResult) => {
+      const provisional = result.internalValidationEvidence!.launcherDecoration.provisional;
+      (provisional as unknown as { red: FeatureContour[] }).red = [
+        { ...square(1, '/Users/private/source.stl'), role: 'DEEP_RED' as const },
+      ];
+    }],
+  ])('rejects internal provisional evidence violating its %s', (_label, mutate) => {
+    const changed = structuredClone(safeLauncherResult());
+    mutate(changed);
+    expect(() => validateAutomaticColoredResult(changed)).toThrow(/internal.*provisional|internal.*bound/i);
   });
 
   it.each([

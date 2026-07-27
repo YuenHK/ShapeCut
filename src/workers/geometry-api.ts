@@ -6,7 +6,7 @@ import type { QuantizeOptions } from '../domain/engraving/quantize';
 import type {
   AutomaticOutlineProgress,
   AutomaticOutlineRequest,
-  AutomaticOutlineResult,
+  PublicAutomaticOutlineResult,
 } from '../domain/pipeline/automatic-outline-pipeline';
 import type { MeshInspection, TriangleMesh } from '../domain/mesh/types';
 import type { MeshProblemReport, MeshRepairResult } from '../domain/mesh/types';
@@ -87,8 +87,8 @@ export type GeometryApi = {
   convertAutomatically(
     request: AutomaticOutlineRequest,
     onProgress?: AutomaticOutlineProgressTransport,
-  ): Promise<AutomaticOutlineResult>;
-  packageOutline(result: AutomaticOutlineResult, deadline?: number): Promise<OutlinePackageTransfer>;
+  ): Promise<PublicAutomaticOutlineResult>;
+  packageOutline(result: PublicAutomaticOutlineResult, deadline?: number): Promise<OutlinePackageTransfer>;
   inspectAndFindAxes(input: ArrayBuffer): Promise<ImportAnalysis>;
   analyzeAndRepairForImport(input: ArrayBuffer): Promise<ImportRepairAnalysis>;
   repairAdvanced(original: SerializedMesh, safeMesh: SerializedMesh): Promise<MeshRepairResult>;

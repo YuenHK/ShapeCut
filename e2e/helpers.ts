@@ -20,7 +20,12 @@ import {
 } from '../src/export/safety-notes';
 import { FASTENER_OMISSION_WARNING } from '../src/domain/outline-assembly/fasteners';
 import { LAUNCHER_ASSEMBLY_ALLOWANCE_MM } from '../src/domain/outline-assembly/launcher';
-import { validateLauncherFitOffsetMm } from '../src/domain/outline-assembly/launcher-fit';
+import {
+  LAUNCHER_FIT_OFFSET_MAX_MM,
+  LAUNCHER_FIT_OFFSET_MIN_MM,
+  LAUNCHER_FIT_OFFSET_STEP_MM,
+  validateLauncherFitOffsetMm,
+} from '../src/domain/outline-assembly/launcher-fit';
 import {
   OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
   OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
@@ -1907,7 +1912,14 @@ export async function selectModel(
 }
 
 export async function installWorkerResultProbe(page: Page): Promise<void> {
-  await page.addInitScript(() => {
+  await page.addInitScript((launcherContract: {
+    readonly templateVersion: number;
+    readonly templateFingerprint: string;
+    readonly assemblyAllowanceMm: number;
+    readonly fitMinimumMm: number;
+    readonly fitMaximumMm: number;
+    readonly fitStepMm: number;
+  }) => {
     type ProbeSummary = {
       mode: 'exact' | 'outline-2.5d';
       status: 'success' | 'warning';
@@ -1969,6 +1981,7 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
       if ((value.mode === 'exact' || value.mode === 'outline-2.5d')
         && (value.status === 'success' || value.status === 'warning')
         && Number.isSafeInteger(value.removedComponentCount)
+        && !('internalValidationEvidence' in value)
         && Array.isArray(value.coloredLayers)) {
         const featureWarnings = Array.isArray(value.featureWarnings)
           && value.featureWarnings.length <= 16
@@ -2020,12 +2033,20 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
           ])
           && launcherValue.status === 'fixed'
           && launcherValue.cutCount === 3
-          && launcherValue.templateVersion === OFFICIAL_THREE_PRONG_TEMPLATE_VERSION
-          && launcherValue.templateFingerprint === OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT
+          && launcherValue.templateVersion === launcherContract.templateVersion
+          && launcherValue.templateFingerprint === launcherContract.templateFingerprint
           && finite(launcherValue.rotationRad)
+          && launcherValue.rotationRad >= 0
+          && launcherValue.rotationRad < Math.PI * 2
           && finite(launcherValue.fitOffsetMm)
+          && launcherValue.fitOffsetMm >= launcherContract.fitMinimumMm - 1e-9
+          && launcherValue.fitOffsetMm <= launcherContract.fitMaximumMm + 1e-9
+          && Math.abs(
+            launcherValue.fitOffsetMm / launcherContract.fitStepMm
+              - Math.round(launcherValue.fitOffsetMm / launcherContract.fitStepMm),
+          ) <= 1e-9
           && launcherValue.finishedAllowanceMm
-            === LAUNCHER_ASSEMBLY_ALLOWANCE_MM + (launcherValue.fitOffsetMm as number);
+            === launcherContract.assemblyAllowanceMm + (launcherValue.fitOffsetMm as number);
         const validCenters = record(fastenerValue) && Array.isArray(fastenerValue.centers)
           && fastenerValue.centers.length <= 3
           && fastenerValue.centers.every((center) => Array.isArray(center) && center.length === 2 && center.every(finite));
@@ -2225,6 +2246,13 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
       }
     }
     Object.defineProperty(window, 'Worker', { configurable: true, value: ProbedWorker });
+  }, {
+    templateVersion: OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+    templateFingerprint: OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
+    assemblyAllowanceMm: LAUNCHER_ASSEMBLY_ALLOWANCE_MM,
+    fitMinimumMm: LAUNCHER_FIT_OFFSET_MIN_MM,
+    fitMaximumMm: LAUNCHER_FIT_OFFSET_MAX_MM,
+    fitStepMm: LAUNCHER_FIT_OFFSET_STEP_MM,
   });
 }
 

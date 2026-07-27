@@ -6,6 +6,7 @@ import {
   expectReleaseAssemblyGeometry,
   expectSharedCentralHoleGeometry,
   inspectColoredArtifacts,
+  installWorkerResultProbe,
   measureCompleteReleaseRun,
   parseColoredOutlineDxfArtifact,
   parseColoredOutlinePdf,
@@ -88,6 +89,43 @@ function releaseSummary(result: AutomaticOutlineResult): WorkerResultSummary {
     })),
   };
 }
+
+it('executes the worker probe init callback after serialization without module-scope closures', async () => {
+  type Listener = (event: { data: unknown }) => void;
+  class IsolatedWorker {
+    private readonly listeners: Listener[] = [];
+    constructor(_url: string | URL, _options?: WorkerOptions) {}
+    addEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
+      if (type === 'message') this.listeners.push(listener as unknown as Listener);
+    }
+    postMessage(_message: unknown): void {}
+    terminate(): void {}
+    emit(data: unknown): void {
+      for (const listener of this.listeners) listener({ data });
+    }
+  }
+  const originalWorker = window.Worker;
+  Object.defineProperty(window, 'Worker', { configurable: true, value: IsolatedWorker });
+  try {
+    const page = {
+      addInitScript: async (callback: (...args: unknown[]) => unknown, argument: unknown) => {
+        expect(callback.toString()).not.toMatch(
+          /OFFICIAL_THREE_PRONG_TEMPLATE|LAUNCHER_ASSEMBLY_ALLOWANCE|LAUNCHER_FIT_OFFSET_/,
+        );
+        const isolated = Function(`return (${callback.toString()})`)() as (value: unknown) => unknown;
+        isolated(argument);
+      },
+    };
+    await installWorkerResultProbe(page as never);
+    const worker = new window.Worker('/geometry.worker.js') as unknown as IsolatedWorker;
+    expect(() => worker.emit(releaseSummary(coloredResult()))).not.toThrow();
+    expect((window as unknown as {
+      __shapeCutWorkerProbe: { results: unknown[] };
+    }).__shapeCutWorkerProbe).toBeDefined();
+  } finally {
+    Object.defineProperty(window, 'Worker', { configurable: true, value: originalWorker });
+  }
+});
 
 beforeAll(async () => {
   output = await createOutlinePackage(coloredResult());

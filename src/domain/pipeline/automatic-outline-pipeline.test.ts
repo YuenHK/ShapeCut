@@ -340,7 +340,7 @@ describe('automatic outline pipeline', () => {
     expect(result.featureEvidenceFingerprint).toMatch(/^[0-9a-f]{32}$/);
   });
 
-  it('propagates non-zero launcher clipping and removal decisions into canonical preview evidence', async () => {
+  it('rejects extracted launcher overlap counters that cannot be recomputed from internal evidence', async () => {
     const originalExactExtraction = extraction.extractExactContours;
     const exact = vi.spyOn(extraction, 'extractExactContours').mockImplementationOnce((...args) => {
       const extracted = originalExactExtraction(...args);
@@ -404,17 +404,8 @@ describe('automatic outline pipeline', () => {
       };
     });
     try {
-      const result = await convertAutomatically({ bytes: writeBinarySTL(cylinder(), 'safe') });
-      const top = result.coloredLayers.at(-1)!;
-
-      expect(result.assembly.topFeatures.launcherOverlap).toEqual({
-        clipped: { red: 1, blue: 0 },
-        removed: { red: 0, blue: 1 },
-      });
-      expect(top.deepFeatures).toHaveLength(1);
-      expect(top.lightFeatures).toHaveLength(0);
-      expect(result.preview.layers).toEqual(result.coloredLayers);
-      expect(result.featureEvidenceFingerprint).toBe(featureEvidenceFingerprint(result));
+      await expect(convertAutomatically({ bytes: writeBinarySTL(cylinder(), 'safe') }))
+        .rejects.toMatchObject({ code: 'NO_OUTLINE' } satisfies Partial<AutomaticOutlineError>);
     } finally {
       exact.mockRestore();
     }

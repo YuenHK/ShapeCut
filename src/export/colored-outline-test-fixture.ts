@@ -199,6 +199,12 @@ export function coloredResult(): AutomaticOutlineResult {
     repairAccepted: true,
     removedComponentCount: 0,
     diagnostics,
+    internalValidationEvidence: {
+      launcherDecoration: {
+        provisional: { red: [], blue: [] },
+        protectedCutClearanceMm: MATERIAL.minWebMm,
+      },
+    },
   };
   const result = {
     ...base,
