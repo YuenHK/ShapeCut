@@ -105,6 +105,7 @@ describe('safe degrading fastener planning', () => {
 
   it('keeps shared geometry ID-free and materializes collision-free layer IDs without changing any point', () => {
     const seed = coloredResult();
+    const seedMaterial = seed.material!;
     const sourceLayers = seed.coloredLayers.map((source, index) => index === 0 ? {
       ...source, deepFeatures: [], lightFeatures: [],
       exterior: { ...source.exterior, id: `${source.id}-fastener-hole-1` },
@@ -114,7 +115,7 @@ describe('safe degrading fastener planning', () => {
         centralHole: source.centralHole,
         launcherCuts: source.launcherCuts,
       })),
-      axisPoint: [0, 0], material,
+      axisPoint: [0, 0], material: seedMaterial,
     });
     expect(plan.count).toBe(3);
     expect(plan.holes.every((hole) => !Object.hasOwn(hole, 'id'))).toBe(true);
@@ -141,10 +142,8 @@ describe('safe degrading fastener planning', () => {
     const coloredLayers = sourceLayers.map((source, index) => ({ ...source, fastenerHoles: materialized[index] }));
     const withLayers = {
       ...seed,
-      material,
       assembly: {
         ...seed.assembly,
-        material,
         fastener: {
           count: plan.count,
           centers: plan.centers,

@@ -18,7 +18,6 @@ import {
   type OutlineLayer,
 } from '../outline-2.5d/extract';
 import {
-  LAUNCHER_ASSEMBLY_ALLOWANCE_MM,
   LauncherCompatibilityError,
   planFixedLauncherClearance,
   type FixedLauncherPlan,
@@ -198,7 +197,7 @@ function withResultEvidence(
   result: Omit<AutomaticOutlineResult, 'assembly' | 'coloredLayers' | 'featureWarnings' | 'featureEvidenceFingerprint' | 'preview' | 'removalEvidenceFingerprint'>,
   previewMesh: TriangleMesh,
   deadline: number,
-  extraction: Pick<OutlineExtraction, 'holeSelections' | 'depthFeatures' | 'blackCuts' | 'featureWarnings'>,
+  extraction: Pick<OutlineExtraction, 'holeSelections' | 'depthFeatures' | 'blackCuts' | 'featureWarnings' | 'launcherDecorationOverlap'>,
   material: ManufacturingGeometryProfile,
   assembly: Omit<AutomaticOutlineAssembly, 'topFeatures'>,
 ): AutomaticOutlineResult {
@@ -243,6 +242,7 @@ function withResultEvidence(
           blue: coloredLayers.at(-1)?.lightFeatures.length ?? 0,
         },
         omitted: coloredLayers.at(-1)?.diagnostics.depth.omitted ?? { red: 0, blue: 0 },
+        launcherOverlap: extraction.launcherDecorationOverlap,
       },
     };
     const completeEvidence = { ...coloredResult, material, assembly: assemblyEvidence };
@@ -298,6 +298,7 @@ function planAssemblyBlackCuts(
     secondCentralHole: second.centralHole,
     material,
     fitOffsetMm: context.launcherFitOffsetMm,
+    decorationContours: context.decorationContours,
     deadline: context.deadline,
     checkpoint,
   });
@@ -342,9 +343,13 @@ function planAssemblyBlackCuts(
     summary: {
       material,
       launcher: {
-        status: 'fallback',
+        status: 'fixed',
         cutCount: 3,
-        assemblyAllowanceMm: LAUNCHER_ASSEMBLY_ALLOWANCE_MM,
+        templateVersion: launcher.templateVersion,
+        templateFingerprint: launcher.templateFingerprint,
+        rotationRad: launcher.rotationRad,
+        fitOffsetMm: launcher.fitOffsetMm,
+        finishedAllowanceMm: launcher.finishedAllowanceMm,
       },
       fastener: fastenerSummary(fastenerPlan),
     },

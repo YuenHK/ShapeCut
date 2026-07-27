@@ -9,6 +9,12 @@ import {
   removalEvidenceFingerprint,
   type AutomaticOutlineResult,
 } from '../domain/pipeline/automatic-outline-pipeline';
+import { LAUNCHER_ASSEMBLY_ALLOWANCE_MM } from '../domain/outline-assembly/launcher';
+import { validateLauncherFitOffsetMm } from '../domain/outline-assembly/launcher-fit';
+import {
+  OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
+  OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+} from '../domain/outline-assembly/launcher-template';
 
 export const COLORED_ROLE_COLORS = Object.freeze({
   CUT_BLACK: '#000000',
@@ -102,13 +108,15 @@ function copyAssembly(
   const material = validateManufacturingGeometryProfile(assembly.material);
   return {
     material: { ...material, fitAllowanceMm: { ...material.fitAllowanceMm } },
-    launcher: assembly.launcher.status === 'omitted'
-      ? { status: 'omitted', cutCount: 0 }
-      : {
-        status: assembly.launcher.status,
-        cutCount: 3,
-        assemblyAllowanceMm: assembly.launcher.assemblyAllowanceMm,
-      },
+    launcher: {
+      status: 'fixed',
+      cutCount: 3,
+      templateVersion: assembly.launcher.templateVersion,
+      templateFingerprint: assembly.launcher.templateFingerprint,
+      rotationRad: assembly.launcher.rotationRad,
+      fitOffsetMm: assembly.launcher.fitOffsetMm,
+      finishedAllowanceMm: assembly.launcher.finishedAllowanceMm,
+    },
     fastener: {
       count: assembly.fastener.count,
       centers: assembly.fastener.centers.map(([x, y]) => {
@@ -123,6 +131,10 @@ function copyAssembly(
     topFeatures: {
       retained: { ...assembly.topFeatures.retained },
       omitted: { ...assembly.topFeatures.omitted },
+      launcherOverlap: {
+        clipped: { ...assembly.topFeatures.launcherOverlap.clipped },
+        removed: { ...assembly.topFeatures.launcherOverlap.removed },
+      },
     },
   };
 }
@@ -191,7 +203,25 @@ function assertCanonicalShape(
   }
   const safetyNotes = copySafetyNotes(document.safetyNotes, checkpoint);
   const assembly = copyAssembly(document.assembly, checkpoint);
-  const launcherCount = assembly.launcher.status === 'omitted' ? 0 : 3;
+  let validFitOffset = true;
+  try {
+    validateLauncherFitOffsetMm(assembly.launcher.fitOffsetMm);
+  } catch {
+    validFitOffset = false;
+  }
+  if (assembly.launcher.status !== 'fixed'
+    || assembly.launcher.cutCount !== 3
+    || assembly.launcher.templateVersion !== OFFICIAL_THREE_PRONG_TEMPLATE_VERSION
+    || assembly.launcher.templateFingerprint !== OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT
+    || !Number.isFinite(assembly.launcher.rotationRad)
+    || assembly.launcher.rotationRad < 0
+    || assembly.launcher.rotationRad >= Math.PI * 2
+    || !validFitOffset
+    || assembly.launcher.finishedAllowanceMm
+      !== LAUNCHER_ASSEMBLY_ALLOWANCE_MM + assembly.launcher.fitOffsetMm) {
+    throw new RangeError('Colored canonical fixed launcher assembly evidence is invalid');
+  }
+  const launcherCount = 3;
   const fastenerCount = assembly.fastener.count;
   if (![0, 1, 2, 3].includes(fastenerCount)
     || assembly.fastener.centers.length !== fastenerCount
@@ -199,6 +229,12 @@ function assertCanonicalShape(
     || !Number.isFinite(assembly.fastener.pathDiameterMm) || assembly.fastener.pathDiameterMm <= 0
     || ![assembly.topFeatures.retained.red, assembly.topFeatures.retained.blue,
       assembly.topFeatures.omitted.red, assembly.topFeatures.omitted.blue]
+      .concat(
+        assembly.topFeatures.launcherOverlap.clipped.red,
+        assembly.topFeatures.launcherOverlap.clipped.blue,
+        assembly.topFeatures.launcherOverlap.removed.red,
+        assembly.topFeatures.launcherOverlap.removed.blue,
+      )
       .every((count) => Number.isSafeInteger(count) && count >= 0)) {
     throw new RangeError('Colored canonical assembly summary is invalid');
   }

@@ -19,7 +19,12 @@ import {
   publicSafetyNotes,
 } from '../src/export/safety-notes';
 import { FASTENER_OMISSION_WARNING } from '../src/domain/outline-assembly/fasteners';
-import { LAUNCHER_OMISSION_WARNING } from '../src/domain/outline-assembly/launcher';
+import { LAUNCHER_ASSEMBLY_ALLOWANCE_MM } from '../src/domain/outline-assembly/launcher';
+import { validateLauncherFitOffsetMm } from '../src/domain/outline-assembly/launcher-fit';
+import {
+  OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
+  OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+} from '../src/domain/outline-assembly/launcher-template';
 import { READY_TEST_MATERIAL } from '../src/test/ready-material';
 
 export const COLORED_ROLES = ['CUT_BLACK', 'DEEP_RED', 'LIGHT_BLUE'] as const;
@@ -186,9 +191,15 @@ export type WorkerResultSummary = {
   };
   readonly assembly?: {
     readonly material: WorkerResultSummary['material'];
-    readonly launcher:
-      | { readonly status: 'detected' | 'fallback'; readonly cutCount: 3; readonly assemblyAllowanceMm: 0.2 }
-      | { readonly status: 'omitted'; readonly cutCount: 0 };
+    readonly launcher: {
+      readonly status: 'fixed';
+      readonly cutCount: 3;
+      readonly templateVersion: number;
+      readonly templateFingerprint: string;
+      readonly rotationRad: number;
+      readonly fitOffsetMm: number;
+      readonly finishedAllowanceMm: number;
+    };
     readonly fastener: {
       readonly count: 0 | 1 | 2 | 3;
       readonly centers: readonly Point2[];
@@ -200,6 +211,10 @@ export type WorkerResultSummary = {
     readonly topFeatures: {
       readonly retained: { readonly red: number; readonly blue: number };
       readonly omitted: { readonly red: number; readonly blue: number };
+      readonly launcherOverlap: {
+        readonly clipped: { readonly red: number; readonly blue: number };
+        readonly removed: { readonly red: number; readonly blue: number };
+      };
     };
   };
   readonly coloredLayers: readonly {
@@ -489,13 +504,23 @@ export function expectReleaseAssemblyGeometry(
     throw new Error('Release warning provenance is outside the bounded public contract');
   }
 
-  const launcherActive = assembly.launcher.status === 'detected' || assembly.launcher.status === 'fallback';
-  if (!launcherActive && assembly.launcher.status !== 'omitted') throw new Error('Release launcher status is invalid');
-  if (launcherActive
-    ? assembly.launcher.cutCount !== 3 || assembly.launcher.assemblyAllowanceMm !== 0.2
-    : assembly.launcher.cutCount !== 0) throw new Error('Release launcher target metadata is invalid');
-  if (summary.featureWarnings.includes(LAUNCHER_OMISSION_WARNING) !== !launcherActive) {
-    throw new Error('Release launcher omission warning provenance is inconsistent');
+  let validLauncherFit = true;
+  try {
+    validateLauncherFitOffsetMm(assembly.launcher.fitOffsetMm);
+  } catch {
+    validLauncherFit = false;
+  }
+  if (assembly.launcher.status !== 'fixed'
+    || assembly.launcher.cutCount !== 3
+    || assembly.launcher.templateVersion !== OFFICIAL_THREE_PRONG_TEMPLATE_VERSION
+    || assembly.launcher.templateFingerprint !== OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT
+    || !Number.isFinite(assembly.launcher.rotationRad)
+    || assembly.launcher.rotationRad < 0
+    || assembly.launcher.rotationRad >= Math.PI * 2
+    || !validLauncherFit
+    || assembly.launcher.finishedAllowanceMm
+      !== LAUNCHER_ASSEMBLY_ALLOWANCE_MM + assembly.launcher.fitOffsetMm) {
+    throw new Error('Release fixed launcher target metadata is invalid');
   }
 
   const fastener = assembly.fastener;
@@ -543,12 +568,12 @@ export function expectReleaseAssemblyGeometry(
     assertTranslatedReleaseContours(light, exported.filter(({ role }) => role === 'LIGHT_BLUE'), translation, 'Release light feature');
   });
   const expectedLauncherCounts = coloredLayers.map((_layer, index) => (
-    launcherActive && index >= coloredLayers.length - 2 ? 3 : 0
+    index >= coloredLayers.length - 2 ? 3 : 0
   ));
   if (exact(launcherCounts) !== exact(expectedLauncherCounts)) {
     throw new Error('Release launcher must be all-or-none on exactly the top two layers');
   }
-  if (launcherActive) for (let index = 0; index < 3; index += 1) {
+  for (let index = 0; index < 3; index += 1) {
     if (releaseContourSignature(coloredLayers.at(-2)!.launcherCuts![index], 'Release launcher')
       !== releaseContourSignature(coloredLayers.at(-1)!.launcherCuts![index], 'Release launcher')) {
       throw new Error('Release launcher geometry must be identical on the top two layers');
@@ -577,7 +602,15 @@ export function expectReleaseAssemblyGeometry(
     || assembly.topFeatures.retained.blue !== top.lightFeatures!.length
     || ![assembly.topFeatures.omitted.red, assembly.topFeatures.omitted.blue].every((count) => (
       Number.isSafeInteger(count) && count >= 0
-    ))) throw new Error('Release top-feature retained/omitted summary does not reconcile');
+    ))
+    || ![
+      assembly.topFeatures.launcherOverlap.clipped.red,
+      assembly.topFeatures.launcherOverlap.clipped.blue,
+      assembly.topFeatures.launcherOverlap.removed.red,
+      assembly.topFeatures.launcherOverlap.removed.blue,
+    ].every((count) => Number.isSafeInteger(count) && count >= 0)) {
+    throw new Error('Release top-feature retained/omitted/launcher-overlap summary does not reconcile');
+  }
 }
 
 function canonicalColoredDocumentExtents(
@@ -1977,12 +2010,22 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
         const topValue = record(assemblyValue) ? assemblyValue.topFeatures : undefined;
         const retainedValue = record(topValue) ? topValue.retained : undefined;
         const omittedValue = record(topValue) ? topValue.omitted : undefined;
+        const overlapValue = record(topValue) ? topValue.launcherOverlap : undefined;
+        const clippedValue = record(overlapValue) ? overlapValue.clipped : undefined;
+        const removedValue = record(overlapValue) ? overlapValue.removed : undefined;
         const validLauncher = record(launcherValue)
-          && (launcherValue.status === 'omitted'
-            ? exactKeys(launcherValue, ['status', 'cutCount']) && launcherValue.cutCount === 0
-            : (launcherValue.status === 'detected' || launcherValue.status === 'fallback')
-              && exactKeys(launcherValue, ['status', 'cutCount', 'assemblyAllowanceMm'])
-              && launcherValue.cutCount === 3 && launcherValue.assemblyAllowanceMm === 0.2);
+          && exactKeys(launcherValue, [
+            'status', 'cutCount', 'templateVersion', 'templateFingerprint',
+            'rotationRad', 'fitOffsetMm', 'finishedAllowanceMm',
+          ])
+          && launcherValue.status === 'fixed'
+          && launcherValue.cutCount === 3
+          && launcherValue.templateVersion === OFFICIAL_THREE_PRONG_TEMPLATE_VERSION
+          && launcherValue.templateFingerprint === OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT
+          && finite(launcherValue.rotationRad)
+          && finite(launcherValue.fitOffsetMm)
+          && launcherValue.finishedAllowanceMm
+            === LAUNCHER_ASSEMBLY_ALLOWANCE_MM + (launcherValue.fitOffsetMm as number);
         const validCenters = record(fastenerValue) && Array.isArray(fastenerValue.centers)
           && fastenerValue.centers.length <= 3
           && fastenerValue.centers.every((center) => Array.isArray(center) && center.length === 2 && center.every(finite));
@@ -1993,10 +2036,16 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
           && validCenters && (fastenerValue.centers as unknown[]).length === fastenerValue.count
           && fastenerValue.finishedDiameterMm === 3 && finite(fastenerValue.pathDiameterMm)
           && (fastenerValue.count === 0 || finite(fastenerValue.radiusMm) && finite(fastenerValue.rotationRad));
-        const validTop = record(topValue) && exactKeys(topValue, ['retained', 'omitted'])
+        const validTop = record(topValue) && exactKeys(topValue, ['retained', 'omitted', 'launcherOverlap'])
           && record(retainedValue) && exactKeys(retainedValue, ['red', 'blue'])
           && record(omittedValue) && exactKeys(omittedValue, ['red', 'blue'])
-          && [retainedValue.red, retainedValue.blue, omittedValue.red, omittedValue.blue]
+          && record(overlapValue) && exactKeys(overlapValue, ['clipped', 'removed'])
+          && record(clippedValue) && exactKeys(clippedValue, ['red', 'blue'])
+          && record(removedValue) && exactKeys(removedValue, ['red', 'blue'])
+          && [
+            retainedValue.red, retainedValue.blue, omittedValue.red, omittedValue.blue,
+            clippedValue.red, clippedValue.blue, removedValue.red, removedValue.blue,
+          ]
             .every((count) => Number.isSafeInteger(count) && (count as number) >= 0);
         const assembly: ProbeSummary['assembly'] | undefined = material && record(assemblyValue)
           && exactKeys(assemblyValue, ['material', 'launcher', 'fastener', 'topFeatures'])
@@ -2017,6 +2066,10 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
             topFeatures: {
               retained: { red: retainedValue.red as number, blue: retainedValue.blue as number },
               omitted: { red: omittedValue.red as number, blue: omittedValue.blue as number },
+              launcherOverlap: {
+                clipped: { red: clippedValue.red as number, blue: clippedValue.blue as number },
+                removed: { red: removedValue.red as number, blue: removedValue.blue as number },
+              },
             },
           } : undefined;
         const layers = value.coloredLayers.flatMap((item): ProbeSummary['coloredLayers'] => {

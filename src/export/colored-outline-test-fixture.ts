@@ -4,7 +4,10 @@ import {
   removalEvidenceFingerprint,
   type AutomaticOutlineResult,
 } from '../domain/pipeline/automatic-outline-pipeline';
-import { LAUNCHER_OMISSION_WARNING } from '../domain/outline-assembly/launcher';
+import {
+  planFixedLauncherClearance,
+  type FixedLauncherPlan,
+} from '../domain/outline-assembly/launcher';
 import { FASTENER_OMISSION_WARNING } from '../domain/outline-assembly/fasteners';
 
 const SOURCE_HASH = '0123456789abcdef'.repeat(2);
@@ -34,12 +37,14 @@ function contour(
   };
 }
 
+let cachedLauncherPlan: FixedLauncherPlan | undefined;
+
 export function coloredResult(): AutomaticOutlineResult {
   const coloredLayers: ColoredOutlineLayer[] = Array.from({ length: 6 }, (_, index) => {
     const exterior = contour(
       `layer-${index + 1}-exterior`,
       'CUT_BLACK',
-      [[-10, -10], [-10, 10], [10, 10], [10, -10]],
+      [[-30, -30], [-30, 30], [30, 30], [30, -30]],
     );
     const centralHole = contour(
       `layer-${index + 1}-hole`,
@@ -78,6 +83,26 @@ export function coloredResult(): AutomaticOutlineResult {
       },
     };
   });
+  const top = coloredLayers.at(-1)!;
+  const second = coloredLayers.at(-2)!;
+  const launcher = cachedLauncherPlan ??= planFixedLauncherClearance({
+      axisPoint: [0, 0],
+      topExterior: top.exterior,
+      secondExterior: second.exterior,
+      topCentralHole: top.centralHole,
+      secondCentralHole: second.centralHole,
+      material: MATERIAL,
+      fitOffsetMm: 0,
+    });
+  for (let index = coloredLayers.length - 2; index < coloredLayers.length; index += 1) {
+    coloredLayers[index] = {
+      ...coloredLayers[index],
+      launcherCuts: launcher.cuts.map((cut, cutIndex) => ({
+        ...cut,
+        id: `${coloredLayers[index].id}-launcher-clearance-${cutIndex + 1}`,
+      })),
+    };
+  }
   const layers = coloredLayers.map((layer) => ({
     id: layer.id,
     index: layer.index,
@@ -119,13 +144,28 @@ export function coloredResult(): AutomaticOutlineResult {
     material: MATERIAL,
     assembly: {
       material: MATERIAL,
-      launcher: { status: 'omitted' as const, cutCount: 0 as const },
+      launcher: {
+        status: 'fixed' as const,
+        cutCount: 3 as const,
+        templateVersion: launcher.templateVersion,
+        templateFingerprint: launcher.templateFingerprint,
+        rotationRad: launcher.rotationRad,
+        fitOffsetMm: launcher.fitOffsetMm,
+        finishedAllowanceMm: launcher.finishedAllowanceMm,
+      },
       fastener: {
         count: 0 as const, centers: [], finishedDiameterMm: 3 as const, pathDiameterMm: 2.85,
       },
-      topFeatures: { retained: { red: 0, blue: 0 }, omitted: { red: 0, blue: 0 } },
+      topFeatures: {
+        retained: { red: 0, blue: 0 },
+        omitted: { red: 0, blue: 0 },
+        launcherOverlap: {
+          clipped: { red: 0, blue: 0 },
+          removed: { red: 0, blue: 0 },
+        },
+      },
     },
-    featureWarnings: [LAUNCHER_OMISSION_WARNING, FASTENER_OMISSION_WARNING],
+    featureWarnings: [FASTENER_OMISSION_WARNING],
     preview: {
       mesh: {
         positions: Float32Array.from([0, 0, 0, 1, 0, 0, 0, 1, 0]),
@@ -212,6 +252,15 @@ export function nearLimitColoredResult(pointCount = 512): AutomaticOutlineResult
       },
     };
   });
+  for (let index = coloredLayers.length - 2; index < coloredLayers.length; index += 1) {
+    coloredLayers[index] = {
+      ...coloredLayers[index],
+      launcherCuts: seed.coloredLayers.at(-1)!.launcherCuts.map((cut, cutIndex) => ({
+        ...cut,
+        id: `${coloredLayers[index].id}-launcher-clearance-${cutIndex + 1}`,
+      })),
+    };
+  }
   const layers = coloredLayers.map((layer) => ({
     id: layer.id, index: layer.index, zStart: layer.zStart, zEnd: layer.zEnd,
     contour: { outer: layer.exterior.outer, holes: [] as const },
@@ -240,7 +289,14 @@ export function nearLimitColoredResult(pointCount = 512): AutomaticOutlineResult
     coloredLayers,
     assembly: {
       ...seed.assembly,
-      topFeatures: { retained: { red: 1, blue: 1 }, omitted: { red: 0, blue: 0 } },
+      topFeatures: {
+        retained: { red: 1, blue: 1 },
+        omitted: { red: 0, blue: 0 },
+        launcherOverlap: {
+          clipped: { red: 0, blue: 0 },
+          removed: { red: 0, blue: 0 },
+        },
+      },
     },
     preview: {
       ...seed.preview,

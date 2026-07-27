@@ -227,9 +227,7 @@ function measurementRange(values: readonly number[]): string | undefined {
 }
 
 function launcherSummary(status: AutomaticOutlineResult['assembly']['launcher']['status']): string {
-  if (status === 'detected') return '已偵測原機幾何';
-  if (status === 'fallback') return '後備樣板';
-  return '已安全省略';
+  return status === 'fixed' ? '官方三爪樣板' : '';
 }
 
 type ModelInputProps = Readonly<{

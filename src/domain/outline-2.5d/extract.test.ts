@@ -8,6 +8,7 @@ import {
   extractExactContours,
   extractProjectedContours,
   outlineBoundsDriftMetrics,
+  protectLauncherFromDecorationForTesting,
   setHoleCandidateProbeForTesting,
   type HoleCandidateProbeEvidence,
 } from './extract';
@@ -186,6 +187,157 @@ describe('extractProjectedContours', () => {
 
     expect(colored.deepFeatures.map(({ id }) => id)).toEqual(['deep-0', 'deep-1']);
     expect(colored.lightFeatures.map(({ id }) => id)).toEqual(['light-0', 'light-1']);
+  });
+
+  test('classifies a launcher-overlapped red remainder as clipped and an enclosed blue source as removed', () => {
+    const layer = extractProjectedContours(
+      box(0, 0, 20, 20, 2), selection, specs, DEFAULT_OUTLINE_BUDGETS,
+    ).layers[0];
+    const feature = (
+      id: string,
+      role: 'DEEP_RED' | 'LIGHT_BLUE',
+      outer: readonly (readonly [number, number])[],
+    ) => ({
+      id, role, outer, boundsMm: bounds(outer),
+      areaMm2: Math.abs(outer.reduce((sum, point, index) => {
+        const next = outer[(index + 1) % outer.length];
+        return sum + point[0] * next[1] - next[0] * point[1];
+      }, 0) / 2),
+    });
+    const provisionalRed = feature('provisional-red', 'DEEP_RED', [
+      [2, -2], [2, 2], [6, 2], [6, -2],
+    ]);
+    const provisionalBlue = feature('provisional-blue', 'LIGHT_BLUE', [
+      [4.25, -1], [4.25, 1], [5.25, 1], [5.25, -1],
+    ]);
+    const finalRed = feature('final-red', 'DEEP_RED', [
+      [2, -2], [2, 2], [3.5, 2], [3.5, -2],
+    ]);
+    const launcherOuter = [[4, -3], [6, -3], [6, 3], [4, 3]] as const;
+    const launcher = {
+      id: 'finished-launcher', role: 'CUT_BLACK' as const, outer: launcherOuter,
+      boundsMm: bounds(launcherOuter), areaMm2: 12,
+    };
+    const diagnostics = {
+      cellSizeMm: 0.25, contrastMm: 2, redThresholdMm: 1.5, blueThresholdMm: 0.5,
+      retained: { red: 1, blue: 0 }, omitted: { red: 0, blue: 0 },
+    };
+    const final = {
+      red: [finalRed], blue: [], diagnostics, evidence: { red: [], blue: [] },
+    };
+    const [colored] = colorizeExteriorLayers(
+      [layer], 0.25, Infinity, () => undefined, [], [final],
+    );
+
+    const decision = protectLauncherFromDecorationForTesting(
+      colored,
+      {
+        red: [provisionalRed], blue: [provisionalBlue], diagnostics,
+        evidence: { red: [], blue: [] },
+      },
+      final,
+      [launcher],
+      0,
+      Infinity,
+      () => undefined,
+    );
+
+    expect(decision).toMatchObject({
+      clipped: { red: 1, blue: 0 },
+      removed: { red: 0, blue: 1 },
+    });
+    expect(decision.deepFeatures).toEqual([finalRed]);
+    expect(decision.lightFeatures).toEqual([]);
+  });
+
+  test('maps split sources against only the final twelve retained launcher-protected remainders', () => {
+    const layer = extractProjectedContours(
+      box(0, 0, 40, 40, 2), selection, specs, DEFAULT_OUTLINE_BUDGETS,
+    ).layers[0];
+    const feature = (
+      id: string,
+      outer: readonly (readonly [number, number])[],
+    ) => ({
+      id, role: 'DEEP_RED' as const, outer, boundsMm: bounds(outer),
+      areaMm2: Math.abs(outer.reduce((sum, point, index) => {
+        const next = outer[(index + 1) % outer.length];
+        return sum + point[0] * next[1] - next[0] * point[1];
+      }, 0) / 2),
+    });
+    const provisionalRed = Array.from({ length: 12 }, (_, index) => {
+      const minimumY = -18 + index * 3;
+      return feature(`provisional-red-${index}`, [
+        [2, minimumY], [2, minimumY + 2], [index === 0 ? 8 : 6, minimumY + 2],
+        [index === 0 ? 8 : 6, minimumY],
+      ]);
+    });
+    const finalRed = [
+      feature('final-red-0-left', [[2, -18], [2, -16], [3.5, -16], [3.5, -18]]),
+      feature('final-red-0-right', [[6.5, -18], [6.5, -16], [8, -16], [8, -18]]),
+      ...provisionalRed.slice(1, 11).map((_, index) => {
+        const minimumY = -15 + index * 3;
+        return feature(`final-red-${index + 1}`, [
+          [2, minimumY], [2, minimumY + 2], [3.5, minimumY + 2], [3.5, minimumY],
+        ]);
+      }),
+    ];
+    expect(finalRed).toHaveLength(12);
+    const launcherOuter = [[4, -20], [6, -20], [6, 20], [4, 20]] as const;
+    const launcher = {
+      id: 'finished-launcher', role: 'CUT_BLACK' as const, outer: launcherOuter,
+      boundsMm: bounds(launcherOuter), areaMm2: 80,
+    };
+    const diagnostics = {
+      cellSizeMm: 0.25, contrastMm: 2, redThresholdMm: 1.5, blueThresholdMm: 0.5,
+      retained: { red: 12, blue: 0 }, omitted: { red: 1, blue: 0 },
+    };
+    const final = {
+      red: finalRed, blue: [], diagnostics, evidence: { red: [], blue: [] },
+    };
+    const [colored] = colorizeExteriorLayers(
+      [layer], 0.25, Infinity, () => undefined, [], [final],
+    );
+
+    const decision = protectLauncherFromDecorationForTesting(
+      colored,
+      {
+        red: provisionalRed, blue: [], diagnostics, evidence: { red: [], blue: [] },
+      },
+      final,
+      [launcher],
+      0,
+      Infinity,
+      () => undefined,
+    );
+
+    expect(decision).toMatchObject({
+      clipped: { red: 11, blue: 0 },
+      removed: { red: 1, blue: 0 },
+    });
+    expect(decision.deepFeatures).toEqual(finalRed);
+  });
+
+  test('feeds bounded provisional top-layer decoration to black-cut planning without returning it', () => {
+    const stepped = combine(
+      box(-5, 0, 12, 20, 6),
+      box(0, 0, 4, 20, 4),
+      box(5, 0, 12, 20, 2),
+    );
+    const fullDepthSpecs = [{ index: 0, zStart: -3, zMid: 0, zEnd: 3 }] as const;
+    let decorationContours: readonly unknown[] | undefined;
+    const result = extractProjectedContours(
+      stepped, selection, fullDepthSpecs, DEFAULT_OUTLINE_BUDGETS, undefined, {
+        planBlackCuts: (context) => {
+          decorationContours = context.decorationContours;
+          return { cuts: [{ launcherCuts: [], fastenerHoles: [] }] };
+        },
+      },
+    );
+
+    expect(decorationContours?.length).toBeGreaterThan(0);
+    expect(decorationContours?.length).toBeLessThanOrEqual(24);
+    expect(result).not.toHaveProperty('provisionalDepthFeatures');
+    expect(JSON.stringify(result)).not.toContain('provisional');
   });
 
   test.each([0.1, 0.2, 1])('fails closed when a %s mm projected dimension cannot stay within three percent', (size) => {

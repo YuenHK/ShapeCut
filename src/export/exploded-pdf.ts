@@ -40,7 +40,7 @@ function centralHoleForLayer(
   layerIndex: number,
 ): ColoredOutlineDocument['layers'][number]['roles']['CUT_BLACK'][number] | undefined {
   const layer = document.layers[layerIndex];
-  const launcherCount = document.assembly.launcher.status === 'omitted' || layerIndex < document.layers.length - 2
+  const launcherCount = layerIndex < document.layers.length - 2
     ? 0
     : document.assembly.launcher.cutCount;
   const expectedWithoutCentral = 1 + launcherCount + document.assembly.fastener.count;

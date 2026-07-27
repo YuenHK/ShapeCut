@@ -367,12 +367,12 @@ describe('release E2E colored artifact parsers', () => {
     expect(() => validateColoredEntityRecords(reordered, 'black reorder')).toThrow(/canonical|array/i);
   });
 
-  it('reconciles a genuine converted package with fallback launcher and three shared fasteners', async () => {
+  it('reconciles a genuine converted package with fixed launcher and three shared fasteners', async () => {
     const result = await convertAutomatically({
       bytes: writeBinarySTL(assemblyCylinder(), 'safe'),
       material: integrationMaterial,
     });
-    expect(result.assembly.launcher.status).toBe('fallback');
+    expect(result.assembly.launcher.status).toBe('fixed');
     expect(result.assembly.fastener.count).toBe(3);
     const packaged = await createOutlinePackage(result);
     const inspected = await inspectColoredArtifacts({
@@ -484,7 +484,7 @@ describe('release E2E colored artifact parsers', () => {
     expect(svg.layers.map(({ order }) => order)).toEqual([1, 2, 3, 4, 5, 6]);
     expect(svg.entities.map(({ id }) => id)).toEqual(dxf.entities.map(({ id }) => id));
     expect(svg.entities).toEqual(dxf.entities);
-    expect(svg.entityCounts).toEqual({ CUT_BLACK: 12, DEEP_RED: 1, LIGHT_BLUE: 1 });
+    expect(svg.entityCounts).toEqual({ CUT_BLACK: 18, DEEP_RED: 1, LIGHT_BLUE: 1 });
     expect(svg.layers.flatMap(({ roleGroups }) => roleGroups.map(({ role }) => role)))
       .toEqual(Array.from({ length: 6 }, () => ['CUT_BLACK', 'DEEP_RED', 'LIGHT_BLUE']).flat());
   });

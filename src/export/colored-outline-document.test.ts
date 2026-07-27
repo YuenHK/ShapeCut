@@ -4,7 +4,6 @@ import { CENTRAL_HOLE_OMISSION_WARNING } from '../domain/outline-features/hole';
 import { featureEvidenceFingerprint } from '../domain/outline-features/types';
 import type { Point2 } from '../domain/decomposition/types';
 import type { FeatureContour } from '../domain/outline-features/types';
-import { planLauncherClearance } from '../domain/outline-assembly/launcher';
 import {
   createColoredOutlineDocument,
   validateColoredOutlineDocument,
@@ -67,22 +66,11 @@ function withColoredLayers(
 function activeAssemblyResult() {
   const result = coloredResult();
   const layer = result.coloredLayers[5], featured = result.coloredLayers[2];
-  const launcherLoops = [
-    [[3.5, -0.5], [4.5, -0.5], [4.5, 0.5], [3.5, 0.5]],
-    [[-2.5, 2.9641016151], [-1.5, 2.9641016151], [-1.5, 3.9641016151], [-2.5, 3.9641016151]],
-    [[-2.5, -3.9641016151], [-1.5, -3.9641016151], [-1.5, -2.9641016151], [-2.5, -2.9641016151]],
-  ] as const;
-  const launcher = planLauncherClearance({
-    detection: { status: 'detected', loops: launcherLoops, score: 1, sourceCandidateIndex: 0 },
-    axisPoint: [0, 0], topExterior: layer.exterior, secondExterior: result.coloredLayers[4].exterior,
-    topCentralHole: layer.centralHole, secondCentralHole: result.coloredLayers[4].centralHole,
-    material: result.assembly.material,
-  });
-  if (launcher.status === 'omitted') throw new Error('Canonical test launcher geometry must be safe');
+  const launcherCuts = layer.launcherCuts;
   const fastenerCenters = [[7, 0], [-7, 0]] as const;
   const coloredLayers = result.coloredLayers.map((candidate, index) => ({
     ...candidate,
-    launcherCuts: index < 4 ? [] : launcher.cuts.map((cut, cutIndex) => ({
+    launcherCuts: index < 4 ? [] : launcherCuts.map((cut, cutIndex) => ({
       ...cut, id: `${candidate.id}-launcher-${cutIndex + 1}`,
     })),
     fastenerHoles: fastenerCenters.map((center, fastenerIndex) => (
@@ -101,12 +89,19 @@ function activeAssemblyResult() {
     featureWarnings: [],
     assembly: {
       ...result.assembly,
-      launcher: { status: 'detected' as const, cutCount: 3 as const, assemblyAllowanceMm: 0.2 as const },
+      launcher: result.assembly.launcher,
       fastener: {
         count: 2 as const, centers: fastenerCenters, finishedDiameterMm: 3 as const,
         pathDiameterMm: 2.85, radiusMm: 7, rotationRad: 0,
       },
-      topFeatures: { retained: { red: 1, blue: 1 }, omitted: { red: 0, blue: 0 } },
+      topFeatures: {
+        retained: { red: 1, blue: 1 },
+        omitted: { red: 0, blue: 0 },
+        launcherOverlap: {
+          clipped: { red: 0, blue: 0 },
+          removed: { red: 0, blue: 0 },
+        },
+      },
     },
     preview: { ...result.preview, layers: coloredLayers },
   };
@@ -163,9 +158,27 @@ describe('canonical colored outline document', () => {
       .toThrow(/assembly|fastener|canonical|mismatch/i);
   });
 
+  it.each([
+    ['templateVersion', (document: any) => { document.assembly.launcher.templateVersion += 1; }],
+    ['templateFingerprint', (document: any) => { document.assembly.launcher.templateFingerprint = 'f'.repeat(32); }],
+    ['rotationRad', (document: any) => { document.assembly.launcher.rotationRad += 0.01; }],
+    ['fitOffsetMm', (document: any) => { document.assembly.launcher.fitOffsetMm += 0.01; }],
+    ['finishedAllowanceMm', (document: any) => { document.assembly.launcher.finishedAllowanceMm += 0.01; }],
+    ['launcherOverlap.clipped.red', (document: any) => { document.assembly.topFeatures.launcherOverlap.clipped.red += 1; }],
+    ['launcherOverlap.clipped.blue', (document: any) => { document.assembly.topFeatures.launcherOverlap.clipped.blue += 1; }],
+    ['launcherOverlap.removed.red', (document: any) => { document.assembly.topFeatures.launcherOverlap.removed.red += 1; }],
+    ['launcherOverlap.removed.blue', (document: any) => { document.assembly.topFeatures.launcherOverlap.removed.blue += 1; }],
+  ])('rejects canonical assembly mutation at %s', (_field, mutate) => {
+    const result = coloredResult();
+    const document = structuredClone(createColoredOutlineDocument(result));
+    mutate(document);
+    expect(() => validateColoredOutlineDocument(document, result))
+      .toThrow(/launcher|assembly|canonical|mismatch/i);
+  });
+
   it('rejects a recomputed-fingerprint exterior-clearance forgery at the canonical boundary', () => {
     const source = activeAssemblyResult();
-    const radiusMm = 9;
+    const radiusMm = 29;
     const centers = [[radiusMm, 0], [-radiusMm, 0]] as const;
     const coloredLayers = source.coloredLayers.map((layer) => ({
       ...layer,

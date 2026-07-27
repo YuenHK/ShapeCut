@@ -16,6 +16,10 @@ import * as outlineProcessScene from '../preview/outline-process-scene';
 import { createStlPresentationPayload } from '../preview/stl-presentation';
 import { BLOCKED_TEST_MATERIAL, READY_TEST_MATERIAL } from '../test/ready-material';
 import {
+  OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
+  OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+} from '../domain/outline-assembly/launcher-template';
+import {
   OneClickConverter,
   type OneClickConverterServices,
   type OutlineDownloads,
@@ -52,9 +56,19 @@ const result: AutomaticOutlineResult = {
   material: resultMaterial,
   assembly: {
     material: resultMaterial,
-    launcher: { status: 'omitted', cutCount: 0 },
+    launcher: {
+      status: 'fixed', cutCount: 3,
+      templateVersion: OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+      templateFingerprint: OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
+      rotationRad: 0, fitOffsetMm: 0, finishedAllowanceMm: 0.2,
+    },
     fastener: { count: 0, centers: [], finishedDiameterMm: 3, pathDiameterMm: 2.85 },
-    topFeatures: { retained: { red: 0, blue: 0 }, omitted: { red: 0, blue: 0 } },
+    topFeatures: {
+      retained: { red: 0, blue: 0 }, omitted: { red: 0, blue: 0 },
+      launcherOverlap: {
+        clipped: { red: 0, blue: 0 }, removed: { red: 0, blue: 0 },
+      },
+    },
   },
   mode: 'exact',
   status: 'success',
@@ -487,12 +501,17 @@ describe('OneClickConverter', () => {
       ...result,
       assembly: {
         material: manufacturingGeometryProfile(defaultPendingMaterialProfile('plywood-3')!),
-        launcher: { status: 'fallback' as const, cutCount: 3 as const, assemblyAllowanceMm: 0.2 as const },
+        launcher: result.assembly.launcher,
         fastener: {
           count: 2 as const, centers: [[6, 0], [-6, 0]] as const,
           finishedDiameterMm: 3 as const, pathDiameterMm: 2.85, radiusMm: 6, rotationRad: 0,
         },
-        topFeatures: { retained: { red: 4, blue: 3 }, omitted: { red: 2, blue: 1 } },
+        topFeatures: {
+          retained: { red: 4, blue: 3 }, omitted: { red: 2, blue: 1 },
+          launcherOverlap: {
+            clipped: { red: 1, blue: 0 }, removed: { red: 0, blue: 1 },
+          },
+        },
       },
     };
     render(<OneClickConverter services={services({ convert: vi.fn().mockResolvedValue(assemblyResult) })} />);
@@ -500,7 +519,7 @@ describe('OneClickConverter', () => {
     await uploadAndSelectMaterial(user, new File(['mesh'], 'assembly.stl'));
     await screen.findByRole('heading', { name: '轉換完成' });
 
-    expect(screen.getByText('發射器相容性').nextElementSibling).toHaveTextContent('後備樣板');
+    expect(screen.getByText('發射器相容性').nextElementSibling).toHaveTextContent('官方三爪樣板');
     expect(screen.getByText('固定螺絲孔').nextElementSibling).toHaveTextContent('2 個');
     expect(screen.getByText('頂層紅色特徵').nextElementSibling).toHaveTextContent('保留 4，省略 2');
     expect(screen.getByText('頂層藍色特徵').nextElementSibling).toHaveTextContent('保留 3，省略 1');

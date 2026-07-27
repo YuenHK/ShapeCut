@@ -1,12 +1,20 @@
 import { describe, expect, it, vi } from 'vitest';
 import { proxyMarker } from 'comlink';
-import type { AutomaticOutlineResult } from '../domain/pipeline/automatic-outline-pipeline';
+import {
+  removalEvidenceFingerprint,
+  type AutomaticOutlineResult,
+} from '../domain/pipeline/automatic-outline-pipeline';
 import { featureEvidenceFingerprint, validateAutomaticColoredResult } from '../domain/outline-features/types';
 import { CENTRAL_HOLE_OMISSION_WARNING } from '../domain/outline-features/hole';
 import { LAUNCHER_OMISSION_WARNING } from '../domain/outline-assembly/launcher';
 import { FASTENER_OMISSION_WARNING } from '../domain/outline-assembly/fasteners';
 import { tetrahedron } from '../test/mesh-builders';
 import { validateManufacturingGeometryProfile } from '../domain/materials/manufacturing-profile';
+import { coloredResult } from '../export/colored-outline-test-fixture';
+import {
+  OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
+  OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+} from '../domain/outline-assembly/launcher-template';
 import {
   OUTLINE_ARTIFACT_IDS,
   OutlineArtifactError,
@@ -68,67 +76,13 @@ function inspectOnly(inspect: GeometryApi['inspect']): GeometryApi {
 }
 
 function automaticResult(sourceHash: string): AutomaticOutlineResult {
-  const coloredLayers = Array.from({ length: 6 }, (_, index) => ({
-    id: `outline-layer-${index}`, index, zStart: index, zEnd: index + 1,
-    exterior: {
-      id: `outline-layer-${index}-exterior`, role: 'CUT_BLACK' as const,
-      outer: [[-1, -1], [-1, 1], [1, 1], [1, -1]] as const,
-      boundsMm: { minX: -1, minY: -1, maxX: 1, maxY: 1 }, areaMm2: 4,
-    },
-    launcherCuts: [], fastenerHoles: [], deepFeatures: [], lightFeatures: [],
-    removedComponentCount: 0,
-    diagnostics: {
-      hole: { status: 'omitted' as const },
-      depth: { cellSizeMm: 0, contrastMm: 0, redThresholdMm: 0, blueThresholdMm: 0 },
-    },
-  }));
-  const previewSource = tetrahedron();
-  const result: Omit<AutomaticOutlineResult, 'featureEvidenceFingerprint'> = {
-    sourceHash,
-    material: testMaterial,
-    assembly: {
-      material: testMaterial,
-      launcher: { status: 'omitted', cutCount: 0 },
-      fastener: { count: 0, centers: [], finishedDiameterMm: 3, pathDiameterMm: 2.9 },
-      topFeatures: { retained: { red: 0, blue: 0 }, omitted: { red: 0, blue: 0 } },
-    },
-    mode: 'exact',
-    status: 'warning',
-    axis: {
-      source: 'candidate',
-      axis: { origin: [0, 0, 0], direction: [0, 0, 1], confidence: 1, confirmed: true },
-    },
-    layers: coloredLayers.map((layer) => ({
-      id: layer.id, index: layer.index, zStart: layer.zStart, zEnd: layer.zEnd,
-      contour: { outer: layer.exterior.outer, holes: [] },
-      sourceAreaMm2: 4, simplifiedAreaMm2: 4,
-      sourceBoundsMm: { minX: -1, minY: -1, maxX: 1, maxY: 1 },
-      simplificationToleranceMm: 0.01, boundsDriftRatio: 0, areaDriftRatio: 0,
-      removedComponentCount: 0,
-    })),
-    coloredLayers,
-    featureWarnings: [CENTRAL_HOLE_OMISSION_WARNING, LAUNCHER_OMISSION_WARNING, FASTENER_OMISSION_WARNING],
-    preview: {
-      mesh: {
-        positions: Float32Array.from(previewSource.positions),
-        indices: previewSource.indices.slice(),
-      },
-      axis: {
-        origin: [0, 0, 0] as const,
-        direction: [0, 0, 1] as const,
-        planeX: [0, 1, 0] as const,
-        planeY: [-1, 0, 0] as const,
-      },
-      layers: coloredLayers,
-    },
-    warnings: [],
-    originalReport: importRepairAnalysis(sourceHash).originalReport,
-    repairAccepted: true,
-    removedComponentCount: 0,
-    removalEvidenceFingerprint: '0'.repeat(32),
-    diagnostics: { topology: { triangleCount: 4, boundaryEdgeCount: 0, nonManifoldEdgeCount: 0, degenerateTriangleCount: 0, duplicateTriangleCount: 0, inconsistentWindingEdgeCount: 0, selfIntersectionCount: 0, selfIntersectionAnalysisComplete: true }, repairDecision: 'accepted', rasterCellSizeMm: null, layers: [] },
+  const fixture = coloredResult();
+  const changed = { ...fixture, sourceHash };
+  return {
+    ...changed,
+    removalEvidenceFingerprint: removalEvidenceFingerprint(changed),
+    featureEvidenceFingerprint: featureEvidenceFingerprint(changed),
   };
-  return { ...result, featureEvidenceFingerprint: featureEvidenceFingerprint(result) };
 }
 
 function importRepairAnalysis(sourceHash: string): ImportRepairAnalysis {

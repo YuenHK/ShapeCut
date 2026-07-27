@@ -1,11 +1,12 @@
 import { decodePDFRawStream, PDFArray, PDFDocument, PDFRawStream, StandardFonts } from 'pdf-lib';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { CENTRAL_HOLE_OMISSION_WARNING } from '../domain/outline-features/hole';
 import { featureEvidenceFingerprint } from '../domain/outline-features/types';
 import { createColoredOutlineDocument } from './colored-outline-document';
 import { coloredResult } from './colored-outline-test-fixture';
 import { writeColoredPreviewPdf, writeExplodedViewPdf } from './exploded-pdf';
 import { writeColoredOutlineSvg } from './package';
+import * as packageExport from './package';
 
 const MM_TO_POINTS = 72 / 25.4;
 
@@ -27,43 +28,7 @@ function allLayerHoleOmissionResult() {
 }
 
 function compactAllLayerHoleOmissionResult() {
-  const result = allLayerHoleOmissionResult();
-  const coloredLayers = result.coloredLayers.map((layer, index) => {
-    const centerX = index * 6;
-    const outer = [
-      [centerX - 2, -2], [centerX - 2, 2], [centerX + 2, 2], [centerX + 2, -2],
-    ] as const;
-    return {
-      ...layer,
-      exterior: {
-        ...layer.exterior,
-        outer,
-        boundsMm: { minX: centerX - 2, minY: -2, maxX: centerX + 2, maxY: 2 },
-        areaMm2: 16,
-      },
-      centralHole: undefined,
-      launcherCuts: [], fastenerHoles: [], deepFeatures: [], lightFeatures: [],
-      diagnostics: {
-        ...layer.diagnostics,
-        hole: { status: 'omitted' as const },
-        depth: { ...layer.diagnostics.depth, contrastMm: 0, redThresholdMm: 0, blueThresholdMm: 0 },
-      },
-    };
-  });
-  const layers = result.layers.map((layer, index) => ({
-    ...layer,
-    contour: { outer: coloredLayers[index].exterior.outer, holes: [] as const },
-    sourceAreaMm2: 16,
-    simplifiedAreaMm2: 16,
-    sourceBoundsMm: { ...coloredLayers[index].exterior.boundsMm },
-  }));
-  const changed = {
-    ...result,
-    layers,
-    coloredLayers,
-    preview: { ...result.preview, layers: coloredLayers },
-  };
-  return { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
+  return allLayerHoleOmissionResult();
 }
 
 function visiblePdfContent(pdf: PDFDocument): string {
@@ -102,7 +67,7 @@ describe('deterministic colored PDFs', () => {
     }
   });
 
-  it('uses one canonical central-launcher-fastener omission order in both PDFs', async () => {
+  it('uses one canonical central-then-fastener omission order in both PDFs', async () => {
     const document = createColoredOutlineDocument(allLayerHoleOmissionResult());
     const [preview, exploded] = await Promise.all([
       writeColoredPreviewPdf(document),
@@ -113,23 +78,29 @@ describe('deterministic colored PDFs', () => {
     )));
     for (const content of contents) {
       const central = content.indexOf(CENTRAL_HOLE_OMISSION_WARNING);
-      const launcher = content.indexOf('Launcher clearance omitted because compatibility could not be preserved safely.');
       const fastener = content.indexOf('3 mm fastener holes omitted because no all-layer pattern was safe.');
       expect(central).toBeGreaterThanOrEqual(0);
-      expect(launcher).toBeGreaterThan(central);
-      expect(fastener).toBeGreaterThan(launcher);
+      expect(fastener).toBeGreaterThan(central);
     }
   });
 
-  it('reserves enough preview page width for the omission warning on compact six-layer layouts', async () => {
+  it('reserves enough preview page width for the omission warning when the fabrication layout is compact', async () => {
     const document = createColoredOutlineDocument(compactAllLayerHoleOmissionResult());
-    const preview = await writeColoredPreviewPdf(document);
-    const pdf = await PDFDocument.load(preview, { updateMetadata: false });
-    const measuringPdf = await PDFDocument.create({ updateMetadata: false });
-    const font = await measuringPdf.embedFont(StandardFonts.Helvetica);
-    const minimumWidthMm = 10 + font.widthOfTextAtSize(CENTRAL_HOLE_OMISSION_WARNING, 7) / MM_TO_POINTS;
+    const createLayout = packageExport.createColoredExportLayout;
+    const compactLayout = vi.spyOn(packageExport, 'createColoredExportLayout')
+      .mockImplementation((...args) => ({ ...createLayout(...args), width: 1 }));
+    try {
+      const preview = await writeColoredPreviewPdf(document);
+      const pdf = await PDFDocument.load(preview, { updateMetadata: false });
+      const measuringPdf = await PDFDocument.create({ updateMetadata: false });
+      const font = await measuringPdf.embedFont(StandardFonts.Helvetica);
+      const minimumWidthMm = 10 + font.widthOfTextAtSize(CENTRAL_HOLE_OMISSION_WARNING, 7) / MM_TO_POINTS;
 
-    expect(pdf.getPage(0).getWidth()).toBeGreaterThanOrEqual(minimumWidthMm * MM_TO_POINTS);
+      expect(pdf.getPage(0).getWidth()).toBeGreaterThanOrEqual(minimumWidthMm * MM_TO_POINTS);
+      expect(pdf.getPage(0).getWidth()).toBeGreaterThan(1 * MM_TO_POINTS);
+    } finally {
+      compactLayout.mockRestore();
+    }
   });
 
   it('renders a byte-identical flat preview on the canonical fabrication sheet with visible relative-level guidance', async () => {
@@ -154,7 +125,6 @@ describe('deterministic colored PDFs', () => {
     expect(content).toContain('BLACK CUT | RED DEEP | BLUE LIGHT');
     expect(content).toContain('Red and blue are relative processing levels, not literal machine settings.');
     expect(content).toContain('Assign machine-specific settings after material test cuts.');
-    expect(content).toContain('Launcher clearance omitted because compatibility could not be preserved safely.');
     expect(content).toContain('3 mm fastener holes omitted because no all-layer pattern was safe.');
   });
 
@@ -171,11 +141,10 @@ describe('deterministic colored PDFs', () => {
     expect(keywords).toContain('view:isometric-exploded');
     expect(keywords).toContain('axis:central');
     expect(keywords).toContain('legend:CUT_BLACK:#000000,DEEP_RED:#E5484D,LIGHT_BLUE:#3A78D4');
-    expect(keywords).toContain('layer:3:layer-3:order=3:thickness=2:X=20:Y=20:hole-diameter=4.514');
-    expect(keywords).toContain('layer:1:layer-1:order=1:thickness=2:X=20:Y=20:hole-diameter=4.514');
+    expect(keywords).toContain('layer:3:layer-3:order=3:thickness=2:X=60:Y=60:hole-diameter=4.514');
+    expect(keywords).toContain('layer:1:layer-1:order=1:thickness=2:X=60:Y=60:hole-diameter=4.514');
     expect(content).toContain('Red and blue are relative processing levels, not literal machine settings.');
     expect(content).toContain('Assign machine-specific settings after material test cuts.');
-    expect(content).toContain('Launcher clearance omitted because compatibility could not be preserved safely.');
     expect(content).toContain('3 mm fastener holes omitted because no all-layer pattern was safe.');
   });
 });

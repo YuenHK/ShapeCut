@@ -6,6 +6,10 @@ import type { AutomaticOutlineProgressEvent, AutomaticOutlineResult } from '../d
 import { featureEvidenceFingerprint, type ColoredOutlineLayer } from '../domain/outline-features/types';
 import { manufacturingGeometryProfile } from '../domain/materials/manufacturing-profile';
 import { READY_TEST_MATERIAL } from '../test/ready-material';
+import {
+  OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
+  OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+} from '../domain/outline-assembly/launcher-template';
 import '../styles.css';
 import { App } from './App';
 import type { OneClickConverterServices } from './OneClickConverter';
@@ -40,9 +44,19 @@ describe('App real browser one-click flow', () => {
       material,
       assembly: {
         material,
-        launcher: { status: 'omitted', cutCount: 0 },
+        launcher: {
+          status: 'fixed', cutCount: 3,
+          templateVersion: OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+          templateFingerprint: OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
+          rotationRad: 0, fitOffsetMm: 0, finishedAllowanceMm: 0.2,
+        },
         fastener: { count: 0, centers: [], finishedDiameterMm: 3, pathDiameterMm: 2.85 },
-        topFeatures: { retained: { red: 0, blue: 0 }, omitted: { red: 0, blue: 0 } },
+        topFeatures: {
+          retained: { red: 0, blue: 0 }, omitted: { red: 0, blue: 0 },
+          launcherOverlap: {
+            clipped: { red: 0, blue: 0 }, removed: { red: 0, blue: 0 },
+          },
+        },
       },
       layers: [{
         id: 'layer-0', index: 0, zStart: 0, zEnd: 1,

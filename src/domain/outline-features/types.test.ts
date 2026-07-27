@@ -3,8 +3,15 @@ import type { Point2 } from '../decomposition/types';
 import type { OutlineLayer } from '../outline-2.5d/extract';
 import type { AutomaticOutlineResult } from '../pipeline/automatic-outline-pipeline';
 import { CENTRAL_HOLE_OMISSION_WARNING } from './hole';
-import { LAUNCHER_OMISSION_WARNING } from '../outline-assembly/launcher';
 import { FASTENER_OMISSION_WARNING } from '../outline-assembly/fasteners';
+import {
+  planFixedLauncherClearance,
+  type FixedLauncherPlan,
+} from '../outline-assembly/launcher';
+import {
+  OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
+  OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+} from '../outline-assembly/launcher-template';
 import {
   featureEvidenceFingerprint,
   migrateColoredOutlineLayer,
@@ -85,7 +92,7 @@ function indexedColoredLayer(index: number): ColoredOutlineLayer {
     index,
     zStart: index,
     zEnd: index + 1,
-    exterior: square(20, `layer-${index}-exterior`),
+    exterior: square(60, `layer-${index}-exterior`),
     centralHole: circle(2, `layer-${index}-hole`),
     deepFeatures: [rectangle(3, 2, `layer-${index}-deep`)],
   });
@@ -106,18 +113,48 @@ function legacyLayer(layer = indexedColoredLayer(0)): OutlineLayer {
   };
 }
 
-function automaticResult(coloredLayers = coloredLayerSet(6)): AutomaticOutlineResult {
+let cachedOfficialLauncher: FixedLauncherPlan | undefined;
+
+function automaticResult(sourceLayers = coloredLayerSet(6)): AutomaticOutlineResult {
   const material = { id: 'test', name: 'Test', thicknessMm: 3, kerfMm: 0.1, minFeatureMm: 0.8, minWebMm: 0.5, fitAllowanceMm: { loose: 0.2, slip: 0.1, snug: 0, press: -0.1 } } as const;
+  const launcher = cachedOfficialLauncher ??= planFixedLauncherClearance({
+    axisPoint: [0, 0],
+    topExterior: square(60, 'launcher-plan-top'),
+    secondExterior: square(60, 'launcher-plan-second'),
+    topCentralHole: circle(2, 'launcher-plan-top-hole'),
+    secondCentralHole: circle(2, 'launcher-plan-second-hole'),
+    material,
+    fitOffsetMm: 0,
+  });
+  const coloredLayers = sourceLayers.map((layer, layerIndex) => ({
+    ...layer,
+    launcherCuts: layerIndex < sourceLayers.length - 2 ? [] : launcher.cuts.map((cut, index) => ({
+      ...cut,
+      id: `${layer.id}-launcher-clearance-${index + 1}`,
+    })),
+  }));
   const result = {
     sourceHash: 'a'.repeat(32),
     material,
     assembly: {
       material,
-      launcher: { status: 'omitted' as const, cutCount: 0 as const },
+      launcher: {
+        status: 'fixed' as const,
+        cutCount: 3 as const,
+        templateVersion: OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+        templateFingerprint: OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
+        rotationRad: launcher.rotationRad,
+        fitOffsetMm: launcher.fitOffsetMm,
+        finishedAllowanceMm: launcher.finishedAllowanceMm,
+      },
       fastener: { count: 0 as const, centers: [], finishedDiameterMm: 3 as const, pathDiameterMm: 2.9 },
       topFeatures: {
         retained: { red: coloredLayers.at(-1)?.deepFeatures.length ?? 0, blue: coloredLayers.at(-1)?.lightFeatures.length ?? 0 },
         omitted: coloredLayers.at(-1)?.diagnostics.depth.omitted ?? { red: 0, blue: 0 },
+        launcherOverlap: {
+          clipped: { red: 0, blue: 0 },
+          removed: { red: 0, blue: 0 },
+        },
       },
     },
     mode: 'exact' as const,
@@ -128,7 +165,7 @@ function automaticResult(coloredLayers = coloredLayerSet(6)): AutomaticOutlineRe
     },
     layers: coloredLayers.map((layer) => legacyLayer(layer)),
     coloredLayers,
-    featureWarnings: [LAUNCHER_OMISSION_WARNING, FASTENER_OMISSION_WARNING],
+    featureWarnings: [FASTENER_OMISSION_WARNING],
     warnings: [],
     originalReport: {
       inspection: { triangleCount: 1, boundaryEdgeCount: 0, nonManifoldEdgeCount: 0, degenerateTriangleCount: 0, invertedVolume: false },
@@ -173,7 +210,6 @@ function withSharedHoleEvidence(
 ): AutomaticOutlineResult {
   const reconciledWarnings = [...new Set([
     ...featureWarnings,
-    LAUNCHER_OMISSION_WARNING,
     FASTENER_OMISSION_WARNING,
   ])];
   const changed = {
@@ -214,6 +250,7 @@ function withFeatureCounts(topDeep: number, lowerDeep: number): AutomaticOutline
       topFeatures: {
         retained: { red: top.deepFeatures.length, blue: top.lightFeatures.length },
         omitted: top.diagnostics.depth.omitted ?? { red: 0, blue: 0 },
+        launcherOverlap: source.assembly.topFeatures.launcherOverlap,
       },
     },
     coloredLayers,
@@ -310,10 +347,10 @@ function overlapLauncherWithFasteners(source: AutomaticOutlineResult): Automatic
     ...source,
     assembly: {
       ...source.assembly,
-      launcher: { status: 'fallback' as const, cutCount: 3 as const, assemblyAllowanceMm: 0.2 as const },
+      launcher: source.assembly.launcher,
     },
     coloredLayers,
-    featureWarnings: source.featureWarnings.filter((warning) => warning !== LAUNCHER_OMISSION_WARNING),
+    featureWarnings: source.featureWarnings,
     preview: { ...source.preview, layers: coloredLayers },
   };
   return { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
@@ -354,19 +391,17 @@ function withLauncherCenters(centers: readonly Point2[]): AutomaticOutlineResult
     ...source,
     assembly: {
       ...source.assembly,
-      launcher: { status: 'fallback' as const, cutCount: 3 as const, assemblyAllowanceMm: 0.2 as const },
+      launcher: source.assembly.launcher,
     },
     coloredLayers,
-    featureWarnings: source.featureWarnings.filter((warning) => warning !== LAUNCHER_OMISSION_WARNING),
+    featureWarnings: source.featureWarnings,
     preview: { ...source.preview, layers: coloredLayers },
   };
   return { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
 }
 
 function safeLauncherResult(): AutomaticOutlineResult {
-  return withLauncherCenters([
-    [5, 0], [-2.5, 4.330127018922193], [-2.5, -4.330127018922193],
-  ]);
+  return automaticResult();
 }
 
 describe('colored outline contracts', () => {
@@ -432,6 +467,57 @@ describe('colored outline contracts', () => {
   it('bounds top and lower engraving arrays independently', () => {
     expect(() => validateAutomaticColoredResult(withFeatureCounts(13, 1))).toThrow(/12.*deep/i);
     expect(() => validateAutomaticColoredResult(withFeatureCounts(1, 2))).toThrow(/one.*deep/i);
+  });
+
+  it.each([
+    ['templateVersion', (result: AutomaticOutlineResult) => {
+      (result.assembly.launcher as { templateVersion: number }).templateVersion += 1;
+    }],
+    ['templateFingerprint', (result: AutomaticOutlineResult) => {
+      (result.assembly.launcher as { templateFingerprint: string }).templateFingerprint = 'f'.repeat(32);
+    }],
+    ['rotationRad', (result: AutomaticOutlineResult) => {
+      (result.assembly.launcher as { rotationRad: number }).rotationRad += 0.01;
+    }],
+    ['fitOffsetMm', (result: AutomaticOutlineResult) => {
+      (result.assembly.launcher as { fitOffsetMm: number }).fitOffsetMm += 0.01;
+    }],
+    ['finishedAllowanceMm', (result: AutomaticOutlineResult) => {
+      (result.assembly.launcher as { finishedAllowanceMm: number }).finishedAllowanceMm += 0.01;
+    }],
+    ['launcherOverlap.clipped.red', (result: AutomaticOutlineResult) => {
+      (result.assembly.topFeatures.launcherOverlap.clipped as { red: number }).red += 1;
+    }],
+    ['launcherOverlap.clipped.blue', (result: AutomaticOutlineResult) => {
+      (result.assembly.topFeatures.launcherOverlap.clipped as { blue: number }).blue += 1;
+    }],
+    ['launcherOverlap.removed.red', (result: AutomaticOutlineResult) => {
+      (result.assembly.topFeatures.launcherOverlap.removed as { red: number }).red += 1;
+    }],
+    ['launcherOverlap.removed.blue', (result: AutomaticOutlineResult) => {
+      (result.assembly.topFeatures.launcherOverlap.removed as { blue: number }).blue += 1;
+    }],
+  ])('rejects mutated fixed canonical assembly evidence at %s', (_field, mutate) => {
+    const forged = structuredClone(safeLauncherResult());
+    mutate(forged);
+    expect(() => validateAutomaticColoredResult(forged)).toThrow(/launcher|fingerprint|assembly/i);
+  });
+
+  it.each([
+    ['rotation', (result: AutomaticOutlineResult) => {
+      (result.assembly.launcher as { rotationRad: number }).rotationRad += 0.01;
+    }],
+    ['coherent fit and finished allowance', (result: AutomaticOutlineResult) => {
+      (result.assembly.launcher as { fitOffsetMm: number }).fitOffsetMm += 0.01;
+      (result.assembly.launcher as { finishedAllowanceMm: number }).finishedAllowanceMm += 0.01;
+    }],
+  ])('rejects recomputed-fingerprint fixed launcher %s metadata that disagrees with its cuts', (_label, mutate) => {
+    const changed = structuredClone(safeLauncherResult());
+    mutate(changed);
+    const forged = { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
+
+    expect(forged.featureEvidenceFingerprint).toBe(featureEvidenceFingerprint(forged));
+    expect(() => validateAutomaticColoredResult(forged)).toThrow(/launcher.*template|placement|geometry/i);
   });
 
   it('rejects a colored layer that mixes legacy and canonical feature fields', () => {
@@ -945,7 +1031,7 @@ describe('colored outline contracts', () => {
   it.each([
     // 2.04 mm remains around the 1.5 mm finished radius: minWeb alone would pass,
     // but the required extra 0.05 mm kerf loss must reject it.
-    ['exterior web plus kerf loss', () => repositionThreeFasteners(withThreeFasteners(), 7.96)],
+    ['exterior web plus kerf loss', () => repositionThreeFasteners(withThreeFasteners(), 27.96)],
     ['central-hole web', () => repositionThreeFasteners(withThreeFasteners(), 3)],
     ['launcher-cut web', () => overlapLauncherWithFasteners(withThreeFasteners())],
     ['pairwise web', () => repositionThreeFasteners(omitCentralHoleEvidence(withThreeFasteners()), 1)],
@@ -975,14 +1061,19 @@ describe('colored outline contracts', () => {
 
   it.each([
     ['exterior removal envelope', () => replaceLayerEngraving(
-      automaticResult(), 0, engravingBox('near-exterior', -9.8, -8.8, 6, 7),
+      automaticResult(), 0, engravingBox('near-exterior', -29.8, -28.8, 6, 7),
     )],
     ['central-hole removal envelope', () => replaceLayerEngraving(
       automaticResult(), 0, engravingBox('near-central', 2.2, 3.2, -0.25, 0.25),
     )],
-    ['launcher finished envelope', () => replaceLayerEngraving(
-      safeLauncherResult(), 4, engravingBox('near-launcher', 5.65, 6.65, -0.2, 0.2),
-    )],
+    ['launcher finished envelope', () => {
+      const source = safeLauncherResult();
+      const [centerX, centerY] = source.coloredLayers.at(-1)!.launcherCuts[0].outer[0];
+      return replaceLayerEngraving(
+        source, 4,
+        engravingBox('near-launcher', centerX - 0.25, centerX + 0.25, centerY - 0.25, centerY + 0.25),
+      );
+    }],
     ['fastener finished envelope', () => replaceLayerEngraving(
       withThreeFasteners(), 0, engravingBox('near-fastener', 6.65, 7.65, -0.2, 0.2),
     )],
@@ -997,7 +1088,7 @@ describe('colored outline contracts', () => {
   it.each([
     // With kerf 0.1 and minWeb 0.5, these leave 0.549 mm to the toolpath:
     // above minWeb alone, but just below the required inclusive 0.55 mm band.
-    ['exterior containment and minimum web', [[9.001, 0], [-2.5, 4.330127018922193], [-2.5, -4.330127018922193]] as const],
+    ['exterior containment and minimum web', [[29.001, 0], [-2.5, 4.330127018922193], [-2.5, -4.330127018922193]] as const],
     ['central-hole minimum web', [[2.999, 0], [-5, 4], [-5, -4]] as const],
     ['inter-hook minimum web', [[5, 0], [5.7, 0], [-5, 0]] as const],
   ])('rejects recomputed active launcher geometry violating %s', (_label, centers) => {

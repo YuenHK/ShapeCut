@@ -15,9 +15,14 @@ import * as extraction from '../outline-2.5d/extract';
 import { createOutlineAxisBasis } from '../outline-2.5d/raster';
 import * as simplification from '../outline-2.5d/simplify';
 import { MAX_STL_BYTES } from '../mesh/parse-stl';
-import type { OutlinePreviewPayload } from '../outline-features/types';
+import type { FeatureContour, OutlinePreviewPayload } from '../outline-features/types';
 import { featureEvidenceFingerprint, validateAutomaticColoredResult } from '../outline-features/types';
+import { validateDepthFeatureContours } from '../outline-features/validate';
 import { createOutlinePackage } from '../../export/outline-package';
+import {
+  OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
+  OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+} from '../outline-assembly/launcher-template';
 
 const testMaterial = { id: 'test-material', name: 'Test material', thicknessMm: 3, kerfMm: 0.1, minFeatureMm: 0.8, minWebMm: 0.5, fitAllowanceMm: { loose: 0.2, slip: 0.1, snug: 0, press: -0.1 } } as const;
 function convertAutomatically(request: { readonly bytes: ArrayBuffer }, onProgress?: Parameters<typeof convertAutomaticOutline>[1]) {
@@ -166,7 +171,15 @@ describe('automatic outline pipeline', () => {
     expect(() => validateAutomaticColoredResult(result, Infinity, () => undefined, result.material)).not.toThrow();
 
     expect(result.assembly.material).toEqual(testMaterial);
-    expect(result.assembly.launcher.status).toBe('fallback');
+    expect(result.assembly.launcher).toEqual({
+      status: 'fixed',
+      cutCount: 3,
+      templateVersion: OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+      templateFingerprint: OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
+      rotationRad: expect.any(Number),
+      fitOffsetMm: 0,
+      finishedAllowanceMm: 0.2,
+    });
     const topTwo = result.coloredLayers.slice(-2);
     const lower = result.coloredLayers.slice(0, -2);
     expect(topTwo.every((layer) => layer.launcherCuts.length === 3)).toBe(true);
@@ -191,21 +204,24 @@ describe('automatic outline pipeline', () => {
     expect(result.assembly.topFeatures).toEqual({
       retained: { red: top.deepFeatures.length, blue: top.lightFeatures.length },
       omitted: top.diagnostics.depth.omitted ?? { red: 0, blue: 0 },
+      launcherOverlap: {
+        clipped: { red: 0, blue: 0 },
+        removed: { red: 0, blue: 0 },
+      },
     });
     expect(result.preview.layers).toEqual(result.coloredLayers);
     const alternateLauncher = {
       ...result,
       assembly: {
         ...result.assembly,
-        launcher: result.assembly.launcher.status === 'fallback'
-          ? { ...result.assembly.launcher, status: 'detected' as const }
-          : result.assembly.launcher,
+        launcher: {
+          ...result.assembly.launcher,
+          rotationRad: (result.assembly.launcher.rotationRad + 0.01) % (Math.PI * 2),
+        },
       },
     };
-    if (alternateLauncher.assembly.launcher.status !== result.assembly.launcher.status) {
-      expect(featureEvidenceFingerprint(alternateLauncher, undefined, undefined, result.material))
-        .not.toBe(result.featureEvidenceFingerprint);
-    }
+    expect(featureEvidenceFingerprint(alternateLauncher, undefined, undefined, result.material))
+      .not.toBe(result.featureEvidenceFingerprint);
   });
 
   it('rejects recomputed-fingerprint fastener metadata and geometry forgeries from a genuine result', async () => {
@@ -307,6 +323,10 @@ describe('automatic outline pipeline', () => {
     const top = result.coloredLayers.at(-1)!;
     expect(top.deepFeatures).toEqual([]);
     expect(top.lightFeatures).toEqual([]);
+    expect(result.assembly.topFeatures.launcherOverlap).toEqual({
+      clipped: { red: 0, blue: 0 },
+      removed: { red: 0, blue: 0 },
+    });
     expect(top.diagnostics.depth.omissionCode).toBe('INSUFFICIENT_CONTRAST');
     expect(result.featureWarnings).toContain('表面深度差不足，已省略雕刻特徵');
     expect(result.preview.layers).toEqual(result.coloredLayers);
@@ -318,6 +338,86 @@ describe('automatic outline pipeline', () => {
       planeY: expectedBasis.planeY,
     });
     expect(result.featureEvidenceFingerprint).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  it('propagates non-zero launcher clipping and removal decisions into canonical preview evidence', async () => {
+    const originalExactExtraction = extraction.extractExactContours;
+    const exact = vi.spyOn(extraction, 'extractExactContours').mockImplementationOnce((...args) => {
+      const extracted = originalExactExtraction(...args);
+      const topIndex = extracted.layers.length - 1;
+      const layer = extracted.layers[topIndex];
+      const hole = extracted.holeSelections[topIndex].hole?.outer;
+      const protection = extracted.blackCuts[topIndex].engravingProtection;
+      if (!protection) throw new Error('expected physical cut protection');
+      let retained: FeatureContour | undefined;
+      for (let y = -24; y <= 24 && !retained; y += 4) {
+        for (let x = -24; x <= 24 && !retained; x += 4) {
+          const outer = [
+            [x - 1, y - 1], [x - 1, y + 1], [x + 1, y + 1], [x + 1, y - 1],
+          ] as const;
+          const candidate: FeatureContour = {
+            id: 'pipeline-launcher-priority-deep',
+            role: 'DEEP_RED',
+            outer,
+            boundsMm: { minX: x - 1, minY: y - 1, maxX: x + 1, maxY: y + 1 },
+            areaMm2: 4,
+          };
+          const exteriorSafe = validateDepthFeatureContours({
+            exterior: layer.contour.outer,
+            centralHole: hole,
+            red: candidate,
+            clearanceMm: protection.exteriorClearanceMm,
+          }).ok;
+          const cutsSafe = protection.removalEnvelopes.every((envelope) => (
+            validateDepthFeatureContours({
+              exterior: layer.contour.outer,
+              centralHole: envelope,
+              red: candidate,
+              clearanceMm: protection.requiredClearanceMm,
+            }).ok
+          ));
+          if (exteriorSafe && cutsSafe) retained = candidate;
+        }
+      }
+      if (!retained) throw new Error('expected one safe retained priority feature');
+      const topDepth = extracted.depthFeatures[topIndex];
+      const depthFeatures = extracted.depthFeatures.map((feature, index) => index === topIndex ? {
+        ...feature,
+        red: [retained!],
+        blue: [],
+        warning: undefined,
+        omissionCode: undefined,
+        diagnostics: {
+          ...feature.diagnostics,
+          retained: { red: 1, blue: 0 },
+          omitted: { red: 0, blue: 0 },
+          omissionCode: undefined,
+        },
+      } : feature);
+      return {
+        ...extracted,
+        depthFeatures,
+        launcherDecorationOverlap: {
+          clipped: { red: 1, blue: 0 },
+          removed: { red: 0, blue: 1 },
+        },
+      };
+    });
+    try {
+      const result = await convertAutomatically({ bytes: writeBinarySTL(cylinder(), 'safe') });
+      const top = result.coloredLayers.at(-1)!;
+
+      expect(result.assembly.topFeatures.launcherOverlap).toEqual({
+        clipped: { red: 1, blue: 0 },
+        removed: { red: 0, blue: 1 },
+      });
+      expect(top.deepFeatures).toHaveLength(1);
+      expect(top.lightFeatures).toHaveLength(0);
+      expect(result.preview.layers).toEqual(result.coloredLayers);
+      expect(result.featureEvidenceFingerprint).toBe(featureEvidenceFingerprint(result));
+    } finally {
+      exact.mockRestore();
+    }
   });
 
   it('bounds every stepped-mesh depth sample to its own layer slab', async () => {
@@ -548,9 +648,9 @@ endsolid overflow`;
     }
   });
 
-  it('maps deadline expiry during fixed launcher structural scoring to a typed time limit', async () => {
+  it('maps deadline expiry during provisional launcher-decoration planning to a typed time limit', async () => {
     const originalNow = Date.now;
-    Date.now = () => new Error().stack?.includes('fixedStructuralClearance') ? 30_001 : 0;
+    Date.now = () => new Error().stack?.includes('provisionalDepthFeatures') ? 30_001 : 0;
     try {
       await expect(convertAutomatically({ bytes: writeBinarySTL(cylinder(), 'safe') }))
         .rejects.toMatchObject({ code: 'TIME_LIMIT' } satisfies Partial<AutomaticOutlineError>);

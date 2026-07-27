@@ -10,7 +10,16 @@ import {
   areFinishedCirclesPairwiseSeparated,
   isCircleSafeThroughAllLayers,
 } from '../outline-assembly/protected-region';
-import { launcherCutsArePhysicallySafe } from '../outline-assembly/launcher';
+import {
+  LAUNCHER_ASSEMBLY_ALLOWANCE_MM,
+  launcherCutsMatchOfficialPlacement,
+  launcherCutsArePhysicallySafe,
+} from '../outline-assembly/launcher';
+import { validateLauncherFitOffsetMm } from '../outline-assembly/launcher-fit';
+import {
+  OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
+  OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+} from '../outline-assembly/launcher-template';
 import { createPhysicalCutProtection } from '../outline-assembly/physical-cut-envelope';
 import type { Vec3 } from '../types';
 import { CENTRAL_HOLE_OMISSION_WARNING, isStrictlyContainedLoop } from './hole';
@@ -65,11 +74,28 @@ export type OutlinePreviewPayload = {
   readonly layers: readonly ColoredOutlineLayer[];
 };
 
+export type AutomaticLauncherAssembly = {
+  readonly status: 'fixed';
+  readonly cutCount: 3;
+  readonly templateVersion: number;
+  readonly templateFingerprint: string;
+  readonly rotationRad: number;
+  readonly fitOffsetMm: number;
+  readonly finishedAllowanceMm: number;
+};
+
+export type AutomaticTopFeatureAssembly = {
+  readonly retained: { readonly red: number; readonly blue: number };
+  readonly omitted: { readonly red: number; readonly blue: number };
+  readonly launcherOverlap: {
+    readonly clipped: { readonly red: number; readonly blue: number };
+    readonly removed: { readonly red: number; readonly blue: number };
+  };
+};
+
 export type AutomaticOutlineAssembly = {
   readonly material: ManufacturingGeometryProfile;
-  readonly launcher:
-    | { readonly status: 'detected' | 'fallback'; readonly cutCount: 3; readonly assemblyAllowanceMm: 0.2 }
-    | { readonly status: 'omitted'; readonly cutCount: 0 };
+  readonly launcher: AutomaticLauncherAssembly;
   readonly fastener: {
     readonly count: 0 | 1 | 2 | 3;
     readonly centers: readonly Point2[];
@@ -78,10 +104,7 @@ export type AutomaticOutlineAssembly = {
     readonly radiusMm?: number;
     readonly rotationRad?: number;
   };
-  readonly topFeatures: {
-    readonly retained: { readonly red: number; readonly blue: number };
-    readonly omitted: { readonly red: number; readonly blue: number };
-  };
+  readonly topFeatures: AutomaticTopFeatureAssembly;
 };
 
 export type ColoredLayerValidation = { readonly ok: boolean; readonly reasons: readonly string[] };
@@ -803,7 +826,6 @@ function samePoints(left: readonly Point2[], right: readonly Point2[]): boolean 
     && left.every(([x, y], index) => x === right[index][0] && y === right[index][1]);
 }
 
-const LAUNCHER_OMISSION_WARNING_TEXT = '無法安全保留原裝發射器相容性，已省略三個發射器開孔';
 const FASTENER_OMISSION_WARNING_TEXT = '無法安全配置 3 mm 固定螺絲孔，已省略螺絲孔';
 
 function nearlyEqual(left: number, right: number): boolean {
@@ -929,22 +951,31 @@ function assemblyReasons(
   if (!isRecord(launcher)) {
     reasons.push('Automatic assembly launcher summary must be present');
   } else {
-    const active = launcher.status === 'detected' || launcher.status === 'fallback';
-    const omitted = launcher.status === 'omitted';
-    const permitted = active
-      ? new Set(['status', 'cutCount', 'assemblyAllowanceMm'])
-      : new Set(['status', 'cutCount']);
-    reasons.push(...unexpectedKeys(launcher, permitted, 'Automatic assembly launcher'));
-    if (!active && !omitted) reasons.push('Automatic assembly launcher status is invalid');
-    if (active && (launcher.cutCount !== 3 || launcher.assemblyAllowanceMm !== 0.2)) {
-      reasons.push('Automatic assembly launcher retained summary is invalid');
+    reasons.push(...unexpectedKeys(launcher, new Set([
+      'status', 'cutCount', 'templateVersion', 'templateFingerprint',
+      'rotationRad', 'fitOffsetMm', 'finishedAllowanceMm',
+    ]), 'Automatic assembly launcher'));
+    let validFitOffset = true;
+    try {
+      validateLauncherFitOffsetMm(launcher.fitOffsetMm);
+    } catch {
+      validFitOffset = false;
     }
-    if (omitted && launcher.cutCount !== 0) reasons.push('Automatic assembly launcher omitted summary is invalid');
+    if (launcher.status !== 'fixed'
+      || launcher.cutCount !== 3
+      || launcher.templateVersion !== OFFICIAL_THREE_PRONG_TEMPLATE_VERSION
+      || launcher.templateFingerprint !== OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT
+      || !Number.isFinite(launcher.rotationRad)
+      || (launcher.rotationRad as number) < 0
+      || (launcher.rotationRad as number) >= Math.PI * 2
+      || !validFitOffset
+      || launcher.finishedAllowanceMm !== LAUNCHER_ASSEMBLY_ALLOWANCE_MM + (launcher.fitOffsetMm as number)) {
+      reasons.push('Automatic assembly fixed launcher template, rotation, fit offset, or finished allowance is invalid');
+    }
     const topStart = Math.max(0, layers.length - 2);
-    const expectedCount = active ? 3 : 0;
-    if (layers.some((layer, index) => layer.launcherCuts.length !== (index >= topStart ? expectedCount : 0))) {
-      reasons.push('Automatic assembly launcher must be identical on exactly the top two layers or omitted atomically');
-    } else if (active && layers.length >= 2) {
+    if (layers.some((layer, index) => layer.launcherCuts.length !== (index >= topStart ? 3 : 0))) {
+      reasons.push('Automatic assembly fixed launcher must have exactly three cuts on the top two layers and zero earlier');
+    } else if (layers.length >= 2) {
       for (let index = 0; index < 3; index += 1) {
         if (!sameContourGeometry(
           layers.at(-2)!.launcherCuts[index], layers.at(-1)!.launcherCuts[index], deadline, checkpoint,
@@ -952,11 +983,23 @@ function assemblyReasons(
           reasons.push('Automatic assembly launcher geometry must be identical on the top two layers');
         }
       }
+      if (material && !launcherCutsMatchOfficialPlacement({
+        cuts: layers.at(-1)!.launcherCuts,
+        axisPoint: [0, 0],
+        rotationRad: launcher.rotationRad as number,
+        fitOffsetMm: launcher.fitOffsetMm as number,
+        material,
+        deadline,
+        checkpoint: () => checkRuntimeBudget(
+          deadline,
+          checkpoint,
+          'assembly:launcher-template-placement-loop',
+        ),
+      })) {
+        reasons.push('Automatic assembly launcher template placement metadata must match the top-two geometry');
+      }
     }
-    if (featureWarnings.includes(LAUNCHER_OMISSION_WARNING_TEXT) !== omitted) {
-      reasons.push('Automatic assembly launcher omission warning provenance is inconsistent');
-    }
-    if (active && material && layers.length >= 2 && layers.at(-1)!.launcherCuts.length === 3
+    if (material && layers.length >= 2 && layers.at(-1)!.launcherCuts.length === 3
       && !launcherCutsArePhysicallySafe({
         cuts: layers.at(-1)!.launcherCuts,
         top: { exterior: layers.at(-1)!.exterior, centralHole: layers.at(-1)!.centralHole },
@@ -1056,12 +1099,40 @@ function assemblyReasons(
   }
   const topFeatures = value.topFeatures;
   const top = layers.at(-1);
-  if (!isRecord(topFeatures) || !isRecord(topFeatures.retained) || !isRecord(topFeatures.omitted) || !top
+  const launcherOverlap = isRecord(topFeatures) ? topFeatures.launcherOverlap : undefined;
+  const overlapCounts = isRecord(launcherOverlap)
+    && isRecord(launcherOverlap.clipped)
+    && isRecord(launcherOverlap.removed)
+    ? [
+      launcherOverlap.clipped.red, launcherOverlap.clipped.blue,
+      launcherOverlap.removed.red, launcherOverlap.removed.blue,
+    ]
+    : [];
+  if (!isRecord(topFeatures)
+    || unexpectedKeys(topFeatures, new Set(['retained', 'omitted', 'launcherOverlap']), 'Automatic assembly top features').length > 0
+    || !isRecord(topFeatures.retained) || !isRecord(topFeatures.omitted)
+    || !isRecord(launcherOverlap) || !isRecord(launcherOverlap.clipped) || !isRecord(launcherOverlap.removed)
+    || unexpectedKeys(launcherOverlap, new Set(['clipped', 'removed']), 'Launcher overlap').length > 0
+    || unexpectedKeys(launcherOverlap.clipped, new Set(['red', 'blue']), 'Launcher clipped overlap').length > 0
+    || unexpectedKeys(launcherOverlap.removed, new Set(['red', 'blue']), 'Launcher removed overlap').length > 0
+    || overlapCounts.length !== 4
+    || overlapCounts.some((count) => !Number.isSafeInteger(count) || (count as number) < 0)
+    || overlapCounts.length === 4 && (
+      (launcherOverlap.clipped.red as number) > 12
+      || (launcherOverlap.clipped.blue as number) > 12
+      || (launcherOverlap.removed.red as number) > 12
+      || (launcherOverlap.removed.blue as number) > 12
+      || (launcherOverlap.clipped.red as number) + (launcherOverlap.removed.red as number) > 12
+      || (launcherOverlap.clipped.blue as number) + (launcherOverlap.removed.blue as number) > 12
+    )
+    || !top
     || topFeatures.retained.red !== top.deepFeatures.length
     || topFeatures.retained.blue !== top.lightFeatures.length
+    || (launcherOverlap.clipped.red as number) > top.deepFeatures.length
+    || (launcherOverlap.clipped.blue as number) > top.lightFeatures.length
     || topFeatures.omitted.red !== (top.diagnostics.depth.omitted?.red ?? 0)
     || topFeatures.omitted.blue !== (top.diagnostics.depth.omitted?.blue ?? 0)) {
-    reasons.push('Automatic assembly top-feature retained and omitted counts are inconsistent');
+    reasons.push('Automatic assembly top-feature retained, omitted, or launcher-overlap counts are inconsistent');
   }
   return reasons;
 }

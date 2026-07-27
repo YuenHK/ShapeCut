@@ -14,6 +14,8 @@ import {
   extractAdaptiveDepthFeatures,
   type DepthFeatureResult,
 } from '../outline-features/depth-field';
+import { polygonsIntersectOrTouch, polygonsOverlapArea } from '../engraving/geometry';
+import { validateDepthFeatureContours } from '../outline-features/validate';
 import { projectMesh, rasterCellSize, rasterProjectLayer, type ProjectedMesh } from './raster';
 import { contourBounds, signedArea, simplifyClosedLoop, type Bounds2 } from './simplify';
 import { DEFAULT_OUTLINE_BUDGETS, type OutlineAxisSelection, type OutlineBudgets, type OutlineLayerSpec } from './types';
@@ -38,6 +40,7 @@ export type OutlineExtraction = {
   readonly holeSelections: readonly CentralHoleSelection[];
   readonly depthFeatures: readonly DepthFeatureResult[];
   readonly blackCuts: readonly ExistingBlackCuts[];
+  readonly launcherDecorationOverlap: LauncherDecorationOverlap;
   readonly featureWarnings: readonly string[];
   readonly cellSizeMm?: number;
   readonly removedComponentCount: number;
@@ -57,8 +60,20 @@ export type OutlineBlackCutPlanningContext = {
   readonly layers: readonly OutlineLayer[];
   readonly holeSelections: readonly CentralHoleSelection[];
   readonly launcherCandidates: readonly LauncherCandidateGroup[];
+  /** Private, bounded evidence used only to rank fixed launcher placement. */
+  readonly decorationContours: readonly FeatureContour[];
   readonly cellSizeMm: number;
   readonly deadline: number;
+};
+
+export type LauncherDecorationOverlap = {
+  readonly clipped: { readonly red: number; readonly blue: number };
+  readonly removed: { readonly red: number; readonly blue: number };
+};
+
+type LauncherDecorationDecision = LauncherDecorationOverlap & {
+  readonly deepFeatures: readonly FeatureContour[];
+  readonly lightFeatures: readonly FeatureContour[];
 };
 
 export type OutlineBlackCutPlan = {
@@ -280,6 +295,148 @@ function resolveBlackCuts(
   };
 }
 
+function extractDepthFeaturesForLayer(
+  projected: ProjectedMesh,
+  layer: OutlineLayer,
+  spec: OutlineLayerSpec,
+  layerIndex: number,
+  layerCount: number,
+  holeSelection: CentralHoleSelection,
+  cellSizeMm: number,
+  budgets: OutlineBudgets,
+  deadline: number,
+  blackCuts?: ExistingBlackCuts,
+): DepthFeatureResult {
+  return extractAdaptiveDepthFeatures(projected, {
+    layerId: layer.id,
+    layer: spec,
+    exterior: layer.contour.outer,
+    centralHole: holeSelection.hole?.outer,
+    exteriorAreaMm2: layer.simplifiedAreaMm2,
+    cellSizeMm,
+    planarDiameterMm: projected.planarDiameter,
+    budgets,
+    totalLayerCount: layerCount,
+    maximumFeaturesPerRole: layerIndex === layerCount - 1 ? 12 : 1,
+    protectedCuts: blackCuts?.engravingProtection?.removalEnvelopes
+      ?? [...(blackCuts?.launcherCuts ?? []), ...(blackCuts?.fastenerHoles ?? [])].map(({ outer }) => outer),
+    exteriorClearanceMm: blackCuts?.engravingProtection?.exteriorClearanceMm,
+    protectedCutClearanceMm: blackCuts?.engravingProtection?.requiredClearanceMm,
+    deadline,
+  });
+}
+
+function provisionalDepthFeatures(
+  projected: ProjectedMesh,
+  layers: readonly OutlineLayer[],
+  specs: readonly OutlineLayerSpec[],
+  holeSelections: readonly CentralHoleSelection[],
+  cellSizeMm: number,
+  budgets: OutlineBudgets,
+  deadline: number,
+): ReadonlyMap<number, DepthFeatureResult> {
+  const provisional = new Map<number, DepthFeatureResult>();
+  for (let index = Math.max(0, layers.length - 2); index < layers.length; index += 1) {
+    checkDeadline(deadline);
+    provisional.set(index, extractDepthFeaturesForLayer(
+      projected, layers[index], specs[index], index, layers.length,
+      holeSelections[index], cellSizeMm, budgets, deadline,
+    ));
+  }
+  return provisional;
+}
+
+function finishedLauncherEnvelopes(
+  layer: OutlineLayer,
+  holeSelection: CentralHoleSelection,
+  cuts: ExistingBlackCuts,
+  deadline: number,
+): readonly FeatureContour[] {
+  const protection = cuts.engravingProtection;
+  if (!protection || cuts.launcherCuts.length === 0) return [];
+  const firstLauncher = holeSelection.hole ? 1 : 0;
+  return protection.removalEnvelopes
+    .slice(firstLauncher, firstLauncher + cuts.launcherCuts.length)
+    .map((outer, index): FeatureContour => ({
+      id: `${layer.id}-launcher-finished-envelope-${index + 1}`,
+      role: 'CUT_BLACK',
+      outer,
+      boundsMm: contourBounds(outer, deadline),
+      areaMm2: Math.abs(signedArea(outer, deadline)),
+    }));
+}
+
+function protectLauncherFromDecoration(
+  layer: ColoredOutlineLayer,
+  provisional: DepthFeatureResult | undefined,
+  final: DepthFeatureResult,
+  finishedLauncherEnvelopes: readonly FeatureContour[],
+  protectedCutClearanceMm: number,
+  deadline: number,
+  checkpoint: () => void,
+): LauncherDecorationDecision {
+  const validateRemainders = (
+    red: readonly FeatureContour[],
+    blue: readonly FeatureContour[],
+    centralHole?: readonly Point2[],
+    clearanceMm = 0,
+  ): void => {
+    const validation = validateDepthFeatureContours({
+      exterior: layer.exterior.outer,
+      centralHole,
+      red,
+      blue,
+      clearanceMm,
+      deadline,
+      checkpoint,
+    });
+    if (!validation.ok) {
+      throw new RangeError(`Launcher-protected decoration remainder is invalid: ${validation.reasons.join('; ')}`);
+    }
+  };
+  validateRemainders(final.red, final.blue, layer.centralHole?.outer);
+  for (const envelope of finishedLauncherEnvelopes) {
+    validateRemainders(final.red, final.blue, envelope.outer, protectedCutClearanceMm);
+  }
+  const decision = {
+    clipped: { red: 0, blue: 0 },
+    removed: { red: 0, blue: 0 },
+  };
+  const classify = (
+    sources: readonly FeatureContour[],
+    remainders: readonly FeatureContour[],
+    role: 'red' | 'blue',
+  ): void => {
+    for (const source of sources) {
+      checkpoint();
+      checkDeadline(deadline);
+      const overlapsLauncher = finishedLauncherEnvelopes.some((envelope) => polygonsIntersectOrTouch(
+        { points: source.outer },
+        { points: envelope.outer },
+        checkpoint,
+      ));
+      if (!overlapsLauncher) continue;
+      const survives = remainders.some((remainder) => polygonsOverlapArea(
+        { points: source.outer },
+        { points: remainder.outer },
+        checkpoint,
+      ));
+      decision[survives ? 'clipped' : 'removed'][role] += 1;
+    }
+  };
+  classify(provisional?.red ?? [], final.red, 'red');
+  classify(provisional?.blue ?? [], final.blue, 'blue');
+  return {
+    deepFeatures: final.red,
+    lightFeatures: final.blue,
+    clipped: decision.clipped,
+    removed: decision.removed,
+  };
+}
+
+/** Test seam for the private provisional-to-final launcher decoration decision. */
+export const protectLauncherFromDecorationForTesting = protectLauncherFromDecoration;
+
 function withinDrift(sourceBounds: Bounds2, simplified: readonly Point2[], deadline: number): boolean {
   return boundsDriftRatio(sourceBounds, simplified, deadline) <= 0.03 + 1e-12;
 }
@@ -385,31 +542,36 @@ export function extractProjectedContours(
     holeRequests.push(holeRequest);
   }
   const holeSelections = selectSharedCentralHole(holeRequests);
+  const provisional = provisionalDepthFeatures(
+    projected, layers, specs, holeSelections, cellSizeMm, budgets, deadline,
+  );
   const blackCutPlan = resolveBlackCuts(options, {
     layers,
     holeSelections,
     launcherCandidates: launcherCandidateGroupsFromHoleCandidates(holeRequests.at(-1)?.candidates ?? [], deadline),
+    decorationContours: [...provisional.values()].flatMap(({ red, blue }) => [...red, ...blue]),
     cellSizeMm,
     deadline,
   });
   const blackCuts = blackCutPlan.cuts;
-  const depthFeatures = layers.map((layer, index) => extractAdaptiveDepthFeatures(projected, {
-      layerId: layer.id,
-      layer: specs[index],
-      exterior: layer.contour.outer,
-      centralHole: holeSelections[index].hole?.outer,
-      exteriorAreaMm2: layer.simplifiedAreaMm2,
-      cellSizeMm,
-      planarDiameterMm: projected.planarDiameter,
-      budgets,
-      totalLayerCount: specs.length,
-      maximumFeaturesPerRole: index === layers.length - 1 ? 12 : 1,
-      protectedCuts: blackCuts[index].engravingProtection?.removalEnvelopes
-        ?? [...blackCuts[index].launcherCuts, ...blackCuts[index].fastenerHoles].map(({ outer }) => outer),
-      exteriorClearanceMm: blackCuts[index].engravingProtection?.exteriorClearanceMm,
-      protectedCutClearanceMm: blackCuts[index].engravingProtection?.requiredClearanceMm,
-      deadline,
-    }));
+  const depthFeatures = layers.map((layer, index) => extractDepthFeaturesForLayer(
+    projected, layer, specs[index], index, layers.length, holeSelections[index],
+    cellSizeMm, budgets, deadline, blackCuts[index],
+  ));
+  const topIndex = layers.length - 1;
+  const topColored = colorizeExteriorLayers(
+    [layers[topIndex]], cellSizeMm, deadline, () => undefined,
+    [holeSelections[topIndex]], [depthFeatures[topIndex]], [blackCuts[topIndex]],
+  )[0];
+  const launcherDecision = protectLauncherFromDecoration(
+    topColored,
+    provisional.get(topIndex),
+    depthFeatures[topIndex],
+    finishedLauncherEnvelopes(layers[topIndex], holeSelections[topIndex], blackCuts[topIndex], deadline),
+    blackCuts[topIndex].engravingProtection?.requiredClearanceMm ?? 0,
+    deadline,
+    () => checkDeadline(deadline),
+  );
   const featureWarnings = new Set<string>();
   for (const warning of blackCutPlan.warnings ?? []) featureWarnings.add(warning);
   if (!holeSelections[0].hole) featureWarnings.add(CENTRAL_HOLE_OMISSION_WARNING);
@@ -417,8 +579,16 @@ export function extractProjectedContours(
   return {
     layers,
     holeSelections,
-    depthFeatures,
+    depthFeatures: depthFeatures.map((feature, index) => index === topIndex ? {
+      ...feature,
+      red: launcherDecision.deepFeatures,
+      blue: launcherDecision.lightFeatures,
+    } : feature),
     blackCuts,
+    launcherDecorationOverlap: {
+      clipped: launcherDecision.clipped,
+      removed: launcherDecision.removed,
+    },
     featureWarnings: [...featureWarnings],
     cellSizeMm,
     removedComponentCount,
@@ -709,31 +879,36 @@ export function extractExactContours(
     holeRequests.push(holeRequest);
   }
   const holeSelections = selectSharedCentralHole(holeRequests);
+  const provisional = provisionalDepthFeatures(
+    projected, layers, specs, holeSelections, cellSizeMm, budgets, deadline,
+  );
   const blackCutPlan = resolveBlackCuts(options, {
     layers,
     holeSelections,
     launcherCandidates: launcherCandidateGroupsFromHoleCandidates(holeRequests.at(-1)?.candidates ?? [], deadline),
+    decorationContours: [...provisional.values()].flatMap(({ red, blue }) => [...red, ...blue]),
     cellSizeMm,
     deadline,
   });
   const blackCuts = blackCutPlan.cuts;
-  const depthFeatures = layers.map((layer, index) => extractAdaptiveDepthFeatures(projected, {
-      layerId: layer.id,
-      layer: specs[index],
-      exterior: layer.contour.outer,
-      centralHole: holeSelections[index].hole?.outer,
-      exteriorAreaMm2: layer.simplifiedAreaMm2,
-      cellSizeMm,
-      planarDiameterMm: projected.planarDiameter,
-      budgets,
-      totalLayerCount: specs.length,
-      maximumFeaturesPerRole: index === layers.length - 1 ? 12 : 1,
-      protectedCuts: blackCuts[index].engravingProtection?.removalEnvelopes
-        ?? [...blackCuts[index].launcherCuts, ...blackCuts[index].fastenerHoles].map(({ outer }) => outer),
-      exteriorClearanceMm: blackCuts[index].engravingProtection?.exteriorClearanceMm,
-      protectedCutClearanceMm: blackCuts[index].engravingProtection?.requiredClearanceMm,
-      deadline,
-    }));
+  const depthFeatures = layers.map((layer, index) => extractDepthFeaturesForLayer(
+    projected, layer, specs[index], index, layers.length, holeSelections[index],
+    cellSizeMm, budgets, deadline, blackCuts[index],
+  ));
+  const topIndex = layers.length - 1;
+  const topColored = colorizeExteriorLayers(
+    [layers[topIndex]], cellSizeMm, deadline, () => undefined,
+    [holeSelections[topIndex]], [depthFeatures[topIndex]], [blackCuts[topIndex]],
+  )[0];
+  const launcherDecision = protectLauncherFromDecoration(
+    topColored,
+    provisional.get(topIndex),
+    depthFeatures[topIndex],
+    finishedLauncherEnvelopes(layers[topIndex], holeSelections[topIndex], blackCuts[topIndex], deadline),
+    blackCuts[topIndex].engravingProtection?.requiredClearanceMm ?? 0,
+    deadline,
+    () => checkDeadline(deadline),
+  );
   const featureWarnings = new Set<string>();
   for (const warning of blackCutPlan.warnings ?? []) featureWarnings.add(warning);
   if (!holeSelections[0].hole) featureWarnings.add(CENTRAL_HOLE_OMISSION_WARNING);
@@ -741,8 +916,16 @@ export function extractExactContours(
   return {
     layers,
     holeSelections,
-    depthFeatures,
+    depthFeatures: depthFeatures.map((feature, index) => index === topIndex ? {
+      ...feature,
+      red: launcherDecision.deepFeatures,
+      blue: launcherDecision.lightFeatures,
+    } : feature),
     blackCuts,
+    launcherDecorationOverlap: {
+      clipped: launcherDecision.clipped,
+      removed: launcherDecision.removed,
+    },
     featureWarnings: [...featureWarnings],
     removedComponentCount: 0,
   };

@@ -11,7 +11,7 @@ import {
   type LauncherPlan,
 } from '../src/domain/outline-assembly/launcher';
 import type { LauncherTemplate } from '../src/domain/outline-assembly/launcher-template';
-import type { AutomaticOutlineAssembly, FeatureContour } from '../src/domain/outline-features/types';
+import type { FeatureContour } from '../src/domain/outline-features/types';
 
 const MAX_RUNTIME_LAYERS = 24;
 const MAX_ARTIFACT_LAUNCHER_CUTS = 6;
@@ -19,7 +19,10 @@ const MAX_ARTIFACT_LAUNCHER_CUTS = 6;
 export type LauncherRuntimeGeometry = {
   readonly mode: OutlineMode;
   readonly material?: ManufacturingGeometryProfile;
-  readonly launcher: AutomaticOutlineAssembly['launcher'];
+  /** Independent legacy-plan gate input; canonical automatic output uses only fixed launcher evidence. */
+  readonly launcher:
+    | { readonly status: 'detected' | 'fallback'; readonly cutCount: 3; readonly assemblyAllowanceMm: 0.2 }
+    | { readonly status: 'omitted'; readonly cutCount: 0 };
   readonly layers: readonly {
     readonly id: string;
     readonly exterior: FeatureContour;
