@@ -23,6 +23,12 @@ export function recomputeLauncherDecorationOverlap(
   deadline: number,
   checkpoint: () => void,
 ): LauncherDecorationOverlap {
+  const guardedCheckpoint = (): void => {
+    checkpoint();
+    if (Date.now() > deadline) {
+      throw new RangeError('Launcher decoration overlap recomputation exceeded the runtime budget');
+    }
+  };
   const result = {
     clipped: { red: 0, blue: 0 },
     removed: { red: 0, blue: 0 },
@@ -36,20 +42,17 @@ export function recomputeLauncherDecorationOverlap(
       throw new RangeError('Internal provisional launcher decoration evidence exceeds the per-role bound');
     }
     for (const source of sources) {
-      checkpoint();
-      if (Date.now() > deadline) {
-        throw new RangeError('Launcher decoration overlap recomputation exceeded the runtime budget');
-      }
+      guardedCheckpoint();
       const overlapsLauncher = finishedLauncherEnvelopes.some((envelope) => polygonsIntersectOrTouch(
         { points: source.outer },
         { points: envelope.outer },
-        checkpoint,
+        guardedCheckpoint,
       ));
       if (!overlapsLauncher) continue;
       const survives = remainders.some((remainder) => polygonsOverlapArea(
         { points: source.outer },
         { points: remainder.outer },
-        checkpoint,
+        guardedCheckpoint,
       ));
       result[survives ? 'clipped' : 'removed'][role] += 1;
     }

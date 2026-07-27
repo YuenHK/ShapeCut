@@ -12,8 +12,6 @@ import {
   AutomaticOutlineError,
   convertAutomatically,
   stripAutomaticOutlineInternalEvidence,
-  type AutomaticOutlineResult,
-  type PublicAutomaticOutlineResult,
   type AutomaticOutlineProgress,
 } from '../domain/pipeline/automatic-outline-pipeline';
 import type { MeshRepairResult, TriangleMesh } from '../domain/mesh/types';
@@ -30,26 +28,11 @@ import {
   type OutlineArtifactId,
   type OutlinePackageTransfer,
 } from './geometry-api';
+import { InternalAutomaticResultCache } from './internal-automatic-result-cache';
 
 let nearLimitPackageWorkload: ReturnType<typeof nearLimitColoredResult> | undefined;
-const INTERNAL_RESULT_CACHE_LIMIT = 4;
-const internalResultCache = new Map<string, AutomaticOutlineResult>();
+const internalResultCache = new InternalAutomaticResultCache();
 const acceptanceProbeEnabled = new URL(globalThis.location.href).searchParams.get('shapecut-acceptance') === '1';
-
-function internalResultKey(
-  result: Pick<PublicAutomaticOutlineResult, 'sourceHash' | 'featureEvidenceFingerprint'>,
-): string {
-  return `${result.sourceHash}:${result.featureEvidenceFingerprint}`;
-}
-
-function cacheInternalResult(result: AutomaticOutlineResult): void {
-  const key = internalResultKey(result);
-  internalResultCache.delete(key);
-  internalResultCache.set(key, result);
-  while (internalResultCache.size > INTERNAL_RESULT_CACHE_LIMIT) {
-    internalResultCache.delete(internalResultCache.keys().next().value!);
-  }
-}
 
 globalThis.addEventListener('message', (event: MessageEvent<unknown>) => {
   if (!acceptanceProbeEnabled) return;
@@ -131,7 +114,7 @@ const geometryApi: GeometryApi = {
         ...request,
         material: validateManufacturingGeometryProfile(request.material),
       }, progress);
-      cacheInternalResult(internalResult);
+      internalResultCache.store(internalResult);
       return stripAutomaticOutlineInternalEvidence(internalResult);
     } catch (error) {
       if (error instanceof AutomaticOutlineError) {
@@ -150,7 +133,7 @@ const geometryApi: GeometryApi = {
       if ('internalValidationEvidence' in result) {
         throw new RangeError('Public package transfer must not contain internal validation evidence');
       }
-      const cached = internalResultCache.get(internalResultKey(result));
+      const cached = internalResultCache.resolve(result);
       if (!nearLimitPackageWorkload && !cached) {
         throw new RangeError('Internal validation evidence is unavailable for this public package request');
       }

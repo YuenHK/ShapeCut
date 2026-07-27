@@ -3,10 +3,12 @@ import { finalizer, releaseProxy, wrap, type Remote } from 'comlink';
 import { writeBinarySTL } from '../domain/mesh/write-stl';
 import {
   removalEvidenceFingerprint,
+  stripAutomaticOutlineInternalEvidence,
+  type AutomaticOutlineResult,
   type AutomaticOutlineProgressEvent,
 } from '../domain/pipeline/automatic-outline-pipeline';
 import { featureEvidenceFingerprint } from '../domain/outline-features/types';
-import { nearLimitColoredResult } from '../export/colored-outline-test-fixture';
+import { coloredResult, nearLimitColoredResult } from '../export/colored-outline-test-fixture';
 import type { TriangleMesh } from '../domain/mesh/types';
 import {
   interpenetratingTetrahedra,
@@ -18,6 +20,7 @@ import {
 import type { GeometryClient } from './geometry-client';
 import { createGeometryWorkerClient as createActualGeometryWorkerClient } from './geometry-client';
 import type { GeometryApi } from './geometry-api';
+import { InternalAutomaticResultCache } from './internal-automatic-result-cache';
 
 const clients: Array<Pick<GeometryClient, 'dispose'>> = [];
 const rawWorkerApis: Array<Remote<GeometryApi>> = [];
@@ -62,6 +65,15 @@ const launcherCompatibleCylinder = (segments = 32): TriangleMesh => {
   return { positions: new Float64Array(positions), indices: new Uint32Array(indices) };
 };
 
+function cacheResult(index: number): AutomaticOutlineResult {
+  const result = coloredResult();
+  return {
+    ...result,
+    sourceHash: index.toString(16).padStart(32, '0'),
+    featureEvidenceFingerprint: (15 - index).toString(16).repeat(32),
+  };
+}
+
 afterEach(() => {
   for (const client of clients.splice(0)) client.dispose();
   for (const api of rawWorkerApis.splice(0)) api[releaseProxy]();
@@ -69,6 +81,57 @@ afterEach(() => {
 });
 
 describe('geometry worker boundary', () => {
+  it('evicts the oldest entry when a fifth internal result enters the max-four cache', () => {
+    const cache = new InternalAutomaticResultCache(4);
+    const results = Array.from({ length: 5 }, (_, index) => cacheResult(index));
+    for (const result of results) cache.store(result);
+
+    expect(cache.resolve(stripAutomaticOutlineInternalEvidence(results[0]))).toBeUndefined();
+    expect(cache.size).toBe(4);
+  });
+
+  it('resolves the latest cache entry for worker-side packaging', () => {
+    const cache = new InternalAutomaticResultCache(4);
+    const results = Array.from({ length: 5 }, (_, index) => cacheResult(index));
+    for (const result of results) cache.store(result);
+
+    expect(cache.resolve(stripAutomaticOutlineInternalEvidence(results[4]))).toBe(results[4]);
+  });
+
+  it('replaces a same-key cache entry with its latest internal evidence', () => {
+    const cache = new InternalAutomaticResultCache(4);
+    const first = cacheResult(1);
+    const replacement = {
+      ...structuredClone(first),
+      internalValidationEvidence: {
+        launcherDecoration: {
+          ...structuredClone(first.internalValidationEvidence!.launcherDecoration),
+          protectedCutClearanceMm: 0.123456,
+        },
+      },
+    };
+    cache.store(first);
+    cache.store(replacement);
+
+    expect(cache.resolve(stripAutomaticOutlineInternalEvidence(first))).toBe(replacement);
+    expect(cache.size).toBe(1);
+  });
+
+  it('rejects cross-key evidence confusion and an evicted-key replay', () => {
+    const cache = new InternalAutomaticResultCache(4);
+    const results = Array.from({ length: 5 }, (_, index) => cacheResult(index));
+    cache.store(results[0]);
+    cache.store(results[1]);
+    const confused = {
+      ...stripAutomaticOutlineInternalEvidence(results[0]),
+      featureEvidenceFingerprint: results[1].featureEvidenceFingerprint,
+    };
+    expect(cache.resolve(confused)).toBeUndefined();
+
+    for (const result of results.slice(2)) cache.store(result);
+    expect(cache.resolve(stripAutomaticOutlineInternalEvidence(results[0]))).toBeUndefined();
+  });
+
   it('derives presentation data behind the cancellable worker boundary without detaching caller-owned STL bytes', async () => {
     const client = createGeometryWorkerClient();
     clients.push(client);
