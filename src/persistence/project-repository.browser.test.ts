@@ -1,5 +1,6 @@
 import Dexie from 'dexie';
 import { afterEach, describe, expect, it } from 'vitest';
+import { OFFICIAL_THREE_PRONG_TEMPLATE_VERSION } from '../domain/outline-assembly/launcher-template';
 import { createMaterialDatabase } from './database';
 import { ProjectRepository, sha256Hex, type StoredProjectV1 } from './project-repository';
 
@@ -16,7 +17,7 @@ describe('project browser persistence', () => {
     const stored: StoredProjectV1 = {
       schemaVersion: 1, id: 'browser-project', name: 'Browser project', step: 'axis',
       axis: { origin: [0, 0, 0], direction: [0, 0, 1], confidence: 0.9, confirmed: true },
-      settings: { splitPositionPercent: 50, ribCount: 6, ringLayers: 2, shaftMm: 3, fit: 'snug', materialId: 'plywood-3', engravingLevels: 3, textureStrength: 0.6, sheetWidthMm: 300, sheetHeightMm: 200 },
+      settings: { splitPositionPercent: 50, ribCount: 6, ringLayers: 2, shaftMm: 3, fit: 'snug', materialId: 'plywood-3', engravingLevels: 3, textureStrength: 0.6, sheetWidthMm: 300, sheetHeightMm: 200, launcherFitOffsetMm: 0, launcherTemplateVersion: OFFICIAL_THREE_PRONG_TEMPLATE_VERSION },
       repair: { mode: 'safe', algorithmVersion: 'safe-repair-v1', meshSha256: 'c'.repeat(64) },
       sourceSha256: await sha256Hex(source), updatedAt: new Date().toISOString(),
     };

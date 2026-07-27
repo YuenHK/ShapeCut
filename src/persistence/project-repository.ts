@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import type { Axis, WorkflowStep } from '../domain/types';
 import type { WizardSettings } from '../app/project-store';
+import { validateLauncherFitOffsetMm } from '../domain/outline-assembly/launcher-fit';
+import { OFFICIAL_THREE_PRONG_TEMPLATE_VERSION } from '../domain/outline-assembly/launcher-template';
 import { createMaterialDatabase, type MaterialDatabase } from './database';
 
 const Vec3Schema = z.tuple([z.number().finite(), z.number().finite(), z.number().finite()]);
@@ -10,7 +12,7 @@ const StoredRepairSchema = z.object({
   algorithmVersion: z.string().trim().min(1).max(200),
   meshSha256: z.string().regex(/^[0-9a-f]{64}$/i, 'Invalid repaired mesh SHA-256').transform((value) => value.toLowerCase()),
 }).strict();
-const SettingsSchema = z.object({
+const LegacySettingsSchema = z.object({
   splitPositionPercent: z.number().finite().min(10).max(90),
   ribCount: z.union([z.literal(4), z.literal(6), z.literal(8), z.literal(10), z.literal(12)]),
   ringLayers: z.number().int().min(1).max(24),
@@ -22,12 +24,28 @@ const SettingsSchema = z.object({
   sheetWidthMm: z.number().finite().positive(),
   sheetHeightMm: z.number().finite().positive(),
 }).strict();
-const StoredProjectBaseSchema = z.object({
+const SettingsSchema = LegacySettingsSchema.extend({
+  launcherFitOffsetMm: z.number().transform((value, context) => {
+    try {
+      return validateLauncherFitOffsetMm(value);
+    } catch {
+      context.addIssue({ code: 'custom', message: 'Invalid launcher fit offset' });
+      return z.NEVER;
+    }
+  }),
+  launcherTemplateVersion: z.number().int().positive(),
+}).strict();
+const StoredProjectFields = {
   schemaVersion: z.literal(1), id: z.string().trim().min(1).max(500), name: z.string().trim().min(1).max(500),
-  step: z.enum(['import', 'axis', 'decomposition', 'engraving', 'export']), axis: AxisSchema.optional(), settings: SettingsSchema,
+  step: z.enum(['import', 'axis', 'decomposition', 'engraving', 'export']), axis: AxisSchema.optional(),
   sourceSha256: z.string().regex(/^[0-9a-f]{64}$/i, 'Invalid source SHA-256').transform((value) => value.toLowerCase()),
   repair: StoredRepairSchema.optional(),
   updatedAt: z.string().datetime({ offset: true }),
+};
+const StoredProjectBaseSchema = z.object({ ...StoredProjectFields, settings: SettingsSchema }).strict();
+const StoredProjectReadSchema = z.object({
+  ...StoredProjectFields,
+  settings: z.union([SettingsSchema, LegacySettingsSchema]),
 }).strict();
 const StoredProjectSchema = StoredProjectBaseSchema.superRefine((project, context) => {
   if (['decomposition', 'engraving', 'export'].includes(project.step) && project.axis?.confirmed !== true) {
@@ -50,8 +68,17 @@ export type StoredProjectV1 = {
 };
 
 function parseStoredProject(value: unknown): StoredProjectV1 {
-  const parsed = StoredProjectBaseSchema.parse(value) as StoredProjectV1;
-  if (parsed.step !== 'import' && !parsed.repair) {
+  const stored = StoredProjectReadSchema.parse(value);
+  const settings = 'launcherFitOffsetMm' in stored.settings
+    ? stored.settings
+    : {
+      ...stored.settings,
+      launcherFitOffsetMm: 0,
+      launcherTemplateVersion: OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+    };
+  const parsed = { ...stored, settings } as StoredProjectV1;
+  if (parsed.step !== 'import' && (!parsed.repair
+    || parsed.settings.launcherTemplateVersion !== OFFICIAL_THREE_PRONG_TEMPLATE_VERSION)) {
     return { ...parsed, step: 'import', axis: undefined };
   }
   return StoredProjectSchema.parse(parsed) as StoredProjectV1;

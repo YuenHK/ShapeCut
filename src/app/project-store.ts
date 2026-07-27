@@ -1,6 +1,7 @@
 import { createStore } from 'zustand/vanilla';
 
 import type { Axis, ProjectV1, WorkflowStep } from '../domain/types';
+import { OFFICIAL_THREE_PRONG_TEMPLATE_VERSION } from '../domain/outline-assembly/launcher-template';
 
 const stepOrder: Record<WorkflowStep, number> = {
   import: 0,
@@ -55,6 +56,8 @@ export type WizardSettings = {
   readonly textureStrength: number;
   readonly sheetWidthMm: number;
   readonly sheetHeightMm: number;
+  readonly launcherFitOffsetMm: number;
+  readonly launcherTemplateVersion: number;
 };
 
 export function createProjectStore() {
@@ -74,6 +77,8 @@ export function createProjectStore() {
       textureStrength: 0.6,
       sheetWidthMm: 300,
       sheetHeightMm: 200,
+      launcherFitOffsetMm: 0,
+      launcherTemplateVersion: OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
     },
     setAxis: (axis) =>
       set({

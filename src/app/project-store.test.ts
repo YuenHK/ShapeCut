@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Axis, ProjectV1, WorkflowStep } from '../domain/types';
+import { OFFICIAL_THREE_PRONG_TEMPLATE_VERSION } from '../domain/outline-assembly/launcher-template';
 import { canEnterStep, createProjectStore } from './project-store';
 
 const confirmedAxis: Axis = Object.freeze({
@@ -102,6 +103,30 @@ describe('canEnterStep', () => {
 });
 
 describe('project workflow store', () => {
+  it('defaults launcher settings and preserves them through immutable load', () => {
+    const store = createProjectStore();
+
+    expect(store.getState().settings).toMatchObject({
+      launcherFitOffsetMm: 0,
+      launcherTemplateVersion: OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+    });
+
+    const saved = {
+      schemaVersion: 1 as const,
+      id: 'launcher-settings-project',
+      name: 'Launcher settings project',
+      step: 'axis' as const,
+      settings: { ...store.getState().settings, launcherFitOffsetMm: 0.05 },
+    };
+    store.getState().loadProject(saved);
+    (saved.settings as { launcherFitOffsetMm: number }).launcherFitOffsetMm = -0.05;
+
+    expect(store.getState().settings).toMatchObject({
+      launcherFitOffsetMm: 0.05,
+      launcherTemplateVersion: OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+    });
+  });
+
   it('loads persisted downstream state into a locked import checkpoint', () => {
     const store = createProjectStore();
 
