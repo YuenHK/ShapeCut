@@ -548,6 +548,17 @@ endsolid overflow`;
     }
   });
 
+  it('maps deadline expiry during fixed launcher structural scoring to a typed time limit', async () => {
+    const originalNow = Date.now;
+    Date.now = () => new Error().stack?.includes('fixedStructuralClearance') ? 30_001 : 0;
+    try {
+      await expect(convertAutomatically({ bytes: writeBinarySTL(cylinder(), 'safe') }))
+        .rejects.toMatchObject({ code: 'TIME_LIMIT' } satisfies Partial<AutomaticOutlineError>);
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
   it('rejects when the shared deadline expires before preview preparation', async () => {
     const originalNow = Date.now;
     const contourBounds = vi.spyOn(simplification, 'contourBounds');

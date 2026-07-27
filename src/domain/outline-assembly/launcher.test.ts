@@ -192,6 +192,33 @@ describe('fixed three-prong launcher planning', () => {
       code: 'LAUNCHER_INCOMPATIBLE',
     });
   });
+
+  it('preserves the exact checkpoint exception from structural-clearance scoring', () => {
+    const cancellation = new Error('structural-clearance cancelled');
+    const thrown = captureThrown(() => planFixedLauncherClearance({
+      ...safeRequest,
+      fitOffsetMm: 0,
+      checkpoint: () => {
+        if (new Error().stack?.includes('fixedStructuralClearance')) throw cancellation;
+      },
+    }));
+
+    expect(thrown).toBe(cancellation);
+  });
+
+  it('preserves the exact checkpoint exception from decoration-overlap scoring', () => {
+    const cancellation = new Error('decoration-overlap cancelled');
+    const thrown = captureThrown(() => planFixedLauncherClearance({
+      ...safeRequest,
+      fitOffsetMm: 0,
+      decorationContours: [contour('decoration', rectangle([25, 25]))],
+      checkpoint: () => {
+        if (new Error().stack?.includes('decorationOverlapCount')) throw cancellation;
+      },
+    }));
+
+    expect(thrown).toBe(cancellation);
+  });
 });
 
 describe('three-hook launcher detection', () => {

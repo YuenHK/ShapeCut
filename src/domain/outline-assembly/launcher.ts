@@ -435,6 +435,8 @@ function materializeFixedCuts(
   const finishedAllowanceMm = LAUNCHER_ASSEMBLY_ALLOWANCE_MM + fitOffsetMm;
   const finishedCuts: FeatureContour[] = [];
   const cuts: FeatureContour[] = [];
+  let minimumStructuralClearanceMm: number;
+  let overlapCount: number;
   try {
     for (let index = 0; index < 3; index += 1) {
       checkRuntime(deadline, guardedCheckpoint);
@@ -469,6 +471,12 @@ function materializeFixedCuts(
         areaMm2: Math.abs(signedArea(outer, deadline, guardedCheckpoint)),
       });
     }
+    minimumStructuralClearanceMm = fixedStructuralClearance(
+      finishedCuts, request, deadline, guardedCheckpoint,
+    );
+    overlapCount = decorationOverlapCount(
+      finishedCuts, request.decorationContours ?? [], deadline, guardedCheckpoint,
+    );
   } catch (error) {
     if (error instanceof LauncherPlanningCheckpointInterruption) throw error.original;
     if (error instanceof RangeError
@@ -487,12 +495,8 @@ function materializeFixedCuts(
     rotationRad,
     fitOffsetMm,
     finishedAllowanceMm,
-    minimumStructuralClearanceMm: fixedStructuralClearance(
-      finishedCuts, request, deadline, guardedCheckpoint,
-    ),
-    decorationOverlapCount: decorationOverlapCount(
-      finishedCuts, request.decorationContours ?? [], deadline, guardedCheckpoint,
-    ),
+    minimumStructuralClearanceMm,
+    decorationOverlapCount: overlapCount,
   };
 }
 
