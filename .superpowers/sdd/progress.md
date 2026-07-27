@@ -32,3 +32,9 @@ Second final-review round:
 - Added an explicit deterministic score-order fixture proving structural clearance precedes decoration overlap, which precedes rotation.
 - Removed the approved spec's trailing whitespace; `git diff --check 3dc11a0` now passes across the complete branch range.
 - Focused verification: 7 files / 140 tests passed; `npm run typecheck` and `npm run build` passed. The real-browser worker command again reached only the Vitest `RUN` banner without a terminal summary, matching the recorded browser RPC blocker.
+
+Third final-review round:
+- The permanent load-failure screen now offers a separate destructive but scoped recovery: delete only `one-click-current`. Conversion remains unmounted until deletion succeeds; deletion errors remain locked, sanitized, and retryable.
+- The local discard mask now re-arms whenever a newly saved record changes source SHA-256 or `updatedAt`. The regression fixture covers saved source A -> discard -> save source B -> confirm the source-B fingerprint gate is active before any source C can be selected.
+- Removed the stale browser test that expected an unsafe material ID to convert and fail during coupon packaging. Early unsafe-ID rejection is now verified both before client transfer in the reliable node suite and inside the real Chromium worker.
+- Focused verification: 8 files / 170 tests passed; targeted Chromium worker: 1 passed / 33 skipped; `npm run typecheck`, `npm run build`, and `git diff --check 3dc11a0` passed.

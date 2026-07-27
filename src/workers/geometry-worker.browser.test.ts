@@ -457,22 +457,6 @@ describe('geometry worker boundary', () => {
     });
   });
 
-  it('attributes a reachable launcher coupon validation failure to launcher-fit-coupon.svg', async () => {
-    const api = createRawGeometryWorkerApi();
-    const runtime = await api.convertAutomatically({
-      bytes: writeBinarySTL(launcherCompatibleCylinder(), 'safe'),
-      material: { ...testMaterial, id: 'coupon id with spaces' },
-      launcherFitOffsetMm: 0,
-    });
-
-    await expect(api.packageOutline(runtime)).rejects.toMatchObject({
-      name: 'OutlineArtifactError',
-      code: 'ARTIFACT_FAILURE',
-      artifact: 'launcher-fit-coupon.svg',
-      message: 'Outline artifact launcher-fit-coupon.svg could not be created.',
-    });
-  });
-
   it('rejects internal validation evidence presented across the public package transfer', async () => {
     const client = createGeometryWorkerClient();
     clients.push(client);

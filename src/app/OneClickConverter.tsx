@@ -411,6 +411,10 @@ export function OneClickConverter({
     return shutdownOutlineProcessRendererPool;
   }, []);
 
+  useEffect(() => {
+    setSavedProjectDiscarded(false);
+  }, [services.savedProject?.sourceSha256, services.savedProject?.updatedAt]);
+
   const releaseCurrentDownloads = useCallback(() => {
     revokeDownloads(downloadsRef.current);
     downloadsRef.current = undefined;

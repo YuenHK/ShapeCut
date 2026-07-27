@@ -86,6 +86,42 @@ describe('App', () => {
     expect(load).toHaveBeenCalledTimes(2);
   });
 
+  it('can explicitly discard one unreadable saved record before unlocking conversion', async () => {
+    const remove = vi.fn().mockResolvedValue(undefined);
+    render(<App services={services} materialRepository={emptyMaterialRepository} oneClickProjectRepository={{
+      load: vi.fn().mockRejectedValue(new Error('unreadable')),
+      save: vi.fn(),
+      delete: remove,
+    }} />);
+    const user = userEvent.setup();
+    expect(await screen.findByText(/已儲存專案未能載入/)).toBeVisible();
+    expect(screen.queryByLabelText('選擇 STL 模型')).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: '刪除無法讀取的已儲存專案' }));
+
+    expect(remove).toHaveBeenCalledOnce();
+    expect(await screen.findByLabelText('選擇 STL 模型')).toBeVisible();
+  });
+
+  it('remains fail closed with a sanitized retry when unreadable-record deletion fails', async () => {
+    const remove = vi.fn().mockRejectedValue(new Error('/Users/private/delete owner@example.test'));
+    render(<App services={services} materialRepository={emptyMaterialRepository} oneClickProjectRepository={{
+      load: vi.fn().mockRejectedValue(new Error('unreadable')),
+      save: vi.fn(),
+      delete: remove,
+    }} />);
+    const user = userEvent.setup();
+    await screen.findByText(/已儲存專案未能載入/);
+
+    await user.click(screen.getByRole('button', { name: '刪除無法讀取的已儲存專案' }));
+
+    const alert = await screen.findByText(/未能安全刪除/);
+    expect(alert).not.toHaveTextContent('/Users/private');
+    expect(alert).not.toHaveTextContent('owner@example.test');
+    expect(screen.queryByLabelText('選擇 STL 模型')).toBeNull();
+    expect(screen.getByRole('button', { name: '重試刪除無法讀取的已儲存專案' })).toBeEnabled();
+  });
+
   it('renders only the ShapeCut one-click experience', async () => {
     render(<App services={services} oneClickProjectRepository={emptyProjectRepository} />);
     expect(screen.getByRole('banner')).toHaveTextContent('ShapeCut');

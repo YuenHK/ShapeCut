@@ -238,6 +238,21 @@ describe('geometry worker client', () => {
     expect(api.convertAutomatically).not.toHaveBeenCalled();
   });
 
+  it('rejects an unsafe public material ID before transfer or remote invocation', async () => {
+    const api = inspectOnly(vi.fn());
+    const transferAutomaticRequest = vi.fn();
+    const client = makeGeometryClient(api, { transferAutomaticRequest });
+
+    await expect(client.convertAutomatically({
+      bytes: new ArrayBuffer(4),
+      material: { ...testMaterial, id: 'legacy material id' },
+      launcherFitOffsetMm: 0,
+    })).rejects.toThrow(/material id.*1-80.*ASCII/i);
+
+    expect(transferAutomaticRequest).not.toHaveBeenCalled();
+    expect(api.convertAutomatically).not.toHaveBeenCalled();
+  });
+
   it.each([NaN, Infinity, -0.21, 0.21, 0.005])('rejects fit offset %s before worker dispatch', async (launcherFitOffsetMm) => {
     const api = inspectOnly(vi.fn());
     const client = makeGeometryClient(api);

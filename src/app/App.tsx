@@ -97,6 +97,8 @@ export function App({
     | { readonly status: 'failed' }
   >({ status: 'loading' });
   const [projectLoadAttempt, setProjectLoadAttempt] = useState(0);
+  const [discardingUnreadableProject, setDiscardingUnreadableProject] = useState(false);
+  const [unreadableProjectDeleteFailed, setUnreadableProjectDeleteFailed] = useState(false);
   const [materialLoadFailed, setMaterialLoadFailed] = useState(false);
   const [chromeTarget, setChromeTarget] = useState<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -118,6 +120,7 @@ export function App({
   useEffect(() => {
     let active = true;
     setProjectLoad({ status: 'loading' });
+    setUnreadableProjectDeleteFailed(false);
     void projectRepository.load().then((project) => {
       if (active) setProjectLoad({ status: 'loaded', ...(project ? { project } : {}) });
     }).catch(() => {
@@ -125,6 +128,19 @@ export function App({
     });
     return () => { active = false; };
   }, [projectLoadAttempt, projectRepository]);
+  const discardUnreadableProject = async () => {
+    if (projectLoad.status !== 'failed' || discardingUnreadableProject) return;
+    setDiscardingUnreadableProject(true);
+    setUnreadableProjectDeleteFailed(false);
+    try {
+      await projectRepository.delete();
+      setProjectLoad({ status: 'loaded' });
+    } catch {
+      setUnreadableProjectDeleteFailed(true);
+    } finally {
+      setDiscardingUnreadableProject(false);
+    }
+  };
   const savedProject = projectLoad.status === 'loaded' ? projectLoad.project : undefined;
   const oneClickServices = useMemo<OneClickConverterServices>(() => ({
     ...services,
@@ -155,8 +171,20 @@ export function App({
         {projectLoad.status === 'failed' && (
           <section className="converter-card">
             <p role="alert">已儲存專案未能載入。為免覆寫現有資料，轉換功能已鎖定。</p>
+            {unreadableProjectDeleteFailed && (
+              <p role="alert">無法讀取的已儲存專案未能安全刪除；轉換功能仍然鎖定。</p>
+            )}
             <button type="button" onClick={() => setProjectLoadAttempt((attempt) => attempt + 1)}>
               重試載入已儲存專案
+            </button>
+            <button
+              type="button"
+              disabled={discardingUnreadableProject}
+              onClick={() => void discardUnreadableProject()}
+            >
+              {unreadableProjectDeleteFailed
+                ? '重試刪除無法讀取的已儲存專案'
+                : '刪除無法讀取的已儲存專案'}
             </button>
           </section>
         )}

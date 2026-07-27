@@ -172,23 +172,25 @@ describe('OneClickConverter', () => {
     const convert = vi.fn().mockResolvedValue(result);
     const saveProject = vi.fn().mockResolvedValue(undefined);
     const deleteSavedProject = vi.fn().mockResolvedValue(undefined);
-    render(<OneClickConverter services={services({
+    const initialSavedProject = {
+      schemaVersion: 1 as const,
+      id: 'one-click-current' as const,
+      updatedAt: '2026-07-28T00:00:00.000Z',
+      sourceSha256: await sha256Hex(bytes),
+      material: manufacturingGeometryProfile(READY_TEST_MATERIAL),
+      launcherFitOffsetMm: 0.05,
+      launcherTemplateVersion: OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+      launcherTemplateFingerprint: OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
+      canonicalSourceHash: result.sourceHash,
+      status: 'regeneration-required' as const,
+    };
+    const api = services({
       convert,
       saveProject,
       deleteSavedProject,
-      savedProject: {
-        schemaVersion: 1,
-        id: 'one-click-current',
-        updatedAt: '2026-07-28T00:00:00.000Z',
-        sourceSha256: await sha256Hex(bytes),
-        material: manufacturingGeometryProfile(READY_TEST_MATERIAL),
-        launcherFitOffsetMm: 0.05,
-        launcherTemplateVersion: OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
-        launcherTemplateFingerprint: OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
-        canonicalSourceHash: result.sourceHash,
-        status: 'regeneration-required',
-      },
-    })} />);
+      savedProject: initialSavedProject,
+    });
+    const view = render(<OneClickConverter services={api} />);
     const file = new File([bytes], 'reattached.stl');
 
     await user.upload(screen.getByLabelText('選擇 STL 模型'), file);
@@ -214,6 +216,14 @@ describe('OneClickConverter', () => {
     await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['different'], 'different.stl'));
     await user.selectOptions(await screen.findByLabelText('選擇製作材料'), READY_TEST_MATERIAL.id);
     expect(convert).toHaveBeenCalledTimes(2);
+    expect(await screen.findByRole('heading', { name: '轉換完成' })).toBeVisible();
+
+    const replacement = vi.mocked(saveProject).mock.calls[1][0];
+    view.rerender(<OneClickConverter services={{ ...api, savedProject: replacement }} />);
+
+    expect(await screen.findByRole('button', { name: '捨棄已儲存專案並選擇另一個模型' })).toBeVisible();
+    expect(screen.queryByLabelText('選擇 STL 模型')).toBeNull();
+    expect(replacement.sourceSha256).toBe(await sha256Hex(new TextEncoder().encode('different')));
   });
 
   it('keeps every workflow state inside one workbench without changing actions', async () => {
