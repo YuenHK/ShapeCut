@@ -309,8 +309,8 @@ describe('geometry worker client', () => {
     firstRemote.resolve(automaticResult('ignored'));
   });
 
-  it('accepts only the four public automatic error codes for rehydration', () => {
-    for (const code of ['INVALID_STL', 'NO_OUTLINE', 'RESOURCE_LIMIT', 'TIME_LIMIT']) {
+  it('accepts only the five public automatic error codes for rehydration', () => {
+    for (const code of ['INVALID_STL', 'NO_OUTLINE', 'RESOURCE_LIMIT', 'TIME_LIMIT', 'LAUNCHER_INCOMPATIBLE']) {
       expect(isSerializedAutomaticOutlineError({ name: 'AutomaticOutlineError', code, message: code })).toBe(true);
     }
     expect(isSerializedAutomaticOutlineError({

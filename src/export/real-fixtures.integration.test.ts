@@ -167,7 +167,25 @@ async function expectPackageMatchesDocument(output: RealOutput): Promise<void> {
   const expectedJson = JSON.parse(JSON.stringify(output.project));
   expect(JSON.parse(output.files.projectJson)).toEqual(expectedJson);
   const zip = await JSZip.loadAsync(output.files.zip);
+  const records = Object.values(zip.files).filter(({ dir }) => !dir);
+  expect(records.map(({ name }) => name).sort()).toEqual([
+    ...output.files.sheets.flatMap((_files, sheetIndex) => {
+      const number = String(sheetIndex + 1).padStart(2, '0');
+      return [
+        `01-cut-files/material-sheet-${number}.dxf`,
+        `01-cut-files/material-sheet-${number}.svg`,
+      ];
+    }),
+    '02-instructions/assembly-guide.pdf',
+    '02-instructions/parts-map.svg',
+    '03-settings/material-recipe.pdf',
+    '03-settings/project-settings.json',
+    'preflight-report.pdf',
+  ].sort());
+  expect(await zip.file('03-settings/project-settings.json')!.async('string')).toBe(output.files.projectJson);
   expect(JSON.parse(await zip.file('03-settings/project-settings.json')!.async('string'))).toEqual(expectedJson);
+  expect(await zip.file('02-instructions/assembly-guide.pdf')!.async('uint8array'))
+    .toEqual(output.files.assemblyPdf);
   for (const [sheetIndex, files] of output.files.sheets.entries()) {
     const number = String(sheetIndex + 1).padStart(2, '0');
     expect(await zip.file(`01-cut-files/material-sheet-${number}.svg`)!.async('string')).toBe(files.svg);

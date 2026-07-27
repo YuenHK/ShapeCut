@@ -136,6 +136,7 @@ beforeAll(async () => {
     dxf: output.cutDxf,
     previewPdf: output.previewPdf,
     explodedPdf: output.explodedViewPdf,
+    launcherCouponSvg: output.launcherCouponSvg,
   };
 });
 
@@ -316,6 +317,7 @@ async function zipWithArtifacts(value: ColoredArtifactPayloads): Promise<Uint8Ar
   zip.file('cut-and-engrave.dxf', value.dxf, { date });
   zip.file('preview.pdf', value.previewPdf, { date });
   zip.file('exploded-view.pdf', value.explodedPdf, { date });
+  zip.file('launcher-fit-coupon.svg', value.launcherCouponSvg!, { date });
   return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
 }
 
@@ -404,6 +406,21 @@ describe('release E2E colored artifact parsers', () => {
     const fastenerIndex = reordered.findIndex(({ id }) => id === 'layer-6-fastener-hole-1');
     [reordered[launcherIndex], reordered[fastenerIndex]] = [reordered[fastenerIndex], reordered[launcherIndex]];
     expect(() => validateColoredEntityRecords(reordered, 'black reorder')).toThrow(/canonical|array/i);
+
+    const renamed = structuredClone(entities);
+    renamed[launcherIndex] = {
+      ...renamed[launcherIndex],
+      id: 'renamed-layer-6-launcher-clearance-1',
+    };
+    expect(() => validateColoredEntityRecords(renamed, 'launcher rename')).toThrow(/canonical|identity|launcher/i);
+
+    const swappedOwnership = structuredClone(entities);
+    const layerFiveLauncher = swappedOwnership.findIndex(({ id }) => id === 'layer-5-launcher-clearance-1');
+    const layerFiveId = swappedOwnership[layerFiveLauncher].id;
+    const layerSixId = swappedOwnership[launcherIndex].id;
+    swappedOwnership[layerFiveLauncher] = { ...swappedOwnership[layerFiveLauncher], id: layerSixId };
+    swappedOwnership[launcherIndex] = { ...swappedOwnership[launcherIndex], id: layerFiveId };
+    expect(() => validateColoredEntityRecords(swappedOwnership, 'launcher ownership')).toThrow(/canonical|identity|launcher/i);
   });
 
   it('reconciles a genuine converted package with fixed launcher and three shared fasteners', async () => {
@@ -421,6 +438,7 @@ describe('release E2E colored artifact parsers', () => {
       dxf: packaged.cutDxf,
       previewPdf: packaged.previewPdf,
       explodedPdf: packaged.explodedViewPdf,
+      launcherCouponSvg: packaged.launcherCouponSvg,
     });
     const summary = releaseSummary(result);
     expect(() => expectReleaseAssemblyGeometry(summary, inspected)).not.toThrow();
@@ -449,6 +467,7 @@ describe('release E2E colored artifact parsers', () => {
       dxf: omitted.cutDxf,
       previewPdf: omitted.previewPdf,
       explodedPdf: omitted.explodedViewPdf,
+      launcherCouponSvg: omitted.launcherCouponSvg,
     };
 
     const inspected = await inspectColoredArtifacts(payloads);
@@ -565,18 +584,26 @@ describe('release E2E colored artifact parsers', () => {
     ]));
   });
 
-  it('enumerates the exact four ZIP records in encounter order and reconciles byte identity', async () => {
+  it('enumerates the exact five ZIP records in encounter order and reconciles byte identity', async () => {
     const zip = await parseColoredZipRecords(output.zip);
     expect(zip.map(({ name }) => name)).toEqual([
       'cut-and-engrave.svg',
       'cut-and-engrave.dxf',
       'preview.pdf',
       'exploded-view.pdf',
+      'launcher-fit-coupon.svg',
     ]);
 
     const inspected = await inspectColoredArtifacts(artifacts);
     expect(inspected.entities).toEqual(parseColoredOutlineSvgArtifact(output.cutSvg).entities);
     expect(inspected.zipRecords.every(({ byteIdentical }) => byteIdentical)).toBe(true);
+  });
+
+  it('requires a distinct standalone launcher coupon instead of counting the ZIP member twice', async () => {
+    await expect(inspectColoredArtifacts({
+      ...artifacts,
+      launcherCouponSvg: undefined as unknown as string,
+    })).rejects.toThrow(/standalone|coupon|download/i);
   });
 
   it.each([
@@ -614,10 +641,10 @@ describe('release E2E colored artifact parsers', () => {
     })).toThrow(/coupon.*kerf|kerf.*coupon/i);
   });
 
-  it('compares all five bounded downloads from bytes rather than trusting equal diagnostic digests', () => {
+  it('compares all six bounded downloads from bytes rather than trusting equal diagnostic digests', () => {
     type ByteEvidence = {
       readonly sha256: string;
-      readonly downloadBytes: Readonly<Record<'zip' | 'svg' | 'dxf' | 'previewPdf' | 'explodedPdf', Uint8Array>>;
+      readonly downloadBytes: Readonly<Record<'zip' | 'svg' | 'dxf' | 'previewPdf' | 'explodedPdf' | 'launcherCouponSvg', Uint8Array>>;
     };
     const bytes = {
       zip: Uint8Array.of(1, 2, 3),
@@ -625,18 +652,19 @@ describe('release E2E colored artifact parsers', () => {
       dxf: Uint8Array.of(5),
       previewPdf: Uint8Array.of(6),
       explodedPdf: Uint8Array.of(7),
+      launcherCouponSvg: Uint8Array.of(8),
     } as const;
     const first = { sha256: 'same-reported-digest', downloadBytes: bytes };
     const copied = Object.fromEntries(Object.entries(bytes).map(([name, payload]) => [name, payload.slice()])) as ByteEvidence['downloadBytes'];
     expect(compareDownloadedOutlineBytes(first, { sha256: 'same-reported-digest', downloadBytes: copied })).toMatchObject({
       byteIdentical: true,
-      comparedArtifactCount: 5,
+      comparedArtifactCount: 6,
     });
     expect(() => compareDownloadedOutlineBytes(first, {
       sha256: 'same-reported-digest',
       downloadBytes: { ...bytes, zip: Uint8Array.of(1, 2, 4) },
     })).toThrow(/ZIP.*byte/i);
-    for (const name of ['svg', 'dxf', 'previewPdf', 'explodedPdf'] as const) {
+    for (const name of ['svg', 'dxf', 'previewPdf', 'explodedPdf', 'launcherCouponSvg'] as const) {
       expect(() => compareDownloadedOutlineBytes(first, {
         sha256: 'same-reported-digest',
         downloadBytes: { ...bytes, [name]: Uint8Array.of(255) },
@@ -728,13 +756,13 @@ describe('release E2E colored artifact parsers', () => {
 
   it('rejects a duplicate ZIP record that a high-level parser can collapse', async () => {
     const duplicate = duplicateFirstCentralDirectoryRecord(output.zip);
-    expect(Object.keys((await JSZip.loadAsync(duplicate)).files)).toHaveLength(4);
-    await expect(parseColoredZipRecords(duplicate)).rejects.toThrow(/four|duplicate|record/i);
+    expect(Object.keys((await JSZip.loadAsync(duplicate)).files)).toHaveLength(5);
+    await expect(parseColoredZipRecords(duplicate)).rejects.toThrow(/five|duplicate|record/i);
   });
 
   it('rejects an orphan local ZIP record not referenced by the central directory', async () => {
     const orphan = insertOrphanLocalRecord(output.zip);
-    expect(Object.keys((await JSZip.loadAsync(orphan)).files)).toHaveLength(4);
+    expect(Object.keys((await JSZip.loadAsync(orphan)).files)).toHaveLength(5);
     await expect(parseColoredZipRecords(orphan)).rejects.toThrow(/local|coverage|record/i);
   });
 
@@ -744,6 +772,7 @@ describe('release E2E colored artifact parsers', () => {
     zip.file('cut-and-engrave.dxf', output.cutDxf);
     zip.file('preview.pdf', output.previewPdf);
     zip.file('exploded-view.pdf', output.explodedViewPdf);
+    zip.file('launcher-fit-coupon.svg', output.launcherCouponSvg);
     const unsafe = await zip.generateAsync({ type: 'uint8array' });
 
     await expect(parseColoredZipRecords(unsafe)).rejects.toThrow(/unsafe|canonical|name/i);

@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { finalizer, releaseProxy, wrap, type Remote } from 'comlink';
 import { writeBinarySTL } from '../domain/mesh/write-stl';
 import {
-  removalEvidenceFingerprint,
   stripAutomaticOutlineInternalEvidence,
   type AutomaticOutlineResult,
   type AutomaticOutlineProgressEvent,
@@ -13,7 +12,6 @@ import type { TriangleMesh } from '../domain/mesh/types';
 import {
   interpenetratingTetrahedra,
   openTetrahedron,
-  separatedClosedCylinders,
   tetrahedron,
   tetrahedronWithOneReversedFace,
 } from '../test/mesh-builders';
@@ -47,10 +45,6 @@ function createRawGeometryWorkerApi(): Remote<GeometryApi> {
   rawWorkerApis.push(api);
   return api;
 }
-const scaledOpenTetrahedron = () => {
-  const mesh = openTetrahedron();
-  return { ...mesh, positions: new Float64Array(Array.from(mesh.positions, (value) => value * 20)) };
-};
 const launcherCompatibleCylinder = (segments = 32): TriangleMesh => {
   const positions: number[] = [0, 0, -1, 0, 0, 1];
   const indices: number[] = [];
@@ -64,6 +58,22 @@ const launcherCompatibleCylinder = (segments = 32): TriangleMesh => {
     const bottom = 2 + index * 2, top = bottom + 1;
     const nextBottom = 2 + next * 2, nextTop = nextBottom + 1;
     indices.push(0, bottom, nextBottom, 1, nextTop, top);
+    indices.push(bottom, top, nextTop, bottom, nextTop, nextBottom);
+  }
+  return { positions: new Float64Array(positions), indices: new Uint32Array(indices) };
+};
+const launcherCompatibleOpenCylinder = (segments = 32): TriangleMesh => {
+  const positions: number[] = [];
+  const indices: number[] = [];
+  for (let index = 0; index < segments; index += 1) {
+    const angle = index / segments * Math.PI * 2;
+    positions.push(30 * Math.cos(angle), 30 * Math.sin(angle), -1);
+    positions.push(30 * Math.cos(angle), 30 * Math.sin(angle), 1);
+  }
+  for (let index = 0; index < segments; index += 1) {
+    const next = (index + 1) % segments;
+    const bottom = index * 2, top = bottom + 1;
+    const nextBottom = next * 2, nextTop = nextBottom + 1;
     indices.push(bottom, top, nextTop, bottom, nextTop, nextBottom);
   }
   return { positions: new Float64Array(positions), indices: new Uint32Array(indices) };
@@ -213,7 +223,7 @@ describe('geometry worker boundary', () => {
   it('proxies automatic progress monotonically across Comlink and transfers the STL bytes', async () => {
     const client = createGeometryWorkerClient();
     clients.push(client);
-    const source = writeBinarySTL(scaledOpenTetrahedron(), 'safe');
+    const source = writeBinarySTL(launcherCompatibleOpenCylinder(), 'safe');
     const progress: AutomaticOutlineProgressEvent[] = [];
     const released = vi.fn();
     const onProgress = Object.assign(
@@ -246,7 +256,7 @@ describe('geometry worker boundary', () => {
       { [finalizer]: released },
     );
 
-    await expect(client.convertAutomatically({ bytes: writeBinarySTL(tetrahedron(), 'safe') }, onProgress))
+    await expect(client.convertAutomatically({ bytes: writeBinarySTL(launcherCompatibleCylinder(), 'safe') }, onProgress))
       .rejects.toThrow('progress receiver closed');
     await vi.waitFor(() => expect(released).toHaveBeenCalledOnce());
   });
@@ -378,11 +388,11 @@ describe('geometry worker boundary', () => {
       expect.objectContaining({ type: 'APPLY' }),
     ));
 
-    const replacement = client.convertAutomatically({ bytes: writeBinarySTL(scaledOpenTetrahedron(), 'safe') });
+    const replacement = client.convertAutomatically({ bytes: writeBinarySTL(launcherCompatibleCylinder(), 'safe') });
 
     await expect(first).resolves.toBeInstanceOf(Error);
     await expect(first).resolves.toMatchObject({ name: 'SupersededError', code: 'SUPERSEDED', jobId: 1 });
-    await expect(replacement).resolves.toMatchObject({ mode: 'outline-2.5d', status: 'warning' });
+    await expect(replacement).resolves.toMatchObject({ mode: 'exact', status: 'warning' });
     expect(terminate).toHaveBeenCalled();
     await vi.waitFor(() => expect(released).toHaveBeenCalledOnce());
   });
@@ -390,51 +400,21 @@ describe('geometry worker boundary', () => {
   it('terminates in-flight outline packaging when a replacement conversion starts', async () => {
     const client = createGeometryWorkerClient();
     clients.push(client);
-    const runtime = await client.convertAutomatically({ bytes: writeBinarySTL(separatedClosedCylinders(256), 'safe') });
-    for (const [layerIndex, coloredLayer] of runtime.coloredLayers.entries()) {
-      const layer = runtime.layers[layerIndex];
-      const clockwise = coloredLayer.exterior.outer.reduce((sum, point, index) => {
-        const next = coloredLayer.exterior.outer[(index + 1) % coloredLayer.exterior.outer.length];
-        return sum + point[0] * next[1] - next[0] * point[1];
-      }, 0) < 0;
-      const originalBounds = coloredLayer.exterior.boundsMm;
-      const centerX = (originalBounds.minX + originalBounds.maxX) / 2;
-      const centerY = (originalBounds.minY + originalBounds.maxY) / 2;
-      const radiusX = (originalBounds.maxX - originalBounds.minX) / 2;
-      const radiusY = (originalBounds.maxY - originalBounds.minY) / 2;
-      const points = Array.from({ length: 4096 }, (_, index) => {
-        const angle = (clockwise ? -1 : 1) * index / 4096 * Math.PI * 2;
-        return [centerX + radiusX * Math.cos(angle), centerY + radiusY * Math.sin(angle)] as const;
-      });
-      const area = Math.abs(points.reduce((sum, point, index) => {
-        const next = points[(index + 1) % points.length];
-        return sum + point[0] * next[1] - next[0] * point[1];
-      }, 0) / 2);
-      Object.assign(coloredLayer.exterior, { outer: points, areaMm2: area });
-      Object.assign(layer, {
-        contour: { outer: points, holes: [] }, sourceAreaMm2: area, simplifiedAreaMm2: area,
-        sourceBoundsMm: { ...originalBounds },
-      });
-    }
-    Object.assign(runtime.preview, { layers: runtime.coloredLayers });
-    Object.assign(runtime, {
-      removalEvidenceFingerprint: removalEvidenceFingerprint(runtime),
-      featureEvidenceFingerprint: featureEvidenceFingerprint(runtime),
-    });
+    const runtime = await client.convertAutomatically({ bytes: writeBinarySTL(launcherCompatibleCylinder(256), 'safe') });
     const terminate = vi.spyOn(Worker.prototype, 'terminate');
     const postMessage = vi.spyOn(Worker.prototype, 'postMessage');
     const priorApplyCount = postMessage.mock.calls.length;
     const first = client.packageOutline(runtime).catch((error: unknown) => error);
     await vi.waitFor(() => expect(postMessage.mock.calls.length).toBeGreaterThan(priorApplyCount));
 
-    const replacement = client.convertAutomatically({ bytes: writeBinarySTL(separatedClosedCylinders(), 'safe') });
+    const replacement = client.convertAutomatically({ bytes: writeBinarySTL(launcherCompatibleCylinder(), 'safe') });
 
     await expect(first).resolves.toMatchObject({ name: 'SupersededError', code: 'SUPERSEDED' });
-    await expect(replacement).resolves.toMatchObject({ mode: 'outline-2.5d', status: 'warning' });
+    await expect(replacement).resolves.toMatchObject({ mode: 'exact', status: 'warning' });
     expect(terminate).toHaveBeenCalled();
   });
 
-  it('transfers exactly the four colored artifacts plus ZIP across the worker boundary', async () => {
+  it('transfers exactly the five colored artifacts plus ZIP across the worker boundary', async () => {
     const client = createGeometryWorkerClient();
     clients.push(client);
     const runtime = await client.convertAutomatically({ bytes: writeBinarySTL(launcherCompatibleCylinder(), 'safe') });
@@ -443,12 +423,13 @@ describe('geometry worker boundary', () => {
     const packaged = await client.packageOutline(runtime);
 
     expect(Object.keys(packaged).sort()).toEqual([
-      'cutDxf', 'cutSvg', 'explodedViewPdf', 'previewPdf', 'zip',
+      'cutDxf', 'cutSvg', 'explodedViewPdf', 'launcherCouponSvg', 'previewPdf', 'zip',
     ]);
     expect(packaged.cutSvg).toContain('CUT_BLACK');
     expect(packaged.cutDxf).toContain('DEEP_RED');
     expect(packaged.previewPdf.byteLength).toBeGreaterThan(0);
     expect(packaged.explodedViewPdf.byteLength).toBeGreaterThan(0);
+    expect(packaged.launcherCouponSvg).toContain('data-template-fingerprint=');
     expect(packaged.zip.byteLength).toBeGreaterThan(0);
   });
 
@@ -465,7 +446,7 @@ describe('geometry worker boundary', () => {
   it('returns a bounded artifact identity for a non-timeout packaging failure', async () => {
     const client = createGeometryWorkerClient();
     clients.push(client);
-    const runtime = await client.convertAutomatically({ bytes: writeBinarySTL(scaledOpenTetrahedron(), 'safe') });
+    const runtime = await client.convertAutomatically({ bytes: writeBinarySTL(launcherCompatibleCylinder(), 'safe') });
     Object.assign(runtime, { featureEvidenceFingerprint: 'f'.repeat(32) });
 
     await expect(client.packageOutline(runtime)).rejects.toMatchObject({
@@ -516,11 +497,11 @@ describe('geometry worker boundary', () => {
 
     let replacement!: ReturnType<GeometryClient['convertAutomatically']>;
     expect(() => {
-      replacement = client.convertAutomatically({ bytes: writeBinarySTL(scaledOpenTetrahedron(), 'safe') });
+      replacement = client.convertAutomatically({ bytes: writeBinarySTL(launcherCompatibleCylinder(), 'safe') });
     }).not.toThrow();
 
     await expect(first).resolves.toMatchObject({ name: 'SupersededError', code: 'SUPERSEDED' });
-    await expect(replacement).resolves.toMatchObject({ mode: 'outline-2.5d', status: 'warning' });
+    await expect(replacement).resolves.toMatchObject({ mode: 'exact', status: 'warning' });
     expect(released).toHaveBeenCalledOnce();
     expect(terminate).toHaveBeenCalled();
   });
@@ -550,19 +531,19 @@ describe('geometry worker boundary', () => {
       }, options);
     } as typeof MessagePort.prototype.addEventListener);
     const first = client.convertAutomatically(
-      { bytes: writeBinarySTL(scaledOpenTetrahedron(), 'safe') },
+      { bytes: writeBinarySTL(launcherCompatibleCylinder(), 'safe') },
       (event) => { observed.push(`old:${event.stage}`); },
     ).catch((error: unknown) => error);
     await vi.waitFor(() => expect(queuedMessages.length).toBeGreaterThan(0));
     const replacement = client.convertAutomatically(
-      { bytes: writeBinarySTL(scaledOpenTetrahedron(), 'safe') },
+      { bytes: writeBinarySTL(launcherCompatibleCylinder(), 'safe') },
       (event) => { observed.push(`new:${event.stage}`); },
     );
     addEventListener.mockRestore();
     for (const deliver of queuedMessages) deliver();
 
     await first;
-    await expect(replacement).resolves.toMatchObject({ mode: 'outline-2.5d', status: 'warning' });
+    await expect(replacement).resolves.toMatchObject({ mode: 'exact', status: 'warning' });
     expect(observed).toEqual([
       'new:reading',
       'new:analyzing',

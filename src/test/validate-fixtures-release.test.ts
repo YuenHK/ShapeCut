@@ -81,11 +81,15 @@ describe.sequential('release fixture validation command', () => {
       expect(summary.launcherRuntimeValidation).toEqual([
         expect.objectContaining({
           caseId: 'reference-a', runtimeStatus: 'fixed', fixedPlan: 'safe',
-          safePlanCount: 1, artifactCutCount: 6,
+          safePlanCount: 1, artifactCutCount: 6, templateVersion: 1,
+          templateFingerprint: expect.stringMatching(/^[0-9a-f]{32}$/),
+          fitOffsetMm: 0,
         }),
         expect.objectContaining({
           caseId: 'reference-b', runtimeStatus: 'fixed', fixedPlan: 'safe',
-          safePlanCount: 1, artifactCutCount: 6,
+          safePlanCount: 1, artifactCutCount: 6, templateVersion: 1,
+          templateFingerprint: expect.stringMatching(/^[0-9a-f]{32}$/),
+          fitOffsetMm: 0,
         }),
       ]);
       expect(JSON.stringify(summary.launcherRuntimeValidation)).not.toMatch(/detected|fallback|omitted/i);

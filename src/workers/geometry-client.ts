@@ -289,6 +289,7 @@ const AUTOMATIC_OUTLINE_ERROR_CODES: ReadonlySet<string> = new Set([
   'NO_OUTLINE',
   'RESOURCE_LIMIT',
   'TIME_LIMIT',
+  'LAUNCHER_INCOMPATIBLE',
 ]);
 
 export function isSerializedAutomaticOutlineError(

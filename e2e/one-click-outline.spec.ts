@@ -48,6 +48,7 @@ async function captureCompleteReleaseRun(page: Page, fixture: ReleaseFixture) {
       'cut-and-engrave.dxf',
       'cut-and-engrave.svg',
       'exploded-view.pdf',
+      'launcher-fit-coupon.svg',
       'preview.pdf',
     ]);
 
@@ -86,7 +87,7 @@ function expectFullRunDuration(durationMs: number): void {
 }
 
 for (const fixture of fixtures) {
-  test(`${fixture.label} completes warning-mode output with five reconciled downloads`, async ({ page }, testInfo) => {
+  test(`${fixture.label} completes warning-mode output with six reconciled downloads`, async ({ page }, testInfo) => {
     expect(fixture.path, `${fixture.env} must point to the external local acceptance fixture`).toBeTruthy();
     expect(existsSync(fixture.path!), `${fixture.env} must point to a readable file`).toBe(true);
     test.setTimeout(120_000);
@@ -121,7 +122,7 @@ for (const fixture of fixtures) {
         comparedByteCount: Object.values(byteComparison.byteLengths).reduce((sum, count) => sum + count, 0),
         diagnosticSha256Equal: byteComparison.diagnosticSha256.first === byteComparison.diagnosticSha256.repeated,
         timing: {
-          interval: 'upload-to-reconciled-five-downloads',
+          interval: 'upload-to-reconciled-six-downloads',
           firstFullRunDurationMs: first.durationMs,
           repeatedFullRunDurationMs: repeated.durationMs,
         },

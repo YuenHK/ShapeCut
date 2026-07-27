@@ -1,10 +1,11 @@
 import { expect, test } from '@playwright/test';
-import { readFile, writeFile } from 'node:fs/promises';
+import { writeFile } from 'node:fs/promises';
 import {
   armWorkerPackageReplacement,
   downloadAndInspectOutline,
   expectResult,
   installWorkerResultProbe,
+  launcherCompatibleStlFixture,
   readWorkerProbeState,
   selectModel,
 } from './helpers';
@@ -69,7 +70,7 @@ test.describe.configure({ mode: 'serial' });
 test('safe conversion has no 100 ms main-thread task through preview, explosion, both PDFs, and URLs', async ({ page }, testInfo) => {
   test.setTimeout(45_000);
   await page.goto('/');
-  await selectModel(page, 'fixtures/acceptance/symmetric-smooth.stl', async () => {
+  await selectModel(page, launcherCompatibleStlFixture(), async () => {
     await installLongTaskObserver(page);
     await mark(page, 'selectedAt');
   });
@@ -137,18 +138,14 @@ test('feature-rich PDF packaging is terminated and replaced by a second complete
   test.setTimeout(60_000);
   await installWorkerResultProbe(page);
   await page.goto('/');
-  const replacement = {
-    name: 'replacement-safe.stl',
-    mimeType: 'model/stl',
-    buffer: await readFile('fixtures/acceptance/symmetric-smooth.stl'),
-  };
+  const replacement = launcherCompatibleStlFixture('replacement-safe.stl');
   await selectModel(
-    page, 'fixtures/acceptance/symmetric-textured.stl',
+    page, launcherCompatibleStlFixture('initial-safe.stl'),
     () => armWorkerPackageReplacement(page, replacement),
   );
   const expectedWorkload = [{
-    layers: 24, contoursPerLayer: 4,
-    minimumPointsPerContour: 512, maximumPointsPerContour: 512, totalPoints: 49_152,
+    layers: 24, contoursPerLayer: 4.25,
+    minimumPointsPerContour: 96, maximumPointsPerContour: 512, totalPoints: 49_728,
   }];
   await expect.poll(async () => (await readWorkerProbeState(page)).packageWorkloads).toEqual(expectedWorkload);
   const armed = await readWorkerProbeState(page);

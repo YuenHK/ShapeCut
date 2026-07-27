@@ -230,15 +230,16 @@ function regularLoop(
 }
 
 /**
- * Test-only legal packaging workload: the 24-layer maximum, all four contours,
- * and 512 points per contour (49,152 segments). The 1,024-point variant took
- * 90.3 s on the acceptance host, so it cannot satisfy the 30 s worker boundary.
+ * Test-only legal packaging workload: the 24-layer maximum, four 512-point
+ * contours on every layer, plus the fixed launcher on the top two layers
+ * (49,728 segments). The 1,024-point variant took 90.3 s on the acceptance
+ * host, so it cannot satisfy the 30 s worker boundary.
  */
 export function nearLimitColoredResult(pointCount = 512): AutomaticOutlineResult {
   const seed = coloredResult(), layerCount = 24;
   const coloredLayers: ColoredOutlineLayer[] = Array.from({ length: layerCount }, (_, index) => {
     const id = `stress-layer-${index + 1}`;
-    const exterior = contour(`${id}-exterior`, 'CUT_BLACK', regularLoop(0, 0, 20, pointCount, true));
+    const exterior = contour(`${id}-exterior`, 'CUT_BLACK', regularLoop(0, 0, 30, pointCount, true));
     const centralHole = contour(`${id}-hole`, 'CUT_BLACK', regularLoop(0, 0, 3, pointCount, false));
     const deepFeature = contour(`${id}-deep`, 'DEEP_RED', regularLoop(-9, 0, 2, pointCount, true));
     const lightFeature = contour(`${id}-light`, 'LIGHT_BLUE', regularLoop(9, 0, 2, pointCount, true));

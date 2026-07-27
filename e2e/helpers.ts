@@ -33,6 +33,34 @@ import {
   OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
 } from '../src/domain/outline-assembly/launcher-template';
 import { READY_TEST_MATERIAL } from '../src/test/ready-material';
+import { writeBinarySTL } from '../src/domain/mesh/write-stl';
+import type { TriangleMesh } from '../src/domain/mesh/types';
+
+export function launcherCompatibleStlFixture(
+  name = 'launcher-compatible-cylinder.stl',
+  radiusMm = 30,
+  segments = 32,
+): { readonly name: string; readonly mimeType: 'model/stl'; readonly buffer: Buffer } {
+  const positions: number[] = [0, 0, -1, 0, 0, 1];
+  const indices: number[] = [];
+  for (let index = 0; index < segments; index += 1) {
+    const angle = index / segments * Math.PI * 2;
+    positions.push(radiusMm * Math.cos(angle), radiusMm * Math.sin(angle), -1);
+    positions.push(radiusMm * Math.cos(angle), radiusMm * Math.sin(angle), 1);
+  }
+  for (let index = 0; index < segments; index += 1) {
+    const next = (index + 1) % segments;
+    const bottom = 2 + index * 2, top = bottom + 1;
+    const nextBottom = 2 + next * 2, nextTop = nextBottom + 1;
+    indices.push(0, bottom, nextBottom, 1, nextTop, top);
+    indices.push(bottom, top, nextTop, bottom, nextTop, nextBottom);
+  }
+  const mesh: TriangleMesh = {
+    positions: new Float64Array(positions),
+    indices: new Uint32Array(indices),
+  };
+  return { name, mimeType: 'model/stl', buffer: Buffer.from(writeBinarySTL(mesh, 'safe')) };
+}
 
 export const COLORED_ROLES = ['CUT_BLACK', 'DEEP_RED', 'LIGHT_BLUE'] as const;
 export type ColoredRole = typeof COLORED_ROLES[number];
@@ -157,8 +185,8 @@ export type ColoredArtifactPayloads = {
   readonly explodedPdf: Uint8Array;
   readonly rawSvg?: Uint8Array;
   readonly rawDxf?: Uint8Array;
-  /** Added to the UI download set in Task 6; ZIP-only callers remain supported meanwhile. */
-  readonly launcherCouponSvg?: string;
+  /** The standalone sixth download; it must also be byte-identical to the ZIP member. */
+  readonly launcherCouponSvg: string;
   readonly rawLauncherCouponSvg?: Uint8Array;
 };
 
@@ -168,6 +196,7 @@ export type BoundedDownloadBytes = {
   readonly dxf: Uint8Array;
   readonly previewPdf: Uint8Array;
   readonly explodedPdf: Uint8Array;
+  readonly launcherCouponSvg: Uint8Array;
 };
 
 export type ParsedColoredZipRecord = {
@@ -446,12 +475,28 @@ export function validateColoredEntityRecords(entities: readonly ColoredEntityRec
       throw new Error(`${label} role encounter order or per-layer cardinality is invalid`);
     }
     const black = records.filter(({ role }) => role === 'CUT_BLACK');
+    const layerId = records[0].physicalLayerId;
+    if (black[0].id !== `${layerId}-exterior`) {
+      throw new Error(`${label} black exterior identity is not canonical`);
+    }
     const remainder = black.slice(1);
-    const central = remainder.filter(({ id }) => id.endsWith('-hole') && !id.includes('-fastener-hole-'));
-    const launcher = remainder.filter(({ id }) => id.includes('-launcher-clearance-'));
-    const fastener = remainder.filter(({ id }) => id.includes('-fastener-hole-'));
+    const central = remainder.filter(({ id }) => id === `${layerId}-hole`);
+    const launcher = remainder.filter(({ id }) => (
+      [1, 2, 3].some((index) => id === `${layerId}-launcher-clearance-${index}`)
+    ));
+    const fastener = remainder.filter(({ id }) => (
+      [1, 2, 3].some((index) => id === `${layerId}-fastener-hole-${index}`)
+    ));
     if (central.length > 1 || launcher.length > 3 || fastener.length > 3
       || remainder.length !== central.length + launcher.length + fastener.length
+      || exact(launcher.map(({ id }) => id)) !== exact(Array.from(
+        { length: launcher.length },
+        (_unused, index) => `${layerId}-launcher-clearance-${index + 1}`,
+      ))
+      || exact(fastener.map(({ id }) => id)) !== exact(Array.from(
+        { length: fastener.length },
+        (_unused, index) => `${layerId}-fastener-hole-${index + 1}`,
+      ))
       || exact(remainder.map(({ id }) => id)) !== exact([
         ...central.map(({ id }) => id),
         ...launcher.map(({ id }) => id),
@@ -590,8 +635,16 @@ export function expectReleaseAssemblyGeometry(
       exterior.points[0][1] - layer.exteriorPoints[0][1],
     ];
     assertTranslatedReleaseContours(layer.exteriorPoints.length > 0 ? [layer.exteriorPoints] : [], [exterior], translation, 'Release exterior');
-    assertTranslatedReleaseContours(launcher, exported.filter(({ id }) => id.includes('-launcher-clearance-')), translation, 'Release launcher');
-    assertTranslatedReleaseContours(holes, exported.filter(({ id }) => id.includes('-fastener-hole-')), translation, 'Release fastener');
+    assertTranslatedReleaseContours(launcher, launcher.map((_contour, index) => {
+      const entity = exported.find(({ id }) => id === `${layer.id}-launcher-clearance-${index + 1}`);
+      if (!entity) throw new Error('Release launcher artifact identity is not canonical');
+      return entity;
+    }), translation, 'Release launcher');
+    assertTranslatedReleaseContours(holes, holes.map((_contour, index) => {
+      const entity = exported.find(({ id }) => id === `${layer.id}-fastener-hole-${index + 1}`);
+      if (!entity) throw new Error('Release fastener artifact identity is not canonical');
+      return entity;
+    }), translation, 'Release fastener');
     assertTranslatedReleaseContours(deep, exported.filter(({ role }) => role === 'DEEP_RED'), translation, 'Release deep feature');
     assertTranslatedReleaseContours(light, exported.filter(({ role }) => role === 'LIGHT_BLUE'), translation, 'Release light feature');
   });
@@ -1651,13 +1704,14 @@ export function parseLauncherFitCouponArtifact(svg: string): ParsedLauncherFitCo
   };
 }
 
-const DOWNLOAD_BYTE_KEYS = ['zip', 'svg', 'dxf', 'previewPdf', 'explodedPdf'] as const;
+const DOWNLOAD_BYTE_KEYS = ['zip', 'svg', 'dxf', 'previewPdf', 'explodedPdf', 'launcherCouponSvg'] as const;
 const DOWNLOAD_BYTE_LABELS: Readonly<Record<typeof DOWNLOAD_BYTE_KEYS[number], string>> = Object.freeze({
   zip: 'ZIP',
   svg: 'SVG',
   dxf: 'DXF',
   previewPdf: 'preview PDF',
   explodedPdf: 'exploded PDF',
+  launcherCouponSvg: 'launcher fit coupon SVG',
 });
 const MAX_INDIVIDUAL_DOWNLOAD_BYTES = 16 * 1024 * 1024;
 const MAX_TOTAL_DOWNLOAD_BYTES = 64 * 1024 * 1024;
@@ -1686,7 +1740,7 @@ export function compareDownloadedOutlineBytes(
   repeated: Pick<DownloadedOutline, 'downloadBytes' | 'sha256'>,
 ): {
   readonly byteIdentical: true;
-  readonly comparedArtifactCount: 5;
+  readonly comparedArtifactCount: 6;
   readonly byteLengths: Readonly<Record<typeof DOWNLOAD_BYTE_KEYS[number], number>>;
   readonly diagnosticSha256: { readonly first: string; readonly repeated: string };
 } {
@@ -1699,7 +1753,7 @@ export function compareDownloadedOutlineBytes(
   }
   return {
     byteIdentical: true,
-    comparedArtifactCount: 5,
+    comparedArtifactCount: 6,
     byteLengths: Object.fromEntries(DOWNLOAD_BYTE_KEYS.map((key) => [key, first.downloadBytes[key].byteLength])) as Record<typeof DOWNLOAD_BYTE_KEYS[number], number>,
     diagnosticSha256: { first: first.sha256, repeated: repeated.sha256 },
   };
@@ -1958,17 +2012,17 @@ function assertPublicText(value: string, label: string): void {
 export async function inspectColoredArtifacts(payloads: ColoredArtifactPayloads): Promise<DownloadedOutline> {
   const encodedSvg = new TextEncoder().encode(payloads.svg);
   const encodedDxf = new TextEncoder().encode(payloads.dxf);
+  if (typeof payloads.launcherCouponSvg !== 'string') {
+    throw new Error('A distinct standalone launcher fit coupon download is required');
+  }
+  const encodedLauncherCoupon = new TextEncoder().encode(payloads.launcherCouponSvg);
   if ((payloads.rawSvg && !bytesEqual(payloads.rawSvg, encodedSvg))
-    || (payloads.rawDxf && !bytesEqual(payloads.rawDxf, encodedDxf))) {
+    || (payloads.rawDxf && !bytesEqual(payloads.rawDxf, encodedDxf))
+    || (payloads.rawLauncherCouponSvg && (
+      !bytesEqual(payloads.rawLauncherCouponSvg, encodedLauncherCoupon)
+    ))) {
     throw new Error('Decoded text artifacts do not exactly round-trip to their captured download bytes');
   }
-  const downloadBytes = retainBoundedDownloadBytes({
-    zip: payloads.zip,
-    svg: payloads.rawSvg ?? encodedSvg,
-    dxf: payloads.rawDxf ?? encodedDxf,
-    previewPdf: payloads.previewPdf,
-    explodedPdf: payloads.explodedPdf,
-  });
   const svg = parseColoredOutlineSvgArtifact(payloads.svg);
   const dxf = parseColoredOutlineDxfArtifact(payloads.dxf);
   const entityTuple = (entity: ColoredEntityRecord) => [
@@ -2008,20 +2062,24 @@ export async function inspectColoredArtifacts(payloads: ColoredArtifactPayloads)
     throw new Error('Launcher fit coupon SVG is not canonical UTF-8');
   }
   const launcherCoupon = parseLauncherFitCouponArtifact(zippedLauncherCouponSvg);
-  if (payloads.launcherCouponSvg !== undefined) {
-    const encoded = new TextEncoder().encode(payloads.launcherCouponSvg);
-    if ((payloads.rawLauncherCouponSvg && !bytesEqual(payloads.rawLauncherCouponSvg, encoded))
-      || !bytesEqual(couponRecord.payload, encoded)) {
-      throw new Error('Launcher fit coupon download and ZIP member are not byte-identical');
-    }
-    parseLauncherFitCouponArtifact(payloads.launcherCouponSvg);
+  if (!bytesEqual(couponRecord.payload, encodedLauncherCoupon)) {
+    throw new Error('Launcher fit coupon download and ZIP member are not byte-identical');
   }
+  parseLauncherFitCouponArtifact(payloads.launcherCouponSvg);
+  const downloadBytes = retainBoundedDownloadBytes({
+    zip: payloads.zip,
+    svg: payloads.rawSvg ?? encodedSvg,
+    dxf: payloads.rawDxf ?? encodedDxf,
+    previewPdf: payloads.previewPdf,
+    explodedPdf: payloads.explodedPdf,
+    launcherCouponSvg: payloads.rawLauncherCouponSvg ?? encodedLauncherCoupon,
+  });
   const individual = new Map<typeof EXPECTED_ZIP_NAMES[number], Uint8Array>([
     ['cut-and-engrave.svg', new TextEncoder().encode(payloads.svg)],
     ['cut-and-engrave.dxf', new TextEncoder().encode(payloads.dxf)],
     ['preview.pdf', payloads.previewPdf],
     ['exploded-view.pdf', payloads.explodedPdf],
-    ['launcher-fit-coupon.svg', couponRecord.payload],
+    ['launcher-fit-coupon.svg', encodedLauncherCoupon],
   ]);
   const reconciledZip = zipRecords.map((record) => ({
     ...record,
@@ -2137,7 +2195,7 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
       seen.add(candidate);
       const value = candidate as Record<string, unknown>;
       if (value.name === 'AutomaticOutlineError' && typeof value.code === 'string'
-        && ['INVALID_STL', 'NO_OUTLINE', 'RESOURCE_LIMIT', 'TIME_LIMIT'].includes(value.code)
+        && ['INVALID_STL', 'NO_OUTLINE', 'RESOURCE_LIMIT', 'TIME_LIMIT', 'LAUNCHER_INCOMPATIBLE'].includes(value.code)
         && !state.errorCodes.includes(value.code)) state.errorCodes.push(value.code);
       if ((value.mode === 'exact' || value.mode === 'outline-2.5d')
         && (value.status === 'success' || value.status === 'warning')
@@ -2495,12 +2553,13 @@ async function captureDownload(page: Page, linkName: string, expectedFileName: s
 export async function downloadAndInspectOutline(page: Page): Promise<DownloadedOutline> {
   const expectedLinks = [
     ['下載 ZIP 製作套件', 'shapecut-files.zip'],
+    ['下載三爪尺寸測試片', 'launcher-fit-coupon.svg'],
     ['下載 SVG', 'cut-and-engrave.svg'],
     ['下載 DXF', 'cut-and-engrave.dxf'],
     ['下載 平面預覽 PDF', 'preview.pdf'],
     ['下載 爆炸圖 PDF', 'exploded-view.pdf'],
   ] as const;
-  await expect(page.locator('a[download]')).toHaveCount(5);
+  await expect(page.locator('a[download]')).toHaveCount(6);
   const downloads = new Map<string, Uint8Array>();
   for (const [label, fileName] of expectedLinks) {
     downloads.set(fileName, await captureDownload(page, label, fileName));
@@ -2512,8 +2571,10 @@ export async function downloadAndInspectOutline(page: Page): Promise<DownloadedO
     dxf: decode('cut-and-engrave.dxf'),
     previewPdf: downloads.get('preview.pdf')!,
     explodedPdf: downloads.get('exploded-view.pdf')!,
+    launcherCouponSvg: decode('launcher-fit-coupon.svg'),
     rawSvg: downloads.get('cut-and-engrave.svg')!,
     rawDxf: downloads.get('cut-and-engrave.dxf')!,
+    rawLauncherCouponSvg: downloads.get('launcher-fit-coupon.svg')!,
   });
 }
 
