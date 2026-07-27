@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isSafePublicMaterialId } from './material-id';
 
 export const FIT_NAMES = ['loose', 'slip', 'snug', 'press'] as const;
 export const PROCESS_NAMES = ['cut', 'score', 'engrave1', 'engrave2', 'engrave3', 'engrave4', 'engrave5'] as const;
@@ -325,6 +326,16 @@ export type MaterialReadiness = {
 };
 
 export function classifyMaterialReadiness(value: unknown): MaterialReadiness {
+  if (value !== null && typeof value === 'object' && !Array.isArray(value)
+    && !isSafePublicMaterialId((value as { readonly id?: unknown }).id)) {
+    return {
+      status: 'block',
+      reasons: [{
+        code: 'invalid-profile',
+        message: 'Material ID must use 1-80 ASCII letters, digits, dots, underscores, or hyphens and start with a letter or digit.',
+      }],
+    };
+  }
   const parsed = MaterialProfileSchema.safeParse(value);
   if (!parsed.success) {
     const messages = parsed.error.issues.map(({ message }) => message);

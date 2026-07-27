@@ -1,9 +1,10 @@
 import { z } from 'zod';
 import { MaterialProfileSchema, type MaterialProfileV1 } from './schema';
+import { SAFE_PUBLIC_MATERIAL_ID } from './material-id';
 
 const boundedText = z.string().trim().min(1).max(500);
 const finiteMillimetres = z.number().finite();
-export const SAFE_PUBLIC_MATERIAL_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$/;
+export { SAFE_PUBLIC_MATERIAL_ID } from './material-id';
 const publicMaterialId = z.string().regex(
   SAFE_PUBLIC_MATERIAL_ID,
   'Material ID must be 1-80 ASCII letters, digits, dots, underscores, or hyphens and start with a letter or digit.',

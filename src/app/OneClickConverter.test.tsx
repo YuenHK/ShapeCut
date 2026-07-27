@@ -171,9 +171,11 @@ describe('OneClickConverter', () => {
     const bytes = new TextEncoder().encode('saved mesh');
     const convert = vi.fn().mockResolvedValue(result);
     const saveProject = vi.fn().mockResolvedValue(undefined);
+    const deleteSavedProject = vi.fn().mockResolvedValue(undefined);
     render(<OneClickConverter services={services({
       convert,
       saveProject,
+      deleteSavedProject,
       savedProject: {
         schemaVersion: 1,
         id: 'one-click-current',
@@ -206,6 +208,12 @@ describe('OneClickConverter', () => {
       status: 'ready',
       launcherTemplateFingerprint: OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
     }));
+
+    await user.click(screen.getByRole('button', { name: '捨棄已儲存專案並選擇另一個模型' }));
+    expect(deleteSavedProject).toHaveBeenCalledOnce();
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['different'], 'different.stl'));
+    await user.selectOptions(await screen.findByLabelText('選擇製作材料'), READY_TEST_MATERIAL.id);
+    expect(convert).toHaveBeenCalledTimes(2);
   });
 
   it('keeps every workflow state inside one workbench without changing actions', async () => {

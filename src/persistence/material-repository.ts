@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { MaterialProfileSchema, classifyMaterialReadiness, type MaterialProfileV1 } from '../domain/materials/schema';
+import { isSafePublicMaterialId } from '../domain/materials/material-id';
 import { createMaterialDatabase, type MaterialDatabase, type StoredMaterialProfile } from './database';
 
 const MaterialIdSchema = z.string().trim().min(1).max(500);
@@ -12,7 +13,10 @@ function decodeStoredProfile(value: unknown): MaterialProfileV1 {
     const storedStatus = CalibrationStatusSchema.parse(clone.calibrationStatus);
     delete clone.calibrationStatus;
     const profile = MaterialProfileSchema.parse(clone);
-    z.literal(classifyMaterialReadiness(profile).status).parse(storedStatus);
+    const readiness = classifyMaterialReadiness(profile);
+    if (isSafePublicMaterialId(profile.id)) {
+      z.literal(readiness.status).parse(storedStatus);
+    }
     return profile;
   }
   return MaterialProfileSchema.parse(value);

@@ -49,6 +49,7 @@ function parse(value: unknown): StoredOneClickProjectV1 {
 export interface OneClickProjectRepositoryPort {
   load(): Promise<StoredOneClickProjectV1 | undefined>;
   save(value: StoredOneClickProjectV1): Promise<void>;
+  delete(): Promise<void>;
 }
 
 export class OneClickProjectRepository implements OneClickProjectRepositoryPort {
@@ -59,5 +60,8 @@ export class OneClickProjectRepository implements OneClickProjectRepositoryPort 
   }
   async save(value: StoredOneClickProjectV1): Promise<void> {
     await this.database.oneClickProjects.put(structuredClone(parse(value)));
+  }
+  async delete(): Promise<void> {
+    await this.database.oneClickProjects.delete('one-click-current');
   }
 }

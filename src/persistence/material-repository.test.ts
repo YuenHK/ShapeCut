@@ -67,8 +67,8 @@ describe('MaterialRepository', () => {
     await Dexie.delete(databaseName);
   });
 
-  it('migrates the database to V2 while retaining the required material indexes', () => {
-    expect(database.verno).toBe(2);
+  it('migrates the database to V3 while retaining the required material indexes', () => {
+    expect(database.verno).toBe(3);
     const indexes = database.materials.schema.indexes.map(({ name }) => name);
     expect(indexes).toEqual(expect.arrayContaining([
       'machine',
@@ -77,6 +77,22 @@ describe('MaterialRepository', () => {
       'physicalCouponVerified',
     ]));
     expect(database.projects.schema.indexes.map(({ name }) => name)).toEqual(expect.arrayContaining(['name', 'updatedAt', 'sourceSha256', 'step']));
+  });
+
+  it('reads an unsafe-ID legacy record without throwing so readiness can block it actionably', async () => {
+    const legacy = { ...completeProfile, id: 'legacy material id', calibrationStatus: 'ready' as const };
+    await database.materials.put(legacy);
+
+    const [loaded] = await repository.list();
+
+    expect(loaded.id).toBe(legacy.id);
+    expect(classifyMaterialReadiness(loaded)).toEqual({
+      status: 'block',
+      reasons: [expect.objectContaining({
+        code: 'invalid-profile',
+        message: expect.stringMatching(/material id.*1-80.*ASCII/i),
+      })],
+    });
   });
 
   it('round-trips the complete V1 record through genuine IndexedDB and does not leak mutable references', async () => {

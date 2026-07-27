@@ -595,6 +595,23 @@ function withoutPrivatePlacementScore(plan: ScoredFixedLauncherPlan): FixedLaunc
   return publicPlan;
 }
 
+export function compareLauncherPlacementScores(
+  left: Readonly<{
+    minimumStructuralClearanceMm: number;
+    decorationOverlapCount: number;
+    rotationRad: number;
+  }>,
+  right: Readonly<{
+    minimumStructuralClearanceMm: number;
+    decorationOverlapCount: number;
+    rotationRad: number;
+  }>,
+): number {
+  return right.minimumStructuralClearanceMm - left.minimumStructuralClearanceMm
+    || left.decorationOverlapCount - right.decorationOverlapCount
+    || left.rotationRad - right.rotationRad;
+}
+
 export function planFixedLauncherClearance(request: FixedLauncherClearanceRequest): FixedLauncherPlan {
   const deadline = request.deadline ?? Date.now() + 30_000;
   const checkpoint = request.checkpoint ?? (() => undefined);
@@ -621,11 +638,7 @@ export function planFixedLauncherClearance(request: FixedLauncherClearanceReques
     const planned = materializeFixedCuts(loops, request, fitOffsetMm, rotationRad);
     if (planned) candidates.push(planned);
   }
-  const ranked = candidates.sort(
-    (left, right) => right.minimumStructuralClearanceMm - left.minimumStructuralClearanceMm
-      || left.decorationOverlapCount - right.decorationOverlapCount
-      || left.rotationRad - right.rotationRad,
-  );
+  const ranked = candidates.sort(compareLauncherPlacementScores);
   const selected = ranked.find((planned) => launcherCutsArePhysicallySafe({
     cuts: planned.cuts,
     top: { exterior: request.topExterior, centralHole: request.topCentralHole },

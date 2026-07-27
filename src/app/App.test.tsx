@@ -8,11 +8,26 @@ import { App, createDownloadUrls } from './App';
 import { BLOCKED_TEST_MATERIAL, READY_TEST_MATERIAL } from '../test/ready-material';
 import { defaultPendingMaterialProfile } from '../domain/materials/default-profiles';
 import { manufacturingGeometryProfile } from '../domain/materials/manufacturing-profile';
+import type { StoredOneClickProjectV1 } from '../persistence/one-click-project-repository';
+import {
+  OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
+  OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+} from '../domain/outline-assembly/launcher-template';
 
 const services: OneClickConverterServices = {
   convert: vi.fn(() => new Promise<AutomaticOutlineResult>(() => undefined)),
   package: vi.fn(() => new Promise<OutlineDownloads>(() => undefined)),
   cancel: vi.fn(),
+};
+const emptyProjectRepository = {
+  load: vi.fn().mockResolvedValue(undefined),
+  save: vi.fn(),
+  delete: vi.fn(),
+};
+const emptyMaterialRepository = {
+  list: vi.fn().mockResolvedValue([]),
+  get: vi.fn(),
+  importJson: vi.fn(),
 };
 
 function deferred<T>() {
@@ -22,20 +37,69 @@ function deferred<T>() {
 }
 
 describe('App', () => {
-  it('renders only the ShapeCut one-click experience', () => {
-    render(<App services={services} />);
+  const savedProject: StoredOneClickProjectV1 = {
+    schemaVersion: 1,
+    id: 'one-click-current',
+    updatedAt: '2026-07-28T00:00:00.000Z',
+    sourceSha256: 'a'.repeat(64),
+    material: manufacturingGeometryProfile(READY_TEST_MATERIAL),
+    launcherFitOffsetMm: 0,
+    launcherTemplateVersion: OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+    launcherTemplateFingerprint: OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
+    canonicalSourceHash: 'b'.repeat(32),
+    status: 'ready',
+  };
+
+  it('does not expose conversion while saved-project loading is unsettled', async () => {
+    const pending = deferred<StoredOneClickProjectV1 | undefined>();
+    render(<App services={services} materialRepository={emptyMaterialRepository} oneClickProjectRepository={{
+      load: vi.fn(() => pending.promise),
+      save: vi.fn(),
+      delete: vi.fn(),
+    }} />);
+
+    expect(screen.getByRole('status')).toHaveTextContent('正在載入已儲存專案');
+    expect(screen.queryByLabelText('選擇 STL 模型')).toBeNull();
+
+    await act(async () => { pending.resolve(savedProject); await pending.promise; });
+    expect(await screen.findByText(/需要重新連結原本 STL/)).toBeVisible();
+  });
+
+  it('fails closed on saved-project load failure and only offers sanitized retry', async () => {
+    const load = vi.fn()
+      .mockRejectedValueOnce(new Error('/Users/private/project.db owner@example.test'))
+      .mockResolvedValueOnce(undefined);
+    render(<App services={services} materialRepository={emptyMaterialRepository} oneClickProjectRepository={{
+      load,
+      save: vi.fn(),
+      delete: vi.fn(),
+    }} />);
+
+    const alert = await screen.findByText(/已儲存專案未能載入/);
+    expect(alert).toHaveTextContent('已儲存專案未能載入');
+    expect(alert).not.toHaveTextContent('/Users/private');
+    expect(alert).not.toHaveTextContent('owner@example.test');
+    expect(screen.queryByLabelText('選擇 STL 模型')).toBeNull();
+
+    await userEvent.setup().click(screen.getByRole('button', { name: '重試載入已儲存專案' }));
+    expect(await screen.findByLabelText('選擇 STL 模型')).toBeVisible();
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it('renders only the ShapeCut one-click experience', async () => {
+    render(<App services={services} oneClickProjectRepository={emptyProjectRepository} />);
     expect(screen.getByRole('banner')).toHaveTextContent('ShapeCut');
-    expect(screen.getByRole('heading', { name: '把 3D 模型變成 Laser Cut 切片' })).toBeVisible();
+    expect(await screen.findByRole('heading', { name: '把 3D 模型變成 Laser Cut 切片' })).toBeVisible();
     expect(screen.queryByText('匯入與修復')).toBeNull();
     expect(screen.queryByText('材料設定')).toBeNull();
   });
 
-  it('keeps local processing visible in floating chrome', () => {
-    render(<App services={services} />);
+  it('keeps local processing visible in floating chrome', async () => {
+    render(<App services={services} oneClickProjectRepository={emptyProjectRepository} />);
 
     const chrome = screen.getByRole('banner');
     expect(within(chrome).getByText('私隱優先 · 本機處理')).toBeVisible();
-    expect(within(chrome).getByRole('navigation', { name: '目前步驟' })).toHaveTextContent('上載 STL 模型');
+    expect(await within(chrome).findByRole('navigation', { name: '目前步驟' })).toHaveTextContent('上載 STL 模型');
     expect(screen.getAllByText('私隱優先 · 本機處理')).toHaveLength(1);
     expect(chrome).toHaveClass('floating-chrome');
   });
@@ -49,9 +113,9 @@ describe('App', () => {
       get: vi.fn(),
       importJson: vi.fn(),
     };
-    render(<App services={services} materialRepository={repository} />);
+    render(<App services={services} materialRepository={repository} oneClickProjectRepository={emptyProjectRepository} />);
 
-    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'stored-ready.stl'));
+    await user.upload(await screen.findByLabelText('選擇 STL 模型'), new File(['mesh'], 'stored-ready.stl'));
 
     expect(await screen.findByRole('option', { name: /TEST ONLY ready birch plywood/ })).toBeVisible();
     expect(screen.queryByRole('option', { name: /pending/i })).toBeNull();
@@ -79,9 +143,9 @@ describe('App', () => {
       get: vi.fn(),
       importJson: vi.fn(),
     };
-    render(<App services={activeServices} materialRepository={repository} />);
+    render(<App services={activeServices} materialRepository={repository} oneClickProjectRepository={emptyProjectRepository} />);
 
-    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'catalog-replacement.stl'));
+    await user.upload(await screen.findByLabelText('選擇 STL 模型'), new File(['mesh'], 'catalog-replacement.stl'));
     const picker = await screen.findByLabelText('選擇製作材料');
 
     expect(await screen.findByRole('option', { name: /TEST ONLY App catalog calibrated plywood/ })).toBeVisible();
@@ -113,9 +177,9 @@ describe('App', () => {
       get: vi.fn(),
       importJson: vi.fn(),
     };
-    render(<App services={activeServices} materialRepository={repository} />);
+    render(<App services={activeServices} materialRepository={repository} oneClickProjectRepository={emptyProjectRepository} />);
 
-    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'catalog-race.stl'));
+    await user.upload(await screen.findByLabelText('選擇 STL 模型'), new File(['mesh'], 'catalog-race.stl'));
     await user.selectOptions(await screen.findByLabelText('選擇製作材料'), READY_TEST_MATERIAL.id);
     expect(activeServices.convert).toHaveBeenCalledOnce();
     vi.mocked(activeServices.cancel).mockClear();
@@ -139,7 +203,7 @@ describe('App', () => {
       get: vi.fn(),
       importJson: vi.fn(),
     };
-    render(<App services={services} materialRepository={repository} />);
+    render(<App services={services} materialRepository={repository} oneClickProjectRepository={emptyProjectRepository} />);
 
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('已儲存的材料設定檔未能載入');
@@ -153,11 +217,11 @@ describe('App', () => {
     const stale = { ...READY_TEST_MATERIAL, id: 'stale-ready', materialName: 'TEST ONLY stale ready profile' };
     const firstRepository = { list: vi.fn(() => first), get: vi.fn(), importJson: vi.fn() };
     const secondRepository = { list: vi.fn().mockResolvedValue([READY_TEST_MATERIAL]), get: vi.fn(), importJson: vi.fn() };
-    const view = render(<App services={services} materialRepository={firstRepository} />);
+    const view = render(<App services={services} materialRepository={firstRepository} oneClickProjectRepository={emptyProjectRepository} />);
 
-    view.rerender(<App services={services} materialRepository={secondRepository} />);
+    view.rerender(<App services={services} materialRepository={secondRepository} oneClickProjectRepository={emptyProjectRepository} />);
     await act(async () => { resolveFirst([stale]); await first; });
-    await userEvent.setup().upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'latest.stl'));
+    await userEvent.setup().upload(await screen.findByLabelText('選擇 STL 模型'), new File(['mesh'], 'latest.stl'));
     expect(await screen.findByRole('option', { name: /TEST ONLY ready birch plywood/ })).toBeVisible();
     expect(screen.queryByRole('option', { name: /stale ready profile/ })).toBeNull();
 

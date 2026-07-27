@@ -67,4 +67,22 @@ describe('material catalog stored estimate replacements', () => {
     await expect(saveStoredMaterialJson(repository, JSON.stringify(forbidden))).rejects.toThrow(/reserved|read-only/i);
     await expect(repository.list()).resolves.toEqual([]);
   });
+
+  it('classifies an unsafe legacy stored ID as blocked without throwing during catalog rendering', async () => {
+    const unsafe = { ...READY_TEST_MATERIAL, id: 'legacy material id' };
+    const catalog = await listMaterialCatalog({
+      list: async () => [unsafe],
+      get: async () => unsafe,
+      importJson: async () => unsafe,
+    });
+    const entry = catalog.find(({ source }) => source === 'stored');
+
+    expect(entry?.readiness).toEqual({
+      status: 'block',
+      reasons: [expect.objectContaining({
+        code: 'invalid-profile',
+        message: expect.stringMatching(/material id.*1-80.*ASCII/i),
+      })],
+    });
+  });
 });

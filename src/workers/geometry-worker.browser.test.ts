@@ -182,7 +182,8 @@ describe('geometry worker boundary', () => {
     ['unknown keys', { ...testMaterial, operatorName: 'private operator' }, /unrecognized key/i],
     ['non-finite values', { ...testMaterial, kerfMm: Infinity }, /number|NaN/i],
     ['forbidden private strings', { ...testMaterial, manufacturer: 'private evidence' }, /unrecognized key/i],
-    ['over-500-character ID and name bounds', { ...testMaterial, id: 'i'.repeat(501), name: 'n'.repeat(501) }, /500|too big/i],
+    ['unsafe public material ID before conversion', { ...testMaterial, id: 'legacy material id' }, /material id.*1-80.*ASCII/i],
+    ['over-500-character name bound', { ...testMaterial, name: 'n'.repeat(501) }, /500|too big/i],
   ])('rejects %s from a structured-clone material payload in the real worker', async (_label, material, error) => {
     const api = createRawGeometryWorkerApi();
 

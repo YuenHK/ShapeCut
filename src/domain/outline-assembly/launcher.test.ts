@@ -12,6 +12,7 @@ import {
 } from './launcher-template';
 import {
   detectLauncherTemplate,
+  compareLauncherPlacementScores,
   LAUNCHER_OMISSION_WARNING,
   LauncherCompatibilityError,
   launcherCutsArePhysicallySafe,
@@ -151,6 +152,28 @@ describe('fixed three-prong launcher planning', () => {
     secondExterior: exterior('fixed-second', 30),
     material: { kerfMm: 0.2, minWebMm: 0.3 },
   } satisfies Omit<FixedLauncherClearanceRequest, 'fitOffsetMm'>;
+
+  it('ranks structural clearance first, decoration overlap second, and rotation third', () => {
+    const score = (
+      id: string,
+      minimumStructuralClearanceMm: number,
+      decorationOverlapCount: number,
+      rotationRad: number,
+    ) => ({ id, minimumStructuralClearanceMm, decorationOverlapCount, rotationRad });
+    const ranked = [
+      score('smaller-clearance-even-with-clean-decoration', 1, 0, 0),
+      score('same-clearance-later-rotation', 2, 1, 0.2),
+      score('same-clearance-more-decoration', 2, 2, 0),
+      score('winner', 2, 1, 0.1),
+    ].sort(compareLauncherPlacementScores);
+
+    expect(ranked.map(({ id }) => id)).toEqual([
+      'winner',
+      'same-clearance-later-rotation',
+      'same-clearance-more-decoration',
+      'smaller-clearance-even-with-clean-decoration',
+    ]);
+  });
 
   it('uses the fixed template, applies fit then kerf once, and returns deterministic rotation', () => {
     const first = planFixedLauncherClearance({ ...safeRequest, fitOffsetMm: 0.05 });

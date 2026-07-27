@@ -24,3 +24,11 @@ Final whole-branch review fixes:
 - Unified the public material-ID contract at the geometry-profile boundary so any accepted ID is safe for coupon/package generation and invalid IDs fail before conversion.
 - Ranking fixtures and 4,096-point planner/axis budget coverage were confirmed in the existing focused suites.
 - Changed-path verification: 100 tests passed; full colored package grammar: 433 passed; `npm run typecheck`, `npm run build`, and `git diff --check` passed. There is no `lint` npm script. The repository-wide serial Vitest command again stopped after the `RUN` banner without a summary (the previously recorded Vitest RPC blocker).
+
+Second final-review round:
+- Production `App` now has explicit saved-project `loading | loaded | failed` state. OneClick conversion is not mounted until loading settles; failure stays locked, exposes only a sanitized retry, and cannot overwrite or bypass the unresolved record.
+- A completed saved job now exposes an explicit discard action. It deletes `one-click-current`, clears active saved state, and only then permits a different STL; ordinary reload still requires fingerprint reattachment and explicit regeneration.
+- The shared 1-80 character public material-ID contract now participates in material readiness. Unsafe legacy stored IDs read without throwing, classify as actionable `block`, never enter OneClick ready profiles, and are rejected at the worker conversion boundary.
+- Added an explicit deterministic score-order fixture proving structural clearance precedes decoration overlap, which precedes rotation.
+- Removed the approved spec's trailing whitespace; `git diff --check 3dc11a0` now passes across the complete branch range.
+- Focused verification: 7 files / 140 tests passed; `npm run typecheck` and `npm run build` passed. The real-browser worker command again reached only the Vitest `RUN` banner without a terminal summary, matching the recorded browser RPC blocker.

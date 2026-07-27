@@ -81,6 +81,7 @@ export type OneClickConverterServices = {
   readonly materialProfiles?: readonly MaterialProfileV1[];
   readonly savedProject?: StoredOneClickProjectV1;
   readonly saveProject?: (project: StoredOneClickProjectV1) => Promise<void>;
+  readonly deleteSavedProject?: () => Promise<void>;
 };
 
 const STAGES: readonly AutomaticOutlineProgressStage[] = ['reading', 'analyzing', 'simplifying', 'slicing', 'packaging'];
@@ -360,6 +361,8 @@ export function OneClickConverter({
   const [selectedMaterialId, setSelectedMaterialId] = useState('');
   const [sourceSha256, setSourceSha256] = useState<string | undefined>();
   const [savedSourceReattached, setSavedSourceReattached] = useState(false);
+  const [savedProjectDiscarded, setSavedProjectDiscarded] = useState(false);
+  const savedProject = savedProjectDiscarded ? undefined : services.savedProject;
   const effectLevel = useEffectLevel(view.kind === 'processing');
   const materials = selectableMaterials(services.materialProfiles);
   const requestId = useRef(0);
@@ -539,17 +542,17 @@ export function OneClickConverter({
     try {
       const bytes = await readFile(file);
       if (current !== requestId.current) return;
-      if (services.savedProject || services.saveProject) {
+      if (savedProject || services.saveProject) {
         const fingerprint = await sha256Hex(bytes);
         if (current !== requestId.current) return;
         setSourceSha256(fingerprint);
-        if (services.savedProject && fingerprint !== services.savedProject.sourceSha256) {
+        if (savedProject && fingerprint !== savedProject.sourceSha256) {
           setView({ kind: 'failure', fileName: file.name, message: 'STL 指紋不符；請重新連結原本的模型。' });
           return;
         }
-        if (services.savedProject) {
-          setLauncherFitInput(services.savedProject.launcherFitOffsetMm.toFixed(2));
-          setSelectedMaterialId(services.savedProject.material.id);
+        if (savedProject) {
+          setLauncherFitInput(savedProject.launcherFitOffsetMm.toFixed(2));
+          setSelectedMaterialId(savedProject.material.id);
           setSavedSourceReattached(true);
         }
       }
@@ -559,11 +562,11 @@ export function OneClickConverter({
       if (current !== requestId.current) return;
       setView({ kind: 'failure', fileName: file.name, message: failureMessage(error) });
     }
-  }, [clearPresentationPreview, releaseCurrentDownloads, runtimeServices, schedulePresentationPreview, services.savedProject]);
+  }, [clearPresentationPreview, releaseCurrentDownloads, runtimeServices, savedProject, schedulePresentationPreview, services.saveProject]);
 
   const selectMaterial = useCallback((id: string) => {
     if (view.kind !== 'material') return;
-    if (services.savedProject) return;
+    if (savedProject) return;
     const fitOffsetMm = parsedLauncherFitOffset(launcherFitInput);
     if (fitOffsetMm === undefined) {
       setSelectedMaterialId('');
@@ -574,7 +577,7 @@ export function OneClickConverter({
       setSelectedMaterialId(id);
       void processFile(view.fileName, view.bytes, material, fitOffsetMm);
     }
-  }, [launcherFitInput, materials, processFile, services.savedProject, view]);
+  }, [launcherFitInput, materials, processFile, savedProject, view]);
 
   const reset = () => {
     clearDrag();
@@ -589,6 +592,20 @@ export function OneClickConverter({
     setSourceSha256(undefined);
     setSavedSourceReattached(false);
     setView({ kind: 'upload' });
+  };
+
+  const discardSavedProject = async () => {
+    if (!savedProject || !services.deleteSavedProject) return;
+    try {
+      await services.deleteSavedProject();
+      setSavedProjectDiscarded(true);
+      reset();
+    } catch {
+      setView({
+        kind: 'failure',
+        message: '已儲存專案未能安全刪除；為免覆寫資料，請重試。',
+      });
+    }
   };
 
   const frame = (content: ReactNode, stage?: AutomaticOutlineProgressStage) => (
@@ -609,7 +626,7 @@ export function OneClickConverter({
         <p className="eyebrow">一鍵轉換工具</p>
         <h1 id="converter-title">把 3D 模型變成 Laser Cut 切片</h1>
         <p>放入 STL，ShapeCut 會自動分析、簡化和切片，然後準備好通用外形檔案。</p>
-        {services.savedProject && (
+        {savedProject && (
           <p role="status">已儲存專案需要重新連結原本 STL，並明確重新產生正式輸出。</p>
         )}
       </div>
@@ -632,7 +649,7 @@ export function OneClickConverter({
       <p className="eyebrow">選擇製作材料</p>
       <h1 id="material-title">{view.fileName}</h1>
       <p>請選擇本次製作的材料，系統只會把所需的幾何資料傳送到處理程序。</p>
-      {services.savedProject && (
+      {savedProject && (
         <section aria-label="已儲存專案重新產生">
           <p role="status">重新連結完成；下載仍被鎖定，直至 canonical 正式輸出重新產生。</p>
           <button
@@ -641,8 +658,8 @@ export function OneClickConverter({
             onClick={() => void processFile(
               view.fileName,
               view.bytes,
-              services.savedProject!.material,
-              services.savedProject!.launcherFitOffsetMm,
+              savedProject.material,
+              savedProject.launcherFitOffsetMm,
             )}
           >
             重新產生正式輸出
@@ -678,7 +695,7 @@ export function OneClickConverter({
         <select
           aria-label="選擇製作材料"
           value={selectedMaterialId}
-          disabled={Boolean(services.savedProject)}
+          disabled={Boolean(savedProject)}
           onChange={(event) => selectMaterial(event.target.value)}
         >
           <option value="" disabled>選擇製作材料</option>
@@ -761,8 +778,14 @@ export function OneClickConverter({
             <ul>{presentationWarnings(view.result).map((item) => <li key={item}>{item}</li>)}</ul>
           </section>
         )}
-        <MotionSurface as="button" level={effectLevel} className="primary-button" type="button" onClick={reset}>
-          選擇另一個模型
+        <MotionSurface
+          as="button"
+          level={effectLevel}
+          className="primary-button"
+          type="button"
+          onClick={savedProject ? () => void discardSavedProject() : reset}
+        >
+          {savedProject ? '捨棄已儲存專案並選擇另一個模型' : '選擇另一個模型'}
         </MotionSurface>
       </section>,
     );
@@ -889,7 +912,13 @@ export function OneClickConverter({
         {warnings.length > 0 ? <ul>{warnings.map((item) => <li key={item}>{item}</li>)}</ul> : <p>沒有額外提示。</p>}
         <p>ZIP 內含 cut-and-engrave.svg、cut-and-engrave.dxf、preview.pdf、exploded-view.pdf 及 launcher-fit-coupon.svg 五項檔案。</p>
       </details>
-      <ModelInput compact level={effectLevel} onFile={(file) => void selectFile(file)} />
+      {savedProject ? (
+        <button type="button" onClick={() => void discardSavedProject()}>
+          捨棄已儲存專案並選擇另一個模型
+        </button>
+      ) : (
+        <ModelInput compact level={effectLevel} onFile={(file) => void selectFile(file)} />
+      )}
     </section>
   );
 }

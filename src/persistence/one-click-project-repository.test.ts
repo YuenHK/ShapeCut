@@ -57,4 +57,15 @@ describe('one-click project persistence', () => {
       launcherTemplateFingerprint: 'f'.repeat(32),
     });
   });
+
+  it('explicitly deletes the current saved job before a replacement model can start', async () => {
+    const name = `one-click-${crypto.randomUUID()}`;
+    names.push(name);
+    const repository = new OneClickProjectRepository(createMaterialDatabase(name));
+    await repository.save(record());
+
+    await repository.delete();
+
+    await expect(repository.load()).resolves.toBeUndefined();
+  });
 });

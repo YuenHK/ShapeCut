@@ -91,7 +91,12 @@ export function App({
     () => suppliedOneClickProjectRepository ?? new OneClickProjectRepository(),
     [suppliedOneClickProjectRepository],
   );
-  const [savedProject, setSavedProject] = useState<StoredOneClickProjectV1 | undefined>();
+  const [projectLoad, setProjectLoad] = useState<
+    | { readonly status: 'loading' }
+    | { readonly status: 'loaded'; readonly project?: StoredOneClickProjectV1 }
+    | { readonly status: 'failed' }
+  >({ status: 'loading' });
+  const [projectLoadAttempt, setProjectLoadAttempt] = useState(0);
   const [materialLoadFailed, setMaterialLoadFailed] = useState(false);
   const [chromeTarget, setChromeTarget] = useState<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -112,20 +117,26 @@ export function App({
   }, [materialRepository]);
   useEffect(() => {
     let active = true;
+    setProjectLoad({ status: 'loading' });
     void projectRepository.load().then((project) => {
-      if (active) setSavedProject(project);
+      if (active) setProjectLoad({ status: 'loaded', ...(project ? { project } : {}) });
     }).catch(() => {
-      if (active) setSavedProject(undefined);
+      if (active) setProjectLoad({ status: 'failed' });
     });
     return () => { active = false; };
-  }, [projectRepository]);
+  }, [projectLoadAttempt, projectRepository]);
+  const savedProject = projectLoad.status === 'loaded' ? projectLoad.project : undefined;
   const oneClickServices = useMemo<OneClickConverterServices>(() => ({
     ...services,
     materialProfiles: [...(services.materialProfiles ?? []), ...storedProfiles],
     savedProject,
     saveProject: async (project) => {
       await projectRepository.save(project);
-      setSavedProject(project);
+      setProjectLoad({ status: 'loaded', project });
+    },
+    deleteSavedProject: async () => {
+      await projectRepository.delete();
+      setProjectLoad({ status: 'loaded' });
     },
   }), [projectRepository, savedProject, services, storedProfiles]);
   useEffect(() => () => geometryRef.current?.dispose(), []);
@@ -138,7 +149,20 @@ export function App({
       </header>
       <main>
         {materialLoadFailed && <p role="alert">已儲存的材料設定檔未能載入；請稍後重試。</p>}
-        <OneClickConverter services={oneClickServices} chromeTarget={chromeTarget} />
+        {projectLoad.status === 'loading' && (
+          <section className="converter-card" role="status">正在載入已儲存專案…</section>
+        )}
+        {projectLoad.status === 'failed' && (
+          <section className="converter-card">
+            <p role="alert">已儲存專案未能載入。為免覆寫現有資料，轉換功能已鎖定。</p>
+            <button type="button" onClick={() => setProjectLoadAttempt((attempt) => attempt + 1)}>
+              重試載入已儲存專案
+            </button>
+          </section>
+        )}
+        {projectLoad.status === 'loaded' && (
+          <OneClickConverter services={oneClickServices} chromeTarget={chromeTarget} />
+        )}
       </main>
       <footer>輸出為通用外形，不包含雷射功率或速度。正式製作前請先試切。</footer>
     </div>
