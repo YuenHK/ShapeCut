@@ -1611,3 +1611,20 @@ export const KNIGHT_FORTRESS_LAUNCHER_TEMPLATE = {
     "17269a09c5a56b3c2e62683836781126421e30bfb9dce5599ff8f53667808b4d"
   ]
 } as const satisfies LauncherTemplate;
+
+export const OFFICIAL_THREE_PRONG_TEMPLATE_VERSION = 1 as const;
+export const OFFICIAL_THREE_PRONG_TEMPLATE = KNIGHT_FORTRESS_LAUNCHER_TEMPLATE;
+
+function templateFingerprint(template: Pick<LauncherTemplate, 'version' | 'loops'>): string {
+  const serialized = JSON.stringify({ version: template.version, loops: template.loops });
+  const lanes = [2166136261, 2246822519, 3266489917, 668265263];
+  for (let lane = 0; lane < lanes.length; lane += 1) {
+    for (const char of serialized) {
+      lanes[lane] = Math.imul(lanes[lane] ^ (char.charCodeAt(0) + lane * 131), 16777619 + lane * 2) >>> 0;
+    }
+  }
+  return lanes.map((lane) => lane.toString(16).padStart(8, '0')).join('');
+}
+
+export const OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT =
+  templateFingerprint(OFFICIAL_THREE_PRONG_TEMPLATE);

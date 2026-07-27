@@ -10,6 +10,9 @@ import {
   KNIGHT_FORTRESS_LAUNCHER_TEMPLATE,
   launcherReferencesAreCompatible,
   normalizeLauncherLoops,
+  OFFICIAL_THREE_PRONG_TEMPLATE,
+  OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
+  OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
   resampleClosedLoop,
   renderLauncherTemplateInitializer,
   type LauncherReference,
@@ -305,6 +308,13 @@ describe('Knight Fortress launcher template compatibility', () => {
     expect(KNIGHT_FORTRESS_LAUNCHER_TEMPLATE.provenanceHashes).toHaveLength(2);
     for (const hash of KNIGHT_FORTRESS_LAUNCHER_TEMPLATE.provenanceHashes) expect(hash).toMatch(/^[0-9a-f]{64}$/);
     expect(JSON.stringify(KNIGHT_FORTRESS_LAUNCHER_TEMPLATE)).not.toMatch(/(?:\/Users\/|[A-Za-z]:\\|\.stl|@)/i);
+  });
+
+  it('publishes one stable numeric-only three-prong template', () => {
+    expect(OFFICIAL_THREE_PRONG_TEMPLATE.version).toBe(OFFICIAL_THREE_PRONG_TEMPLATE_VERSION);
+    expect(OFFICIAL_THREE_PRONG_TEMPLATE.loops).toHaveLength(3);
+    expect(OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT).toMatch(/^[0-9a-f]{32}$/);
+    expect(JSON.stringify(OFFICIAL_THREE_PRONG_TEMPLATE)).not.toMatch(/(?:\/Users\/|[A-Za-z]:\\|\.stl|@)/i);
   });
 
   it('requires exactly two lowercase 64-hex hashes at averaging and render boundaries', () => {

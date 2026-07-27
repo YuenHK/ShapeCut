@@ -2,6 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Point2 } from '../decomposition/types';
 import type { FeatureContour } from '../outline-features/types';
 import {
+  LAUNCHER_FIT_OFFSET_MAX_MM,
+  LAUNCHER_FIT_OFFSET_MIN_MM,
+  validateLauncherFitOffsetMm,
+} from './launcher-fit';
+import {
   detectLauncherTemplate,
   LAUNCHER_OMISSION_WARNING,
   launcherCutsArePhysicallySafe,
@@ -116,6 +121,21 @@ function contour(id: string, outer: readonly Point2[]): FeatureContour {
     }, 0) / 2),
   };
 }
+
+describe('launcher fit contract', () => {
+  it.each([-0.20, -0.01, 0, 0.01, 0.20])('accepts bounded 0.01 mm fit offset %s', (value) => {
+    expect(validateLauncherFitOffsetMm(value)).toBe(value);
+  });
+
+  it.each([NaN, Infinity, -0.201, 0.201, 0.005, '0.00'])('rejects invalid fit offset %s', (value) => {
+    expect(() => validateLauncherFitOffsetMm(value)).toThrow(RangeError);
+  });
+
+  it('publishes the inclusive fit-offset bounds', () => {
+    expect(LAUNCHER_FIT_OFFSET_MIN_MM).toBe(-0.20);
+    expect(LAUNCHER_FIT_OFFSET_MAX_MM).toBe(0.20);
+  });
+});
 
 describe('three-hook launcher detection', () => {
   it.each([
