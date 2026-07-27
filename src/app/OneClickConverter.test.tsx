@@ -114,6 +114,7 @@ const downloads: OutlineDownloads = {
   dxf: { href: 'blob:dxf', fileName: 'cut-and-engrave.dxf' },
   previewPdf: { href: 'blob:preview', fileName: 'preview.pdf' },
   explodedPdf: { href: 'blob:exploded', fileName: 'exploded-view.pdf' },
+  launcherCoupon: { href: 'blob:launcher-coupon', fileName: 'launcher-fit-coupon.svg' },
 };
 
 function packageDownloads(prefix: string): OutlineDownloads {
@@ -123,6 +124,7 @@ function packageDownloads(prefix: string): OutlineDownloads {
     dxf: { href: `blob:${prefix}-dxf`, fileName: 'cut-and-engrave.dxf' },
     previewPdf: { href: `blob:${prefix}-preview`, fileName: 'preview.pdf' },
     explodedPdf: { href: `blob:${prefix}-exploded`, fileName: 'exploded-view.pdf' },
+    launcherCoupon: { href: `blob:${prefix}-launcher-coupon`, fileName: 'launcher-fit-coupon.svg' },
   };
 }
 
@@ -192,7 +194,7 @@ describe('OneClickConverter', () => {
     expect(await screen.findByRole('heading', { name: '轉換完成' })).toBeVisible();
     expectState('result');
     expect(api.package).toHaveBeenCalledOnce();
-    expect(screen.getAllByRole('link', { name: /下載/ })).toHaveLength(5);
+    expect(screen.getAllByRole('link', { name: /下載/ })).toHaveLength(6);
 
     fireEvent.change(screen.getByLabelText('選擇 STL 模型'), {
       target: { files: [new File(['bad'], 'not-stl.txt')] },
@@ -262,7 +264,7 @@ describe('OneClickConverter', () => {
       Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revoke });
       const first = services({
         createTimeline: undefined,
-        convert: vi.fn((_bytes, _material, onProgress) => {
+        convert: vi.fn((_bytes, _material, _launcherFitOffsetMm, onProgress) => {
           onProgress?.({ stage: 'reading' });
           onProgress?.({ stage: 'analyzing', preview: result.preview });
           onProgress?.({ stage: 'simplifying' });
@@ -301,6 +303,7 @@ describe('OneClickConverter', () => {
         'blob:runtime-swap-held-dxf',
         'blob:runtime-swap-held-preview',
         'blob:runtime-swap-held-exploded',
+        'blob:runtime-swap-held-launcher-coupon',
       ]);
       expect(vi.getTimerCount()).toBe(0);
       await vi.advanceTimersByTimeAsync(10_000);
@@ -342,7 +345,7 @@ describe('OneClickConverter', () => {
       let report: ((event: AutomaticOutlineProgressEvent) => void) | undefined;
       const api = services({
         createTimeline: undefined,
-        convert: vi.fn((_bytes, _material, onProgress) => {
+        convert: vi.fn((_bytes, _material, _launcherFitOffsetMm, onProgress) => {
           report = onProgress;
           report?.({ stage: 'reading' });
           report?.({ stage: 'analyzing', preview: result.preview });
@@ -377,7 +380,7 @@ describe('OneClickConverter', () => {
       Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revoke });
       const api = services({
         createTimeline: undefined,
-        convert: vi.fn((_bytes, _material, onProgress) => {
+        convert: vi.fn((_bytes, _material, _launcherFitOffsetMm, onProgress) => {
           onProgress?.({ stage: 'reading' });
           onProgress?.({ stage: 'analyzing', preview: result.preview });
           onProgress?.({ stage: 'simplifying' });
@@ -403,6 +406,7 @@ describe('OneClickConverter', () => {
 
       expect(revoke.mock.calls.map(([href]) => href)).toEqual([
         'blob:held-zip', 'blob:held-svg', 'blob:held-dxf', 'blob:held-preview', 'blob:held-exploded',
+        'blob:held-launcher-coupon',
       ]);
       expect(vi.getTimerCount()).toBe(0);
       expect(screen.queryByRole('heading', { name: '轉換完成' })).toBeNull();
@@ -432,6 +436,7 @@ describe('OneClickConverter', () => {
 
       expect(revoke.mock.calls.map(([href]) => href)).toEqual([
         'blob:late-zip', 'blob:late-svg', 'blob:late-dxf', 'blob:late-preview', 'blob:late-exploded',
+        'blob:late-launcher-coupon',
       ]);
       expect(vi.getTimerCount()).toBe(0);
       expect(screen.queryByRole('heading', { name: '轉換完成' })).toBeNull();
@@ -460,6 +465,7 @@ describe('OneClickConverter', () => {
 
       expect(revoke.mock.calls.map(([href]) => href)).toEqual([
         'blob:unmount-held-zip', 'blob:unmount-held-svg', 'blob:unmount-held-dxf', 'blob:unmount-held-preview', 'blob:unmount-held-exploded',
+        'blob:unmount-held-launcher-coupon',
       ]);
       expect(vi.getTimerCount()).toBe(0);
     } finally {
@@ -473,7 +479,7 @@ describe('OneClickConverter', () => {
       let report: ((event: AutomaticOutlineProgressEvent) => void) | undefined;
       const api = services({
         createTimeline: undefined,
-        convert: vi.fn((_bytes, _material, onProgress) => {
+        convert: vi.fn((_bytes, _material, _launcherFitOffsetMm, onProgress) => {
           report = onProgress;
           return Promise.resolve(result);
         }),
@@ -495,7 +501,7 @@ describe('OneClickConverter', () => {
     }
   });
 
-  it('shows the material, launcher, fastener, and top-feature assembly summary without adding downloads', async () => {
+  it('shows the material, launcher, fastener, and top-feature assembly summary with the coupon download', async () => {
     const user = userEvent.setup();
     const assemblyResult = {
       ...result,
@@ -519,12 +525,12 @@ describe('OneClickConverter', () => {
     await uploadAndSelectMaterial(user, new File(['mesh'], 'assembly.stl'));
     await screen.findByRole('heading', { name: '轉換完成' });
 
-    expect(screen.getByText('發射器相容性').nextElementSibling).toHaveTextContent('官方三爪樣板');
+    expect(screen.getByText('發射器相容性').nextElementSibling).toHaveTextContent('官方三爪孔：已加入頂部兩層');
     expect(screen.getByText('固定螺絲孔').nextElementSibling).toHaveTextContent('2 個');
     expect(screen.getByText('頂層紅色特徵').nextElementSibling).toHaveTextContent('保留 4，省略 2');
     expect(screen.getByText('頂層藍色特徵').nextElementSibling).toHaveTextContent('保留 3，省略 1');
     expect(screen.getByText('製作材料').nextElementSibling).toHaveTextContent(/3 mm.*kerf 0\.15 mm/i);
-    expect(screen.getAllByRole('link', { name: /下載/ })).toHaveLength(5);
+    expect(screen.getAllByRole('link', { name: /下載/ })).toHaveLength(6);
   });
 
   it('drains the idle renderer pool when the application workflow unmounts', () => {
@@ -569,10 +575,111 @@ describe('OneClickConverter', () => {
     expect(api.convert).not.toHaveBeenCalled();
     await user.selectOptions(await screen.findByLabelText('選擇製作材料'), expectedSubset.id);
     expect(api.convert).toHaveBeenCalledOnce();
-    expect(api.convert).toHaveBeenCalledWith(expect.any(ArrayBuffer), expectedSubset, expect.any(Function));
+    expect(api.convert).toHaveBeenCalledWith(expect.any(ArrayBuffer), expectedSubset, 0, expect.any(Function));
     await screen.findByRole('heading', { name: '轉換完成' });
     await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['replacement'], 'replacement.stl'));
     expect(await screen.findByLabelText('選擇製作材料')).toHaveValue('');
+    expect(screen.getByLabelText('三爪配合微調')).toHaveValue(0);
+  });
+
+  it('passes the controlled launcher fit offset with the selected material', async () => {
+    const user = userEvent.setup();
+    const api = services({ materialProfiles: [] });
+    render(<OneClickConverter services={api} />);
+
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'fit-offset.stl'));
+    const fitInput = await screen.findByLabelText('三爪配合微調');
+    expect(fitInput).toHaveValue(0);
+    await user.clear(fitInput);
+    await user.type(fitInput, '0.05');
+    await user.selectOptions(screen.getByLabelText('選擇製作材料'), 'plywood-3');
+
+    expect(api.convert).toHaveBeenCalledWith(
+      expect.any(ArrayBuffer),
+      expect.objectContaining({ id: 'plywood-3' }),
+      0.05,
+      expect.any(Function),
+    );
+  });
+
+  it('restores the default launcher fit after failure reset', async () => {
+    const user = userEvent.setup();
+    const api = services({
+      convert: vi.fn().mockRejectedValue(new AutomaticOutlineError('RESOURCE_LIMIT', 'internal limit')),
+    });
+    render(<OneClickConverter services={api} />);
+
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'first-fit.stl'));
+    const fitInput = await screen.findByLabelText('三爪配合微調');
+    await user.clear(fitInput);
+    await user.type(fitInput, '0.05');
+    await user.selectOptions(screen.getByLabelText('選擇製作材料'), READY_TEST_MATERIAL.id);
+    await screen.findByRole('alert');
+
+    await user.click(screen.getByRole('button', { name: '選擇另一個模型' }));
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'second-fit.stl'));
+    expect(await screen.findByLabelText('三爪配合微調')).toHaveValue(0);
+    expect(screen.getByLabelText('選擇製作材料')).toHaveValue('');
+  });
+
+  it.each([
+    ['a non-step value', '0.205'],
+    ['Infinity', 'Infinity'],
+    ['pasted text', 'not-a-number'],
+  ])('blocks material conversion and announces an inline error for %s', async (_label, invalidValue) => {
+    const user = userEvent.setup();
+    const api = services({ materialProfiles: [] });
+    render(<OneClickConverter services={api} />);
+
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'invalid-fit.stl'));
+    const fitInput = await screen.findByLabelText('三爪配合微調');
+    await user.clear(fitInput);
+    if (invalidValue === 'not-a-number') {
+      await user.click(fitInput);
+      await user.paste(invalidValue);
+    } else {
+      fireEvent.change(fitInput, { target: { value: invalidValue } });
+    }
+
+    expect(screen.getByRole('alert')).toHaveTextContent('請輸入 -0.20 至 +0.20 mm，步進 0.01 mm。');
+    await user.selectOptions(screen.getByLabelText('選擇製作材料'), 'plywood-3');
+    expect(api.convert).not.toHaveBeenCalled();
+    expect(screen.getByLabelText('選擇製作材料')).toHaveValue('');
+  });
+
+  it('reports canonical launcher evidence and offers the separate fit coupon', async () => {
+    const user = userEvent.setup();
+    const launcherResult: AutomaticOutlineResult = {
+      ...result,
+      assembly: {
+        ...result.assembly,
+        launcher: {
+          ...result.assembly.launcher,
+          fitOffsetMm: 0.05,
+          finishedAllowanceMm: 0.25,
+        },
+        topFeatures: {
+          ...result.assembly.topFeatures,
+          launcherOverlap: {
+            clipped: { red: 1, blue: 0 },
+            removed: { red: 0, blue: 0 },
+          },
+        },
+      },
+    };
+    render(<OneClickConverter services={services({
+      convert: vi.fn().mockResolvedValue(launcherResult),
+    })} />);
+
+    await uploadAndSelectMaterial(user, new File(['mesh'], 'launcher-status.stl'));
+    await screen.findByRole('heading', { name: '轉換完成' });
+
+    expect(screen.getByText('官方三爪孔：已加入頂部兩層')).toBeVisible();
+    expect(screen.getByText(/模板版本 1/)).toBeVisible();
+    expect(screen.getByText(/配合微調 \+0\.05 mm/)).toBeVisible();
+    expect(screen.getByText(/已裁切紅色 1/)).toBeVisible();
+    expect(screen.getByText('依 Knight Fortress 樣本建立，待官方發射器實物校準')).toBeVisible();
+    expect(screen.getByRole('link', { name: '下載三爪尺寸測試片' })).toBeVisible();
   });
 
   it('offers exactly five geometry estimates on a fresh installation', async () => {
@@ -611,6 +718,7 @@ describe('OneClickConverter', () => {
     expect(api.convert).toHaveBeenCalledWith(
       expect.any(ArrayBuffer),
       expect.objectContaining({ id, thicknessMm }),
+      0,
       expect.any(Function),
     );
   });
@@ -695,7 +803,7 @@ describe('OneClickConverter', () => {
     replacementRead.resolve(replacementBytes);
     await user.selectOptions(await screen.findByLabelText('選擇製作材料'), READY_TEST_MATERIAL.id);
 
-    expect(api.convert).toHaveBeenCalledWith(replacementBytes, expect.any(Object), expect.any(Function));
+    expect(api.convert).toHaveBeenCalledWith(replacementBytes, expect.any(Object), 0, expect.any(Function));
   });
 
   it('only exposes profiles classified ready and never starts from pending or blocked material evidence', async () => {
@@ -725,7 +833,7 @@ describe('OneClickConverter', () => {
 
     await user.selectOptions(picker, readyReplacement.id);
     expect(api.convert).toHaveBeenCalledWith(
-      expect.any(ArrayBuffer), manufacturingGeometryProfile(readyReplacement), expect.any(Function),
+      expect.any(ArrayBuffer), manufacturingGeometryProfile(readyReplacement), 0, expect.any(Function),
     );
   });
 
@@ -759,6 +867,7 @@ describe('OneClickConverter', () => {
     expect(api.convert).toHaveBeenCalledWith(
       expect.any(ArrayBuffer),
       manufacturingGeometryProfile(last),
+      0,
       expect.any(Function),
     );
   });
@@ -822,7 +931,7 @@ describe('OneClickConverter', () => {
     const user = userEvent.setup();
     const conversion = deferred<AutomaticOutlineResult>();
     let report: ((event: AutomaticOutlineProgressEvent) => void) | undefined;
-    const api = services({ convert: vi.fn((_bytes, _material, onProgress) => { report = onProgress; return conversion.promise; }) });
+    const api = services({ convert: vi.fn((_bytes, _material, _launcherFitOffsetMm, onProgress) => { report = onProgress; return conversion.promise; }) });
     const { container } = render(<OneClickConverter services={api} />);
 
     await uploadAndSelectMaterial(user, new File(['mesh'], 'busy.stl'));
@@ -849,7 +958,7 @@ describe('OneClickConverter', () => {
     const user = userEvent.setup();
     const conversion = deferred<AutomaticOutlineResult>();
     let report: ((event: AutomaticOutlineProgressEvent) => void) | undefined;
-    const api = services({ convert: vi.fn((_bytes, _material, onProgress) => { report = onProgress; return conversion.promise; }) });
+    const api = services({ convert: vi.fn((_bytes, _material, _launcherFitOffsetMm, onProgress) => { report = onProgress; return conversion.promise; }) });
     const { container } = render(<OneClickConverter services={api} />);
 
     await uploadAndSelectMaterial(user, new File(['mesh'], 'preview.stl'));
@@ -876,7 +985,7 @@ describe('OneClickConverter', () => {
     const conversions = [deferred<AutomaticOutlineResult>(), deferred<AutomaticOutlineResult>()];
     const reports: Array<((event: AutomaticOutlineProgressEvent) => void) | undefined> = [];
     const api = services({
-      convert: vi.fn((_bytes, _material, onProgress) => {
+      convert: vi.fn((_bytes, _material, _launcherFitOffsetMm, onProgress) => {
         reports.push(onProgress);
         return conversions[reports.length - 1].promise;
       }),
@@ -925,7 +1034,7 @@ describe('OneClickConverter', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
-  it('shows the simplified warning, primary real viewport, and exact five colored downloads', async () => {
+  it('shows the simplified warning, primary real viewport, five colored artifacts, and launcher coupon', async () => {
     const user = userEvent.setup();
     const warning = { ...result, mode: 'outline-2.5d' as const, status: 'warning' as const, warnings: ['已簡化模型'] };
     render(<OneClickConverter services={services({ convert: vi.fn().mockResolvedValue(warning) })} />);
@@ -1066,7 +1175,7 @@ describe('OneClickConverter', () => {
     expect(details).toHaveTextContent('warning');
     expect(details).toHaveTextContent('a'.repeat(32));
     expect(details).toHaveTextContent('正式製作前應先試切少量零件');
-    expect(details).toHaveTextContent('cut-and-engrave.svg、cut-and-engrave.dxf、preview.pdf 及 exploded-view.pdf');
+    expect(details).toHaveTextContent('cut-and-engrave.svg、cut-and-engrave.dxf、preview.pdf、exploded-view.pdf 及 launcher-fit-coupon.svg');
     expect(details).not.toHaveTextContent('private-name.stl');
   });
 
@@ -1123,17 +1232,31 @@ describe('OneClickConverter', () => {
 
   it('maps an incompatible fixed launcher to a blocking Traditional Chinese failure', async () => {
     const user = userEvent.setup();
-    render(<OneClickConverter services={services({
+    const api = services({
       convert: vi.fn().mockRejectedValue(new AutomaticOutlineError(
         'LAUNCHER_INCOMPATIBLE',
         'internal launcher geometry details',
       )),
-    })} />);
+    });
+    render(<OneClickConverter services={api} />);
 
     await uploadAndSelectMaterial(user, new File(['mesh'], 'launcher-blocked.stl'));
 
     expect(await screen.findByRole('alert'))
       .toHaveTextContent('官方三爪孔會破壞外框或必要承托結構，已停止所有輸出。');
+    expect(screen.queryByRole('link', { name: /下載/ })).not.toBeInTheDocument();
+    expect(api.package).not.toHaveBeenCalled();
+  });
+
+  it('fails closed without partial links when the launcher coupon URL cannot be prepared', async () => {
+    const user = userEvent.setup();
+    render(<OneClickConverter services={services({
+      package: vi.fn().mockRejectedValue(new OutlineArtifactError('launcher-fit-coupon.svg')),
+    })} />);
+
+    await uploadAndSelectMaterial(user, new File(['mesh'], 'coupon-url-failure.stl'));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('launcher-fit-coupon.svg');
     expect(screen.queryByRole('link', { name: /下載/ })).not.toBeInTheDocument();
   });
 
@@ -1188,8 +1311,8 @@ describe('OneClickConverter', () => {
     await screen.findByText('one.stl');
     await uploadAndSelectMaterial(user, new File(['two'], 'two.stl'));
     await screen.findByText('two.stl');
-    expect(revoke).toHaveBeenCalledTimes(5);
+    expect(revoke).toHaveBeenCalledTimes(6);
     unmount();
-    expect(revoke).toHaveBeenCalledTimes(10);
+    expect(revoke).toHaveBeenCalledTimes(12);
   });
 });

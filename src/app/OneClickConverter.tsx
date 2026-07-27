@@ -24,6 +24,7 @@ import {
   type ManufacturingGeometryProfile,
 } from '../domain/materials/manufacturing-profile';
 import { classifyMaterialReadiness, type MaterialProfileV1 } from '../domain/materials/schema';
+import { validateLauncherFitOffsetMm } from '../domain/outline-assembly/launcher-fit';
 import {
   OutlineProcessViewport,
 } from '../preview/OutlineProcessViewport';
@@ -44,6 +45,7 @@ export type OutlineDownloads = {
   readonly dxf: DownloadFile;
   readonly previewPdf: DownloadFile;
   readonly explodedPdf: DownloadFile;
+  readonly launcherCoupon: DownloadFile;
 };
 
 export type OneClickViewState =
@@ -66,6 +68,7 @@ export type OneClickConverterServices = {
   readonly convert: (
     bytes: ArrayBuffer,
     material: ManufacturingGeometryProfile,
+    launcherFitOffsetMm: number,
     onProgress?: (event: AutomaticOutlineProgressEvent) => void | Promise<void>,
   ) => Promise<AutomaticOutlineResult>;
   readonly package: (result: AutomaticOutlineResult, fileName?: string) => Promise<OutlineDownloads>;
@@ -228,7 +231,21 @@ function measurementRange(values: readonly number[]): string | undefined {
 }
 
 function launcherSummary(status: AutomaticOutlineResult['assembly']['launcher']['status']): string {
-  return status === 'fixed' ? '官方三爪樣板' : '';
+  return status === 'fixed' ? '官方三爪孔：已加入頂部兩層' : '';
+}
+
+function parsedLauncherFitOffset(value: string): number | undefined {
+  if (value.trim() === '') return undefined;
+  try {
+    return validateLauncherFitOffsetMm(Number(value));
+  } catch {
+    return undefined;
+  }
+}
+
+function signedMillimeters(value: number): string {
+  const normalized = Object.is(value, -0) ? 0 : value;
+  return `${normalized >= 0 ? '+' : ''}${normalized.toFixed(2)} mm`;
 }
 
 type ModelInputProps = Readonly<{
@@ -335,6 +352,8 @@ export function OneClickConverter({
   const [view, setView] = useState<OneClickViewState>({ kind: 'upload' });
   const [dragActive, setDragActive] = useState(false);
   const [presentationPreview, setPresentationPreview] = useState<OutlinePreviewPayload | undefined>(undefined);
+  const [launcherFitInput, setLauncherFitInput] = useState('0.00');
+  const [selectedMaterialId, setSelectedMaterialId] = useState('');
   const effectLevel = useEffectLevel(view.kind === 'processing');
   const materials = selectableMaterials(services.materialProfiles);
   const requestId = useRef(0);
@@ -406,7 +425,12 @@ export function OneClickConverter({
     }
   }, [clearPresentationPreview, presentationPreview, view]);
 
-  const processFile = useCallback(async (fileName: string, bytes: ArrayBuffer, material: ManufacturingGeometryProfile) => {
+  const processFile = useCallback(async (
+    fileName: string,
+    bytes: ArrayBuffer,
+    material: ManufacturingGeometryProfile,
+    launcherFitOffsetMm: number,
+  ) => {
     const current = ++requestId.current;
     timelineRef.current?.cancel();
     releaseCurrentDownloads();
@@ -426,7 +450,7 @@ export function OneClickConverter({
     timelineRef.current = timeline;
     timeline.advance('reading');
     try {
-      const result = await runtimeServices.convert(bytes, material, (event) => {
+      const result = await runtimeServices.convert(bytes, material, launcherFitOffsetMm, (event) => {
         if (current !== requestId.current || workerFinished) return;
         if ('preview' in event) latestPreview = event.preview;
         timeline.advance(event.stage, latestPreview);
@@ -476,6 +500,8 @@ export function OneClickConverter({
 
   const selectFile = useCallback(async (file: File) => {
     const current = ++requestId.current;
+    setLauncherFitInput('0.00');
+    setSelectedMaterialId('');
     clearPresentationPreview();
     timelineRef.current?.cancel();
     timelineRef.current = undefined;
@@ -503,9 +529,17 @@ export function OneClickConverter({
 
   const selectMaterial = useCallback((id: string) => {
     if (view.kind !== 'material') return;
+    const fitOffsetMm = parsedLauncherFitOffset(launcherFitInput);
+    if (fitOffsetMm === undefined) {
+      setSelectedMaterialId('');
+      return;
+    }
     const material = materials.find((profile) => profile.id === id);
-    if (material) void processFile(view.fileName, view.bytes, material);
-  }, [materials, processFile, view]);
+    if (material) {
+      setSelectedMaterialId(id);
+      void processFile(view.fileName, view.bytes, material, fitOffsetMm);
+    }
+  }, [launcherFitInput, materials, processFile, view]);
 
   const reset = () => {
     clearDrag();
@@ -515,6 +549,8 @@ export function OneClickConverter({
     timelineRef.current = undefined;
     runtimeServices.cancel();
     releaseCurrentDownloads();
+    setLauncherFitInput('0.00');
+    setSelectedMaterialId('');
     setView({ kind: 'upload' });
   };
 
@@ -561,8 +597,32 @@ export function OneClickConverter({
           <OutlineProcessViewport payload={presentationPreview} stage="reading" effectLevel={effectLevel} />
         </div>
       )}
+      <label className="material-picker">
+        三爪配合微調
+        <input
+          aria-describedby="launcher-fit-help launcher-fit-error"
+          aria-invalid={parsedLauncherFitOffset(launcherFitInput) === undefined}
+          type="number"
+          inputMode="decimal"
+          min="-0.20"
+          max="0.20"
+          step="0.01"
+          value={launcherFitInput}
+          onChange={(event) => setLauncherFitInput(event.target.value)}
+        />
+      </label>
+      <p id="launcher-fit-help" className="material-field-help">正數較鬆，負數較緊；可調 -0.20 至 +0.20 mm。</p>
+      {parsedLauncherFitOffset(launcherFitInput) === undefined && (
+        <p id="launcher-fit-error" className="material-field-error" role="alert">
+          請輸入 -0.20 至 +0.20 mm，步進 0.01 mm。
+        </p>
+      )}
       <label className="material-picker">製作材料
-        <select aria-label="選擇製作材料" defaultValue="" onChange={(event) => selectMaterial(event.target.value)}>
+        <select
+          aria-label="選擇製作材料"
+          value={selectedMaterialId}
+          onChange={(event) => selectMaterial(event.target.value)}
+        >
           <option value="" disabled>選擇製作材料</option>
           {materials.map((profile) => (
             <option key={profile.id} value={profile.id}>{profile.name} ({profile.thicknessMm} mm)</option>
@@ -695,12 +755,17 @@ export function OneClickConverter({
           {assembly && <>
             <div><dt>製作材料</dt><dd>{assembly.material.name} ({assembly.material.thicknessMm} mm，kerf {assembly.material.kerfMm} mm)</dd></div>
             <div><dt>發射器相容性</dt><dd>{launcherSummary(assembly.launcher.status)}</dd></div>
+            <div><dt>三爪樣板</dt><dd>模板版本 {assembly.launcher.templateVersion}</dd></div>
+            <div><dt>三爪配合</dt><dd>配合微調 {signedMillimeters(assembly.launcher.fitOffsetMm)}</dd></div>
             <div><dt>固定螺絲孔</dt><dd>{assembly.fastener.count === 0 ? '已安全省略' : `${assembly.fastener.count} 個`}</dd></div>
             <div><dt>頂層紅色特徵</dt><dd>保留 {assembly.topFeatures.retained.red}，省略 {assembly.topFeatures.omitted.red}</dd></div>
             <div><dt>頂層藍色特徵</dt><dd>保留 {assembly.topFeatures.retained.blue}，省略 {assembly.topFeatures.omitted.blue}</dd></div>
+            <div><dt>三爪區紅色處理</dt><dd>已裁切紅色 {assembly.topFeatures.launcherOverlap.clipped.red}，已移除紅色 {assembly.topFeatures.launcherOverlap.removed.red}</dd></div>
+            <div><dt>三爪區藍色處理</dt><dd>已裁切藍色 {assembly.topFeatures.launcherOverlap.clipped.blue}，已移除藍色 {assembly.topFeatures.launcherOverlap.removed.blue}</dd></div>
           </>}
         </dl>
       </div>
+      <p className="launcher-calibration-note">依 Knight Fortress 樣本建立，待官方發射器實物校準</p>
       <div className="color-legend" aria-label="相對顏色圖例">
         <strong>顏色圖例</strong>
         <ul>
@@ -720,6 +785,14 @@ export function OneClickConverter({
         下載 ZIP 製作套件
       </MotionSurface>
       <nav className="secondary-downloads" aria-label="其他下載格式">
+        <MotionSurface
+          as="a"
+          level={effectLevel}
+          href={downloads.launcherCoupon.href}
+          download={downloads.launcherCoupon.fileName}
+        >
+          下載三爪尺寸測試片
+        </MotionSurface>
         {([
           ['svg', 'SVG'], ['dxf', 'DXF'], ['previewPdf', '平面預覽 PDF'], ['explodedPdf', '爆炸圖 PDF'],
         ] as const).map(([kind, label]) => (
@@ -756,7 +829,7 @@ export function OneClickConverter({
         </dl>
         <h2>處理提示</h2>
         {warnings.length > 0 ? <ul>{warnings.map((item) => <li key={item}>{item}</li>)}</ul> : <p>沒有額外提示。</p>}
-        <p>ZIP 只內含 cut-and-engrave.svg、cut-and-engrave.dxf、preview.pdf 及 exploded-view.pdf 四項檔案。</p>
+        <p>ZIP 內含 cut-and-engrave.svg、cut-and-engrave.dxf、preview.pdf、exploded-view.pdf 及 launcher-fit-coupon.svg 五項檔案。</p>
       </details>
       <ModelInput compact level={effectLevel} onFile={(file) => void selectFile(file)} />
     </section>

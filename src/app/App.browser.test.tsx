@@ -139,7 +139,7 @@ describe('App real browser one-click flow', () => {
           cancel: vi.fn(),
         };
       },
-      convert: vi.fn((_bytes, _material, onProgress) => {
+      convert: vi.fn((_bytes, _material, _launcherFitOffsetMm, onProgress) => {
         report = onProgress;
         return conversion.promise;
       }),
@@ -149,6 +149,7 @@ describe('App real browser one-click flow', () => {
         dxf: { href: 'blob:dxf', fileName: 'cut-and-engrave.dxf' },
         previewPdf: { href: 'blob:preview', fileName: 'preview.pdf' },
         explodedPdf: { href: 'blob:exploded', fileName: 'exploded-view.pdf' },
+        launcherCoupon: { href: 'blob:launcher-coupon', fileName: 'launcher-fit-coupon.svg' },
       }),
     };
     const storedProfile = {
@@ -170,7 +171,7 @@ describe('App real browser one-click flow', () => {
     expect(services.convert).not.toHaveBeenCalled();
     const materialSelect = await screen.findByLabelText('選擇製作材料');
     await user.selectOptions(materialSelect, material.id);
-    expect(services.convert).toHaveBeenCalledWith(expect.any(ArrayBuffer), material, expect.any(Function));
+    expect(services.convert).toHaveBeenCalledWith(expect.any(ArrayBuffer), material, 0, expect.any(Function));
 
     expect(document.querySelector('.processing-loading-panel')).toBeInTheDocument();
     expect(document.querySelector('.processing-status-overlay')).not.toBeInTheDocument();
@@ -214,7 +215,7 @@ describe('App real browser one-click flow', () => {
       'link', { name: '下載 ZIP 製作套件' }, { timeout: 10_000 },
     )).toHaveAttribute('download', 'shapecut-files.zip');
     expect(screen.getByRole('link', { name: /爆炸圖 PDF/ })).toHaveAttribute('download', 'exploded-view.pdf');
-    expect(screen.getAllByRole('link', { name: /下載/ })).toHaveLength(5);
+    expect(screen.getAllByRole('link', { name: /下載/ })).toHaveLength(6);
     const technicalSummary = screen.getByText('技術資料');
     technicalSummary.focus();
     await user.keyboard('{Enter}');

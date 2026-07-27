@@ -93,6 +93,7 @@ describe('App', () => {
     expect(activeServices.convert).toHaveBeenCalledWith(
       expect.any(ArrayBuffer),
       manufacturingGeometryProfile(replacement),
+      0,
       expect.any(Function),
     );
   });
@@ -179,6 +180,7 @@ describe('App', () => {
       createDownloadUrls({
         zip: new Uint8Array([1]), cutSvg: '<svg/>', cutDxf: 'DXF',
         previewPdf: new Uint8Array([2]), explodedViewPdf: new Uint8Array([3]),
+        launcherCouponSvg: '<svg/>',
       }, 'spinner.stl');
     } catch (error) {
       failure = error;
@@ -193,16 +195,47 @@ describe('App', () => {
   it('uses generic private download names rather than deriving them from the source file name', () => {
     const create = vi.fn()
       .mockReturnValueOnce('blob:zip').mockReturnValueOnce('blob:svg').mockReturnValueOnce('blob:dxf')
-      .mockReturnValueOnce('blob:preview').mockReturnValueOnce('blob:exploded');
+      .mockReturnValueOnce('blob:preview').mockReturnValueOnce('blob:exploded')
+      .mockReturnValueOnce('blob:launcher-coupon');
     Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: create });
     const generated = createDownloadUrls({
       zip: new Uint8Array([1]), cutSvg: '<svg/>', cutDxf: 'DXF',
       previewPdf: new Uint8Array([2]), explodedViewPdf: new Uint8Array([3]),
+      launcherCouponSvg: '<svg id="launcher-coupon"/>',
     }, '/Users/person/private-model.stl');
 
     expect(Object.values(generated).map(({ fileName }) => fileName)).toEqual([
       'shapecut-files.zip', 'cut-and-engrave.svg', 'cut-and-engrave.dxf',
-      'preview.pdf', 'exploded-view.pdf',
+      'preview.pdf', 'exploded-view.pdf', 'launcher-fit-coupon.svg',
+    ]);
+    expect(generated.launcherCoupon).toEqual({
+      href: 'blob:launcher-coupon',
+      fileName: 'launcher-fit-coupon.svg',
+    });
+  });
+
+  it('attributes coupon URL creation failure and revokes all earlier URLs', () => {
+    const create = vi.fn()
+      .mockReturnValueOnce('blob:zip')
+      .mockReturnValueOnce('blob:svg')
+      .mockReturnValueOnce('blob:dxf')
+      .mockReturnValueOnce('blob:preview')
+      .mockReturnValueOnce('blob:exploded')
+      .mockImplementationOnce(() => { throw new Error('URL quota'); });
+    const revoke = vi.fn();
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: create });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revoke });
+
+    expect(() => createDownloadUrls({
+      zip: new Uint8Array([1]), cutSvg: '<svg/>', cutDxf: 'DXF',
+      previewPdf: new Uint8Array([2]), explodedViewPdf: new Uint8Array([3]),
+      launcherCouponSvg: '<svg id="launcher-coupon"/>',
+    })).toThrow(expect.objectContaining({
+      name: 'OutlineArtifactError',
+      artifact: 'launcher-fit-coupon.svg',
+    }));
+    expect(revoke.mock.calls.map(([href]) => href)).toEqual([
+      'blob:zip', 'blob:svg', 'blob:dxf', 'blob:preview', 'blob:exploded',
     ]);
   });
 
@@ -220,6 +253,7 @@ describe('App', () => {
     expect(() => createDownloadUrls({
       zip: new Uint8Array([1]), cutSvg: '<svg/>', cutDxf: 'DXF',
       previewPdf: new Uint8Array([2]), explodedViewPdf: new Uint8Array([3]),
+      launcherCouponSvg: '<svg/>',
     })).toThrow(OutlineArtifactError);
     expect(revoke).toHaveBeenCalledTimes(2);
     expect(revoke).toHaveBeenNthCalledWith(2, 'blob:svg');

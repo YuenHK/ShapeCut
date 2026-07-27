@@ -54,7 +54,7 @@ async function renderProcessingSurfaces(): Promise<readonly HTMLElement[]> {
       finish: () => Promise.resolve(),
       cancel: vi.fn(),
     }),
-    convert: vi.fn((_bytes, _material, onProgress) => {
+    convert: vi.fn((_bytes, _material, _launcherFitOffsetMm, onProgress) => {
       void onProgress?.({
         stage: 'analyzing',
         preview: {
@@ -127,6 +127,35 @@ describe('Apple workbench visual contracts', () => {
     expect(action).toBeVisible();
     expect(bounds.left).toBeGreaterThanOrEqual(0);
     expect(bounds.right).toBeLessThanOrEqual(window.innerWidth);
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
+  });
+
+  it('keeps launcher fit validation accessible and contained beside material selection', async () => {
+    await page.viewport(390, 844);
+    const activeServices = services();
+    render(<App services={activeServices} />);
+    fireEvent.change(screen.getByLabelText('選擇 STL 模型'), {
+      target: { files: [new File(['mesh'], 'launcher-fit.stl', { type: 'model/stl' })] },
+    });
+
+    const fitInput = await screen.findByLabelText('三爪配合微調');
+    expect(fitInput).toHaveAttribute('type', 'number');
+    expect(fitInput).toHaveAttribute('min', '-0.20');
+    expect(fitInput).toHaveAttribute('max', '0.20');
+    expect(fitInput).toHaveAttribute('step', '0.01');
+    expect(fitInput).toHaveAttribute('aria-describedby', 'launcher-fit-help launcher-fit-error');
+    fitInput.focus();
+    expect(fitInput).toHaveFocus();
+
+    fireEvent.change(fitInput, { target: { value: '0.205' } });
+    expect(screen.getByRole('alert')).toHaveTextContent('請輸入 -0.20 至 +0.20 mm，步進 0.01 mm。');
+    fireEvent.change(screen.getByLabelText('選擇製作材料'), {
+      target: { value: READY_TEST_MATERIAL.id },
+    });
+    expect(activeServices.convert).not.toHaveBeenCalled();
+
+    expect(fitInput.getBoundingClientRect().left).toBeGreaterThanOrEqual(0);
+    expect(fitInput.getBoundingClientRect().right).toBeLessThanOrEqual(window.innerWidth);
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
   });
 

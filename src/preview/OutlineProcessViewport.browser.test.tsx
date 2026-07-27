@@ -88,7 +88,7 @@ function activeConversionServices() {
         cancel: vi.fn(),
       };
     },
-    convert: vi.fn((_bytes, _material, onProgress) => {
+    convert: vi.fn((_bytes, _material, _launcherFitOffsetMm, onProgress) => {
       report = onProgress;
       return new Promise<never>(() => undefined);
     }),
@@ -114,6 +114,7 @@ function completedConversionServices(): OneClickConverterServices {
       dxf: { href: 'blob:browser-dxf', fileName: 'cut-and-engrave.dxf' },
       previewPdf: { href: 'blob:browser-preview', fileName: 'preview.pdf' },
       explodedPdf: { href: 'blob:browser-exploded', fileName: 'exploded-view.pdf' },
+      launcherCoupon: { href: 'blob:browser-launcher-coupon', fileName: 'launcher-fit-coupon.svg' },
     }),
   };
 }

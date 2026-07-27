@@ -17,6 +17,7 @@ export type OutlineDownloadContents = {
   readonly cutDxf: string;
   readonly previewPdf: Uint8Array;
   readonly explodedViewPdf: Uint8Array;
+  readonly launcherCouponSvg: string;
 };
 
 export function createDownloadUrls(files: OutlineDownloadContents, _fileName?: string): OutlineDownloads {
@@ -35,6 +36,7 @@ export function createDownloadUrls(files: OutlineDownloadContents, _fileName?: s
       dxf: make(files.cutDxf, 'application/dxf;charset=utf-8', 'cut-and-engrave.dxf'),
       previewPdf: make(files.previewPdf as BlobPart, 'application/pdf', 'preview.pdf'),
       explodedPdf: make(files.explodedViewPdf as BlobPart, 'application/pdf', 'exploded-view.pdf'),
+      launcherCoupon: make(files.launcherCouponSvg, 'image/svg+xml;charset=utf-8', 'launcher-fit-coupon.svg'),
     };
   } catch (error) {
     for (const href of created) {
@@ -52,10 +54,10 @@ export function createOneClickServices(
   return {
     cancel,
     present: (bytes: ArrayBuffer) => getGeometry().createStlPresentation(bytes),
-    convert: (bytes: ArrayBuffer, material: ManufacturingGeometryProfile, onProgress) => getGeometry().convertAutomatically({
+    convert: (bytes: ArrayBuffer, material: ManufacturingGeometryProfile, launcherFitOffsetMm, onProgress) => getGeometry().convertAutomatically({
       bytes,
       material,
-      launcherFitOffsetMm: 0,
+      launcherFitOffsetMm,
     }, onProgress),
     package: (result, fileName) => getGeometry().packageOutline(result).then((files) => createDownloadUrls(files, fileName)),
   };
