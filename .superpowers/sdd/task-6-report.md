@@ -53,3 +53,22 @@ Independent Task 6 review found no Critical, Important, or Minor issues. It conf
 
 - The wider unit matrix cannot be fully green until Task 8 updates the old exact-four ZIP acceptance fixtures.
 - Physical fit remains subject to the displayed Knight Fortress caveat and official-launcher calibration.
+
+## Reviewer follow-up: raw decimal validation
+
+The reviewer identified an Important coercion gap: `Number()` converted raw strings before validation, so `1e-9999` underflowed to `0` and `0.1000000000000000001` rounded to `0.1`.
+
+- Added a full-string decimal grammar check before number conversion.
+- The accepted syntax has an optional sign, a zero integer part or omitted zero, and at most two fractional digits; the existing domain validator remains authoritative for the `-0.20` to `+0.20` range and `0.01` step.
+- Exponents, whitespace, leading-zero coercions, non-finite text, empty input, and over-precision decimals now fail without rounding or underflow.
+- Added component coverage for the reported coercion cases, the retained `0.205` step case, and valid zero/boundary/decimal forms.
+- Added a real Chromium flow that uses the browser clipboard and paste action for `1e-9999`, keyboard typing for `0.1000000000000000001`, and verifies the accessible error plus no conversion call.
+- Limited clipboard read/write permission to the headless Playwright test context so the paste test uses the native browser path.
+- Removed only failure screenshots generated during RED/debug runs; no visual baseline or other asset is included.
+
+Follow-up verification:
+
+- `npx vitest run src/app/OneClickConverter.test.tsx`: 61/61 passed.
+- `npx vitest --config vitest.browser.config.ts run src/app/apple-workbench.browser.test.tsx`: 10/10 passed.
+- `npm run build`: passed, including TypeScript project build and 163 transformed modules.
+- `git diff --check`: passed.

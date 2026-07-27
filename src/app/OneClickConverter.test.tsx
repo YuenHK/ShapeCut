@@ -624,6 +624,9 @@ describe('OneClickConverter', () => {
 
   it.each([
     ['a non-step value', '0.205'],
+    ['an underflowing exponent', '1e-9999'],
+    ['a rounded long decimal', '0.1000000000000000001'],
+    ['a leading-zero coercion', '00.10'],
     ['Infinity', 'Infinity'],
     ['pasted text', 'not-a-number'],
   ])('blocks material conversion and announces an inline error for %s', async (_label, invalidValue) => {
@@ -645,6 +648,31 @@ describe('OneClickConverter', () => {
     await user.selectOptions(screen.getByLabelText('選擇製作材料'), 'plywood-3');
     expect(api.convert).not.toHaveBeenCalled();
     expect(screen.getByLabelText('選擇製作材料')).toHaveValue('');
+  });
+
+  it.each([
+    ['0', 0],
+    ['0.00', 0],
+    ['-0.20', -0.2],
+    ['0.20', 0.2],
+    ['.10', 0.1],
+  ])('accepts the practical decimal fit form %s', async (fitValue, expectedOffset) => {
+    const user = userEvent.setup();
+    const api = services({ materialProfiles: [] });
+    render(<OneClickConverter services={api} />);
+
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'valid-fit.stl'));
+    fireEvent.change(await screen.findByLabelText('三爪配合微調'), {
+      target: { value: fitValue },
+    });
+    await user.selectOptions(screen.getByLabelText('選擇製作材料'), 'plywood-3');
+
+    expect(api.convert).toHaveBeenCalledWith(
+      expect.any(ArrayBuffer),
+      expect.objectContaining({ id: 'plywood-3' }),
+      expectedOffset,
+      expect.any(Function),
+    );
   });
 
   it('reports canonical launcher evidence and offers the separate fit coupon', async () => {

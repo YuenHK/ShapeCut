@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { cdp, page } from '@vitest/browser/context';
+import { cdp, page, userEvent } from '@vitest/browser/context';
 import type {} from '@vitest/browser/providers/playwright';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import stylesText from '../styles.css?raw';
@@ -157,6 +157,36 @@ describe('Apple workbench visual contracts', () => {
     expect(fitInput.getBoundingClientRect().left).toBeGreaterThanOrEqual(0);
     expect(fitInput.getBoundingClientRect().right).toBeLessThanOrEqual(window.innerWidth);
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
+  });
+
+  it('rejects pasted exponents and typed over-precision decimals in real Chromium', async () => {
+    const activeServices: OneClickConverterServices = {
+      ...services(),
+      materialProfiles: [READY_TEST_MATERIAL],
+    };
+    render(<App services={activeServices} />);
+    await userEvent.upload(
+      screen.getByLabelText('選擇 STL 模型'),
+      new File(['mesh'], 'raw-decimal-fit.stl', { type: 'model/stl' }),
+    );
+    const fitInput = await screen.findByLabelText('三爪配合微調');
+    const materialPicker = screen.getByLabelText('選擇製作材料');
+
+    await userEvent.clear(fitInput);
+    await userEvent.click(fitInput);
+    await navigator.clipboard.writeText('1e-9999');
+    await userEvent.paste();
+    expect((fitInput as HTMLInputElement).value).toBe('1e-9999');
+    expect(screen.getByRole('alert')).toHaveTextContent('請輸入 -0.20 至 +0.20 mm，步進 0.01 mm。');
+    await userEvent.selectOptions(materialPicker, READY_TEST_MATERIAL.id);
+    expect(activeServices.convert).not.toHaveBeenCalled();
+
+    await userEvent.clear(fitInput);
+    await userEvent.type(fitInput, '0.1000000000000000001');
+    expect((fitInput as HTMLInputElement).value).toBe('0.1000000000000000001');
+    expect(screen.getByRole('alert')).toHaveTextContent('請輸入 -0.20 至 +0.20 mm，步進 0.01 mm。');
+    await userEvent.selectOptions(materialPicker, READY_TEST_MATERIAL.id);
+    expect(activeServices.convert).not.toHaveBeenCalled();
   });
 
   it('keeps a compact local-processing privacy status visible in mobile chrome', async () => {

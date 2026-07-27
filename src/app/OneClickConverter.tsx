@@ -235,7 +235,7 @@ function launcherSummary(status: AutomaticOutlineResult['assembly']['launcher'][
 }
 
 function parsedLauncherFitOffset(value: string): number | undefined {
-  if (value.trim() === '') return undefined;
+  if (!/^[+-]?(?:0(?:\.\d{1,2})?|\.\d{1,2})$/u.test(value)) return undefined;
   try {
     return validateLauncherFitOffsetMm(Number(value));
   } catch {
