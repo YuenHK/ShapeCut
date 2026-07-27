@@ -12,6 +12,7 @@ import {
   parseColoredOutlinePdf,
   parseColoredOutlineSvgArtifact,
   parseColoredZipRecords,
+  parseLauncherFitCouponArtifact,
   validateColoredEntityRecords,
   type ColoredArtifactPayloads,
   type ColoredEntityRecord,
@@ -576,6 +577,41 @@ describe('release E2E colored artifact parsers', () => {
     const inspected = await inspectColoredArtifacts(artifacts);
     expect(inspected.entities).toEqual(parseColoredOutlineSvgArtifact(output.cutSvg).entities);
     expect(inspected.zipRecords.every(({ byteIdentical }) => byteIdentical)).toBe(true);
+  });
+
+  it.each([
+    ['template fingerprint', (svg: string) => svg.replace(
+      /data-template-fingerprint="[0-9a-f]+"/,
+      `data-template-fingerprint="${'f'.repeat(32)}"`,
+    )],
+    ['kerf metadata', (svg: string) => svg.replace(/data-kerf-mm="[^"]+"/, 'data-kerf-mm="0.99"')],
+    ['cut geometry', (svg: string) => svg.replace(/points="([^"])/, 'points="9$1')],
+    ['document dimensions', (svg: string) => svg.replace(
+      /width="([^"]+)mm"/,
+      (_match, width: string) => `width="${Number(width) + 1}mm"`,
+    )],
+    ['label position', (svg: string) => svg.replace(
+      /(<text id="launcher-coupon-label-1"[^>]* x=")([^"]+)/,
+      (_match, prefix: string, x: string) => `${prefix}${Number(x) + 1}`,
+    )],
+    ['root-external geometry', (svg: string) => `${svg}<polygon points="0,0 1,0 0,1"/>`],
+  ])('rejects non-canonical launcher coupon mutation: %s', (_label, mutate) => {
+    expect(() => parseLauncherFitCouponArtifact(mutate(output.launcherCouponSvg))).toThrow(
+      /coupon|template|kerf|geometry|canonical|EOF/i,
+    );
+  });
+
+  it('reconciles coupon material identity and kerf with the bounded worker result', async () => {
+    const inspected = await inspectColoredArtifacts(artifacts);
+    const summary = releaseSummary(coloredResult());
+    expect(() => expectReleaseAssemblyGeometry(summary, {
+      ...inspected,
+      launcherCoupon: { ...inspected.launcherCoupon, materialId: 'forged-material' },
+    })).toThrow(/coupon.*material|material.*coupon/i);
+    expect(() => expectReleaseAssemblyGeometry(summary, {
+      ...inspected,
+      launcherCoupon: { ...inspected.launcherCoupon, kerfMm: inspected.launcherCoupon.kerfMm + 0.01 },
+    })).toThrow(/coupon.*kerf|kerf.*coupon/i);
   });
 
   it('compares all five bounded downloads from bytes rather than trusting equal diagnostic digests', () => {

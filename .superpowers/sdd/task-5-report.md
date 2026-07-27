@@ -52,3 +52,31 @@ No fail-closed package or ZIP checks were weakened to accommodate the deferred f
 
 - Task 6 must expose `launcherCouponSvg` as the separate UI download and manage its Object URL.
 - Task 8 must update the old four-member ZIP and launcher-incompatible browser fixtures. Those files were intentionally not rewritten in this task.
+- Coupon generation currently retains the existing bounded artifact-error enum. A coupon-generation failure is reported through the prior generic colored-document/PDF stage until Task 6 adds the coupon-specific UI label.
+
+## Independent Review Remediation
+
+The first independent review found no Critical issue and one Important E2E-helper gap: its grammar parser accepted a format-valid forged fingerprint/kerf and did not reconstruct the official geometry or reconcile selected material evidence.
+
+RED:
+
+```text
+npx vitest run src/test/e2e-helpers.test.ts -t 'launcher coupon|coupon material'
+4 failed: forged fingerprint, kerf, geometry, and worker-material parity were accepted.
+```
+
+GREEN:
+
+- The helper now requires the exact official template version/fingerprint.
+- It independently offsets the official loops from each declared fit offset and kerf, reconstructs all five left-to-right translations, and compares every point.
+- It verifies exact coupon dimensions and label positions.
+- `expectReleaseAssemblyGeometry()` now reconciles coupon material ID and kerf with the bounded worker result.
+- Mutation coverage includes fingerprint, kerf, path geometry, dimensions, label position, and root-external geometry.
+
+Fresh remediation verification:
+
+```text
+E2E coupon/parity focus: 8 passed, 52 skipped by focus.
+Coupon/package/worker focus: 463/463 passed.
+Build: passed.
+```

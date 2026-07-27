@@ -19,6 +19,7 @@ import {
   publicSafetyNotes,
 } from '../src/export/safety-notes';
 import { FASTENER_OMISSION_WARNING } from '../src/domain/outline-assembly/fasteners';
+import { simpleMiterPolygonKernel } from '../src/domain/layout/polygon-kernel';
 import { LAUNCHER_ASSEMBLY_ALLOWANCE_MM } from '../src/domain/outline-assembly/launcher';
 import {
   LAUNCHER_FIT_OFFSET_MAX_MM,
@@ -27,6 +28,7 @@ import {
   validateLauncherFitOffsetMm,
 } from '../src/domain/outline-assembly/launcher-fit';
 import {
+  OFFICIAL_THREE_PRONG_TEMPLATE,
   OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
   OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
 } from '../src/domain/outline-assembly/launcher-template';
@@ -517,6 +519,12 @@ export function expectReleaseAssemblyGeometry(
     || material.thicknessMm <= 0 || material.kerfMm < 0 || material.minFeatureMm <= 0 || material.minWebMm <= 0
     || exact(assembly.material) !== exact(material)) {
     throw new Error('Release material evidence is not the strict manufacturing geometry subset');
+  }
+  if (output.launcherCoupon.templateVersion !== OFFICIAL_THREE_PRONG_TEMPLATE_VERSION
+    || output.launcherCoupon.templateFingerprint !== OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT
+    || output.launcherCoupon.materialId !== material.id
+    || output.launcherCoupon.kerfMm !== material.kerfMm) {
+    throw new Error('Release coupon template, material identity, or kerf does not reconcile with worker evidence');
   }
   if (summary.featureWarnings.length > MAX_FEATURE_WARNING_COUNT
     || summary.featureWarnings.some((warning) => warning.length < 1 || warning.length > MAX_FEATURE_WARNING_LENGTH
@@ -1537,7 +1545,9 @@ export function parseLauncherFitCouponArtifact(svg: string): ParsedLauncherFitCo
   const materialId = root[7];
   const kerfMm = Number(root[8]);
   const offsets = root[9].split(',').map(Number);
-  if (templateVersion !== 1 || !HASH.test(templateFingerprint) || !SAFE_ID.test(materialId)
+  if (templateVersion !== OFFICIAL_THREE_PRONG_TEMPLATE_VERSION
+    || templateFingerprint !== OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT
+    || !HASH.test(templateFingerprint) || !SAFE_ID.test(materialId)
     || !Number.isFinite(kerfMm) || kerfMm < 0
     || exact(offsets) !== exact([-0.1, -0.05, 0, 0.05, 0.1])) {
     throw new Error('Launcher fit coupon template, material, kerf, or offsets are not canonical');
@@ -1551,6 +1561,9 @@ export function parseLauncherFitCouponArtifact(svg: string): ParsedLauncherFitCo
     throw new Error('Launcher fit coupon opening grammar is not fully consumed');
   }
   let cutCount = 0;
+  let expectedCursorX = 5;
+  let expectedMaximumCutY = 5;
+  const expectedLabelPositions: Array<readonly [number, number]> = [];
   for (let openingIndex = 0; openingIndex < openings.length; openingIndex += 1) {
     const opening = openings[openingIndex];
     if (Number(opening[1]) !== openingIndex + 1 || Number(opening[2]) !== offsets[openingIndex]) {
@@ -1561,6 +1574,27 @@ export function parseLauncherFitCouponArtifact(svg: string): ParsedLauncherFitCo
     if (polygons.length !== 3 || polygons.map(({ 0: token }) => token).join('') !== opening[3]) {
       throw new Error('Launcher fit coupon cut grammar is not fully consumed');
     }
+    const toolpathOffsetMm = LAUNCHER_ASSEMBLY_ALLOWANCE_MM + offsets[openingIndex] - kerfMm / 2;
+    const expectedLoops = OFFICIAL_THREE_PRONG_TEMPLATE.loops.map((loop) => {
+      let offset: ReturnType<typeof simpleMiterPolygonKernel.offset>;
+      try {
+        offset = simpleMiterPolygonKernel.offset({ points: loop }, toolpathOffsetMm);
+      } catch {
+        throw new Error('Launcher fit coupon official-template kerf offset is invalid');
+      }
+      if (offset.length !== 1) throw new Error('Launcher fit coupon official template offset is invalid');
+      return offset[0].points;
+    });
+    const expectedBounds = expectedLoops.flat().reduce((bounds, [x, y]) => ({
+      minX: Math.min(bounds.minX, x),
+      minY: Math.min(bounds.minY, y),
+      maxX: Math.max(bounds.maxX, x),
+      maxY: Math.max(bounds.maxY, y),
+    }), { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity });
+    const expectedWidth = expectedBounds.maxX - expectedBounds.minX;
+    const expectedHeight = expectedBounds.maxY - expectedBounds.minY;
+    const translateX = expectedCursorX - expectedBounds.minX;
+    const translateY = 5 - expectedBounds.minY;
     for (let cutIndex = 0; cutIndex < polygons.length; cutIndex += 1) {
       if (Number(polygons[cutIndex][1]) !== openingIndex + 1 || Number(polygons[cutIndex][2]) !== cutIndex + 1) {
         throw new Error('Launcher fit coupon cut identity is not canonical');
@@ -1570,8 +1604,18 @@ export function parseLauncherFitCouponArtifact(svg: string): ParsedLauncherFitCo
         || new Set(points.map((point) => point.join(','))).size !== points.length) {
         throw new Error('Launcher fit coupon cut geometry is invalid');
       }
+      const expectedPoints = expectedLoops[cutIndex].map(([x, y]) => [x + translateX, y + translateY]);
+      if (exact(points) !== exact(expectedPoints)) {
+        throw new Error('Launcher fit coupon cut geometry does not match the official template and kerf');
+      }
       cutCount += 1;
     }
+    expectedLabelPositions.push([
+      expectedCursorX + expectedWidth / 2,
+      5 + expectedHeight + 3 + 2.5,
+    ]);
+    expectedMaximumCutY = Math.max(expectedMaximumCutY, 5 + expectedHeight);
+    expectedCursorX += expectedWidth + 5;
   }
   const textPattern = /<text id="launcher-coupon-label-(\d+)" data-role="DEEP_RED" data-fit-offset-mm="([^"]+)" x="([^"]+)" y="([^"]+)" text-anchor="middle" font-size="2\.5" fill="#E5484D">([^<]+)<\/text>/g;
   const textRecords = [...groups[2].matchAll(textPattern)];
@@ -1582,9 +1626,17 @@ export function parseLauncherFitCouponArtifact(svg: string): ParsedLauncherFitCo
   for (let index = 0; index < textRecords.length; index += 1) {
     const record = textRecords[index];
     if (Number(record[1]) !== index + 1 || Number(record[2]) !== offsets[index]
-      || ![Number(record[3]), Number(record[4])].every(Number.isFinite) || record[5] !== labels[index]) {
+      || ![Number(record[3]), Number(record[4])].every(Number.isFinite)
+      || Number(record[3]) !== expectedLabelPositions[index][0]
+      || Number(record[4]) !== expectedLabelPositions[index][1]
+      || record[5] !== labels[index]) {
       throw new Error('Launcher fit coupon label identity, position, offset, or text is not canonical');
     }
+  }
+  const expectedWidth = expectedCursorX - 5 + 5;
+  const expectedHeight = expectedMaximumCutY + 3 + 2.5 + 5;
+  if (dimensions[0] !== expectedWidth || dimensions[1] !== expectedHeight) {
+    throw new Error('Launcher fit coupon dimensions do not match the canonical official-template layout');
   }
   const publicText = svg.replace(/\sdata-material-id="[^"]*"/, '');
   assertPublicText(publicText, 'Launcher fit coupon SVG');
