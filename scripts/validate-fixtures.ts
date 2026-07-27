@@ -146,7 +146,7 @@ if (!publicOnly) {
     try {
       const bytes = await readFile(launcherInputs[index]!);
       const source = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-      const runtime = await convertAutomatically({ bytes: source, material });
+      const runtime = await convertAutomatically({ bytes: source, material, launcherFitOffsetMm: 0 });
       const packaged = await createOutlinePackage(runtime);
       const artifactLauncherCutCount = packaged.cutSvg.match(/-launcher-clearance-/g)?.length ?? 0;
       validations.push(validateLauncherRuntimeGeometry({

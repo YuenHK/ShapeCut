@@ -182,6 +182,34 @@ describe('geometry worker boundary', () => {
     } as unknown as Parameters<GeometryApi['convertAutomatically']>[0])).rejects.toThrow(error);
   });
 
+  it.each([NaN, Infinity, -0.21, 0.21, 0.005])('rejects fit offset %s in the real worker before conversion', async (launcherFitOffsetMm) => {
+    const api = createRawGeometryWorkerApi();
+
+    await expect(api.convertAutomatically({
+      bytes: writeBinarySTL(tetrahedron(), 'safe'),
+      material: testMaterial,
+      launcherFitOffsetMm,
+    })).rejects.toMatchObject({
+      name: 'RangeError',
+      message: expect.stringMatching(/fit offset/i),
+    });
+  });
+
+  it('normalizes a raw-worker fit offset without mutating the caller request', async () => {
+    const api = createRawGeometryWorkerApi();
+    const request = {
+      bytes: writeBinarySTL(launcherCompatibleCylinder(), 'safe'),
+      material: testMaterial,
+      launcherFitOffsetMm: -0,
+    };
+
+    const result = await api.convertAutomatically(request);
+
+    expect(result.assembly.launcher).toMatchObject({ status: 'fixed', fitOffsetMm: 0 });
+    expect(Object.is(result.assembly.launcher.fitOffsetMm, -0)).toBe(false);
+    expect(Object.is(request.launcherFitOffsetMm, -0)).toBe(true);
+  });
+
   it('proxies automatic progress monotonically across Comlink and transfers the STL bytes', async () => {
     const client = createGeometryWorkerClient();
     clients.push(client);

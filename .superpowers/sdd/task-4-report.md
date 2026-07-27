@@ -23,3 +23,12 @@
 ## Concern
 
 Browser-only worker tests are excluded by the default Vitest configuration; build type-checks their updated request fixture, but no browser run was included in this Task 4 verification.
+
+## Review follow-up
+
+- `scripts/validate-fixtures.ts` now supplies `launcherFitOffsetMm: 0` for the private launcher runtime conversion request.
+- Added real raw-Comlink Chromium worker coverage for `NaN`, `Infinity`, `-0.21`, `0.21`, and `0.005`; each returns the serialized `RangeError` contract before STL conversion. Added a raw-worker `-0` case that verifies a public fixed-launcher result contains positive zero while the caller request remains `-0`.
+- Follow-up focused node test: `npx vitest run src/workers/geometry-api.test.ts --maxWorkers=1 --fileParallelism=false` passed `27/27`.
+- `npm run validate:fixtures:public` passed `10/10` fixtures with `8/8` automatic models and distinct output comparison.
+- `npm run build` passed.
+- Exact requested Chromium command ran. The six new raw-worker fit tests and normalization test passed, for `25/33` total. Eight pre-existing browser scenarios still fail because their `scaledOpenTetrahedron` conversion now receives `LAUNCHER_INCOMPATIBLE` before they reach their intended progress/supersede/package assertions. This command is therefore not a full pass.
