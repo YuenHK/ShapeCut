@@ -128,6 +128,7 @@ const ARTIFACT_LABELS: Readonly<Record<OutlineArtifactId, string>> = Object.free
   'cut-and-engrave.dxf': 'cut-and-engrave.dxf',
   'preview.pdf': 'preview.pdf',
   'exploded-view.pdf': 'exploded-view.pdf',
+  'launcher-fit-coupon.svg': 'launcher-fit-coupon.svg',
   'shapecut-files.zip': 'shapecut-files.zip',
   'package-verification': '輸出套件驗證',
 });

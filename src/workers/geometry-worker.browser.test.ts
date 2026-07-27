@@ -455,7 +455,7 @@ describe('geometry worker boundary', () => {
   it('returns a typed TIME_LIMIT when the shared packaging deadline is exhausted', async () => {
     const client = createGeometryWorkerClient();
     clients.push(client);
-    const runtime = await client.convertAutomatically({ bytes: writeBinarySTL(scaledOpenTetrahedron(), 'safe') });
+    const runtime = await client.convertAutomatically({ bytes: writeBinarySTL(launcherCompatibleCylinder(), 'safe') });
 
     await expect(client.packageOutline(runtime, 0)).rejects.toMatchObject({
       name: 'AutomaticOutlineError', code: 'TIME_LIMIT', message: '模型處理超出時間上限',
@@ -472,6 +472,22 @@ describe('geometry worker boundary', () => {
       name: 'OutlineArtifactError',
       code: 'ARTIFACT_FAILURE',
       artifact: 'colored-outline-document',
+    });
+  });
+
+  it('attributes a reachable launcher coupon validation failure to launcher-fit-coupon.svg', async () => {
+    const api = createRawGeometryWorkerApi();
+    const runtime = await api.convertAutomatically({
+      bytes: writeBinarySTL(launcherCompatibleCylinder(), 'safe'),
+      material: { ...testMaterial, id: 'coupon id with spaces' },
+      launcherFitOffsetMm: 0,
+    });
+
+    await expect(api.packageOutline(runtime)).rejects.toMatchObject({
+      name: 'OutlineArtifactError',
+      code: 'ARTIFACT_FAILURE',
+      artifact: 'launcher-fit-coupon.svg',
+      message: 'Outline artifact launcher-fit-coupon.svg could not be created.',
     });
   });
 

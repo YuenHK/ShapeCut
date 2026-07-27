@@ -80,3 +80,29 @@ E2E coupon/parity focus: 8 passed, 52 skipped by focus.
 Coupon/package/worker focus: 463/463 passed.
 Build: passed.
 ```
+
+## Reviewer P2 Artifact Attribution Remediation
+
+The remaining reviewer P2 is resolved:
+
+- Added `launcher-fit-coupon.svg` to the bounded `OUTLINE_ARTIFACT_IDS` contract and its exhaustive UI label map.
+- Mapped `colored-package:launcher-coupon:before` to that artifact so every non-timeout coupon generation or validation failure is attributed to the coupon rather than the preceding exploded PDF.
+- Added a real-worker regression using a material ID that is valid under the geometry profile contract but deliberately invalid under the coupon public-ID grammar. Conversion succeeds, coupon validation is reached, and the exact serialized error names `launcher-fit-coupon.svg`.
+- Updated the existing TIME_LIMIT regression to use a launcher-compatible mesh so it reaches packaging and continues to prove that timeout handling takes precedence over artifact attribution.
+
+RED:
+
+```text
+Geometry API contract: 1 failed, 26 passed; launcher-fit-coupon.svg was absent.
+Real worker coupon failure: expected launcher-fit-coupon.svg, received exploded-view.pdf.
+```
+
+GREEN:
+
+```text
+Coupon/package/API focus: 3 files passed; 463 tests passed.
+Real worker error focus: 2 passed, 32 skipped by focus.
+Build: passed (tsc -b and Vite production build).
+```
+
+The earlier concern that coupon failures inherit the preceding package stage is superseded by this remediation. Task 6 still owns exposing the separate coupon download and its Object URL.

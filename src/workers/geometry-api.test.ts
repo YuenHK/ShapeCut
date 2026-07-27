@@ -164,6 +164,7 @@ describe('geometry worker client', () => {
       'cut-and-engrave.dxf',
       'preview.pdf',
       'exploded-view.pdf',
+      'launcher-fit-coupon.svg',
       'shapecut-files.zip',
       'package-verification',
     ]);

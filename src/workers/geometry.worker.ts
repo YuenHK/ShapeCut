@@ -256,6 +256,7 @@ function artifactForPackageCheckpoint(
   if (label === 'colored-package:dxf:before') return 'cut-and-engrave.dxf';
   if (label === 'colored-package:preview-pdf:before') return 'preview.pdf';
   if (label === 'colored-package:exploded-pdf:before') return 'exploded-view.pdf';
+  if (label === 'colored-package:launcher-coupon:before') return 'launcher-fit-coupon.svg';
   if (label === 'colored-package:zip:before') return 'shapecut-files.zip';
   if (label === 'colored-package:create:start' || label.startsWith('canonical:')) {
     return 'colored-outline-document';
