@@ -1,7 +1,7 @@
 # Launcher Exterior Expansion Design
 
-**Date:** 2026-07-28  
-**Status:** Approved in conversation; awaiting written-spec review  
+**Date:** 2026-07-28
+**Status:** Approved in conversation; awaiting written-spec review
 **Extends:** `2026-07-27-official-three-prong-launcher-cut-design.md`
 
 ## Goal

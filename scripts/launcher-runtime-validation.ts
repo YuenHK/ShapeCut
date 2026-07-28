@@ -11,8 +11,14 @@ import {
   OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
   OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
 } from '../src/domain/outline-assembly/launcher-template';
+import {
+  LAUNCHER_EXTERIOR_EXPANSION_MAX_MM,
+  LAUNCHER_EXTERIOR_EXPANSION_MODE,
+  normalizeLauncherExteriorExpansionMm,
+} from '../src/domain/outline-assembly/launcher-exterior-expansion';
 import type {
   AutomaticLauncherAssembly,
+  DecorationOmission,
   FeatureContour,
 } from '../src/domain/outline-features/types';
 
@@ -23,11 +29,14 @@ export type LauncherRuntimeGeometry = {
   readonly mode: OutlineMode;
   readonly material?: ManufacturingGeometryProfile;
   readonly launcher: AutomaticLauncherAssembly;
+  readonly decorationOmissions: readonly DecorationOmission[];
   readonly layers: readonly {
     readonly id: string;
     readonly exterior: FeatureContour;
     readonly centralHole?: FeatureContour;
     readonly launcherCuts: readonly FeatureContour[];
+    readonly deepFeatures: readonly FeatureContour[];
+    readonly lightFeatures: readonly FeatureContour[];
   }[];
 };
 
@@ -41,6 +50,8 @@ export type LauncherRuntimeValidation = {
   readonly templateFingerprint: string;
   readonly fitOffsetMm: number;
   readonly rotationRad: number;
+  readonly exteriorExpansionMm: number;
+  readonly decorationOmissionLayerIds: readonly string[];
   readonly justification: string;
 };
 
@@ -113,6 +124,20 @@ export function validateLauncherRuntimeGeometry(
   const top = request.runtime.layers.at(-1)!;
   const second = request.runtime.layers.at(-2)!;
   const lower = request.runtime.layers.slice(0, -2);
+  const expansion = launcher.exteriorExpansion;
+  let normalizedExpansion: number;
+  try {
+    normalizedExpansion = normalizeLauncherExteriorExpansionMm(expansion.offsetMm);
+  } catch {
+    throw new RangeError('Fixed launcher exterior expansion must use the bounded 0.01 mm contract');
+  }
+  if (expansion.mode !== LAUNCHER_EXTERIOR_EXPANSION_MODE
+    || normalizedExpansion !== expansion.offsetMm
+    || expansion.maxOffsetMm !== LAUNCHER_EXTERIOR_EXPANSION_MAX_MM
+    || expansion.affectedLayerIds[0] !== second.id
+    || expansion.affectedLayerIds[1] !== top.id) {
+    throw new RangeError('Fixed launcher exterior expansion does not identify the canonical top two layers');
+  }
   if (top.launcherCuts.length !== 3 || second.launcherCuts.length !== 3
     || lower.some(({ launcherCuts }) => launcherCuts.length !== 0)
     || !sameCuts(top.launcherCuts, second.launcherCuts, deadline, checkpoint)) {
@@ -139,6 +164,30 @@ export function validateLauncherRuntimeGeometry(
   })) {
     throw new RangeError('Fixed launcher runtime geometry fails independent physical safety validation');
   }
+  if (!Array.isArray(request.runtime.decorationOmissions)
+    || request.runtime.decorationOmissions.length > request.runtime.layers.length) {
+    throw new RangeError('Launcher runtime decoration omission evidence exceeds the layer bound');
+  }
+  let previousOmissionPosition = -1;
+  const decorationOmissionLayerIds: string[] = [];
+  for (const omission of request.runtime.decorationOmissions) {
+    checkRuntime(deadline, checkpoint);
+    const position = request.runtime.layers.findIndex(({ id }) => id === omission.layerId);
+    const layer = request.runtime.layers[position];
+    if (Object.keys(omission).length !== 3
+      || omission.reason !== 'protected-cut-work-budget'
+      || omission.roles.length !== 2
+      || omission.roles[0] !== 'DEEP_RED'
+      || omission.roles[1] !== 'LIGHT_BLUE'
+      || position <= previousOmissionPosition
+      || !layer
+      || layer.deepFeatures.length !== 0
+      || layer.lightFeatures.length !== 0) {
+      throw new RangeError('Launcher runtime decoration omission evidence is invalid or inconsistent');
+    }
+    decorationOmissionLayerIds.push(omission.layerId);
+    previousOmissionPosition = position;
+  }
   return {
     caseId: request.caseId,
     runtimeStatus: 'fixed',
@@ -149,6 +198,8 @@ export function validateLauncherRuntimeGeometry(
     templateFingerprint: launcher.templateFingerprint,
     fitOffsetMm,
     rotationRad: launcher.rotationRad,
+    exteriorExpansionMm: normalizedExpansion,
+    decorationOmissionLayerIds,
     justification: 'Runtime launcher geometry matches the independently revalidated fixed official template.',
   };
 }

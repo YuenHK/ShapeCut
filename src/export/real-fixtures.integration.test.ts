@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import JSZip from 'jszip';
@@ -7,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { AUTOMATIC_AXIS_CONFIDENCE_THRESHOLD, findAxisCandidates } from '../domain/axis/find-axis';
 import { generateParts } from '../domain/decomposition/generate-parts';
 import { quantizeHeightField } from '../domain/engraving/quantize';
+import { manufacturingGeometryProfile } from '../domain/materials/manufacturing-profile';
 import type { MaterialProfileV1 } from '../domain/materials/schema';
 import { inspectMesh } from '../domain/mesh/inspect-mesh';
 import { parseSTL } from '../domain/mesh/parse-stl';
@@ -17,6 +19,10 @@ import {
   type ManufacturingArtifacts,
   type ManufacturingSettings,
 } from '../domain/pipeline/manufacturing-pipeline';
+import { convertAutomatically } from '../domain/pipeline/automatic-outline-pipeline';
+import type { FeatureContour } from '../domain/outline-features/types';
+import { READY_TEST_MATERIAL } from '../test/ready-material';
+import { createOutlinePackage, verifyOutlinePackage } from './outline-package';
 import { buildPackage, type ManufacturingPackage } from './package';
 import { LAYER_ORDER, type LayerEntity, type ManufacturingProject, type ManufacturingSheet } from './layers';
 
@@ -95,6 +101,160 @@ describe('real STL manufacturing-package integration', () => {
     await expectPackageMatchesDocument(wide);
   });
 });
+
+const knightFixtures = ([
+  { caseId: 'reference-a', fileName: 'Copy of Beyblade X Knight Fortress.stl' },
+  { caseId: 'reference-b', fileName: 'Copy of Beyblade X Knight Fortress Group.stl' },
+] as const).map((fixture) => ({
+  ...fixture,
+  path: [
+    resolve(process.cwd(), fixture.fileName),
+    resolve(process.cwd(), '..', '..', fixture.fileName),
+  ].find(existsSync),
+}));
+
+describe.runIf(knightFixtures.every(({ path }) => path !== undefined))(
+  'Knight Fortress launcher exterior expansion',
+  () => {
+    it.each(knightFixtures)(
+      '$caseId succeeds with only the top-two canonical exteriors expanded',
+      async ({ caseId, path }) => {
+        const bytes = await readFile(path!);
+        const source = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+        const conversionStartedAt = performance.now();
+        const result = await convertAutomatically({
+          bytes: source,
+          material: manufacturingGeometryProfile(READY_TEST_MATERIAL),
+          launcherFitOffsetMm: 0,
+        });
+        const conversionElapsedMs = performance.now() - conversionStartedAt;
+        const sourceContours = result.layers.map(({ contour }) => (
+          contour.outer.map(([x, y]) => [x, y] as const)
+        ));
+        const blackBeforePackaging = blackContourSnapshot(result.coloredLayers);
+
+        expect(result.assembly.launcher.exteriorExpansion).toMatchObject({
+          mode: 'shared-uniform',
+          maxOffsetMm: 6,
+        });
+        expect(conversionElapsedMs).toBeLessThan(30_000);
+        expect(result.assembly.launcher.exteriorExpansion.offsetMm).toBeGreaterThan(0);
+        expect(result.assembly.launcher.exteriorExpansion.offsetMm).toBeLessThanOrEqual(6);
+        expect(result.layers.slice(-2).map(({ id }) => id))
+          .toEqual(result.assembly.launcher.exteriorExpansion.affectedLayerIds);
+        expect(result.coloredLayers.slice(-2).every(
+          (layer) => layer.launcherCuts.length === 3,
+        )).toBe(true);
+        expect(result.assembly.decorationOmissions.every((omission) =>
+          result.coloredLayers.some((layer) =>
+            layer.id === omission.layerId
+              && layer.deepFeatures.length === 0
+              && layer.lightFeatures.length === 0,
+          ),
+        )).toBe(true);
+        const omittedLayerIds = result.assembly.decorationOmissions.map(({ layerId }) => layerId);
+        expect(result.coloredLayers.flatMap((layer) => (
+          layer.diagnostics.depth.omissionCode === 'PROTECTED_CUT_WORK_BUDGET'
+            ? [layer.id]
+            : []
+        ))).toEqual(omittedLayerIds);
+
+        expect(result.coloredLayers).toHaveLength(sourceContours.length);
+        result.coloredLayers.forEach((layer, index) => {
+          if (index < sourceContours.length - 2) {
+            expect(layer.exterior.outer, `${caseId} lower exterior ${layer.id}`)
+              .toEqual(sourceContours[index]);
+          } else {
+            expect(layer.exterior.outer, `${caseId} expanded exterior ${layer.id}`)
+              .not.toEqual(sourceContours[index]);
+          }
+        });
+        expect(result.preview.layers.map(({ exterior }) => exterior.outer))
+          .toEqual(result.coloredLayers.map(({ exterior }) => exterior.outer));
+        expect(blackContourSnapshot(result.preview.layers)).toEqual(blackBeforePackaging);
+
+        const output = await createOutlinePackage(result);
+        await expect(verifyOutlinePackage(output, result)).resolves.toBeUndefined();
+        expect(blackContourSnapshot(result.coloredLayers)).toEqual(blackBeforePackaging);
+        expect(blackContourSnapshot(result.preview.layers)).toEqual(blackBeforePackaging);
+        const project = JSON.parse(output.projectJson) as {
+          readonly assembly: {
+            readonly launcher: { readonly exteriorExpansion: unknown };
+            readonly decorationOmissions: unknown;
+          };
+          readonly layers: readonly {
+            readonly id: string;
+            readonly members: {
+              readonly CUT_BLACK: readonly string[];
+              readonly DEEP_RED: readonly string[];
+              readonly LIGHT_BLUE: readonly string[];
+            };
+          }[];
+        };
+        const manifest = JSON.parse(output.manifestJson) as {
+          readonly decisions: {
+            readonly launcherExteriorExpansionMode: unknown;
+            readonly launcherExteriorExpansionMm: unknown;
+            readonly launcherExteriorExpansionMaxMm: unknown;
+            readonly launcherExteriorExpansionLayerIds: unknown;
+            readonly decorationOmissions: unknown;
+          };
+        };
+        expect(project.assembly.launcher.exteriorExpansion)
+          .toEqual(result.assembly.launcher.exteriorExpansion);
+        expect(manifest.decisions).toMatchObject({
+          launcherExteriorExpansionMode: result.assembly.launcher.exteriorExpansion.mode,
+          launcherExteriorExpansionMm: result.assembly.launcher.exteriorExpansion.offsetMm,
+          launcherExteriorExpansionMaxMm: result.assembly.launcher.exteriorExpansion.maxOffsetMm,
+          launcherExteriorExpansionLayerIds:
+            result.assembly.launcher.exteriorExpansion.affectedLayerIds,
+          decorationOmissions: result.assembly.decorationOmissions,
+        });
+        expect(project.assembly.decorationOmissions)
+          .toEqual(result.assembly.decorationOmissions);
+        for (const layer of project.layers) {
+          expect(layer.members.CUT_BLACK.length).toBeGreaterThan(0);
+          if (omittedLayerIds.includes(layer.id)) {
+            expect(layer.members.DEEP_RED).toEqual([]);
+            expect(layer.members.LIGHT_BLUE).toEqual([]);
+          }
+        }
+        console.info(
+          [
+            'KNIGHT_RELEASE',
+            caseId,
+            `elapsedMs=${conversionElapsedMs.toFixed(3)}`,
+            `offsetMm=${result.assembly.launcher.exteriorExpansion.offsetMm.toFixed(2)}`,
+            `rotationRad=${result.assembly.launcher.rotationRad.toFixed(12)}`,
+            `omittedLayerIds=${omittedLayerIds.length === 0 ? 'none' : omittedLayerIds.join(',')}`,
+            `blackBytes=${blackBeforePackaging.byteLength}`,
+          ].join(' '),
+        );
+      },
+      120_000,
+    );
+  },
+);
+
+function blackContourSnapshot(
+  layers: readonly {
+    readonly id: string;
+    readonly exterior: FeatureContour;
+    readonly centralHole?: FeatureContour;
+    readonly launcherCuts: readonly FeatureContour[];
+    readonly fastenerHoles: readonly FeatureContour[];
+  }[],
+): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(layers.map((layer) => ({
+    layerId: layer.id,
+    contours: [
+      layer.exterior,
+      ...(layer.centralHole ? [layer.centralHole] : []),
+      ...layer.launcherCuts,
+      ...layer.fastenerHoles,
+    ],
+  }))));
+}
 
 async function manufacture(fileName: string): Promise<RealOutput> {
   const bytes = await readFile(resolve(process.cwd(), 'fixtures', 'acceptance', fileName));

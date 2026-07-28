@@ -46,6 +46,7 @@ function runtime(plan = fixedPlan()): LauncherRuntimeGeometry {
   return {
     mode: 'exact',
     material,
+    decorationOmissions: [],
     launcher: {
       status: 'fixed',
       cutCount: 3,
@@ -60,9 +61,9 @@ function runtime(plan = fixedPlan()): LauncherRuntimeGeometry {
       },
     },
     layers: [
-      { id: 'lower', exterior: contour('lower-exterior', 30), launcherCuts: [] },
-      { id: 'second', exterior: contour('second-exterior', 30), centralHole: hole('second-hole', 2), launcherCuts: plan.cuts },
-      { id: 'top', exterior: contour('top-exterior', 30), centralHole: hole('top-hole', 2), launcherCuts: plan.cuts },
+      { id: 'lower', exterior: contour('lower-exterior', 30), launcherCuts: [], deepFeatures: [], lightFeatures: [] },
+      { id: 'second', exterior: contour('second-exterior', 30), centralHole: hole('second-hole', 2), launcherCuts: plan.cuts, deepFeatures: [], lightFeatures: [] },
+      { id: 'top', exterior: contour('top-exterior', 30), centralHole: hole('top-hole', 2), launcherCuts: plan.cuts, deepFeatures: [], lightFeatures: [] },
     ],
   };
 }
@@ -84,8 +85,26 @@ describe('private release launcher runtime geometry gate', () => {
       templateVersion: 1,
       templateFingerprint: expect.stringMatching(/^[0-9a-f]{32}$/),
       fitOffsetMm: 0,
+      exteriorExpansionMm: 0,
+      decorationOmissionLayerIds: [],
     });
     expect(result.justification).toMatch(/fixed official template/i);
+  });
+
+  test('accepts ordered decoration omissions only for layers with both colored roles absent', () => {
+    const candidate = structuredClone(runtime());
+    (candidate as { decorationOmissions: LauncherRuntimeGeometry['decorationOmissions'] })
+      .decorationOmissions = [{
+      layerId: 'second',
+      reason: 'protected-cut-work-budget',
+      roles: ['DEEP_RED', 'LIGHT_BLUE'],
+    }];
+
+    expect(validateLauncherRuntimeGeometry({
+      caseId: 'reference-a',
+      runtime: candidate,
+      artifactLauncherCutCount: 6,
+    }).decorationOmissionLayerIds).toEqual(['second']);
   });
 
   test.each([
@@ -104,6 +123,12 @@ describe('private release launcher runtime geometry gate', () => {
     ['finished allowance', (candidate: LauncherRuntimeGeometry) => {
       (candidate.launcher as { finishedAllowanceMm: number }).finishedAllowanceMm += 0.01;
     }],
+    ['exterior expansion maximum', (candidate: LauncherRuntimeGeometry) => {
+      (candidate.launcher.exteriorExpansion as { maxOffsetMm: number }).maxOffsetMm = 7;
+    }],
+    ['exterior expansion layer order', (candidate: LauncherRuntimeGeometry) => {
+      (candidate.launcher.exteriorExpansion.affectedLayerIds as unknown as string[]).reverse();
+    }],
   ])('rejects invalid fixed %s metadata', (_label, mutate) => {
     const candidate = structuredClone(runtime());
     mutate(candidate);
@@ -112,6 +137,35 @@ describe('private release launcher runtime geometry gate', () => {
       runtime: candidate,
       artifactLauncherCutCount: 6,
     })).toThrow(/fixed launcher|fit offset|official template/i);
+  });
+
+  test.each([
+    ['unknown layer', (candidate: LauncherRuntimeGeometry) => {
+      (candidate as { decorationOmissions: LauncherRuntimeGeometry['decorationOmissions'] })
+        .decorationOmissions = [{
+        layerId: 'unknown',
+        reason: 'protected-cut-work-budget',
+        roles: ['DEEP_RED', 'LIGHT_BLUE'],
+      }];
+    }],
+    ['retained colored role', (candidate: LauncherRuntimeGeometry) => {
+      (candidate as { decorationOmissions: LauncherRuntimeGeometry['decorationOmissions'] })
+        .decorationOmissions = [{
+        layerId: 'second',
+        reason: 'protected-cut-work-budget',
+        roles: ['DEEP_RED', 'LIGHT_BLUE'],
+      }];
+      (candidate.layers[1].deepFeatures as FeatureContour[])
+        .push(contour('retained-red', 1));
+    }],
+  ])('rejects invalid decoration omission evidence for %s', (_label, mutate) => {
+    const candidate = structuredClone(runtime()) as LauncherRuntimeGeometry;
+    mutate(candidate);
+    expect(() => validateLauncherRuntimeGeometry({
+      caseId: 'reference-b',
+      runtime: candidate,
+      artifactLauncherCutCount: 6,
+    })).toThrow(/decoration omission/i);
   });
 
   test('rejects artifact count and top-two geometry drift', () => {
@@ -132,5 +186,5 @@ describe('private release launcher runtime geometry gate', () => {
     expect(() => validateLauncherRuntimeGeometry({
       caseId: 'reference-a', runtime: misplaced, artifactLauncherCutCount: 6,
     })).toThrow(/exactly the top two layers/i);
-  });
+  }, 10_000);
 });

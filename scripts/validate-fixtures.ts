@@ -122,7 +122,12 @@ const outputComparisonPass = automaticOutputs.length >= 2
   && new Set(automaticOutputs.map(({ dimensionsMm }) => JSON.stringify(dimensionsMm))).size >= 2;
 let launcherTemplatePass: boolean | 'not-requested' = 'not-requested';
 let launcherTemplateDeterministic: boolean | 'not-requested' = 'not-requested';
-let launcherRuntimeValidation: readonly LauncherRuntimeValidation[] | 'not-requested' = 'not-requested';
+type ReleaseLauncherRuntimeValidation = LauncherRuntimeValidation & {
+  readonly conversionElapsedMs: number;
+  readonly blackGeometrySha256: string;
+  readonly artifactGeometryVerified: true;
+};
+let launcherRuntimeValidation: readonly ReleaseLauncherRuntimeValidation[] | 'not-requested' = 'not-requested';
 if (!publicOnly) {
   let first: string, second: string;
   try {
@@ -140,27 +145,48 @@ if (!publicOnly) {
     throw new Error('Private launcher validation material is not release-ready');
   }
   const material = manufacturingGeometryProfile(READY_TEST_MATERIAL);
-  const validations: LauncherRuntimeValidation[] = [];
+  const validations: ReleaseLauncherRuntimeValidation[] = [];
   for (let index = 0; index < launcherInputs.length; index += 1) {
     const caseId = index === 0 ? 'reference-a' : 'reference-b';
     try {
       const bytes = await readFile(launcherInputs[index]!);
       const source = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      const conversionStartedAt = performance.now();
       const runtime = await convertAutomatically({ bytes: source, material, launcherFitOffsetMm: 0 });
+      const conversionElapsedMs = performance.now() - conversionStartedAt;
+      if (conversionElapsedMs >= 30_000) {
+        throw new RangeError('Private launcher automatic conversion exceeded 30 seconds');
+      }
+      const blackGeometryBefore = blackGeometrySha256(runtime);
       const packaged = await createOutlinePackage(runtime);
+      if (blackGeometrySha256(runtime) !== blackGeometryBefore) {
+        throw new RangeError('Private launcher black geometry changed during artifact creation');
+      }
       const artifactLauncherCutCount = packaged.cutSvg.match(/-launcher-clearance-/g)?.length ?? 0;
-      validations.push(validateLauncherRuntimeGeometry({
+      const validation = validateLauncherRuntimeGeometry({
         caseId,
         runtime: {
           mode: runtime.mode,
           material: runtime.material,
           launcher: runtime.assembly.launcher,
-          layers: runtime.coloredLayers.map(({ id, exterior, centralHole, launcherCuts }) => ({
-            id, exterior, centralHole, launcherCuts,
+          decorationOmissions: runtime.assembly.decorationOmissions,
+          layers: runtime.coloredLayers.map(({
+            id, exterior, centralHole, launcherCuts, deepFeatures, lightFeatures,
+          }) => ({
+            id, exterior, centralHole, launcherCuts, deepFeatures, lightFeatures,
           })),
         },
         artifactLauncherCutCount,
-      }));
+      });
+      if (validation.exteriorExpansionMm <= 0) {
+        throw new RangeError('Private Knight launcher release requires positive exterior expansion');
+      }
+      validations.push({
+        ...validation,
+        conversionElapsedMs,
+        blackGeometrySha256: blackGeometryBefore,
+        artifactGeometryVerified: true,
+      });
     } catch {
       throw new Error(`Private launcher runtime validation failed for ${caseId}`);
     }
@@ -183,6 +209,20 @@ if (autoSuccess !== 8 || !outputComparisonPass || launcherTemplatePass === false
   || launcherTemplateDeterministic === false || (launcherRuntimeValidation !== 'not-requested'
     && launcherRuntimeValidation.length !== 2) || results.some(({ pass }) => !pass)) {
   throw new Error(`Acceptance failed: ${autoSuccess}/8 automatic models passed; output comparison ${outputComparisonPass ? 'passed' : 'failed'}`);
+}
+
+function blackGeometrySha256(
+  runtime: Awaited<ReturnType<typeof convertAutomatically>>,
+): string {
+  return createHash('sha256').update(JSON.stringify(runtime.coloredLayers.map((layer) => ({
+    layerId: layer.id,
+    contours: [
+      layer.exterior,
+      ...(layer.centralHole ? [layer.centralHole] : []),
+      ...layer.launcherCuts,
+      ...layer.fastenerHoles,
+    ],
+  })))).digest('hex');
 }
 
 function kitOutput(kit: SpinnerKit): { readonly dimensionsMm: readonly [number, number]; readonly geometrySha256: string } {

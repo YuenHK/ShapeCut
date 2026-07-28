@@ -141,6 +141,8 @@ const geometryApi: GeometryApi = {
       }
       const packageInput = nearLimitPackageWorkload ?? {
         ...result,
+        centralHoleSourceEvidence: cached!.centralHoleSourceEvidence,
+        decorationOmissionSourceEvidence: cached!.decorationOmissionSourceEvidence,
         internalValidationEvidence: cached!.internalValidationEvidence,
       };
       nearLimitPackageWorkload = undefined;

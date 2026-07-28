@@ -111,6 +111,28 @@ describe('adaptive source-triangle depth features', () => {
     }))).toThrow(ProtectedCutWorkBudgetError);
   });
 
+  it('fails invalid protected topology before classifying the same request as work-budget exhaustion', () => {
+    const bowTie = [[-1, -1], [1, 1], [-1, 1], [1, -1]] as const;
+    const invalidOverBudgetCut = Array.from(
+      { length: 2_000 },
+      (_, index) => bowTie[index % bowTie.length],
+    );
+    let thrown: unknown;
+
+    try {
+      buildDepthField(steppedSurface(), request({
+        cellSizeMm: 0.05,
+        protectedCuts: [invalidOverBudgetCut],
+      }));
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(RangeError);
+    expect(thrown).not.toBeInstanceOf(ProtectedCutWorkBudgetError);
+    expect((thrown as Error).message).toMatch(/valid protected cut geometry/i);
+  });
+
   it('does not type unrelated raster, hit, component, topology, deadline, or cancellation errors as protected-cut work exhaustion', () => {
     const thrown = (action: () => unknown): unknown => {
       try {

@@ -170,7 +170,7 @@ describe('canonical colored outline document', () => {
     const document = createColoredOutlineDocument(complete);
 
     expect(document.layers[5].roles.CUT_BLACK.map(({ id }) => id)).toEqual([
-      'layer-6-exterior', 'layer-6-hole',
+      'layer-6-exterior', 'layer-6-central-hole',
       'layer-6-launcher-1', 'layer-6-launcher-2', 'layer-6-launcher-3',
       'layer-6-fastener-1', 'layer-6-fastener-2',
     ]);
@@ -193,7 +193,7 @@ describe('canonical colored outline document', () => {
     );
     expect(Object.keys(document.layers[2].roles)).toEqual(['CUT_BLACK', 'DEEP_RED', 'LIGHT_BLUE']);
     expect(document.layers[2].roles.CUT_BLACK.map(({ id }) => id)).toEqual([
-      'layer-3-exterior', 'layer-3-hole',
+      'layer-3-exterior', 'layer-3-central-hole',
     ]);
     expect(document.layers[2].roles.DEEP_RED).toHaveLength(1);
     expect(document.layers[2].roles.LIGHT_BLUE).toHaveLength(1);

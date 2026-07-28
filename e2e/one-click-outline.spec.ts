@@ -49,7 +49,9 @@ async function captureCompleteReleaseRun(page: Page, fixture: ReleaseFixture) {
       'cut-and-engrave.svg',
       'exploded-view.pdf',
       'launcher-fit-coupon.svg',
+      'manifest.json',
       'preview.pdf',
+      'project.json',
     ]);
 
     const retainedHoles = runtime.coloredLayers.filter((layer) => layer.hole.status === 'retained');

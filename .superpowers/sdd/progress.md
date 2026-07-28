@@ -38,3 +38,32 @@ Third final-review round:
 - The local discard mask now re-arms whenever a newly saved record changes source SHA-256 or `updatedAt`. The regression fixture covers saved source A -> discard -> save source B -> confirm the source-B fingerprint gate is active before any source C can be selected.
 - Removed the stale browser test that expected an unsafe material ID to convert and fail during coupon packaging. Early unsafe-ID rejection is now verified both before client transfer in the reliable node suite and inside the real Chromium worker.
 - Focused verification: 8 files / 170 tests passed; targeted Chromium worker: 1 passed / 33 skipped; `npm run typecheck`, `npm run build`, and `git diff --check 3dc11a0` passed.
+
+## Shared Launcher Exterior Expansion
+
+Task 1: complete (commit 5c29b9b..23df4b9, review clean; three pipeline interface-transition failures are owned by Task 2)
+Task 2: complete (commits 23df4b9..5b7c38b, review clean after central-hole source-evidence fix; monolithic assertions pass but known Vitest RPC exit persists)
+Task 3: complete (commits 5b7c38b..10c5a29, review clean after project/artifact mutation and App propagation fixes)
+
+Expansion minor review ledger:
+- Task 3: decoded-PDF negative label test could first assert one known visible label so an empty decoder result cannot pass silently.
+
+## Protected-Cut Decoration Omission
+
+Task 1: complete (commits 980d5b8..c413f51, review clean after topology-only recovery and arrangement-bound fixes)
+Task 2: complete (commits c413f51..26ca124, review clean after status, zero-diagnostic, source-evidence, and black-geometry fixes)
+Task 3: complete (commit 26ca124..24179bf, review clean; artifacts, UI, and v3 persistence approved)
+
+Task 4: complete (final independent review clean; physical gate outstanding).
+
+Task 4 release evidence:
+- Knight reference A: conversion 28,068.937 ms; shared exterior expansion 5.72 mm; launcher rotation 1.413716694115 rad; protected-work omissions `outline-layer-4,outline-layer-5`; black-geometry snapshot 150,324 bytes.
+- Knight reference B: conversion 29,297.224 ms; shared exterior expansion 5.70 mm; launcher rotation 1.413716694115 rad; protected-work omissions `outline-layer-4,outline-layer-5`; black-geometry snapshot 148,074 bytes.
+- Focused release matrix: 3 files / 20 tests passed. Real Chromium worker: 34/34 passed. Happy-path Chromium: 7/7 passed. Fixture/parser regression matrix: 4 files / 126 tests passed. Replacement/cancellation Chromium regression: 1/1 passed.
+- Repository serial Vitest assertions: 65/65 files and 1,655/1,655 tests passed, but the command exited nonzero after the assertions because Vitest reported one unhandled `[vitest-worker]: Timeout calling "onTaskUpdate"` RPC error. This command is not recorded as passed.
+- The final-review fix wave validates protected topology before budget classification, strictly reconciles every canonical project/manifest decision and privacy boundary, checks omission order by physical layer order (`layer-2` before `layer-10`), and lists all seven ZIP members.
+- The follow-up privacy fix rejects bare STL filenames and forward-UNC paths in JSON metadata, with fresh-hash mutation regressions.
+- Final-review core matrix: 3 files / 162 tests passed. The covering matrix reached 6/6 files and 774/774 assertions before the known post-assertion Vitest `onTaskUpdate` RPC timeout made the process nonzero.
+- `npm run typecheck`, `npm run build`, working-tree `git diff --check`, and complete-range `git diff --check 3dc11a0` passed.
+- A supplemental sequential browser rerun passed happy-path Chromium 7/7, then model A timed out with the material selector still disabled and model B was interrupted when that extra run was stopped; the scoped Knight and real-worker release evidence above remains unchanged.
+- `physical coupon + official launcher latch/release/play/damage test: outstanding`.

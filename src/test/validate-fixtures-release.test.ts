@@ -1,4 +1,5 @@
 import { execFile, type ExecException } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -6,9 +7,25 @@ const root = process.cwd();
 const viteNode = resolve(root, 'node_modules/vite-node/vite-node.mjs');
 const validator = resolve(root, 'scripts/validate-fixtures.ts');
 const publicFixture = resolve(root, 'fixtures/acceptance/symmetric-textured.stl');
+function privateFixture(envValue: string | undefined, fileName: string): string | undefined {
+  return [
+    envValue,
+    resolve(root, fileName),
+    resolve(root, '..', '..', fileName),
+  ].find((candidate): candidate is string => (
+    candidate !== undefined && existsSync(candidate)
+  ));
+}
+
 const privateInputs = {
-  first: process.env.KNIGHT_FORTRESS_STL,
-  second: process.env.KNIGHT_FORTRESS_GROUP_STL,
+  first: privateFixture(
+    process.env.KNIGHT_FORTRESS_STL,
+    'Copy of Beyblade X Knight Fortress.stl',
+  ),
+  second: privateFixture(
+    process.env.KNIGHT_FORTRESS_GROUP_STL,
+    'Copy of Beyblade X Knight Fortress Group.stl',
+  ),
 };
 
 type ChildResult = { readonly code: number; readonly stdout: string; readonly stderr: string };
@@ -84,14 +101,29 @@ describe.sequential('release fixture validation command', () => {
           safePlanCount: 1, artifactCutCount: 6, templateVersion: 1,
           templateFingerprint: expect.stringMatching(/^[0-9a-f]{32}$/),
           fitOffsetMm: 0,
+          rotationRad: 1.413716694115407,
+          exteriorExpansionMm: 5.72,
+          decorationOmissionLayerIds: ['outline-layer-4', 'outline-layer-5'],
+          conversionElapsedMs: expect.any(Number),
+          blackGeometrySha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+          artifactGeometryVerified: true,
         }),
         expect.objectContaining({
           caseId: 'reference-b', runtimeStatus: 'fixed', fixedPlan: 'safe',
           safePlanCount: 1, artifactCutCount: 6, templateVersion: 1,
           templateFingerprint: expect.stringMatching(/^[0-9a-f]{32}$/),
           fitOffsetMm: 0,
+          rotationRad: 1.413716694115407,
+          exteriorExpansionMm: 5.7,
+          decorationOmissionLayerIds: ['outline-layer-4', 'outline-layer-5'],
+          conversionElapsedMs: expect.any(Number),
+          blackGeometrySha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+          artifactGeometryVerified: true,
         }),
       ]);
+      expect((summary.launcherRuntimeValidation as Array<{ conversionElapsedMs: number }>)
+        .every(({ conversionElapsedMs }) => conversionElapsedMs > 0 && conversionElapsedMs < 30_000))
+        .toBe(true);
       expect(JSON.stringify(summary.launcherRuntimeValidation)).not.toMatch(/detected|fallback|omitted/i);
       expect(JSON.stringify(summary.launcherRuntimeValidation)).not.toMatch(/Knight|Fortress|\.stl|\//i);
     },

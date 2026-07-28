@@ -85,12 +85,22 @@ export type AutomaticOutlineResult = {
     readonly launcherDecoration: InternalLauncherDecorationEvidence;
   };
 };
-export type PublicAutomaticOutlineResult = Omit<AutomaticOutlineResult, 'internalValidationEvidence'>;
+export type PublicAutomaticOutlineResult = Omit<
+  AutomaticOutlineResult,
+  | 'centralHoleSourceEvidence'
+  | 'decorationOmissionSourceEvidence'
+  | 'internalValidationEvidence'
+>;
 
 export function stripAutomaticOutlineInternalEvidence(
   result: AutomaticOutlineResult,
 ): PublicAutomaticOutlineResult {
-  const { internalValidationEvidence: _internalValidationEvidence, ...publicResult } = result;
+  const {
+    centralHoleSourceEvidence: _centralHoleSourceEvidence,
+    decorationOmissionSourceEvidence: _decorationOmissionSourceEvidence,
+    internalValidationEvidence: _internalValidationEvidence,
+    ...publicResult
+  } = result;
   return publicResult;
 }
 export type AutomaticOutlineDiagnostics = {

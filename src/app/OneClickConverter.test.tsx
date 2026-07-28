@@ -1575,7 +1575,7 @@ describe('OneClickConverter', () => {
     expect(details).toHaveTextContent('warning');
     expect(details).toHaveTextContent('a'.repeat(32));
     expect(details).toHaveTextContent('正式製作前應先試切少量零件');
-    expect(details).toHaveTextContent('cut-and-engrave.svg、cut-and-engrave.dxf、preview.pdf、exploded-view.pdf 及 launcher-fit-coupon.svg');
+    expect(details).toHaveTextContent('cut-and-engrave.svg、cut-and-engrave.dxf、preview.pdf、exploded-view.pdf、launcher-fit-coupon.svg、project.json 及 manifest.json 七項檔案');
     expect(details).not.toHaveTextContent('private-name.stl');
   });
 

@@ -259,15 +259,22 @@ function validateRequest(projected: ProjectedMesh, request: DepthFeatureRequest,
     if (!Number.isSafeInteger(protectedPointCount) || protectedPointCount > MAX_PROTECTED_CUT_POINTS) {
       throw new RangeError('Depth feature extraction exceeds the protected cut budget');
     }
+    const validation = validateDepthFeatureContours({
+      exterior: cut,
+      clearanceMm: 0,
+      deadline,
+      checkpoint,
+    });
+    if (!validation.ok) {
+      throw new RangeError(
+        `Depth feature extraction requires valid protected cut geometry: ${validation.reasons.join('; ')}`,
+      );
+    }
   }
   if (protectedPointCount * width * height > MAX_DEPTH_COMPONENT_BYTES) {
     throw new ProtectedCutWorkBudgetError(
       'Depth feature extraction exceeds the protected cut work budget',
     );
-  }
-  for (const cut of protectedCuts) {
-    const validation = validateDepthFeatureContours({ exterior: cut, clearanceMm: 0, deadline, checkpoint });
-    if (!validation.ok) throw new RangeError(`Depth feature extraction requires valid protected cut geometry: ${validation.reasons.join('; ')}`);
   }
   if (width * height * totalLayerCount > request.budgets.maxRasterCellsTotal) {
     throw new RangeError('Depth feature extraction exceeds the total raster cell budget');

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import JSZip from 'jszip';
 import { decodePDFRawStream, PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFNumber, PDFRawStream, PDFRef, PDFString, rgb } from 'pdf-lib';
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -21,7 +22,10 @@ import {
 import { coloredResult, nearLimitColoredResult } from '../export/colored-outline-test-fixture';
 import { createOutlinePackage, type ColoredOutlinePackage } from '../export/outline-package';
 import { featureEvidenceFingerprint } from '../domain/outline-features/types';
-import { convertAutomatically } from '../domain/pipeline/automatic-outline-pipeline';
+import {
+  convertAutomatically,
+  stripAutomaticOutlineInternalEvidence,
+} from '../domain/pipeline/automatic-outline-pipeline';
 import type { AutomaticOutlineResult } from '../domain/pipeline/automatic-outline-pipeline';
 import { writeBinarySTL } from '../domain/mesh/write-stl';
 import type { TriangleMesh } from '../domain/mesh/types';
@@ -120,9 +124,30 @@ it('executes the worker probe init callback after serialization without module-s
     await installWorkerResultProbe(page as never);
     const worker = new window.Worker('/geometry.worker.js') as unknown as IsolatedWorker;
     expect(() => worker.emit(releaseSummary(coloredResult()))).not.toThrow();
+    const sourceResult = coloredResult();
+    const physicalOrderResult = stripAutomaticOutlineInternalEvidence({
+      ...sourceResult,
+      assembly: {
+        ...sourceResult.assembly,
+        decorationOmissions: [
+          {
+            layerId: 'layer-2',
+            reason: 'protected-cut-work-budget',
+            roles: ['DEEP_RED', 'LIGHT_BLUE'],
+          },
+          {
+            layerId: 'layer-10',
+            reason: 'protected-cut-work-budget',
+            roles: ['DEEP_RED', 'LIGHT_BLUE'],
+          },
+        ],
+      },
+    });
+    expect(() => worker.emit(physicalOrderResult)).not.toThrow();
     expect((window as unknown as {
-      __shapeCutWorkerProbe: { results: unknown[] };
-    }).__shapeCutWorkerProbe).toBeDefined();
+      __shapeCutWorkerProbe: { results: WorkerResultSummary[] };
+    }).__shapeCutWorkerProbe.results.at(-1)?.assembly?.decorationOmissions)
+      .toEqual(physicalOrderResult.assembly.decorationOmissions);
   } finally {
     Object.defineProperty(window, 'Worker', { configurable: true, value: originalWorker });
   }
@@ -318,6 +343,39 @@ async function zipWithArtifacts(value: ColoredArtifactPayloads): Promise<Uint8Ar
   zip.file('preview.pdf', value.previewPdf, { date });
   zip.file('exploded-view.pdf', value.explodedPdf, { date });
   zip.file('launcher-fit-coupon.svg', value.launcherCouponSvg!, { date });
+  zip.file('project.json', output.projectJson, { date });
+  zip.file('manifest.json', output.manifestJson, { date });
+  return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
+}
+
+async function zipWithMutatedMetadata(
+  mutate: (
+    project: Record<string, unknown>,
+    manifest: Record<string, unknown>,
+  ) => void,
+): Promise<Uint8Array> {
+  const encoder = new TextEncoder();
+  const project = JSON.parse(output.projectJson) as Record<string, unknown>;
+  const manifest = JSON.parse(output.manifestJson) as Record<string, unknown>;
+  mutate(project, manifest);
+  const projectJson = JSON.stringify(project, null, 2);
+  const payloads = [
+    ['cut-and-engrave.svg', encoder.encode(output.cutSvg)],
+    ['cut-and-engrave.dxf', encoder.encode(output.cutDxf)],
+    ['preview.pdf', output.previewPdf],
+    ['exploded-view.pdf', output.explodedViewPdf],
+    ['launcher-fit-coupon.svg', encoder.encode(output.launcherCouponSvg)],
+    ['project.json', encoder.encode(projectJson)],
+  ] as const;
+  manifest.members = payloads.map(([path, payload]) => ({
+    path,
+    byteLength: payload.byteLength,
+    sha256: createHash('sha256').update(payload).digest('hex'),
+  }));
+  const manifestJson = JSON.stringify(manifest, null, 2);
+  const zip = new JSZip(), date = new Date('2000-01-01T00:00:00.000Z');
+  payloads.forEach(([path, payload]) => zip.file(path, Buffer.from(payload), { date }));
+  zip.file('manifest.json', manifestJson, { date });
   return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
 }
 
@@ -334,6 +392,9 @@ function allLayerHoleOmissionResult() {
     ...result,
     status: 'warning' as const,
     coloredLayers,
+    centralHoleSourceEvidence: result.centralHoleSourceEvidence.map(() => ({
+      status: 'omitted' as const,
+    })),
     featureWarnings: [CENTRAL_HOLE_OMISSION_WARNING, ...result.featureWarnings],
     preview: { ...result.preview, layers: coloredLayers },
   };
@@ -380,7 +441,7 @@ describe('release E2E colored artifact parsers', () => {
       const layer = position + 1, top = layer === 6;
       return [
         record(layer, 'CUT_BLACK', `layer-${layer}-exterior`),
-        record(layer, 'CUT_BLACK', `layer-${layer}-hole`),
+        record(layer, 'CUT_BLACK', `layer-${layer}-central-hole`),
         ...(layer >= 5 ? [1, 2, 3].map((index) => record(
           layer, 'CUT_BLACK', `layer-${layer}-launcher-clearance-${index}`,
         )) : []),
@@ -454,7 +515,8 @@ describe('release E2E colored artifact parsers', () => {
         },
       },
     };
-    expect(() => expectReleaseAssemblyGeometry(shiftedCenter, inspected)).toThrow(/fastener.*center/i);
+    expect(() => expectReleaseAssemblyGeometry(shiftedCenter, inspected))
+      .toThrow(/fastener.*(?:center|decision)/i);
     expect(inspected.entities.filter(({ id }) => id.includes('-launcher-clearance-'))).toHaveLength(6);
     expect(inspected.entities.filter(({ id }) => id.includes('-fastener-hole-'))).toHaveLength(18);
   });
@@ -584,7 +646,7 @@ describe('release E2E colored artifact parsers', () => {
     ]));
   });
 
-  it('enumerates the exact five ZIP records in encounter order and reconciles byte identity', async () => {
+  it('enumerates the exact seven ZIP records in encounter order and reconciles byte identity', async () => {
     const zip = await parseColoredZipRecords(output.zip);
     expect(zip.map(({ name }) => name)).toEqual([
       'cut-and-engrave.svg',
@@ -592,11 +654,75 @@ describe('release E2E colored artifact parsers', () => {
       'preview.pdf',
       'exploded-view.pdf',
       'launcher-fit-coupon.svg',
+      'project.json',
+      'manifest.json',
     ]);
 
     const inspected = await inspectColoredArtifacts(artifacts);
     expect(inspected.entities).toEqual(parseColoredOutlineSvgArtifact(output.cutSvg).entities);
     expect(inspected.zipRecords.every(({ byteIdentical }) => byteIdentical)).toBe(true);
+  });
+
+  it('rejects a synchronized project material forgery after updating the manifest project hash', async () => {
+    const zip = await zipWithMutatedMetadata((project) => {
+      const assembly = project.assembly as Record<string, unknown>;
+      const material = assembly.material as Record<string, unknown>;
+      material.minWebMm = (material.minWebMm as number) + 0.1;
+    });
+    const inspected = await inspectColoredArtifacts({ ...artifacts, zip });
+
+    expect(() => expectReleaseAssemblyGeometry(releaseSummary(coloredResult()), inspected))
+      .toThrow(/material.*reconcile/i);
+  });
+
+  it('rejects synchronized project fastener and top-feature forgeries with fresh metadata hashes', async () => {
+    const fastenerZip = await zipWithMutatedMetadata((project) => {
+      const assembly = project.assembly as Record<string, unknown>;
+      const fastener = assembly.fastener as Record<string, unknown>;
+      fastener.pathDiameterMm = (fastener.pathDiameterMm as number) + 0.1;
+    });
+    const fastenerOutput = await inspectColoredArtifacts({ ...artifacts, zip: fastenerZip });
+    expect(() => expectReleaseAssemblyGeometry(releaseSummary(coloredResult()), fastenerOutput))
+      .toThrow(/fastener.*reconcile/i);
+
+    const topZip = await zipWithMutatedMetadata((project, manifest) => {
+      const assembly = project.assembly as Record<string, unknown>;
+      const top = structuredClone(assembly.topFeatures) as Record<string, unknown>;
+      const retained = top.retained as Record<string, unknown>;
+      retained.red = (retained.red as number) + 1;
+      assembly.topFeatures = top;
+      (manifest.decisions as Record<string, unknown>).topFeatures = structuredClone(top);
+    });
+    const topOutput = await inspectColoredArtifacts({ ...artifacts, zip: topZip });
+    expect(() => expectReleaseAssemblyGeometry(releaseSummary(coloredResult()), topOutput))
+      .toThrow(/top.*feature|reconcile/i);
+  });
+
+  it('rejects ignored manifest decisions and private project notes even with fresh member hashes', async () => {
+    const manifestZip = await zipWithMutatedMetadata((_project, manifest) => {
+      const decisions = manifest.decisions as Record<string, unknown>;
+      decisions.launcherTemplateVersion = 999;
+    });
+    await expect(inspectColoredArtifacts({ ...artifacts, zip: manifestZip }))
+      .rejects.toThrow(/manifest.*decision|template|release/i);
+
+    const privateZip = await zipWithMutatedMetadata((project) => {
+      project.safetyNotes = [['', 'private', 'var', 'secret.stl'].join('/')];
+    });
+    await expect(inspectColoredArtifacts({ ...artifacts, zip: privateZip }))
+      .rejects.toThrow(/private|path|source/i);
+
+    const privateFilenameZip = await zipWithMutatedMetadata((project) => {
+      project.safetyNotes = ['private model (copy).stl'];
+    });
+    await expect(inspectColoredArtifacts({ ...artifacts, zip: privateFilenameZip }))
+      .rejects.toThrow(/private|filename|source/i);
+
+    const forwardUncZip = await zipWithMutatedMetadata((project) => {
+      project.safetyNotes = [['', '', 'server', 'share', 'notes.txt'].join('/')];
+    });
+    await expect(inspectColoredArtifacts({ ...artifacts, zip: forwardUncZip }))
+      .rejects.toThrow(/private|path|source/i);
   });
 
   it('requires a distinct standalone launcher coupon instead of counting the ZIP member twice', async () => {
@@ -756,13 +882,13 @@ describe('release E2E colored artifact parsers', () => {
 
   it('rejects a duplicate ZIP record that a high-level parser can collapse', async () => {
     const duplicate = duplicateFirstCentralDirectoryRecord(output.zip);
-    expect(Object.keys((await JSZip.loadAsync(duplicate)).files)).toHaveLength(5);
-    await expect(parseColoredZipRecords(duplicate)).rejects.toThrow(/five|duplicate|record/i);
+    expect(Object.keys((await JSZip.loadAsync(duplicate)).files)).toHaveLength(7);
+    await expect(parseColoredZipRecords(duplicate)).rejects.toThrow(/seven|duplicate|record/i);
   });
 
   it('rejects an orphan local ZIP record not referenced by the central directory', async () => {
     const orphan = insertOrphanLocalRecord(output.zip);
-    expect(Object.keys((await JSZip.loadAsync(orphan)).files)).toHaveLength(5);
+    expect(Object.keys((await JSZip.loadAsync(orphan)).files)).toHaveLength(7);
     await expect(parseColoredZipRecords(orphan)).rejects.toThrow(/local|coverage|record/i);
   });
 
@@ -773,6 +899,8 @@ describe('release E2E colored artifact parsers', () => {
     zip.file('preview.pdf', output.previewPdf);
     zip.file('exploded-view.pdf', output.explodedViewPdf);
     zip.file('launcher-fit-coupon.svg', output.launcherCouponSvg);
+    zip.file('project.json', output.projectJson);
+    zip.file('manifest.json', output.manifestJson);
     const unsafe = await zip.generateAsync({ type: 'uint8array' });
 
     await expect(parseColoredZipRecords(unsafe)).rejects.toThrow(/unsafe|canonical|name/i);

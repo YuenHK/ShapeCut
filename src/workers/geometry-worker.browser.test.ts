@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { finalizer, releaseProxy, wrap, type Remote } from 'comlink';
+import JSZip from 'jszip';
 import { writeBinarySTL } from '../domain/mesh/write-stl';
 import {
   stripAutomaticOutlineInternalEvidence,
@@ -415,11 +416,14 @@ describe('geometry worker boundary', () => {
     expect(terminate).toHaveBeenCalled();
   });
 
-  it('transfers exactly the five colored artifacts plus ZIP across the worker boundary', async () => {
+  it('strips private source evidence while packaging the canonical omission decision from the worker cache', async () => {
     const client = createGeometryWorkerClient();
     clients.push(client);
     const runtime = await client.convertAutomatically({ bytes: writeBinarySTL(launcherCompatibleCylinder(), 'safe') });
     expect(runtime).not.toHaveProperty('internalValidationEvidence');
+    expect(runtime).not.toHaveProperty('centralHoleSourceEvidence');
+    expect(runtime).not.toHaveProperty('decorationOmissionSourceEvidence');
+    expect(runtime.assembly.decorationOmissions).toEqual([]);
 
     const packaged = await client.packageOutline(runtime);
 
@@ -432,6 +436,15 @@ describe('geometry worker boundary', () => {
     expect(packaged.explodedViewPdf.byteLength).toBeGreaterThan(0);
     expect(packaged.launcherCouponSvg).toContain('data-template-fingerprint=');
     expect(packaged.zip.byteLength).toBeGreaterThan(0);
+    const zip = await JSZip.loadAsync(packaged.zip);
+    const project = JSON.parse(await zip.file('project.json')!.async('string')) as {
+      readonly assembly: { readonly decorationOmissions: unknown };
+    };
+    const manifest = JSON.parse(await zip.file('manifest.json')!.async('string')) as {
+      readonly decisions: { readonly decorationOmissions: unknown };
+    };
+    expect(project.assembly.decorationOmissions).toEqual(runtime.assembly.decorationOmissions);
+    expect(manifest.decisions.decorationOmissions).toEqual(runtime.assembly.decorationOmissions);
   });
 
   it('returns a typed TIME_LIMIT when the shared packaging deadline is exhausted', async () => {

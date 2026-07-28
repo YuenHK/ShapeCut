@@ -21,6 +21,9 @@ function allLayerHoleOmissionResult() {
     ...result,
     status: 'warning' as const,
     coloredLayers,
+    centralHoleSourceEvidence: result.centralHoleSourceEvidence.map(() => ({
+      status: 'omitted' as const,
+    })),
     featureWarnings: [...result.featureWarnings, CENTRAL_HOLE_OMISSION_WARNING],
     preview: { ...result.preview, layers: coloredLayers },
   };

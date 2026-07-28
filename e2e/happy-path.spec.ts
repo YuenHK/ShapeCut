@@ -1,4 +1,6 @@
 import { expect, test } from '@playwright/test';
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { writeBinarySTL } from '../src/domain/mesh/write-stl';
 import type { TriangleMesh } from '../src/domain/mesh/types';
 import {
@@ -19,6 +21,10 @@ const structurallyImpossibleFixture = launcherCompatibleStlFixture(
   'structurally-impossible-launcher-cylinder.stl',
   6,
 );
+const knightFixturePath = [
+  resolve(process.cwd(), 'Copy of Beyblade X Knight Fortress.stl'),
+  resolve(process.cwd(), '..', '..', 'Copy of Beyblade X Knight Fortress.stl'),
+].find(existsSync);
 
 function holedSteppedPlate(): TriangleMesh {
   const positions: number[] = [];
@@ -84,6 +90,12 @@ test('serialized worker probe accepts the fixed public result without internal e
   expect(runtime.coloredLayers.slice(0, -2).every((layer) => layer.launcherCuts?.length === 0)).toBe(true);
   expect(runtime.coloredLayers.slice(-2).every((layer) => layer.launcherCuts?.length === 3)).toBe(true);
   expect(runtime.coloredLayers.at(-1)!.launcherCuts).toEqual(runtime.coloredLayers.at(-2)!.launcherCuts);
+  expect(runtime.assembly!.launcher.exteriorExpansion).toMatchObject({
+    mode: 'shared-uniform',
+    maxOffsetMm: 6,
+    affectedLayerIds: runtime.coloredLayers.slice(-2).map(({ id }) => id),
+  });
+  expect(runtime.assembly!.decorationOmissions).toEqual([]);
   expect(output.launcherCoupon).toMatchObject({
     templateVersion: runtime.assembly!.launcher.templateVersion,
     templateFingerprint: runtime.assembly!.launcher.templateFingerprint,
@@ -93,8 +105,36 @@ test('serialized worker probe accepts the fixed public result without internal e
     labels: ['-0.10 mm', '-0.05 mm', '0.00 mm', '+0.05 mm', '+0.10 mm'],
   });
   expectReleaseAssemblyGeometry(runtime, output);
+  expect(output.project.assembly.decorationOmissions).toEqual([]);
+  expect(output.manifest.decisions.decorationOmissions).toEqual([]);
+  expect(output.zipRecords).toHaveLength(7);
+  expect(output.zipRecords.every(({ byteIdentical }) => byteIdentical)).toBe(true);
   expect(probe.results).toHaveLength(1);
   expect(probe.errorCodes).toEqual([]);
+});
+
+test('Knight omission warning and canonical decisions survive browser downloads', async ({ page }) => {
+  test.skip(!knightFixturePath, 'Knight Fortress reference fixture is not available');
+  test.setTimeout(120_000);
+  await installWorkerResultProbe(page);
+  await page.goto('/');
+  await selectModel(page, knightFixturePath!);
+  await expectResult(page, '需注意', '2.5D 外形');
+  const runtime = await readLatestWorkerResultSummary(page);
+  const omissionLayerIds = runtime.assembly!.decorationOmissions.map(({ layerId }) => layerId);
+  expect(omissionLayerIds).toEqual(['outline-layer-4', 'outline-layer-5']);
+  const omissionPanel = page.getByRole('region', { name: '紅藍裝飾省略提示' });
+  await expect(omissionPanel).toContainText('三爪孔保護運算量超出上限，已省略此層紅藍裝飾');
+  for (const layerId of omissionLayerIds) {
+    await expect(omissionPanel).toContainText(`受影響層：${layerId}`);
+  }
+  await expect(omissionPanel).toContainText('官方三爪孔及黑色切割幾何已保留');
+  const output = await downloadAndInspectOutline(page);
+  expectReleaseAssemblyGeometry(runtime, output);
+  expect(output.project.assembly.decorationOmissions)
+    .toEqual(runtime.assembly!.decorationOmissions);
+  expect(output.manifest.decisions.decorationOmissions)
+    .toEqual(runtime.assembly!.decorationOmissions);
 });
 
 test('structurally impossible fixed launcher geometry blocks every download', async ({ page }) => {
@@ -105,12 +145,12 @@ test('structurally impossible fixed launcher geometry blocks every download', as
 
   await expect(page.getByRole('heading', { name: '這次未能完成' })).toBeVisible({ timeout: 60_000 });
   await expect(page.getByRole('alert')).toContainText(
-    '官方三爪孔會破壞外框或必要承托結構，已停止所有輸出。',
+    '頂部兩層外框需要擴大超過 6.00 mm，已停止所有輸出。',
   );
   await expect(page.locator('a[download]')).toHaveCount(0);
   const probe = await readWorkerProbeState(page);
   expect(probe.results).toEqual([]);
-  expect(probe.errorCodes).toContain('LAUNCHER_INCOMPATIBLE');
+  expect(probe.errorCodes).toContain('LAUNCHER_EXTERIOR_EXPANSION_EXCEEDED');
 });
 
 test('one selection converts the safe single-loop model with real wireframe and exploded layers', async ({ page }) => {

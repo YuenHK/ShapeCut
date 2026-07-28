@@ -12,7 +12,7 @@ import {
   AutomaticOutlineError,
   type AutomaticOutlineProgressEvent,
   type AutomaticOutlineProgressStage,
-  type AutomaticOutlineResult,
+  type PublicAutomaticOutlineResult,
 } from '../domain/pipeline/automatic-outline-pipeline';
 import type { DecorationOmission, OutlinePreviewPayload } from '../domain/outline-features/types';
 import { PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING } from '../domain/outline-features/depth-field';
@@ -57,13 +57,13 @@ export type OneClickViewState =
   | { readonly kind: 'reading'; readonly fileName: string }
   | { readonly kind: 'material'; readonly fileName: string; readonly bytes: ArrayBuffer }
   | { readonly kind: 'processing'; readonly fileName: string; readonly stage: AutomaticOutlineProgressStage; readonly preview?: OutlinePreviewPayload }
-  | { readonly kind: 'result'; readonly fileName: string; readonly result: AutomaticOutlineResult; readonly downloads: OutlineDownloads }
+  | { readonly kind: 'result'; readonly fileName: string; readonly result: PublicAutomaticOutlineResult; readonly downloads: OutlineDownloads }
   | {
     readonly kind: 'failure';
     readonly fileName?: string;
     readonly message: string;
     readonly artifact?: OutlineArtifactId;
-    readonly result?: AutomaticOutlineResult;
+    readonly result?: PublicAutomaticOutlineResult;
     readonly preview?: OutlinePreviewPayload;
   };
 
@@ -74,8 +74,8 @@ export type OneClickConverterServices = {
     material: ManufacturingGeometryProfile,
     launcherFitOffsetMm: number,
     onProgress?: (event: AutomaticOutlineProgressEvent) => void | Promise<void>,
-  ) => Promise<AutomaticOutlineResult>;
-  readonly package: (result: AutomaticOutlineResult, fileName?: string) => Promise<OutlineDownloads>;
+  ) => Promise<PublicAutomaticOutlineResult>;
+  readonly package: (result: PublicAutomaticOutlineResult, fileName?: string) => Promise<OutlineDownloads>;
   readonly cancel: () => void;
   /** Test seam; production uses the cancellable wall-clock presentation timeline. */
   readonly createTimeline?: (clock: ProcessingTimelineClock<number>) => ProcessingTimeline;
@@ -174,7 +174,7 @@ function finiteDisplay(value: number): string | undefined {
   return Number(value.toFixed(2)).toString();
 }
 
-function outlinePresentation(result: AutomaticOutlineResult): OutlinePresentation | undefined {
+function outlinePresentation(result: PublicAutomaticOutlineResult): OutlinePresentation | undefined {
   if (result.layers.length === 0) return undefined;
   if (result.layers.some((layer) => !layer?.sourceBoundsMm || !Array.isArray(layer.contour?.outer))) return undefined;
   const values = result.layers.flatMap((layer) => [
@@ -208,7 +208,7 @@ function omittedFeatureMessage(label: string, omitted: number, total: number): s
   return `${omitted === total ? '所有' : '部分'}切片未${label}。`;
 }
 
-function presentationWarnings(result: AutomaticOutlineResult): readonly string[] {
+function presentationWarnings(result: PublicAutomaticOutlineResult): readonly string[] {
   const total = result.coloredLayers.length;
   const warnings: string[] = [];
   if (result.mode === 'outline-2.5d') {
@@ -240,7 +240,7 @@ function measurementRange(values: readonly number[]): string | undefined {
   return `${finite[0]}–${finite[finite.length - 1]} mm`;
 }
 
-function launcherSummary(status: AutomaticOutlineResult['assembly']['launcher']['status']): string {
+function launcherSummary(status: PublicAutomaticOutlineResult['assembly']['launcher']['status']): string {
   return status === 'fixed' ? '官方三爪孔：已加入頂部兩層' : '';
 }
 
@@ -497,7 +497,7 @@ export function OneClickConverter({
     timelineRef.current?.cancel();
     releaseCurrentDownloads();
     let latestPreview: OutlinePreviewPayload | undefined;
-    let completedResult: AutomaticOutlineResult | undefined;
+    let completedResult: PublicAutomaticOutlineResult | undefined;
     let ownedDownloads: OutlineDownloads | undefined;
     let workerFinished = false;
     const timeline = (runtimeServices.createTimeline ?? createProcessingTimeline)({
@@ -1050,7 +1050,7 @@ export function OneClickConverter({
         </dl>
         <h2>處理提示</h2>
         {warnings.length > 0 ? <ul>{warnings.map((item) => <li key={item}>{item}</li>)}</ul> : <p>沒有額外提示。</p>}
-        <p>ZIP 內含 cut-and-engrave.svg、cut-and-engrave.dxf、preview.pdf、exploded-view.pdf 及 launcher-fit-coupon.svg 五項檔案。</p>
+        <p>ZIP 內含 cut-and-engrave.svg、cut-and-engrave.dxf、preview.pdf、exploded-view.pdf、launcher-fit-coupon.svg、project.json 及 manifest.json 七項檔案。</p>
       </details>
       {savedProject ? (
         <button type="button" onClick={() => void discardSavedProject()}>

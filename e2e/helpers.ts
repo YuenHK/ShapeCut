@@ -32,6 +32,12 @@ import {
   OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
   OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
 } from '../src/domain/outline-assembly/launcher-template';
+import {
+  LAUNCHER_EXTERIOR_EXPANSION_MAX_MM,
+  LAUNCHER_EXTERIOR_EXPANSION_MODE,
+  normalizeLauncherExteriorExpansionMm,
+} from '../src/domain/outline-assembly/launcher-exterior-expansion';
+import { PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING } from '../src/domain/outline-features/depth-field';
 import { READY_TEST_MATERIAL } from '../src/test/ready-material';
 import { writeBinarySTL } from '../src/domain/mesh/write-stl';
 import type { TriangleMesh } from '../src/domain/mesh/types';
@@ -86,6 +92,8 @@ const EXPECTED_ZIP_NAMES = Object.freeze([
   'preview.pdf',
   'exploded-view.pdf',
   'launcher-fit-coupon.svg',
+  'project.json',
+  'manifest.json',
 ] as const);
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$/;
 const HASH = /^[0-9a-f]{32}$/i;
@@ -211,9 +219,76 @@ export type DownloadedOutline = ColoredFingerprints & {
   readonly previewPdf: ParsedColoredPdf;
   readonly explodedPdf: ParsedColoredPdf;
   readonly launcherCoupon: ParsedLauncherFitCoupon;
+  readonly project: ParsedColoredProject;
+  readonly manifest: ParsedColoredManifest;
   readonly zipRecords: readonly (ParsedColoredZipRecord & { readonly byteIdentical: boolean })[];
   readonly downloadBytes: BoundedDownloadBytes;
   readonly sha256: string;
+};
+
+export type DecorationOmissionDecision = {
+  readonly layerId: string;
+  readonly reason: 'protected-cut-work-budget';
+  readonly roles: readonly ['DEEP_RED', 'LIGHT_BLUE'];
+};
+
+export type LauncherExteriorExpansionDecision = {
+  readonly mode: 'shared-uniform';
+  readonly offsetMm: number;
+  readonly maxOffsetMm: 6;
+  readonly affectedLayerIds: readonly [string, string];
+};
+
+type ProjectMaterialDecision = {
+  readonly id: string;
+  readonly thicknessMm: number;
+  readonly kerfMm: number;
+  readonly minFeatureMm: number;
+  readonly minWebMm: number;
+  readonly fitAllowanceMm: Readonly<Record<'loose' | 'slip' | 'snug' | 'press', number>>;
+};
+
+type FastenerDecision = NonNullable<WorkerResultSummary['assembly']>['fastener'];
+type TopFeatureDecision = NonNullable<WorkerResultSummary['assembly']>['topFeatures'];
+
+export type ParsedColoredProject = ColoredFingerprints & {
+  readonly safetyNotes: readonly string[];
+  readonly assembly: {
+    readonly material: ProjectMaterialDecision;
+    readonly launcher: WorkerResultSummary['assembly'] extends infer _Assembly
+      ? NonNullable<WorkerResultSummary['assembly']>['launcher']
+      : never;
+    readonly fastener: FastenerDecision;
+    readonly decorationOmissions: readonly DecorationOmissionDecision[];
+    readonly topFeatures: TopFeatureDecision;
+  };
+  readonly layers: readonly {
+    readonly id: string;
+    readonly order: number;
+    readonly index: number;
+    readonly zStart: number;
+    readonly zEnd: number;
+    readonly members: Readonly<Record<ColoredRole, readonly string[]>>;
+  }[];
+};
+
+export type ParsedColoredManifest = {
+  readonly decisions: {
+    readonly sourceHash: string;
+    readonly materialId: string;
+    readonly kerfMm: number;
+    readonly launcherTemplateVersion: number;
+    readonly launcherTemplateFingerprint: string;
+    readonly launcherRotationRad: number;
+    readonly launcherFitOffsetMm: number;
+    readonly launcherFinishedAllowanceMm: number;
+    readonly launcherExteriorExpansionMode: 'shared-uniform';
+    readonly launcherExteriorExpansionMm: number;
+    readonly launcherExteriorExpansionMaxMm: 6;
+    readonly launcherExteriorExpansionLayerIds: readonly [string, string];
+    readonly decorationOmissions: readonly DecorationOmissionDecision[];
+    readonly topFeatures: TopFeatureDecision;
+  };
 };
 
 export type ParsedLauncherFitCoupon = {
@@ -250,7 +325,9 @@ export type WorkerResultSummary = {
       readonly rotationRad: number;
       readonly fitOffsetMm: number;
       readonly finishedAllowanceMm: number;
+      readonly exteriorExpansion: LauncherExteriorExpansionDecision;
     };
+    readonly decorationOmissions: readonly DecorationOmissionDecision[];
     readonly fastener: {
       readonly count: 0 | 1 | 2 | 3;
       readonly centers: readonly Point2[];
@@ -480,7 +557,7 @@ export function validateColoredEntityRecords(entities: readonly ColoredEntityRec
       throw new Error(`${label} black exterior identity is not canonical`);
     }
     const remainder = black.slice(1);
-    const central = remainder.filter(({ id }) => id === `${layerId}-hole`);
+    const central = remainder.filter(({ id }) => id === `${layerId}-central-hole`);
     const launcher = remainder.filter(({ id }) => (
       [1, 2, 3].some((index) => id === `${layerId}-launcher-clearance-${index}`)
     ));
@@ -571,6 +648,22 @@ export function expectReleaseAssemblyGeometry(
     || output.launcherCoupon.kerfMm !== material.kerfMm) {
     throw new Error('Release coupon template, material identity, or kerf does not reconcile with worker evidence');
   }
+  if (exact(output.project.safetyNotes) !== exact(summary.featureWarnings)) {
+    throw new Error('Release project safety-note provenance does not reconcile');
+  }
+  const projectMaterial = {
+    id: material.id,
+    thicknessMm: material.thicknessMm,
+    kerfMm: material.kerfMm,
+    minFeatureMm: material.minFeatureMm,
+    minWebMm: material.minWebMm,
+    fitAllowanceMm: material.fitAllowanceMm,
+  };
+  if (exact(output.project.assembly.material) !== exact(projectMaterial)
+    || output.manifest.decisions.materialId !== material.id
+    || output.manifest.decisions.kerfMm !== material.kerfMm) {
+    throw new Error('Release project and manifest material decisions do not reconcile');
+  }
   if (summary.featureWarnings.length > MAX_FEATURE_WARNING_COUNT
     || summary.featureWarnings.some((warning) => warning.length < 1 || warning.length > MAX_FEATURE_WARNING_LENGTH
       || /[\u0000-\u001f\u007f]/.test(warning))) {
@@ -595,6 +688,34 @@ export function expectReleaseAssemblyGeometry(
       !== LAUNCHER_ASSEMBLY_ALLOWANCE_MM + assembly.launcher.fitOffsetMm) {
     throw new Error('Release fixed launcher target metadata is invalid');
   }
+  const expansion = assembly.launcher.exteriorExpansion;
+  let normalizedExpansion: number;
+  try {
+    normalizedExpansion = normalizeLauncherExteriorExpansionMm(expansion.offsetMm);
+  } catch {
+    normalizedExpansion = Number.NaN;
+  }
+  const topTwoLayerIds = coloredLayers.slice(-2).map(({ id }) => id);
+  if (expansion.mode !== LAUNCHER_EXTERIOR_EXPANSION_MODE
+    || normalizedExpansion !== expansion.offsetMm
+    || expansion.maxOffsetMm !== LAUNCHER_EXTERIOR_EXPANSION_MAX_MM
+    || exact(expansion.affectedLayerIds) !== exact(topTwoLayerIds)
+    || exact(output.project.assembly.launcher) !== exact(assembly.launcher)
+    || output.manifest.decisions.launcherTemplateVersion
+      !== assembly.launcher.templateVersion
+    || output.manifest.decisions.launcherTemplateFingerprint
+      !== assembly.launcher.templateFingerprint
+    || output.manifest.decisions.launcherRotationRad !== assembly.launcher.rotationRad
+    || output.manifest.decisions.launcherFitOffsetMm !== assembly.launcher.fitOffsetMm
+    || output.manifest.decisions.launcherFinishedAllowanceMm
+      !== assembly.launcher.finishedAllowanceMm
+    || output.manifest.decisions.launcherExteriorExpansionMode !== expansion.mode
+    || output.manifest.decisions.launcherExteriorExpansionMm !== expansion.offsetMm
+    || output.manifest.decisions.launcherExteriorExpansionMaxMm !== expansion.maxOffsetMm
+    || exact(output.manifest.decisions.launcherExteriorExpansionLayerIds)
+      !== exact(expansion.affectedLayerIds)) {
+    throw new Error('Release shared launcher exterior expansion does not reconcile');
+  }
 
   const fastener = assembly.fastener;
   if (![0, 1, 2, 3].includes(fastener.count) || fastener.centers.length !== fastener.count
@@ -604,6 +725,9 @@ export function expectReleaseAssemblyGeometry(
     || fastener.count === 0 && (fastener.radiusMm !== undefined || fastener.rotationRad !== undefined)
     || fastener.count > 0 && (!Number.isFinite(fastener.radiusMm) || !Number.isFinite(fastener.rotationRad))) {
     throw new Error('Release fastener 3.00 mm target or material compensation metadata is invalid');
+  }
+  if (exact(output.project.assembly.fastener) !== exact(fastener)) {
+    throw new Error('Release project fastener decision does not reconcile');
   }
   if (summary.featureWarnings.includes(FASTENER_OMISSION_WARNING) !== (fastener.count === 0)) {
     throw new Error('Release fastener omission warning provenance is inconsistent');
@@ -671,6 +795,36 @@ export function expectReleaseAssemblyGeometry(
       }
     }
   }
+  const omissionLayerIds = assembly.decorationOmissions.map(({ layerId }) => layerId);
+  const omittedPositions = omissionLayerIds.map((layerId) => (
+    coloredLayers.findIndex((layer) => layer.id === layerId)
+  ));
+  if (assembly.decorationOmissions.length > 24
+    || new Set(omissionLayerIds).size !== omissionLayerIds.length
+    || omittedPositions.some((position, index) => (
+      position < 0 || index > 0 && position <= omittedPositions[index - 1]
+    ))
+    || assembly.decorationOmissions.some((omission) => (
+      omission.reason !== 'protected-cut-work-budget'
+      || exact(omission.roles) !== exact(['DEEP_RED', 'LIGHT_BLUE'])
+    ))
+    || assembly.decorationOmissions.some(({ layerId }) => {
+      const layer = coloredLayers.find((candidate) => candidate.id === layerId);
+      const exported = output.entities.filter((entity) => entity.physicalLayerId === layerId);
+      return !layer
+        || layer.deepFeatures?.length !== 0
+        || layer.lightFeatures?.length !== 0
+        || exported.some(({ role }) => role === 'DEEP_RED' || role === 'LIGHT_BLUE');
+    })
+    || summary.featureWarnings.includes(PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING)
+      !== (assembly.decorationOmissions.length > 0)
+    || assembly.decorationOmissions.length > 0 && summary.status !== 'warning'
+    || exact(output.project.assembly.decorationOmissions)
+      !== exact(assembly.decorationOmissions)
+    || exact(output.manifest.decisions.decorationOmissions)
+      !== exact(assembly.decorationOmissions)) {
+    throw new Error('Release decoration omission decisions and artifact roles do not reconcile');
+  }
   for (let index = 0; index < fastener.count; index += 1) {
     const center = polygonCentroid(coloredLayers[0].fastenerHoles![index]).centroid;
     if (!nearlyEqual(center[0], fastener.centers[index][0])
@@ -679,7 +833,9 @@ export function expectReleaseAssemblyGeometry(
     }
   }
   const top = coloredLayers.at(-1)!;
-  if (assembly.topFeatures.retained.red !== top.deepFeatures!.length
+  if (exact(output.project.assembly.topFeatures) !== exact(assembly.topFeatures)
+    || exact(output.manifest.decisions.topFeatures) !== exact(assembly.topFeatures)
+    || assembly.topFeatures.retained.red !== top.deepFeatures!.length
     || assembly.topFeatures.retained.blue !== top.lightFeatures!.length
     || ![assembly.topFeatures.omitted.red, assembly.topFeatures.omitted.blue].every((count) => (
       Number.isSafeInteger(count) && count >= 0
@@ -1446,6 +1602,12 @@ export async function parseColoredOutlinePdf(
   if (keywords.length !== recognizedCount) throw new Error(`Colored ${kind} PDF contains extra or malformed metadata markers`);
   assertPublicText(keywordsText, `Colored ${kind} PDF metadata`);
   const parsedGeometry = parsePdfGeometry(pdf);
+  const visibleLabelAnchor = kind === 'preview'
+    ? `Scale 1:1 | ${ROLE_LEGEND_LABEL}`
+    : 'Central axis';
+  if (!parsedGeometry.texts.some(({ text }) => text === visibleLabelAnchor)) {
+    throw new Error(`Colored ${kind} PDF decoder did not recover its known visible label`);
+  }
   if (new Set(parsedGeometry.texts.map(({ fontName }) => fontName)).size !== parsedGeometry.texts.length
     || exact([...fontResourceNames].sort()) !== exact(parsedGeometry.texts.map(({ fontName }) => fontName).sort())) {
     throw new Error(`Colored ${kind} PDF text/font resource coverage is not canonical`);
@@ -1496,8 +1658,9 @@ export async function parseColoredZipRecords(bytes: Uint8Array): Promise<readonl
   const centralSize = view.getUint32(eocd + 12, true);
   const centralOffset = view.getUint32(eocd + 16, true);
   if (view.getUint16(eocd + 4, true) !== 0 || view.getUint16(eocd + 6, true) !== 0
-    || diskRecords !== recordCount || recordCount !== 5 || centralOffset + centralSize !== eocd) {
-    throw new Error('Colored ZIP must contain exactly five central-directory records');
+    || diskRecords !== recordCount || recordCount !== EXPECTED_ZIP_NAMES.length
+    || centralOffset + centralSize !== eocd) {
+    throw new Error('Colored ZIP must contain exactly seven central-directory records');
   }
   const central: Array<{
     name: typeof EXPECTED_ZIP_NAMES[number];
@@ -1567,7 +1730,7 @@ export async function parseColoredZipRecords(bytes: Uint8Array): Promise<readonl
   if (localCursor !== centralOffset) throw new Error('Colored ZIP local record coverage contains an orphan or trailing gap');
   const zip = await JSZip.loadAsync(bytes, { checkCRC32: true });
   const entries = Object.entries(zip.files);
-  if (entries.length !== 5 || entries.some(([, entry]) => entry.dir)
+  if (entries.length !== EXPECTED_ZIP_NAMES.length || entries.some(([, entry]) => entry.dir)
     || exact(entries.map(([name]) => name)) !== exact(EXPECTED_ZIP_NAMES)) {
     throw new Error('Colored ZIP contains an unsafe, duplicate, extra, or missing file');
   }
@@ -1576,13 +1739,421 @@ export async function parseColoredZipRecords(bytes: Uint8Array): Promise<readonl
     if (original !== name || name !== exactZipName(new TextEncoder().encode(name))) {
       throw new Error('Colored ZIP original record name is unsafe or was sanitized');
     }
-    assertPublicText(name, 'Colored ZIP record name');
+    if (name !== 'project.json' && name !== 'manifest.json') {
+      assertPublicText(name, 'Colored ZIP record name');
+    }
     return { name: name as typeof EXPECTED_ZIP_NAMES[number], payload: await entry.async('uint8array') };
   }));
 }
 
 function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function jsonObject(value: unknown, label: string): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`${label} must be a canonical JSON object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function exactJsonKeys(
+  value: Record<string, unknown>,
+  expected: readonly string[],
+  label: string,
+): void {
+  if (exact(Object.keys(value)) !== exact(expected)) {
+    throw new Error(`${label} keys are not canonical`);
+  }
+}
+
+function parseDecorationOmissions(
+  value: unknown,
+  label: string,
+  physicalLayerIds?: readonly string[],
+): readonly DecorationOmissionDecision[] {
+  if (!Array.isArray(value) || value.length > 24) {
+    throw new Error(`${label} exceeds the canonical omission bound`);
+  }
+  const seen = new Set<string>();
+  const omissions = value.map((candidate) => {
+    const omission = jsonObject(candidate, `${label} member`);
+    exactJsonKeys(omission, ['layerId', 'reason', 'roles'], `${label} member`);
+    if (typeof omission.layerId !== 'string' || !SAFE_ID.test(omission.layerId)
+      || seen.has(omission.layerId)
+      || omission.reason !== 'protected-cut-work-budget'
+      || !Array.isArray(omission.roles)
+      || exact(omission.roles) !== exact(['DEEP_RED', 'LIGHT_BLUE'])) {
+      throw new Error(`${label} member is invalid, duplicated, or out of order`);
+    }
+    seen.add(omission.layerId);
+    return {
+      layerId: omission.layerId,
+      reason: 'protected-cut-work-budget' as const,
+      roles: ['DEEP_RED', 'LIGHT_BLUE'] as const,
+    };
+  });
+  if (physicalLayerIds) {
+    const positions = omissions.map(({ layerId }) => physicalLayerIds.indexOf(layerId));
+    if (positions.some((position, index) => (
+      position < 0 || index > 0 && position <= positions[index - 1]
+    ))) {
+      throw new Error(`${label} members are not in canonical physical-layer order`);
+    }
+  }
+  return omissions;
+}
+
+function parseLauncherExteriorExpansion(
+  value: unknown,
+  label: string,
+): LauncherExteriorExpansionDecision {
+  const expansion = jsonObject(value, label);
+  exactJsonKeys(
+    expansion,
+    ['mode', 'offsetMm', 'maxOffsetMm', 'affectedLayerIds'],
+    label,
+  );
+  let normalizedOffset: number;
+  try {
+    if (typeof expansion.offsetMm !== 'number') throw new TypeError('offset');
+    normalizedOffset = normalizeLauncherExteriorExpansionMm(expansion.offsetMm);
+  } catch {
+    throw new Error(`${label} offset is outside the canonical bound`);
+  }
+  if (expansion.mode !== LAUNCHER_EXTERIOR_EXPANSION_MODE
+    || normalizedOffset !== expansion.offsetMm
+    || expansion.maxOffsetMm !== LAUNCHER_EXTERIOR_EXPANSION_MAX_MM
+    || !Array.isArray(expansion.affectedLayerIds)
+    || expansion.affectedLayerIds.length !== 2
+    || expansion.affectedLayerIds.some((id) => typeof id !== 'string' || !SAFE_ID.test(id))
+    || expansion.affectedLayerIds[0] === expansion.affectedLayerIds[1]) {
+    throw new Error(`${label} decision is not canonical`);
+  }
+  return {
+    mode: LAUNCHER_EXTERIOR_EXPANSION_MODE,
+    offsetMm: normalizedOffset,
+    maxOffsetMm: LAUNCHER_EXTERIOR_EXPANSION_MAX_MM,
+    affectedLayerIds: [
+      expansion.affectedLayerIds[0] as string,
+      expansion.affectedLayerIds[1] as string,
+    ],
+  };
+}
+
+function finiteNumber(value: unknown, label: string, minimum = -Infinity): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < minimum) {
+    throw new Error(`${label} must be a bounded finite number`);
+  }
+  return value;
+}
+
+function parseProjectMaterial(value: unknown): ProjectMaterialDecision {
+  const material = jsonObject(value, 'Colored project material');
+  exactJsonKeys(material, [
+    'id', 'thicknessMm', 'kerfMm', 'minFeatureMm', 'minWebMm', 'fitAllowanceMm',
+  ], 'Colored project material');
+  const fit = jsonObject(material.fitAllowanceMm, 'Colored project material fit allowance');
+  exactJsonKeys(fit, ['loose', 'slip', 'snug', 'press'], 'Colored project material fit allowance');
+  if (typeof material.id !== 'string' || !SAFE_ID.test(material.id)) {
+    throw new Error('Colored project material identity is invalid');
+  }
+  return {
+    id: material.id,
+    thicknessMm: finiteNumber(material.thicknessMm, 'Colored project material thickness', Number.EPSILON),
+    kerfMm: finiteNumber(material.kerfMm, 'Colored project material kerf', 0),
+    minFeatureMm: finiteNumber(material.minFeatureMm, 'Colored project material minimum feature', Number.EPSILON),
+    minWebMm: finiteNumber(material.minWebMm, 'Colored project material minimum web', 0),
+    fitAllowanceMm: {
+      loose: finiteNumber(fit.loose, 'Colored project loose fit'),
+      slip: finiteNumber(fit.slip, 'Colored project slip fit'),
+      snug: finiteNumber(fit.snug, 'Colored project snug fit'),
+      press: finiteNumber(fit.press, 'Colored project press fit'),
+    },
+  };
+}
+
+function parseFastenerDecision(value: unknown, label: string): FastenerDecision {
+  const fastener = jsonObject(value, label);
+  const count = fastener.count;
+  if (!Number.isSafeInteger(count) || ![0, 1, 2, 3].includes(count as number)) {
+    throw new Error(`${label} count is invalid`);
+  }
+  const present = (count as number) > 0;
+  exactJsonKeys(fastener, [
+    'count', 'centers', 'finishedDiameterMm', 'pathDiameterMm',
+    ...(present ? ['radiusMm', 'rotationRad'] : []),
+  ], label);
+  if (!Array.isArray(fastener.centers) || fastener.centers.length !== count
+    || fastener.centers.some((center) => !Array.isArray(center) || center.length !== 2
+      || center.some((coordinate) => typeof coordinate !== 'number' || !Number.isFinite(coordinate)))
+    || fastener.finishedDiameterMm !== 3) {
+    throw new Error(`${label} geometry is invalid`);
+  }
+  const pathDiameterMm = finiteNumber(fastener.pathDiameterMm, `${label} path diameter`, Number.EPSILON);
+  if (!present) {
+    return {
+      count: 0,
+      centers: [],
+      finishedDiameterMm: 3,
+      pathDiameterMm,
+    };
+  }
+  const radiusMm = finiteNumber(fastener.radiusMm, `${label} radius`, Number.EPSILON);
+  const rotationRad = finiteNumber(fastener.rotationRad, `${label} rotation`, 0);
+  if (rotationRad >= Math.PI * 2) throw new Error(`${label} rotation is invalid`);
+  return {
+    count: count as 1 | 2 | 3,
+    centers: (fastener.centers as number[][]).map(([x, y]) => [x, y] as const),
+    finishedDiameterMm: 3,
+    pathDiameterMm,
+    radiusMm,
+    rotationRad,
+  };
+}
+
+function parseRoleCounts(value: unknown, label: string): { readonly red: number; readonly blue: number } {
+  const counts = jsonObject(value, label);
+  exactJsonKeys(counts, ['red', 'blue'], label);
+  if (![counts.red, counts.blue].every((count) => Number.isSafeInteger(count) && (count as number) >= 0)) {
+    throw new Error(`${label} counts are invalid`);
+  }
+  return { red: counts.red as number, blue: counts.blue as number };
+}
+
+function parseTopFeatureDecision(value: unknown, label: string): TopFeatureDecision {
+  const top = jsonObject(value, label);
+  exactJsonKeys(top, ['retained', 'omitted', 'launcherOverlap'], label);
+  const overlap = jsonObject(top.launcherOverlap, `${label} launcher overlap`);
+  exactJsonKeys(overlap, ['clipped', 'removed'], `${label} launcher overlap`);
+  return {
+    retained: parseRoleCounts(top.retained, `${label} retained`),
+    omitted: parseRoleCounts(top.omitted, `${label} omitted`),
+    launcherOverlap: {
+      clipped: parseRoleCounts(overlap.clipped, `${label} clipped`),
+      removed: parseRoleCounts(overlap.removed, `${label} removed`),
+    },
+  };
+}
+
+function parseColoredProjectJson(bytes: Uint8Array): ParsedColoredProject {
+  let decoded: string;
+  let value: unknown;
+  try {
+    decoded = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    value = JSON.parse(decoded);
+  } catch {
+    throw new Error('Colored project JSON is not canonical UTF-8 JSON');
+  }
+  assertNoPrivateText(decoded!, 'Colored project JSON');
+  const project = jsonObject(value, 'Colored project');
+  exactJsonKeys(project, [
+    'schemaVersion', 'sourceHash', 'featureEvidenceFingerprint',
+    'diagnosticsFingerprint', 'safetyNotes', 'assembly', 'layers',
+  ], 'Colored project');
+  if (project.schemaVersion !== 2 || !HASH.test(String(project.sourceHash))
+    || !HASH.test(String(project.featureEvidenceFingerprint))
+    || !HASH.test(String(project.diagnosticsFingerprint))
+    || !Array.isArray(project.safetyNotes) || project.safetyNotes.length > 16
+    || project.safetyNotes.some((note) => typeof note !== 'string' || note.length < 1 || note.length > 200)
+    || new Set(project.safetyNotes).size !== project.safetyNotes.length
+    || !Array.isArray(project.layers) || project.layers.length < 2 || project.layers.length > 24) {
+    throw new Error('Colored project envelope is invalid');
+  }
+  const assembly = jsonObject(project.assembly, 'Colored project assembly');
+  exactJsonKeys(
+    assembly,
+    ['material', 'launcher', 'fastener', 'decorationOmissions', 'topFeatures'],
+    'Colored project assembly',
+  );
+  const material = parseProjectMaterial(assembly.material);
+  const fastener = parseFastenerDecision(assembly.fastener, 'Colored project fastener');
+  const topFeatures = parseTopFeatureDecision(assembly.topFeatures, 'Colored project top features');
+  const launcher = jsonObject(assembly.launcher, 'Colored project launcher');
+  exactJsonKeys(launcher, [
+    'status', 'cutCount', 'templateVersion', 'templateFingerprint',
+    'rotationRad', 'fitOffsetMm', 'finishedAllowanceMm', 'exteriorExpansion',
+  ], 'Colored project launcher');
+  const exteriorExpansion = parseLauncherExteriorExpansion(
+    launcher.exteriorExpansion,
+    'Colored project launcher exterior expansion',
+  );
+  if (launcher.status !== 'fixed' || launcher.cutCount !== 3
+    || launcher.templateVersion !== OFFICIAL_THREE_PRONG_TEMPLATE_VERSION
+    || launcher.templateFingerprint !== OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT
+    || typeof launcher.rotationRad !== 'number' || !Number.isFinite(launcher.rotationRad)
+    || launcher.rotationRad < 0 || launcher.rotationRad >= Math.PI * 2
+    || typeof launcher.fitOffsetMm !== 'number'
+    || typeof launcher.finishedAllowanceMm !== 'number'
+    || launcher.finishedAllowanceMm !== LAUNCHER_ASSEMBLY_ALLOWANCE_MM + launcher.fitOffsetMm) {
+    throw new Error('Colored project launcher decision is invalid');
+  }
+  try {
+    validateLauncherFitOffsetMm(launcher.fitOffsetMm);
+  } catch {
+    throw new Error('Colored project launcher fit decision is invalid');
+  }
+  const layers = project.layers.map((candidate, index) => {
+    const layer = jsonObject(candidate, 'Colored project layer');
+    exactJsonKeys(
+      layer,
+      ['id', 'order', 'index', 'zStart', 'zEnd', 'members'],
+      'Colored project layer',
+    );
+    const members = jsonObject(layer.members, 'Colored project layer members');
+    exactJsonKeys(members, COLORED_ROLES, 'Colored project layer members');
+    if (typeof layer.id !== 'string' || !SAFE_ID.test(layer.id)
+      || layer.order !== index + 1 || !Number.isSafeInteger(layer.index)
+      || typeof layer.zStart !== 'number' || !Number.isFinite(layer.zStart)
+      || typeof layer.zEnd !== 'number' || !Number.isFinite(layer.zEnd)
+      || layer.zEnd <= layer.zStart
+      || COLORED_ROLES.some((role) => !Array.isArray(members[role])
+        || (members[role] as unknown[]).some((id) => typeof id !== 'string' || !SAFE_ID.test(id)))) {
+      throw new Error('Colored project layer metadata or member identity is invalid');
+    }
+    return {
+      id: layer.id,
+      order: layer.order as number,
+      index: layer.index as number,
+      zStart: layer.zStart,
+      zEnd: layer.zEnd,
+      members: Object.fromEntries(COLORED_ROLES.map((role) => [
+        role,
+        [...members[role] as string[]],
+      ])) as unknown as Record<ColoredRole, readonly string[]>,
+    };
+  });
+  if (exact(exteriorExpansion.affectedLayerIds)
+    !== exact(layers.slice(-2).map(({ id }) => id))) {
+    throw new Error('Colored project expanded layer IDs do not identify the top two layers');
+  }
+  const decorationOmissions = parseDecorationOmissions(
+    assembly.decorationOmissions,
+    'Colored project decoration omissions',
+    layers.map(({ id }) => id),
+  );
+  if (decorationOmissions.some(({ layerId }) => {
+    const layer = layers.find(({ id }) => id === layerId);
+    return !layer || layer.members.DEEP_RED.length !== 0 || layer.members.LIGHT_BLUE.length !== 0;
+  })) {
+    throw new Error('Colored project omission decision does not match empty decoration roles');
+  }
+  return {
+    sourceHash: project.sourceHash as string,
+    featureEvidenceFingerprint: project.featureEvidenceFingerprint as string,
+    diagnosticsFingerprint: project.diagnosticsFingerprint as string,
+    safetyNotes: [...project.safetyNotes as string[]],
+    assembly: {
+      material,
+      launcher: {
+        status: 'fixed',
+        cutCount: 3,
+        templateVersion: OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+        templateFingerprint: OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
+        rotationRad: launcher.rotationRad,
+        fitOffsetMm: launcher.fitOffsetMm,
+        finishedAllowanceMm: launcher.finishedAllowanceMm,
+        exteriorExpansion,
+      },
+      fastener,
+      decorationOmissions,
+      topFeatures,
+    },
+    layers,
+  };
+}
+
+function parseColoredManifestJson(
+  bytes: Uint8Array,
+  records: readonly ParsedColoredZipRecord[],
+): ParsedColoredManifest {
+  let decoded: string;
+  let value: unknown;
+  try {
+    decoded = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    value = JSON.parse(decoded);
+  } catch {
+    throw new Error('Colored manifest JSON is not canonical UTF-8 JSON');
+  }
+  assertNoPrivateText(decoded!, 'Colored manifest JSON');
+  const manifest = jsonObject(value, 'Colored manifest');
+  exactJsonKeys(manifest, ['schemaVersion', 'projectPath', 'decisions', 'members'], 'Colored manifest');
+  if (manifest.schemaVersion !== 1 || manifest.projectPath !== 'project.json'
+    || !Array.isArray(manifest.members) || manifest.members.length !== 6) {
+    throw new Error('Colored manifest envelope is invalid');
+  }
+  const expectedMemberNames = EXPECTED_ZIP_NAMES.slice(0, -1);
+  manifest.members.forEach((candidate, index) => {
+    const member = jsonObject(candidate, 'Colored manifest member');
+    exactJsonKeys(member, ['path', 'byteLength', 'sha256'], 'Colored manifest member');
+    const record = records.find(({ name }) => name === expectedMemberNames[index]);
+    if (!record || member.path !== expectedMemberNames[index]
+      || member.byteLength !== record.payload.byteLength
+      || member.sha256 !== createHash('sha256').update(record.payload).digest('hex')) {
+      throw new Error('Colored manifest member identity, length, or digest does not reconcile');
+    }
+  });
+  const decisions = jsonObject(manifest.decisions, 'Colored manifest decisions');
+  exactJsonKeys(decisions, [
+    'sourceHash', 'materialId', 'kerfMm', 'launcherTemplateVersion',
+    'launcherTemplateFingerprint', 'launcherRotationRad', 'launcherFitOffsetMm',
+    'launcherFinishedAllowanceMm', 'launcherExteriorExpansionMode',
+    'launcherExteriorExpansionMm', 'launcherExteriorExpansionMaxMm',
+    'launcherExteriorExpansionLayerIds', 'decorationOmissions', 'topFeatures',
+  ], 'Colored manifest decisions');
+  const expansion = parseLauncherExteriorExpansion({
+    mode: decisions.launcherExteriorExpansionMode,
+    offsetMm: decisions.launcherExteriorExpansionMm,
+    maxOffsetMm: decisions.launcherExteriorExpansionMaxMm,
+    affectedLayerIds: decisions.launcherExteriorExpansionLayerIds,
+  }, 'Colored manifest launcher exterior expansion');
+  let fitOffsetMm: number;
+  try {
+    if (typeof decisions.launcherFitOffsetMm !== 'number') throw new TypeError('fit');
+    fitOffsetMm = validateLauncherFitOffsetMm(decisions.launcherFitOffsetMm);
+  } catch {
+    throw new Error('Colored manifest launcher fit decision is invalid');
+  }
+  const rotationRad = finiteNumber(
+    decisions.launcherRotationRad,
+    'Colored manifest launcher rotation',
+    0,
+  );
+  if (!HASH.test(String(decisions.sourceHash))
+    || typeof decisions.materialId !== 'string' || !SAFE_ID.test(decisions.materialId)
+    || finiteNumber(decisions.kerfMm, 'Colored manifest kerf', 0) !== decisions.kerfMm
+    || decisions.launcherTemplateVersion !== OFFICIAL_THREE_PRONG_TEMPLATE_VERSION
+    || decisions.launcherTemplateFingerprint !== OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT
+    || rotationRad >= Math.PI * 2
+    || decisions.launcherFinishedAllowanceMm
+      !== LAUNCHER_ASSEMBLY_ALLOWANCE_MM + fitOffsetMm) {
+    throw new Error('Colored manifest release decision is invalid');
+  }
+  const topFeatures = parseTopFeatureDecision(
+    decisions.topFeatures,
+    'Colored manifest top features',
+  );
+  return {
+    decisions: {
+      sourceHash: decisions.sourceHash as string,
+      materialId: decisions.materialId,
+      kerfMm: decisions.kerfMm,
+      launcherTemplateVersion: OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+      launcherTemplateFingerprint: OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
+      launcherRotationRad: rotationRad,
+      launcherFitOffsetMm: fitOffsetMm,
+      launcherFinishedAllowanceMm: decisions.launcherFinishedAllowanceMm as number,
+      launcherExteriorExpansionMode: expansion.mode,
+      launcherExteriorExpansionMm: expansion.offsetMm,
+      launcherExteriorExpansionMaxMm: expansion.maxOffsetMm,
+      launcherExteriorExpansionLayerIds: expansion.affectedLayerIds,
+      decorationOmissions: parseDecorationOmissions(
+        decisions.decorationOmissions,
+        'Colored manifest decoration omissions',
+      ),
+      topFeatures,
+    },
+  };
 }
 
 export function parseLauncherFitCouponArtifact(svg: string): ParsedLauncherFitCoupon {
@@ -1987,6 +2558,14 @@ function reconcilePdf(
 }
 
 function assertPublicText(value: string, label: string): void {
+  assertNoPrivateText(value, label);
+  const machineText = value.normalize('NFKC').replaceAll('material test cuts', '');
+  if (/80\s*%|40\s*%|\bpower\b|\bspeed\b|\bpasses?\b|\bmaterial\b|\.stl\b|\.json\b|manifest/i.test(machineText)) {
+    throw new Error(`${label} contains forbidden machine or source claim text`);
+  }
+}
+
+function assertNoPrivateText(value: string, label: string): void {
   let decoded = value;
   try {
     for (let pass = 0; pass < 4 && decoded.includes('%'); pass += 1) decoded = decodeURIComponent(decoded);
@@ -1994,14 +2573,14 @@ function assertPublicText(value: string, label: string): void {
     throw new Error(`${label} contains malformed percent encoding`);
   }
   const pathScanText = decoded.replace(/<\/[A-Za-z][A-Za-z0-9:._-]*\s*>/g, '');
-  const machineText = decoded.normalize('NFKC').replaceAll('material test cuts', '');
   const checks = [
     ['percent encoding', /%[0-9a-f]{2}/i, decoded],
     ['email', /\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b/, decoded],
     ['file URI', /\bfile:\/\//i, decoded],
+    ['private forward UNC path', /(?:^|[^:\p{L}\p{N}_/])\/\/(?!\/)[^/\s"'<>]+\/[^/\s"'<>]+/u, decoded],
     ['private POSIX path', /(?:^|[^\p{L}\p{N}_/])\/(?![/>])/u, pathScanText],
     ['private Windows path', /(?:^|[^\p{L}\p{N}_\\/])(?:[A-Za-z]:[\\/]|\\{2,}(?!\\)[^\\\s"'<>]+\\+(?!\\)[^\\\s"'<>]+)/u, pathScanText],
-    ['machine or source claim', /80\s*%|40\s*%|\bpower\b|\bspeed\b|\bpasses?\b|\bmaterial\b|\.stl\b|\.json\b|manifest/i, machineText],
+    ['source STL filename', /\.stl\b/i, decoded],
   ] as const;
   const failed = checks.find(([, pattern, candidate]) => pattern.test(candidate));
   if (failed) {
@@ -2054,7 +2633,11 @@ export async function inspectColoredArtifacts(payloads: ColoredArtifactPayloads)
   assertPublicText(payloads.dxf, 'Colored DXF');
   const zipRecords = await parseColoredZipRecords(payloads.zip);
   const couponRecord = zipRecords.find(({ name }) => name === 'launcher-fit-coupon.svg');
-  if (!couponRecord) throw new Error('Colored ZIP is missing the launcher fit coupon');
+  const projectRecord = zipRecords.find(({ name }) => name === 'project.json');
+  const manifestRecord = zipRecords.find(({ name }) => name === 'manifest.json');
+  if (!couponRecord || !projectRecord || !manifestRecord) {
+    throw new Error('Colored ZIP is missing its coupon, project, or manifest member');
+  }
   let zippedLauncherCouponSvg: string;
   try {
     zippedLauncherCouponSvg = new TextDecoder('utf-8', { fatal: true }).decode(couponRecord.payload);
@@ -2066,6 +2649,52 @@ export async function inspectColoredArtifacts(payloads: ColoredArtifactPayloads)
     throw new Error('Launcher fit coupon download and ZIP member are not byte-identical');
   }
   parseLauncherFitCouponArtifact(payloads.launcherCouponSvg);
+  const project = parseColoredProjectJson(projectRecord.payload);
+  const manifest = parseColoredManifestJson(manifestRecord.payload, zipRecords);
+  if (exact({
+    sourceHash: project.sourceHash,
+    featureEvidenceFingerprint: project.featureEvidenceFingerprint,
+    diagnosticsFingerprint: project.diagnosticsFingerprint,
+  }) !== exact(fingerprints)
+    || project.sourceHash !== manifest.decisions.sourceHash
+    || project.assembly.material.id !== manifest.decisions.materialId
+    || project.assembly.material.kerfMm !== manifest.decisions.kerfMm
+    || project.assembly.material.id !== launcherCoupon.materialId
+    || project.assembly.material.kerfMm !== launcherCoupon.kerfMm
+    || project.assembly.launcher.templateVersion
+      !== manifest.decisions.launcherTemplateVersion
+    || project.assembly.launcher.templateFingerprint
+      !== manifest.decisions.launcherTemplateFingerprint
+    || project.assembly.launcher.rotationRad !== manifest.decisions.launcherRotationRad
+    || project.assembly.launcher.fitOffsetMm !== manifest.decisions.launcherFitOffsetMm
+    || project.assembly.launcher.finishedAllowanceMm
+      !== manifest.decisions.launcherFinishedAllowanceMm
+    || exact(project.assembly.launcher.exteriorExpansion) !== exact({
+      mode: manifest.decisions.launcherExteriorExpansionMode,
+      offsetMm: manifest.decisions.launcherExteriorExpansionMm,
+      maxOffsetMm: manifest.decisions.launcherExteriorExpansionMaxMm,
+      affectedLayerIds: manifest.decisions.launcherExteriorExpansionLayerIds,
+    })
+    || exact(project.assembly.decorationOmissions)
+      !== exact(manifest.decisions.decorationOmissions)
+    || exact(project.assembly.topFeatures) !== exact(manifest.decisions.topFeatures)
+    || exact(project.layers.map(({ id, order, index, zStart, zEnd, members }) => ({
+      id, order, index, zStart, zEnd, members,
+    }))) !== exact(svg.layers.map((layer) => ({
+      id: layer.id,
+      order: layer.order,
+      index: layer.index,
+      zStart: layer.zStart,
+      zEnd: layer.zEnd,
+      members: Object.fromEntries(COLORED_ROLES.map((role) => [
+        role,
+        svg.entities.filter((entity) => (
+          entity.physicalLayerId === layer.id && entity.role === role
+        )).map(({ id }) => id),
+      ])),
+    })))) {
+    throw new Error('Colored project, manifest, and fabrication artifact decisions do not reconcile');
+  }
   const downloadBytes = retainBoundedDownloadBytes({
     zip: payloads.zip,
     svg: payloads.rawSvg ?? encodedSvg,
@@ -2083,7 +2712,9 @@ export async function inspectColoredArtifacts(payloads: ColoredArtifactPayloads)
   ]);
   const reconciledZip = zipRecords.map((record) => ({
     ...record,
-    byteIdentical: bytesEqual(record.payload, individual.get(record.name)!),
+    byteIdentical: individual.has(record.name)
+      ? bytesEqual(record.payload, individual.get(record.name)!)
+      : true,
   }));
   if (reconciledZip.some(({ byteIdentical }) => !byteIdentical)) {
     throw new Error('Colored ZIP payloads are not byte-identical to the five canonical artifacts');
@@ -2096,6 +2727,8 @@ export async function inspectColoredArtifacts(payloads: ColoredArtifactPayloads)
     previewPdf,
     explodedPdf,
     launcherCoupon,
+    project,
+    manifest,
     zipRecords: reconciledZip,
     downloadBytes,
     sha256: createHash('sha256').update(payloads.zip).digest('hex'),
@@ -2195,12 +2828,17 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
       seen.add(candidate);
       const value = candidate as Record<string, unknown>;
       if (value.name === 'AutomaticOutlineError' && typeof value.code === 'string'
-        && ['INVALID_STL', 'NO_OUTLINE', 'RESOURCE_LIMIT', 'TIME_LIMIT', 'LAUNCHER_INCOMPATIBLE'].includes(value.code)
+        && [
+          'INVALID_STL', 'NO_OUTLINE', 'RESOURCE_LIMIT', 'TIME_LIMIT',
+          'LAUNCHER_INCOMPATIBLE', 'LAUNCHER_EXTERIOR_EXPANSION_EXCEEDED',
+        ].includes(value.code)
         && !state.errorCodes.includes(value.code)) state.errorCodes.push(value.code);
       if ((value.mode === 'exact' || value.mode === 'outline-2.5d')
         && (value.status === 'success' || value.status === 'warning')
         && Number.isSafeInteger(value.removedComponentCount)
         && !('internalValidationEvidence' in value)
+        && !('centralHoleSourceEvidence' in value)
+        && !('decorationOmissionSourceEvidence' in value)
         && Array.isArray(value.coloredLayers)) {
         const featureWarnings = Array.isArray(value.featureWarnings)
           && value.featureWarnings.length <= 16
@@ -2238,7 +2876,9 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
         } : undefined;
         const assemblyValue = value.assembly;
         const launcherValue = record(assemblyValue) ? assemblyValue.launcher : undefined;
+        const expansionValue = record(launcherValue) ? launcherValue.exteriorExpansion : undefined;
         const fastenerValue = record(assemblyValue) ? assemblyValue.fastener : undefined;
+        const decorationValue = record(assemblyValue) ? assemblyValue.decorationOmissions : undefined;
         const topValue = record(assemblyValue) ? assemblyValue.topFeatures : undefined;
         const retainedValue = record(topValue) ? topValue.retained : undefined;
         const omittedValue = record(topValue) ? topValue.omitted : undefined;
@@ -2248,7 +2888,7 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
         const validLauncher = record(launcherValue)
           && exactKeys(launcherValue, [
             'status', 'cutCount', 'templateVersion', 'templateFingerprint',
-            'rotationRad', 'fitOffsetMm', 'finishedAllowanceMm',
+            'rotationRad', 'fitOffsetMm', 'finishedAllowanceMm', 'exteriorExpansion',
           ])
           && launcherValue.status === 'fixed'
           && launcherValue.cutCount === 3
@@ -2265,7 +2905,19 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
               - Math.round(launcherValue.fitOffsetMm / launcherContract.fitStepMm),
           ) <= 1e-9
           && launcherValue.finishedAllowanceMm
-            === launcherContract.assemblyAllowanceMm + (launcherValue.fitOffsetMm as number);
+            === launcherContract.assemblyAllowanceMm + (launcherValue.fitOffsetMm as number)
+          && record(expansionValue)
+          && exactKeys(expansionValue, ['mode', 'offsetMm', 'maxOffsetMm', 'affectedLayerIds'])
+          && expansionValue.mode === 'shared-uniform'
+          && finite(expansionValue.offsetMm)
+          && expansionValue.offsetMm >= 0
+          && expansionValue.offsetMm <= 6
+          && Math.round(expansionValue.offsetMm * 100) / 100 === expansionValue.offsetMm
+          && expansionValue.maxOffsetMm === 6
+          && Array.isArray(expansionValue.affectedLayerIds)
+          && expansionValue.affectedLayerIds.length === 2
+          && expansionValue.affectedLayerIds.every((id) => typeof id === 'string')
+          && expansionValue.affectedLayerIds[0] !== expansionValue.affectedLayerIds[1];
         const validCenters = record(fastenerValue) && Array.isArray(fastenerValue.centers)
           && fastenerValue.centers.length <= 3
           && fastenerValue.centers.every((center) => Array.isArray(center) && center.length === 2 && center.every(finite));
@@ -2287,12 +2939,44 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
             clippedValue.red, clippedValue.blue, removedValue.red, removedValue.blue,
           ]
             .every((count) => Number.isSafeInteger(count) && (count as number) >= 0);
+        const validDecoration = Array.isArray(decorationValue)
+          && decorationValue.length <= 24
+          && decorationValue.every((candidate, index) => {
+            if (!record(candidate)
+              || !exactKeys(candidate, ['layerId', 'reason', 'roles'])
+              || typeof candidate.layerId !== 'string'
+              || candidate.reason !== 'protected-cut-work-budget'
+              || !Array.isArray(candidate.roles)
+              || JSON.stringify(candidate.roles) !== JSON.stringify(['DEEP_RED', 'LIGHT_BLUE'])) return false;
+            return !(decorationValue as unknown[]).slice(0, index).some((earlier) => (
+              record(earlier) && earlier.layerId === candidate.layerId
+            ));
+          });
         const assembly: ProbeSummary['assembly'] | undefined = material && record(assemblyValue)
-          && exactKeys(assemblyValue, ['material', 'launcher', 'fastener', 'topFeatures'])
+          && exactKeys(assemblyValue, [
+            'material', 'launcher', 'fastener', 'decorationOmissions', 'topFeatures',
+          ])
           && JSON.stringify(assemblyValue.material) === JSON.stringify(material)
-          && validLauncher && validFastener && validTop ? {
+          && validLauncher && validFastener && validDecoration && validTop ? {
             material,
-            launcher: { ...launcherValue } as ProbeSummary['assembly']['launcher'],
+            launcher: {
+              status: 'fixed',
+              cutCount: 3,
+              templateVersion: launcherValue.templateVersion as number,
+              templateFingerprint: launcherValue.templateFingerprint as string,
+              rotationRad: launcherValue.rotationRad as number,
+              fitOffsetMm: launcherValue.fitOffsetMm as number,
+              finishedAllowanceMm: launcherValue.finishedAllowanceMm as number,
+              exteriorExpansion: {
+                mode: 'shared-uniform',
+                offsetMm: (expansionValue as Record<string, unknown>).offsetMm as number,
+                maxOffsetMm: 6,
+                affectedLayerIds: [
+                  (expansionValue as { affectedLayerIds: string[] }).affectedLayerIds[0],
+                  (expansionValue as { affectedLayerIds: string[] }).affectedLayerIds[1],
+                ],
+              },
+            },
             fastener: {
               count: fastenerValue.count as 0 | 1 | 2 | 3,
               centers: (fastenerValue.centers as Array<[number, number]>).map(([x, y]) => [x, y]),
@@ -2303,6 +2987,15 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
                 rotationRad: fastenerValue.rotationRad as number,
               }),
             },
+            decorationOmissions: (decorationValue as Array<{
+              layerId: string;
+              reason: 'protected-cut-work-budget';
+              roles: ['DEEP_RED', 'LIGHT_BLUE'];
+            }>).map((omission) => ({
+              layerId: omission.layerId,
+              reason: omission.reason,
+              roles: [...omission.roles],
+            })),
             topFeatures: {
               retained: { red: retainedValue.red as number, blue: retainedValue.blue as number },
               omitted: { red: omittedValue.red as number, blue: omittedValue.blue as number },

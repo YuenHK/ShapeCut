@@ -11,7 +11,7 @@ import {
   AutomaticOutlineError,
   type AutomaticOutlineProgress,
   type AutomaticOutlineRequest,
-  type AutomaticOutlineResult,
+  type PublicAutomaticOutlineResult,
 } from '../domain/pipeline/automatic-outline-pipeline';
 import type {
   DecompositionRequest,
@@ -60,8 +60,8 @@ export type GeometryClient = {
   convertAutomatically(
     request: AutomaticOutlineRequest,
     onProgress?: AutomaticOutlineProgress,
-  ): Promise<AutomaticOutlineResult>;
-  packageOutline(result: AutomaticOutlineResult, deadline?: number): Promise<OutlinePackageTransfer>;
+  ): Promise<PublicAutomaticOutlineResult>;
+  packageOutline(result: PublicAutomaticOutlineResult, deadline?: number): Promise<OutlinePackageTransfer>;
   analyzeForImport(input: ArrayBuffer): Promise<ImportAnalysis>;
   analyzeAndRepairForImport(input: ArrayBuffer): Promise<ImportRepairAnalysis>;
   repairAdvanced(original: SerializedMesh, safeMesh: SerializedMesh): Promise<MeshRepairResult>;
@@ -290,6 +290,7 @@ const AUTOMATIC_OUTLINE_ERROR_CODES: ReadonlySet<string> = new Set([
   'RESOURCE_LIMIT',
   'TIME_LIMIT',
   'LAUNCHER_INCOMPATIBLE',
+  'LAUNCHER_EXTERIOR_EXPANSION_EXCEEDED',
 ]);
 
 export function isSerializedAutomaticOutlineError(

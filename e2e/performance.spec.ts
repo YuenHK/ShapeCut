@@ -145,7 +145,7 @@ test('feature-rich PDF packaging is terminated and replaced by a second complete
   );
   const expectedWorkload = [{
     layers: 24, contoursPerLayer: 4.25,
-    minimumPointsPerContour: 96, maximumPointsPerContour: 512, totalPoints: 49_728,
+    minimumPointsPerContour: 96, maximumPointsPerContour: 256, totalPoints: 25_152,
   }];
   await expect.poll(async () => (await readWorkerProbeState(page)).packageWorkloads).toEqual(expectedWorkload);
   const armed = await readWorkerProbeState(page);

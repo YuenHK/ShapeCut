@@ -139,7 +139,13 @@ describe('safe degrading fastener planning', () => {
     ];
     expect(new Set(allIds).size).toBe(allIds.length);
 
-    const coloredLayers = sourceLayers.map((source, index) => ({ ...source, fastenerHoles: materialized[index] }));
+    const coloredLayers = sourceLayers.map((source, index) => ({
+      ...source,
+      // The collision source above is intentionally invalid public evidence.
+      // Restore the canonical extracted exterior before validating the result.
+      exterior: seed.coloredLayers[index].exterior,
+      fastenerHoles: materialized[index],
+    }));
     const withLayers = {
       ...seed,
       assembly: {

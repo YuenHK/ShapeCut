@@ -8,7 +8,9 @@ import {
   planFixedLauncherClearance,
   type FixedLauncherPlan,
 } from '../domain/outline-assembly/launcher';
+import { expandLauncherExterior } from '../domain/outline-assembly/launcher-exterior-expansion';
 import { FASTENER_OMISSION_WARNING } from '../domain/outline-assembly/fasteners';
+import { contourBounds, signedArea } from '../domain/outline-2.5d/simplify';
 
 const SOURCE_HASH = '0123456789abcdef'.repeat(2);
 const MATERIAL = {
@@ -22,18 +24,10 @@ function contour(
   role: FeatureContour['role'],
   outer: FeatureContour['outer'],
 ): FeatureContour {
-  const xs = outer.map(([x]) => x), ys = outer.map(([, y]) => y);
-  const areaMm2 = Math.abs(outer.reduce((sum, point, index) => {
-    const next = outer[(index + 1) % outer.length];
-    return sum + point[0] * next[1] - next[0] * point[1];
-  }, 0) / 2);
   return {
     id, role, outer,
-    boundsMm: {
-      minX: Math.min(...xs), minY: Math.min(...ys),
-      maxX: Math.max(...xs), maxY: Math.max(...ys),
-    },
-    areaMm2,
+    boundsMm: contourBounds(outer),
+    areaMm2: Math.abs(signedArea(outer)),
   };
 }
 
@@ -47,7 +41,7 @@ export function coloredResult(): AutomaticOutlineResult {
       [[-30, -30], [-30, 30], [30, 30], [30, -30]],
     );
     const centralHole = contour(
-      `layer-${index + 1}-hole`,
+      `layer-${index + 1}-central-hole`,
       'CUT_BLACK',
       [[-2, -2], [2, -2], [2, 2], [-2, 2]],
     );
@@ -252,17 +246,17 @@ function regularLoop(
 }
 
 /**
- * Test-only legal packaging workload: the 24-layer maximum, four 512-point
+ * Test-only cancellation workload: the 24-layer maximum, four 256-point
  * contours on every layer, plus the fixed launcher on the top two layers
- * (49,728 segments). The 1,024-point variant took 90.3 s on the acceptance
- * host, so it cannot satisfy the 30 s worker boundary.
+ * (25,152 segments). Higher point counts remain available to exercise the
+ * worker deadline independently of the cancellation checkpoint.
  */
-export function nearLimitColoredResult(pointCount = 512): AutomaticOutlineResult {
+export function nearLimitColoredResult(pointCount = 256): AutomaticOutlineResult {
   const seed = coloredResult(), layerCount = 24;
   const coloredLayers: ColoredOutlineLayer[] = Array.from({ length: layerCount }, (_, index) => {
     const id = `stress-layer-${index + 1}`;
     const exterior = contour(`${id}-exterior`, 'CUT_BLACK', regularLoop(0, 0, 30, pointCount, true));
-    const centralHole = contour(`${id}-hole`, 'CUT_BLACK', regularLoop(0, 0, 3, pointCount, false));
+    const centralHole = contour(`${id}-central-hole`, 'CUT_BLACK', regularLoop(0, 0, 3, pointCount, false));
     const deepFeature = contour(`${id}-deep`, 'DEEP_RED', regularLoop(-9, 0, 2, pointCount, true));
     const lightFeature = contour(`${id}-light`, 'LIGHT_BLUE', regularLoop(9, 0, 2, pointCount, true));
     return {
@@ -281,21 +275,23 @@ export function nearLimitColoredResult(pointCount = 512): AutomaticOutlineResult
       },
     };
   });
+  const sourceExteriors = coloredLayers.map(({ exterior }) => exterior);
   for (let index = coloredLayers.length - 2; index < coloredLayers.length; index += 1) {
     coloredLayers[index] = {
       ...coloredLayers[index],
+      exterior: expandLauncherExterior(sourceExteriors[index], 0),
       launcherCuts: seed.coloredLayers.at(-1)!.launcherCuts.map((cut, cutIndex) => ({
         ...cut,
         id: `${coloredLayers[index].id}-launcher-clearance-${cutIndex + 1}`,
       })),
     };
   }
-  const layers = coloredLayers.map((layer) => ({
+  const layers = coloredLayers.map((layer, index) => ({
     id: layer.id, index: layer.index, zStart: layer.zStart, zEnd: layer.zEnd,
-    contour: { outer: layer.exterior.outer, holes: [] as const },
-    sourceAreaMm2: layer.exterior.areaMm2,
-    simplifiedAreaMm2: layer.exterior.areaMm2,
-    sourceBoundsMm: { ...layer.exterior.boundsMm },
+    contour: { outer: sourceExteriors[index].outer, holes: [] as const },
+    sourceAreaMm2: sourceExteriors[index].areaMm2,
+    simplifiedAreaMm2: sourceExteriors[index].areaMm2,
+    sourceBoundsMm: { ...sourceExteriors[index].boundsMm },
     simplificationToleranceMm: 0.01,
     boundsDriftRatio: 0,
     areaDriftRatio: 0,
@@ -315,6 +311,20 @@ export function nearLimitColoredResult(pointCount = 512): AutomaticOutlineResult
       axis: { origin: [0, 0, 0] as const, direction: [0, 0, 1] as const, confidence: 1, confirmed: true },
     },
     layers,
+    centralHoleSourceEvidence: coloredLayers.map((layer) => ({
+      status: 'retained' as const,
+      contour: {
+        outer: layer.centralHole!.outer,
+        boundsMm: { ...layer.centralHole!.boundsMm },
+        areaMm2: layer.centralHole!.areaMm2,
+      },
+      equivalentDiameterMm: layer.diagnostics.hole.status === 'retained'
+        ? layer.diagnostics.hole.equivalentDiameterMm
+        : 0,
+      axisDistanceMm: layer.diagnostics.hole.status === 'retained'
+        ? layer.diagnostics.hole.axisDistanceMm
+        : 0,
+    })),
     coloredLayers,
     assembly: {
       ...seed.assembly,
