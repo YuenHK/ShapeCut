@@ -1,6 +1,7 @@
 import type { Point2 } from '../decomposition/types';
 import type { TriangleMesh } from '../mesh/types';
 import type { ColoredOutlineLayer, FeatureContour } from '../outline-features/types';
+import { validatePolygon } from '../engraving/geometry';
 import type { LauncherCandidateGroup } from '../outline-assembly/launcher';
 import type { PhysicalCutProtection } from '../outline-assembly/physical-cut-envelope';
 import {
@@ -54,6 +55,7 @@ export type OutlineExtraction = {
 export type ExistingBlackCuts = {
   readonly launcherCuts: readonly FeatureContour[];
   readonly fastenerHoles: readonly FeatureContour[];
+  readonly exteriorOverride?: FeatureContour;
   /** Production-only material-aware envelopes used before engraving retention. */
   readonly engravingProtection?: PhysicalCutProtection;
 };
@@ -161,13 +163,17 @@ export function colorizeExteriorLayers(
     };
     const depthFeature = depthFeatures[coloredLayers.length];
     const existingBlackCuts = blackCuts[coloredLayers.length];
+    const exteriorOverride = existingBlackCuts?.exteriorOverride;
+    if (exteriorOverride) {
+      validateExteriorOverride(layer, exteriorOverride, deadline, checkpoint);
+    }
     checkColorizationDeadline();
     coloredLayers.push({
       id: layer.id,
       index: layer.index,
       zStart: layer.zStart,
       zEnd: layer.zEnd,
-      exterior,
+      exterior: exteriorOverride ?? exterior,
       centralHole,
       launcherCuts: existingBlackCuts?.launcherCuts ?? [],
       fastenerHoles: existingBlackCuts?.fastenerHoles ?? [],
@@ -195,6 +201,36 @@ export function colorizeExteriorLayers(
   }
   checkColorizationDeadline();
   return coloredLayers;
+}
+
+function validateExteriorOverride(
+  layer: OutlineLayer,
+  exterior: FeatureContour,
+  deadline: number,
+  checkpoint: () => void,
+): void {
+  const expectedId = `${layer.id}-exterior`;
+  if (exterior.id !== expectedId) {
+    throw new RangeError(`Exterior override ID must match layer ${layer.id}`);
+  }
+  if (exterior.role !== 'CUT_BLACK') {
+    throw new RangeError('Exterior override role must be CUT_BLACK');
+  }
+  if (!validatePolygon({ points: exterior.outer }, checkpoint)) {
+    throw new RangeError('Exterior override must be one finite simple clockwise contour');
+  }
+  const area = signedArea(exterior.outer, deadline, checkpoint);
+  if (area >= 0) {
+    throw new RangeError('Exterior override must be one finite simple clockwise contour');
+  }
+  const expectedBounds = contourBounds(exterior.outer, deadline, checkpoint);
+  if (exterior.areaMm2 !== Math.abs(area)
+    || exterior.boundsMm.minX !== expectedBounds.minX
+    || exterior.boundsMm.minY !== expectedBounds.minY
+    || exterior.boundsMm.maxX !== expectedBounds.maxX
+    || exterior.boundsMm.maxY !== expectedBounds.maxY) {
+    throw new RangeError('Exterior override bounds and area metadata must exactly match its contour');
+  }
 }
 
 /** Exact slice topology is ambiguous, so projected extraction may be attempted. */
@@ -234,8 +270,10 @@ function validateRequest(projected: ProjectedMesh, specs: readonly OutlineLayerS
 
 function boundedBlackCutsForLayers(
   supplied: readonly ExistingBlackCuts[],
-  layerCount: number,
+  layers: readonly OutlineLayer[],
+  deadline: number,
 ): readonly ExistingBlackCuts[] {
+  const layerCount = layers.length;
   if (!Array.isArray(supplied) || supplied.length !== 0 && supplied.length !== layerCount) {
     throw new RangeError('Contour extraction requires ordered existing black cuts for every layer');
   }
@@ -243,6 +281,14 @@ function boundedBlackCutsForLayers(
     const cuts = supplied[index];
     if (cuts !== undefined && (!Array.isArray(cuts.launcherCuts) || !Array.isArray(cuts.fastenerHoles))) {
       throw new RangeError('Contour extraction requires bounded black-cut arrays');
+    }
+    if (cuts?.exteriorOverride) {
+      validateExteriorOverride(
+        layers[index],
+        cuts.exteriorOverride,
+        deadline,
+        () => checkDeadline(deadline),
+      );
     }
     return cuts ?? { launcherCuts: [], fastenerHoles: [] };
   });
@@ -291,7 +337,7 @@ function resolveBlackCuts(
   }
   const plan = options?.planBlackCuts?.(context) ?? { cuts: options?.existingBlackCuts ?? [] };
   return {
-    cuts: boundedBlackCutsForLayers(plan.cuts, context.layers.length),
+    cuts: boundedBlackCutsForLayers(plan.cuts, context.layers, context.deadline),
     warnings: plan.warnings ?? [],
   };
 }
@@ -308,12 +354,13 @@ function extractDepthFeaturesForLayer(
   deadline: number,
   blackCuts?: ExistingBlackCuts,
 ): DepthFeatureResult {
+  const exterior = blackCuts?.exteriorOverride;
   return extractAdaptiveDepthFeatures(projected, {
     layerId: layer.id,
     layer: spec,
-    exterior: layer.contour.outer,
+    exterior: exterior?.outer ?? layer.contour.outer,
     centralHole: holeSelection.hole?.outer,
-    exteriorAreaMm2: layer.simplifiedAreaMm2,
+    exteriorAreaMm2: exterior?.areaMm2 ?? layer.simplifiedAreaMm2,
     cellSizeMm,
     planarDiameterMm: projected.planarDiameter,
     budgets,

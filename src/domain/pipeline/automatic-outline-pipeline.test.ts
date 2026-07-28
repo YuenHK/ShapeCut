@@ -23,6 +23,8 @@ import {
   OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
   OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
 } from '../outline-assembly/launcher-template';
+import { planFixedLauncherClearance } from '../outline-assembly/launcher';
+import { expandLauncherExterior } from '../outline-assembly/launcher-exterior-expansion';
 
 const testMaterial = { id: 'test-material', name: 'Test material', thicknessMm: 3, kerfMm: 0.1, minFeatureMm: 0.8, minWebMm: 0.5, fitAllowanceMm: { loose: 0.2, slip: 0.1, snug: 0, press: -0.1 } } as const;
 function convertAutomatically(request: { readonly bytes: ArrayBuffer }, onProgress?: Parameters<typeof convertAutomaticOutline>[1]) {
@@ -179,6 +181,15 @@ describe('automatic outline pipeline', () => {
       rotationRad: expect.any(Number),
       fitOffsetMm: 0,
       finishedAllowanceMm: 0.2,
+      exteriorExpansion: {
+        mode: 'shared-uniform',
+        offsetMm: 0,
+        maxOffsetMm: 6,
+        affectedLayerIds: [
+          result.coloredLayers.at(-2)!.id,
+          result.coloredLayers.at(-1)!.id,
+        ],
+      },
     });
     const topTwo = result.coloredLayers.slice(-2);
     const lower = result.coloredLayers.slice(0, -2);
@@ -223,6 +234,160 @@ describe('automatic outline pipeline', () => {
     expect(featureEvidenceFingerprint(alternateLauncher, undefined, undefined, result.material))
       .not.toBe(result.featureEvidenceFingerprint);
   });
+
+  it('carries only the required shared top-two exterior expansion into canonical geometry', async () => {
+    const result = await convertAutomatically({
+      bytes: writeBinarySTL(rectangularPrism(45, 45), 'safe'),
+    });
+    const originalColoredLayers = extraction.colorizeExteriorLayers(
+      result.layers, 0, Infinity, () => undefined,
+    );
+
+    expect(result.assembly.launcher.exteriorExpansion.offsetMm).toBeGreaterThan(0);
+    expect(result.assembly.launcher.exteriorExpansion.maxOffsetMm).toBe(6);
+    expect(result.coloredLayers.slice(0, -2).map((layer) => layer.exterior.outer))
+      .toEqual(originalColoredLayers.slice(0, -2).map((layer) => layer.exterior.outer));
+    expect(result.coloredLayers.at(-1)!.exterior.outer)
+      .not.toEqual(result.layers.at(-1)!.contour.outer);
+    expect(result.coloredLayers.at(-2)!.exterior.outer)
+      .not.toEqual(result.layers.at(-2)!.contour.outer);
+
+    const sourceExterior = (index: number): FeatureContour => ({
+      id: `${result.layers[index].id}-exterior`,
+      role: 'CUT_BLACK',
+      outer: result.layers[index].contour.outer,
+      boundsMm: simplification.contourBounds(result.layers[index].contour.outer),
+      areaMm2: Math.abs(simplification.signedArea(result.layers[index].contour.outer)),
+    });
+    const topIndex = result.layers.length - 1;
+    const secondIndex = result.layers.length - 2;
+    const sourceTop = sourceExterior(topIndex);
+    const sourceSecond = sourceExterior(secondIndex);
+    const top = result.coloredLayers[topIndex];
+    const second = result.coloredLayers[secondIndex];
+    const centralHole = (id: string): FeatureContour => ({
+      id,
+      role: 'CUT_BLACK',
+      outer: [[-1, -1], [-1, 1], [1, 1], [1, -1]],
+      boundsMm: { minX: -1, minY: -1, maxX: 1, maxY: 1 },
+      areaMm2: 4,
+    });
+    const decoration: FeatureContour = {
+      id: 'retained-decoration',
+      role: 'DEEP_RED',
+      outer: [[15, 15], [15, 16], [16, 16], [16, 15]],
+      boundsMm: { minX: 15, minY: 15, maxX: 16, maxY: 16 },
+      areaMm2: 1,
+    };
+    const sharedRequest = {
+      axisPoint: [0, 0] as const,
+      topCentralHole: centralHole('top-central'),
+      secondCentralHole: centralHole('second-central'),
+      material: testMaterial,
+      fitOffsetMm: 0,
+      decorationContours: [decoration],
+    };
+    const requiredPlan = planFixedLauncherClearance({
+      ...sharedRequest,
+      topExterior: sourceTop,
+      secondExterior: sourceSecond,
+    });
+    const originalSafePlan = planFixedLauncherClearance({
+      ...sharedRequest,
+      topExterior: expandLauncherExterior(sourceTop, requiredPlan.exteriorExpansion.offsetMm),
+      secondExterior: expandLauncherExterior(sourceSecond, requiredPlan.exteriorExpansion.offsetMm),
+    });
+
+    expect(originalSafePlan.exteriorExpansion.offsetMm).toBe(0);
+    expect(requiredPlan.cuts.map(({ outer }) => outer))
+      .toEqual(originalSafePlan.cuts.map(({ outer }) => outer));
+    expect(top.launcherCuts.map(({ outer }) => outer))
+      .toEqual(requiredPlan.cuts.map(({ outer }) => outer));
+
+    const holeSelections = result.layers.map((_, index) => {
+      const hole = index === topIndex
+        ? sharedRequest.topCentralHole
+        : sharedRequest.secondCentralHole;
+      return {
+        hole: {
+          outer: hole.outer,
+          boundsMm: hole.boundsMm,
+          areaMm2: hole.areaMm2,
+          equivalentDiameterMm: Math.sqrt(4 * hole.areaMm2 / Math.PI),
+          axisDistanceMm: 0,
+        },
+      };
+    });
+    const depthFeatures = result.layers.map((_, index) => ({
+      red: index === topIndex ? sharedRequest.decorationContours : [],
+      blue: [],
+      diagnostics: {
+        cellSizeMm: 0,
+        contrastMm: 1,
+        redThresholdMm: 0.5,
+        blueThresholdMm: 0.25,
+        retained: { red: index === topIndex ? 1 : 0, blue: 0 },
+        omitted: { red: 0, blue: 0 },
+      },
+      evidence: { red: [], blue: [] },
+    }));
+    const requiredBlackCuts = result.layers.map((_, index) => ({
+      launcherCuts: index >= secondIndex ? requiredPlan.cuts : [],
+      fastenerHoles: [],
+      ...(index === topIndex
+        ? { exteriorOverride: requiredPlan.expandedTopExterior }
+        : index === secondIndex
+          ? { exteriorOverride: requiredPlan.expandedSecondExterior }
+          : {}),
+    }));
+    const requiredCanonical = extraction.colorizeExteriorLayers(
+      result.layers, 0, Infinity, () => undefined,
+      holeSelections, depthFeatures, requiredBlackCuts,
+    );
+    const originalSafeLayers = result.layers.map((layer, index) => {
+      const expanded = index === topIndex
+        ? requiredPlan.expandedTopExterior
+        : index === secondIndex
+          ? requiredPlan.expandedSecondExterior
+          : undefined;
+      return expanded ? {
+        ...layer,
+        contour: { outer: expanded.outer, holes: [] as const },
+        sourceAreaMm2: expanded.areaMm2,
+        simplifiedAreaMm2: expanded.areaMm2,
+        sourceBoundsMm: expanded.boundsMm,
+      } : layer;
+    });
+    const originalSafeBlackCuts = result.layers.map((_, index) => ({
+      launcherCuts: index >= secondIndex ? originalSafePlan.cuts : [],
+      fastenerHoles: [],
+    }));
+    const originalSafeCanonical = extraction.colorizeExteriorLayers(
+      originalSafeLayers, 0, Infinity, () => undefined,
+      holeSelections, depthFeatures, originalSafeBlackCuts,
+    );
+
+    expect(requiredCanonical.slice(-2).map((layer) => layer.centralHole?.outer))
+      .toEqual(originalSafeCanonical.slice(-2).map((layer) => layer.centralHole?.outer));
+    expect(requiredCanonical.slice(-2).flatMap((layer) => layer.launcherCuts.map(({ outer }) => outer)))
+      .toEqual(originalSafeCanonical.slice(-2).flatMap((layer) => layer.launcherCuts.map(({ outer }) => outer)));
+    expect(requiredCanonical.slice(-2).flatMap((layer) => [
+      ...layer.deepFeatures.map(({ outer }) => outer),
+      ...layer.lightFeatures.map(({ outer }) => outer),
+    ])).toEqual(originalSafeCanonical.slice(-2).flatMap((layer) => [
+      ...layer.deepFeatures.map(({ outer }) => outer),
+      ...layer.lightFeatures.map(({ outer }) => outer),
+    ]));
+  }, 20_000);
+
+  it('reports a typed error when the required shared expansion exceeds 6.00 mm', async () => {
+    await expect(convertAutomatically({
+      bytes: writeBinarySTL(rectangularPrism(34, 34), 'safe'),
+    })).rejects.toMatchObject({
+      code: 'LAUNCHER_EXTERIOR_EXPANSION_EXCEEDED',
+      message: expect.stringMatching(/required|requires|6\.00 mm/i),
+    } satisfies Partial<AutomaticOutlineError>);
+  }, 20_000);
 
   it('rejects recomputed-fingerprint fastener metadata and geometry forgeries from a genuine result', async () => {
     const result = await convertAutomatically({ bytes: writeBinarySTL(cylinder(), 'safe') });
@@ -307,9 +472,11 @@ describe('automatic outline pipeline', () => {
   it.each([
     ['narrow', rectangularPrism(20, 6)],
     ['small', rectangularPrism(4, 4)],
-  ] as const)('blocks the %s outline when no fixed launcher rotation is safe', async (_label, mesh) => {
+  ] as const)('reports an expansion-limit error for the %s outline', async (_label, mesh) => {
     await expect(convertAutomatically({ bytes: writeBinarySTL(mesh, 'safe') }))
-      .rejects.toMatchObject({ code: 'LAUNCHER_INCOMPATIBLE' } satisfies Partial<AutomaticOutlineError>);
+      .rejects.toMatchObject({
+        code: 'LAUNCHER_EXTERIOR_EXPANSION_EXCEEDED',
+      } satisfies Partial<AutomaticOutlineError>);
   }, 20_000);
 
   it('gives exact-mode fastener removal envelopes priority over colliding layer-local engraving', async () => {
@@ -549,9 +716,11 @@ describe('automatic outline pipeline', () => {
     expect(result.layers.every((layer) => layer.sourceBoundsMm !== undefined)).toBe(true);
   });
 
-  it('blocks disconnected closed slices that cannot retain the fixed launcher', async () => {
+  it('reports expansion-limit failure for disconnected closed slices whose retained outline is too small', async () => {
     await expect(convertAutomatically({ bytes: writeBinarySTL(separatedClosedCylinders(), 'safe') }))
-      .rejects.toMatchObject({ code: 'LAUNCHER_INCOMPATIBLE' } satisfies Partial<AutomaticOutlineError>);
+      .rejects.toMatchObject({
+        code: 'LAUNCHER_EXTERIOR_EXPANSION_EXCEEDED',
+      } satisfies Partial<AutomaticOutlineError>);
   });
 
   it('uses a deterministic shortest-bounds axis with a warning when no candidate is trusted', async () => {

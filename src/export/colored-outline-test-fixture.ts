@@ -152,6 +152,12 @@ export function coloredResult(): AutomaticOutlineResult {
         rotationRad: launcher.rotationRad,
         fitOffsetMm: launcher.fitOffsetMm,
         finishedAllowanceMm: launcher.finishedAllowanceMm,
+        exteriorExpansion: {
+          mode: 'shared-uniform' as const,
+          offsetMm: 0,
+          maxOffsetMm: 6 as const,
+          affectedLayerIds: [second.id, top.id] as const,
+        },
       },
       fastener: {
         count: 0 as const, centers: [], finishedDiameterMm: 3 as const, pathDiameterMm: 2.85,
@@ -296,6 +302,16 @@ export function nearLimitColoredResult(pointCount = 512): AutomaticOutlineResult
     coloredLayers,
     assembly: {
       ...seed.assembly,
+      launcher: {
+        ...seed.assembly.launcher,
+        exteriorExpansion: {
+          ...seed.assembly.launcher.exteriorExpansion,
+          affectedLayerIds: [
+            coloredLayers.at(-2)!.id,
+            coloredLayers.at(-1)!.id,
+          ] as const,
+        },
+      },
       topFeatures: {
         retained: { red: 1, blue: 1 },
         omitted: { red: 0, blue: 0 },

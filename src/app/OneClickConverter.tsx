@@ -122,6 +122,7 @@ function failureMessage(error: unknown): string {
       RESOURCE_LIMIT: '模型太複雜，超出這次可處理的上限。請先簡化模型再試。',
       TIME_LIMIT: '處理時間過長，已安全停止。請先簡化模型再試。',
       LAUNCHER_INCOMPATIBLE: '官方三爪孔會破壞外框或必要承托結構，已停止所有輸出。',
+      LAUNCHER_EXTERIOR_EXPANSION_EXCEEDED: '發射器外框所需擴張超過 6.00 mm 上限，已停止所有輸出。',
     }[error.code];
   }
   if (error instanceof OutlineArtifactError) {

@@ -142,6 +142,12 @@ describe('canonical colored outline document', () => {
     expect(document.layers[2].roles.DEEP_RED).toHaveLength(1);
     expect(document.layers[2].roles.LIGHT_BLUE).toHaveLength(1);
     expect(document.assembly).toEqual(result.assembly);
+    expect(document.assembly.launcher.exteriorExpansion).toEqual({
+      mode: 'shared-uniform',
+      offsetMm: 0,
+      maxOffsetMm: 6,
+      affectedLayerIds: ['layer-5', 'layer-6'],
+    });
     expect(() => validateColoredOutlineDocument(document, result)).not.toThrow();
   });
 
@@ -164,6 +170,12 @@ describe('canonical colored outline document', () => {
     ['rotationRad', (document: any) => { document.assembly.launcher.rotationRad += 0.01; }],
     ['fitOffsetMm', (document: any) => { document.assembly.launcher.fitOffsetMm += 0.01; }],
     ['finishedAllowanceMm', (document: any) => { document.assembly.launcher.finishedAllowanceMm += 0.01; }],
+    ['exteriorExpansion.mode', (document: any) => { document.assembly.launcher.exteriorExpansion.mode = 'independent'; }],
+    ['exteriorExpansion.offsetMm', (document: any) => { document.assembly.launcher.exteriorExpansion.offsetMm += 0.01; }],
+    ['exteriorExpansion.maxOffsetMm', (document: any) => { document.assembly.launcher.exteriorExpansion.maxOffsetMm = 7; }],
+    ['exteriorExpansion.affectedLayerIds', (document: any) => {
+      document.assembly.launcher.exteriorExpansion.affectedLayerIds.reverse();
+    }],
     ['launcherOverlap.clipped.red', (document: any) => { document.assembly.topFeatures.launcherOverlap.clipped.red += 1; }],
     ['launcherOverlap.clipped.blue', (document: any) => { document.assembly.topFeatures.launcherOverlap.clipped.blue += 1; }],
     ['launcherOverlap.removed.red', (document: any) => { document.assembly.topFeatures.launcherOverlap.removed.red += 1; }],

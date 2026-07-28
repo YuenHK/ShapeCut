@@ -20,6 +20,13 @@ import {
   OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
   OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
 } from '../outline-assembly/launcher-template';
+import {
+  expandLauncherExterior,
+  LAUNCHER_EXTERIOR_EXPANSION_MAX_MM,
+  LAUNCHER_EXTERIOR_EXPANSION_MODE,
+  normalizeLauncherExteriorExpansionMm,
+  type LauncherExteriorExpansion,
+} from '../outline-assembly/launcher-exterior-expansion';
 import { createPhysicalCutProtection } from '../outline-assembly/physical-cut-envelope';
 import type { Vec3 } from '../types';
 import { CENTRAL_HOLE_OMISSION_WARNING, isStrictlyContainedLoop } from './hole';
@@ -86,6 +93,7 @@ export type AutomaticLauncherAssembly = {
   readonly rotationRad: number;
   readonly fitOffsetMm: number;
   readonly finishedAllowanceMm: number;
+  readonly exteriorExpansion: LauncherExteriorExpansion;
 };
 
 export type AutomaticTopFeatureAssembly = {
@@ -856,6 +864,109 @@ function sameContourGeometry(
   return true;
 }
 
+function sameContourEvidence(
+  left: FeatureContour,
+  right: FeatureContour,
+  deadline: number,
+  checkpoint: () => void,
+): boolean {
+  return left.id === right.id
+    && sameContourGeometry(left, right, deadline, checkpoint);
+}
+
+function extractedSourceExterior(
+  layer: OutlineLayer,
+  deadline: number,
+  checkpoint: () => void,
+): FeatureContour {
+  return {
+    id: `${layer.id}-exterior`,
+    role: 'CUT_BLACK',
+    outer: layer.contour.outer,
+    boundsMm: contourBounds(layer.contour.outer, deadline, checkpoint),
+    areaMm2: Math.abs(contourSignedArea(layer.contour.outer, deadline, checkpoint)),
+  };
+}
+
+function launcherExteriorExpansionReasons(
+  value: unknown,
+  coloredLayers: readonly ColoredOutlineLayer[],
+  sourceLayers: readonly OutlineLayer[],
+  deadline: number,
+  checkpoint: () => void,
+): string[] {
+  const reasons: string[] = [];
+  if (!isRecord(value)) {
+    return ['Automatic assembly launcher exterior expansion evidence is missing'];
+  }
+  reasons.push(...unexpectedKeys(value, new Set([
+    'mode', 'offsetMm', 'maxOffsetMm', 'affectedLayerIds',
+  ]), 'Automatic assembly launcher exterior expansion'));
+  const offsetMm = value.offsetMm;
+  let normalizedOffsetMm: number | undefined;
+  try {
+    if (!Number.isFinite(offsetMm)
+      || (offsetMm as number) < 0
+      || (offsetMm as number) > LAUNCHER_EXTERIOR_EXPANSION_MAX_MM
+      || normalizeLauncherExteriorExpansionMm(offsetMm as number) !== offsetMm) {
+      throw new RangeError('invalid grid value');
+    }
+    normalizedOffsetMm = offsetMm as number;
+  } catch {
+    reasons.push('Automatic assembly launcher exterior expansion offset must be finite, non-negative, on the 0.01 mm grid, and at most 6.00 mm');
+  }
+  if (value.mode !== LAUNCHER_EXTERIOR_EXPANSION_MODE) {
+    reasons.push('Automatic assembly launcher exterior expansion mode must be shared-uniform');
+  }
+  if (value.maxOffsetMm !== LAUNCHER_EXTERIOR_EXPANSION_MAX_MM) {
+    reasons.push('Automatic assembly launcher exterior expansion maximum must be 6.00 mm');
+  }
+  const expectedLayerIds = sourceLayers.length >= 2
+    ? [sourceLayers.at(-2)!.id, sourceLayers.at(-1)!.id]
+    : [];
+  if (!Array.isArray(value.affectedLayerIds)
+    || value.affectedLayerIds.length !== 2
+    || value.affectedLayerIds.some((id) => typeof id !== 'string')
+    || value.affectedLayerIds[0] !== expectedLayerIds[0]
+    || value.affectedLayerIds[1] !== expectedLayerIds[1]) {
+    reasons.push('Automatic assembly launcher exterior expansion affected layer IDs must exactly match the ordered top two source layers');
+  }
+  if (normalizedOffsetMm === undefined
+    || sourceLayers.length !== coloredLayers.length
+    || sourceLayers.length < 2) return reasons;
+
+  const expandedStart = sourceLayers.length - 2;
+  for (let index = 0; index < sourceLayers.length; index += 1) {
+    checkRuntimeBudget(deadline, checkpoint, 'assembly:launcher-exterior-expansion-loop');
+    const sourceExterior = extractedSourceExterior(
+      sourceLayers[index], deadline, checkpoint,
+    );
+    let expectedExterior = sourceExterior;
+    if (index >= expandedStart) {
+      try {
+        expectedExterior = expandLauncherExterior(
+          sourceExterior, normalizedOffsetMm, deadline, checkpoint,
+        );
+      } catch (error) {
+        if (error instanceof RangeError && /runtime budget/i.test(error.message)) throw error;
+        reasons.push(`Automatic assembly launcher exterior expansion could not reconstruct source layer ${sourceLayers[index].id}`);
+        continue;
+      }
+    }
+    if (!sameContourEvidence(
+      expectedExterior,
+      coloredLayers[index].exterior,
+      deadline,
+      checkpoint,
+    )) {
+      reasons.push(index < expandedStart
+        ? `Lower colored exterior ${sourceLayers[index].id} must exactly match its extracted source exterior`
+        : `Automatic assembly launcher exterior expansion for ${sourceLayers[index].id} must equal the exact deterministic offset`);
+    }
+  }
+  return reasons;
+}
+
 function validFastenerContour(
   contour: FeatureContour,
   center: Point2,
@@ -939,6 +1050,7 @@ function physicalEngravingReasons(
 function assemblyReasons(
   value: unknown,
   layers: readonly ColoredOutlineLayer[],
+  sourceLayers: readonly OutlineLayer[],
   featureWarnings: readonly string[],
   material: ManufacturingGeometryProfile | undefined,
   internalValidationEvidence: unknown,
@@ -958,8 +1070,15 @@ function assemblyReasons(
   } else {
     reasons.push(...unexpectedKeys(launcher, new Set([
       'status', 'cutCount', 'templateVersion', 'templateFingerprint',
-      'rotationRad', 'fitOffsetMm', 'finishedAllowanceMm',
+      'rotationRad', 'fitOffsetMm', 'finishedAllowanceMm', 'exteriorExpansion',
     ]), 'Automatic assembly launcher'));
+    reasons.push(...launcherExteriorExpansionReasons(
+      launcher.exteriorExpansion,
+      layers,
+      sourceLayers,
+      deadline,
+      checkpoint,
+    ));
     let validFitOffset = true;
     try {
       validateLauncherFitOffsetMm(launcher.fitOffsetMm);
@@ -1368,7 +1487,7 @@ export function validateAutomaticColoredResult(
   }
   if (coloredLayersValid && featureWarnings) {
     reasons.push(...assemblyReasons(
-      value.assembly, coloredLayers, featureWarnings, validatedMaterial,
+      value.assembly, coloredLayers, legacyLayers ?? [], featureWarnings, validatedMaterial,
       value.internalValidationEvidence, deadline, checkpoint,
     ));
     if (validatedMaterial) {
@@ -1438,11 +1557,14 @@ export function validateAutomaticColoredResult(
         continue;
       }
       const colored = coloredLayers[index];
+      const exteriorExpansionTarget = index >= legacyLayers.length - 2;
       if (colored && (candidate.id !== colored.id || candidate.index !== colored.index
         || candidate.zStart !== colored.zStart || candidate.zEnd !== colored.zEnd
         || candidate.removedComponentCount !== colored.removedComponentCount
-        || candidate.simplifiedAreaMm2 !== colored.exterior.areaMm2
-        || !samePoints(candidate.contour.outer, colored.exterior.outer))) {
+        || !exteriorExpansionTarget && (
+          candidate.simplifiedAreaMm2 !== colored.exterior.areaMm2
+          || !samePoints(candidate.contour.outer, colored.exterior.outer)
+        ))) {
         reasons.push(`Migration exterior layer ${index} must match the ordered colored layer record`);
       }
     }

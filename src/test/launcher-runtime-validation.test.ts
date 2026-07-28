@@ -54,6 +54,10 @@ function runtime(plan = fixedPlan()): LauncherRuntimeGeometry {
       rotationRad: plan.rotationRad,
       fitOffsetMm: plan.fitOffsetMm,
       finishedAllowanceMm: plan.finishedAllowanceMm,
+      exteriorExpansion: {
+        ...plan.exteriorExpansion,
+        affectedLayerIds: ['second', 'top'],
+      },
     },
     layers: [
       { id: 'lower', exterior: contour('lower-exterior', 30), launcherCuts: [] },

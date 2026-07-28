@@ -62,6 +62,10 @@ const result: AutomaticOutlineResult = {
       templateVersion: OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
       templateFingerprint: OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
       rotationRad: 0, fitOffsetMm: 0, finishedAllowanceMm: 0.2,
+      exteriorExpansion: {
+        mode: 'shared-uniform', offsetMm: 0, maxOffsetMm: 6,
+        affectedLayerIds: ['layer-0', 'layer-0'],
+      },
     },
     fastener: { count: 0, centers: [], finishedDiameterMm: 3, pathDiameterMm: 2.85 },
     topFeatures: {
@@ -1333,6 +1337,24 @@ describe('OneClickConverter', () => {
 
     expect(await screen.findByRole('alert'))
       .toHaveTextContent('官方三爪孔會破壞外框或必要承托結構，已停止所有輸出。');
+    expect(screen.queryByRole('link', { name: /下載/ })).not.toBeInTheDocument();
+    expect(api.package).not.toHaveBeenCalled();
+  });
+
+  it('maps an over-limit launcher exterior expansion to a blocking Traditional Chinese failure', async () => {
+    const user = userEvent.setup();
+    const api = services({
+      convert: vi.fn().mockRejectedValue(new AutomaticOutlineError(
+        'LAUNCHER_EXTERIOR_EXPANSION_EXCEEDED',
+        'Launcher exterior expansion requires 6.01 mm, exceeding 6.00 mm',
+      )),
+    });
+    render(<OneClickConverter services={api} />);
+
+    await uploadAndSelectMaterial(user, new File(['mesh'], 'launcher-expansion-blocked.stl'));
+
+    expect(await screen.findByRole('alert'))
+      .toHaveTextContent('發射器外框所需擴張超過 6.00 mm 上限，已停止所有輸出。');
     expect(screen.queryByRole('link', { name: /下載/ })).not.toBeInTheDocument();
     expect(api.package).not.toHaveBeenCalled();
   });

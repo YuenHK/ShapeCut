@@ -12,6 +12,7 @@ import {
   OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
   OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
 } from '../outline-assembly/launcher-template';
+import { expandLauncherExterior } from '../outline-assembly/launcher-exterior-expansion';
 import {
   featureEvidenceFingerprint,
   migrateColoredOutlineLayer,
@@ -87,12 +88,13 @@ function coloredLayer(overrides: Partial<ColoredOutlineLayer> = {}): ColoredOutl
 }
 
 function indexedColoredLayer(index: number): ColoredOutlineLayer {
+  const id = `outline-layer-${index}`;
   return coloredLayer({
-    id: `outline-layer-${index}`,
+    id,
     index,
     zStart: index,
     zEnd: index + 1,
-    exterior: square(60, `layer-${index}-exterior`),
+    exterior: square(60, `${id}-exterior`),
     centralHole: circle(2, `layer-${index}-hole`),
     deepFeatures: [rectangle(3, 2, `layer-${index}-deep`)],
   });
@@ -146,6 +148,15 @@ function automaticResult(sourceLayers = coloredLayerSet(6)): AutomaticOutlineRes
         rotationRad: launcher.rotationRad,
         fitOffsetMm: launcher.fitOffsetMm,
         finishedAllowanceMm: launcher.finishedAllowanceMm,
+        exteriorExpansion: {
+          mode: 'shared-uniform' as const,
+          offsetMm: 0,
+          maxOffsetMm: 6 as const,
+          affectedLayerIds: [
+            coloredLayers.at(-2)?.id ?? '',
+            coloredLayers.at(-1)?.id ?? '',
+          ] as const,
+        },
       },
       fastener: { count: 0 as const, centers: [], finishedDiameterMm: 3 as const, pathDiameterMm: 2.9 },
       topFeatures: {
@@ -410,6 +421,64 @@ function safeLauncherResult(): AutomaticOutlineResult {
   return automaticResult();
 }
 
+function sourceExterior(
+  result: AutomaticOutlineResult,
+  index: number,
+): FeatureContour {
+  const layer = result.layers[index];
+  return {
+    id: `${layer.id}-exterior`,
+    role: 'CUT_BLACK',
+    outer: layer.contour.outer,
+    boundsMm: layer.sourceBoundsMm,
+    areaMm2: layer.simplifiedAreaMm2,
+  };
+}
+
+function withExteriorExpansion(offsetMm = 1): AutomaticOutlineResult {
+  const source = automaticResult();
+  const topStart = source.coloredLayers.length - 2;
+  const coloredLayers = source.coloredLayers.map((layer, index) => index < topStart
+    ? layer
+    : {
+      ...layer,
+      exterior: expandLauncherExterior(sourceExterior(source, index), offsetMm),
+    });
+  const changed = {
+    ...source,
+    assembly: {
+      ...source.assembly,
+      launcher: {
+        ...source.assembly.launcher,
+        exteriorExpansion: {
+          mode: 'shared-uniform' as const,
+          offsetMm,
+          maxOffsetMm: 6 as const,
+          affectedLayerIds: [
+            source.layers.at(-2)!.id,
+            source.layers.at(-1)!.id,
+          ] as const,
+        },
+      },
+    },
+    coloredLayers,
+    preview: { ...source.preview, layers: coloredLayers },
+  };
+  return { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
+}
+
+function refingerprint(
+  result: AutomaticOutlineResult,
+  coloredLayers = result.coloredLayers,
+): AutomaticOutlineResult {
+  const changed = {
+    ...result,
+    coloredLayers,
+    preview: { ...result.preview, layers: coloredLayers },
+  };
+  return { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
+}
+
 describe('colored outline contracts', () => {
   function legacyLayerBase(): Record<string, unknown> {
     const { deepFeatures: _deepFeatures, lightFeatures: _lightFeatures,
@@ -473,6 +542,178 @@ describe('colored outline contracts', () => {
   it('bounds top and lower engraving arrays independently', () => {
     expect(() => validateAutomaticColoredResult(withFeatureCounts(13, 1))).toThrow(/12.*deep/i);
     expect(() => validateAutomaticColoredResult(withFeatureCounts(1, 2))).toThrow(/one.*deep/i);
+  });
+
+  it('accepts an exact independently reproducible shared top-two exterior expansion', () => {
+    const baseline = automaticResult();
+    const expanded = withExteriorExpansion();
+
+    expect(() => validateAutomaticColoredResult(expanded)).not.toThrow();
+    expect(expanded.coloredLayers.slice(0, -2).map(({ exterior }) => exterior))
+      .toEqual(baseline.coloredLayers.slice(0, -2).map(({ exterior }) => exterior));
+    expect(expanded.coloredLayers.slice(-2).map((layer) => ({
+      centralHole: layer.centralHole,
+      launcherCuts: layer.launcherCuts,
+      deepFeatures: layer.deepFeatures,
+      lightFeatures: layer.lightFeatures,
+    }))).toEqual(baseline.coloredLayers.slice(-2).map((layer) => ({
+      centralHole: layer.centralHole,
+      launcherCuts: layer.launcherCuts,
+      deepFeatures: layer.deepFeatures,
+      lightFeatures: layer.lightFeatures,
+    })));
+  });
+
+  it.each(['mode', 'offsetMm', 'maxOffsetMm', 'affectedLayerIds'])(
+    'rejects launcher exterior expansion missing required %s',
+    (key) => {
+      const missing = structuredClone(withExteriorExpansion());
+      delete (missing.assembly.launcher.exteriorExpansion as unknown as Record<string, unknown>)[key];
+      expect(() => validateAutomaticColoredResult(refingerprint(missing)))
+        .toThrow(/exterior.*expansion|missing|unexpected|keys/i);
+    },
+  );
+
+  it('rejects a missing launcher exterior-expansion object or an extra key', () => {
+    const missingObject = structuredClone(withExteriorExpansion()) as AutomaticOutlineResult;
+    delete (missingObject.assembly.launcher as unknown as Record<string, unknown>).exteriorExpansion;
+    expect(() => validateAutomaticColoredResult(refingerprint(missingObject)))
+      .toThrow(/exterior.*expansion|expansion.*missing/i);
+
+    const extra = structuredClone(withExteriorExpansion());
+    Object.assign(extra.assembly.launcher.exteriorExpansion, { privateOffset: 1 });
+    expect(() => validateAutomaticColoredResult(refingerprint(extra)))
+      .toThrow(/exterior.*expansion.*unexpected|unexpected.*privateOffset/i);
+  });
+
+  it.each([0.001, -0.01, NaN, Infinity, 6.01])(
+    'rejects invalid launcher exterior expansion offset %s',
+    (offsetMm) => {
+      const changed = structuredClone(withExteriorExpansion());
+      (changed.assembly.launcher.exteriorExpansion as { offsetMm: number }).offsetMm = offsetMm;
+      expect(() => validateAutomaticColoredResult(refingerprint(changed)))
+        .toThrow(/exterior.*expansion.*offset|grid|finite|non-negative|6/i);
+    },
+  );
+
+  it.each([
+    ['mode', (result: AutomaticOutlineResult) => {
+      (result.assembly.launcher.exteriorExpansion as { mode: string }).mode = 'independent';
+    }],
+    ['maximum', (result: AutomaticOutlineResult) => {
+      (result.assembly.launcher.exteriorExpansion as { maxOffsetMm: number }).maxOffsetMm = 7;
+    }],
+    ['wrong IDs', (result: AutomaticOutlineResult) => {
+      (result.assembly.launcher.exteriorExpansion as unknown as { affectedLayerIds: string[] }).affectedLayerIds = ['wrong-a', 'wrong-b'];
+    }],
+    ['reversed IDs', (result: AutomaticOutlineResult) => {
+      (result.assembly.launcher.exteriorExpansion as unknown as { affectedLayerIds: string[] }).affectedLayerIds.reverse();
+    }],
+    ['duplicated IDs', (result: AutomaticOutlineResult) => {
+      const id = result.assembly.launcher.exteriorExpansion.affectedLayerIds[0];
+      (result.assembly.launcher.exteriorExpansion as unknown as { affectedLayerIds: string[] }).affectedLayerIds = [id, id];
+    }],
+  ])('rejects launcher exterior expansion with wrong %s', (_label, mutate) => {
+    const changed = structuredClone(withExteriorExpansion());
+    mutate(changed);
+    expect(() => validateAutomaticColoredResult(refingerprint(changed)))
+      .toThrow(/exterior.*expansion|affected.*layer|shared-uniform|maximum/i);
+  });
+
+  it('rejects unchanged or independently expanded top exteriors and any changed lower exterior', () => {
+    const unchanged = withExteriorExpansion();
+    const unchangedLayers = unchanged.coloredLayers.map((layer, index) => index === unchanged.coloredLayers.length - 1
+      ? { ...layer, exterior: sourceExterior(unchanged, index) }
+      : layer);
+    expect(() => validateAutomaticColoredResult(refingerprint(unchanged, unchangedLayers)))
+      .toThrow(/exterior.*expansion|deterministic|exact/i);
+
+    const lower = withExteriorExpansion();
+    const lowerLayers = lower.coloredLayers.map((layer, index) => index === 0
+      ? { ...layer, exterior: expandLauncherExterior(sourceExterior(lower, index), 0.01) }
+      : layer);
+    expect(() => validateAutomaticColoredResult(refingerprint(lower, lowerLayers)))
+      .toThrow(/lower.*exterior|source exterior|exterior.*match/i);
+
+    const independent = withExteriorExpansion();
+    const independentLayers = independent.coloredLayers.map((layer, index) => index === independent.coloredLayers.length - 2
+      ? { ...layer, exterior: expandLauncherExterior(sourceExterior(independent, index), 0.5) }
+      : layer);
+    expect(() => validateAutomaticColoredResult(refingerprint(independent, independentLayers)))
+      .toThrow(/exterior.*expansion|deterministic|exact/i);
+  });
+
+  it('rejects a non-exact deterministic contour or metadata-only expansion mutation', () => {
+    const contourMutation = withExteriorExpansion();
+    const contourLayers = contourMutation.coloredLayers.map((layer, index) => index === contourMutation.coloredLayers.length - 1
+      ? { ...layer, exterior: expandLauncherExterior(sourceExterior(contourMutation, index), 0.99) }
+      : layer);
+    expect(() => validateAutomaticColoredResult(refingerprint(contourMutation, contourLayers)))
+      .toThrow(/exterior.*expansion|deterministic|exact/i);
+
+    const metadataMutation = structuredClone(withExteriorExpansion());
+    (metadataMutation.assembly.launcher.exteriorExpansion as { offsetMm: number }).offsetMm = 0.5;
+    expect(() => validateAutomaticColoredResult(refingerprint(metadataMutation)))
+      .toThrow(/exterior.*expansion|deterministic|exact/i);
+  });
+
+  it.each([
+    ['id', (exterior: FeatureContour) => ({ ...exterior, id: `${exterior.id}-forged` })],
+    ['role', (exterior: FeatureContour) => ({ ...exterior, role: 'DEEP_RED' as const })],
+    ['bounds', (exterior: FeatureContour) => ({
+      ...exterior,
+      boundsMm: { ...exterior.boundsMm, minX: exterior.boundsMm.minX + 0.01 },
+    })],
+    ['area', (exterior: FeatureContour) => ({ ...exterior, areaMm2: exterior.areaMm2 + 0.01 })],
+  ])('rejects an expanded exterior with independently forged %s', (_label, mutate) => {
+    const changed = withExteriorExpansion();
+    const changedLayers = changed.coloredLayers.map((layer, index) => index === changed.coloredLayers.length - 1
+      ? { ...layer, exterior: mutate(layer.exterior) }
+      : layer);
+    expect(() => validateAutomaticColoredResult(refingerprint(changed, changedLayers)))
+      .toThrow(/exterior.*expansion|deterministic|exact|role|id|bounds|area/i);
+  });
+
+  it('rejects launcher, central-hole, or decoration coordinate mutations in expanded geometry', () => {
+    const launcher = withExteriorExpansion();
+    const launcherLayers = launcher.coloredLayers.map((layer, layerIndex) => layerIndex < launcher.coloredLayers.length - 2
+      ? layer
+      : {
+        ...layer,
+        launcherCuts: layer.launcherCuts.map((cut) => contour(
+          cut.id, cut.role, cut.outer.map(([x, y]) => [x + 0.1, y] as const),
+        )),
+      });
+    expect(() => validateAutomaticColoredResult(refingerprint(launcher, launcherLayers)))
+      .toThrow(/launcher.*template|placement|geometry/i);
+
+    const central = withExteriorExpansion();
+    const centralLayers = central.coloredLayers.map((layer, index) => index !== central.coloredLayers.length - 1 || !layer.centralHole
+      ? layer
+      : {
+        ...layer,
+        centralHole: contour(
+          layer.centralHole.id,
+          layer.centralHole.role,
+          layer.centralHole.outer.map(([x, y]) => [x + 0.1, y] as const),
+        ),
+      });
+    expect(() => validateAutomaticColoredResult(refingerprint(central, centralLayers)))
+      .toThrow(/central hole|shared central/i);
+
+    const decoration = withExteriorExpansion();
+    const decorationLayers = decoration.coloredLayers.map((layer, index) => index !== decoration.coloredLayers.length - 1
+      ? layer
+      : {
+        ...layer,
+        deepFeatures: layer.deepFeatures.map((feature) => contour(
+          feature.id,
+          feature.role,
+          feature.outer.map(([x, y]) => [x + 100, y] as const),
+        )),
+      });
+    expect(() => validateAutomaticColoredResult(refingerprint(decoration, decorationLayers)))
+      .toThrow(/deep feature|exterior|decoration/i);
   });
 
   it.each([

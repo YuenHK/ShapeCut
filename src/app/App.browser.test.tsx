@@ -49,6 +49,10 @@ describe('App real browser one-click flow', () => {
           templateVersion: OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
           templateFingerprint: OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
           rotationRad: 0, fitOffsetMm: 0, finishedAllowanceMm: 0.2,
+          exteriorExpansion: {
+            mode: 'shared-uniform', offsetMm: 0, maxOffsetMm: 6,
+            affectedLayerIds: ['layer-0', 'layer-0'],
+          },
         },
         fastener: { count: 0, centers: [], finishedDiameterMm: 3, pathDiameterMm: 2.85 },
         topFeatures: {

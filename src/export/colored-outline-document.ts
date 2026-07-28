@@ -15,6 +15,11 @@ import {
   OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
   OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
 } from '../domain/outline-assembly/launcher-template';
+import {
+  LAUNCHER_EXTERIOR_EXPANSION_MAX_MM,
+  LAUNCHER_EXTERIOR_EXPANSION_MODE,
+  normalizeLauncherExteriorExpansionMm,
+} from '../domain/outline-assembly/launcher-exterior-expansion';
 
 export const COLORED_ROLE_COLORS = Object.freeze({
   CUT_BLACK: '#000000',
@@ -116,6 +121,15 @@ function copyAssembly(
       rotationRad: assembly.launcher.rotationRad,
       fitOffsetMm: assembly.launcher.fitOffsetMm,
       finishedAllowanceMm: assembly.launcher.finishedAllowanceMm,
+      exteriorExpansion: {
+        mode: assembly.launcher.exteriorExpansion.mode,
+        offsetMm: assembly.launcher.exteriorExpansion.offsetMm,
+        maxOffsetMm: assembly.launcher.exteriorExpansion.maxOffsetMm,
+        affectedLayerIds: [
+          assembly.launcher.exteriorExpansion.affectedLayerIds[0],
+          assembly.launcher.exteriorExpansion.affectedLayerIds[1],
+        ],
+      },
     },
     fastener: {
       count: assembly.fastener.count,
@@ -209,6 +223,14 @@ function assertCanonicalShape(
   } catch {
     validFitOffset = false;
   }
+  const expansion = assembly.launcher.exteriorExpansion;
+  let validExpansionOffset = true;
+  try {
+    validExpansionOffset = normalizeLauncherExteriorExpansionMm(expansion.offsetMm)
+      === expansion.offsetMm;
+  } catch {
+    validExpansionOffset = false;
+  }
   if (assembly.launcher.status !== 'fixed'
     || assembly.launcher.cutCount !== 3
     || assembly.launcher.templateVersion !== OFFICIAL_THREE_PRONG_TEMPLATE_VERSION
@@ -217,6 +239,11 @@ function assertCanonicalShape(
     || assembly.launcher.rotationRad < 0
     || assembly.launcher.rotationRad >= Math.PI * 2
     || !validFitOffset
+    || expansion.mode !== LAUNCHER_EXTERIOR_EXPANSION_MODE
+    || !validExpansionOffset
+    || expansion.maxOffsetMm !== LAUNCHER_EXTERIOR_EXPANSION_MAX_MM
+    || expansion.affectedLayerIds[0] !== document.layers.at(-2)?.id
+    || expansion.affectedLayerIds[1] !== document.layers.at(-1)?.id
     || assembly.launcher.finishedAllowanceMm
       !== LAUNCHER_ASSEMBLY_ALLOWANCE_MM + assembly.launcher.fitOffsetMm) {
     throw new RangeError('Colored canonical fixed launcher assembly evidence is invalid');

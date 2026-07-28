@@ -166,6 +166,95 @@ describe('extractProjectedContours', () => {
     expect(colored.launcherCuts).toEqual([launcher]);
     expect(colored.fastenerHoles).toEqual([fastener]);
   });
+
+  test('publishes a validated exterior override without mutating extracted source evidence', () => {
+    const layer = extractProjectedContours(
+      box(0, 0, 20, 20, 2), selection, specs, DEFAULT_OUTLINE_BUDGETS,
+    ).layers[0];
+    const originalOuter = structuredClone(layer.contour.outer);
+    const expandedOuter = [
+      [-11, -11], [-11, 11], [11, 11], [11, -11],
+    ] as const;
+    const expandedExterior = {
+      id: `${layer.id}-exterior`,
+      role: 'CUT_BLACK' as const,
+      outer: expandedOuter,
+      boundsMm: bounds(expandedOuter),
+      areaMm2: 484,
+    };
+
+    const [colored] = colorizeExteriorLayers(
+      [layer], 0, Infinity, () => undefined, [], [], [{
+        launcherCuts: [],
+        fastenerHoles: [],
+        exteriorOverride: expandedExterior,
+      }],
+    );
+
+    expect(colored.exterior).toEqual(expandedExterior);
+    expect(layer.contour.outer).toEqual(originalOuter);
+  });
+
+  test.each([
+    ['wrong ID', (layerId: string) => ({
+      id: `${layerId}-other`, role: 'CUT_BLACK' as const,
+      outer: [[-11, -11], [-11, 11], [11, 11], [11, -11]] as const,
+      boundsMm: { minX: -11, minY: -11, maxX: 11, maxY: 11 }, areaMm2: 484,
+    })],
+    ['wrong role', (layerId: string) => ({
+      id: `${layerId}-exterior`, role: 'DEEP_RED' as const,
+      outer: [[-11, -11], [-11, 11], [11, 11], [11, -11]] as const,
+      boundsMm: { minX: -11, minY: -11, maxX: 11, maxY: 11 }, areaMm2: 484,
+    })],
+    ['non-finite geometry', (layerId: string) => ({
+      id: `${layerId}-exterior`, role: 'CUT_BLACK' as const,
+      outer: [[-11, -11], [-11, 11], [Number.NaN, 11], [11, -11]] as const,
+      boundsMm: { minX: -11, minY: -11, maxX: 11, maxY: 11 }, areaMm2: 484,
+    })],
+    ['self-intersecting geometry', (layerId: string) => ({
+      id: `${layerId}-exterior`, role: 'CUT_BLACK' as const,
+      outer: [[-11, -11], [11, 11], [-11, 11], [11, -11]] as const,
+      boundsMm: { minX: -11, minY: -11, maxX: 11, maxY: 11 }, areaMm2: 484,
+    })],
+    ['counter-clockwise geometry', (layerId: string) => ({
+      id: `${layerId}-exterior`, role: 'CUT_BLACK' as const,
+      outer: [[-11, -11], [11, -11], [11, 11], [-11, 11]] as const,
+      boundsMm: { minX: -11, minY: -11, maxX: 11, maxY: 11 }, areaMm2: 484,
+    })],
+    ['non-finite bounds metadata', (layerId: string) => ({
+      id: `${layerId}-exterior`, role: 'CUT_BLACK' as const,
+      outer: [[-11, -11], [-11, 11], [11, 11], [11, -11]] as const,
+      boundsMm: { minX: Number.NaN, minY: -11, maxX: 11, maxY: 11 }, areaMm2: 484,
+    })],
+    ['stale bounds metadata', (layerId: string) => ({
+      id: `${layerId}-exterior`, role: 'CUT_BLACK' as const,
+      outer: [[-11, -11], [-11, 11], [11, 11], [11, -11]] as const,
+      boundsMm: { minX: -10, minY: -11, maxX: 11, maxY: 11 }, areaMm2: 484,
+    })],
+    ['non-finite area metadata', (layerId: string) => ({
+      id: `${layerId}-exterior`, role: 'CUT_BLACK' as const,
+      outer: [[-11, -11], [-11, 11], [11, 11], [11, -11]] as const,
+      boundsMm: { minX: -11, minY: -11, maxX: 11, maxY: 11 }, areaMm2: Number.NaN,
+    })],
+    ['stale area metadata', (layerId: string) => ({
+      id: `${layerId}-exterior`, role: 'CUT_BLACK' as const,
+      outer: [[-11, -11], [-11, 11], [11, 11], [11, -11]] as const,
+      boundsMm: { minX: -11, minY: -11, maxX: 11, maxY: 11 }, areaMm2: 483,
+    })],
+  ])('rejects an exterior override with %s', (_label, makeOverride) => {
+    const layer = extractProjectedContours(
+      box(0, 0, 20, 20, 2), selection, specs, DEFAULT_OUTLINE_BUDGETS,
+    ).layers[0];
+
+    expect(() => colorizeExteriorLayers(
+      [layer], 0, Infinity, () => undefined, [], [], [{
+        launcherCuts: [],
+        fastenerHoles: [],
+        exteriorOverride: makeOverride(layer.id),
+      }],
+    )).toThrow(/exterior override|id|role|finite|simple|clockwise|layer|bounds|area|metadata/i);
+  });
+
   test('publishes all ordered depth contours instead of wrapping the feature arrays', () => {
     const layer = extractProjectedContours(box(0, 0, 20, 20, 2), selection, specs, DEFAULT_OUTLINE_BUDGETS).layers[0];
     const feature = (id: string, role: 'DEEP_RED' | 'LIGHT_BLUE', minX: number) => ({

@@ -22,6 +22,7 @@ import {
   planFixedLauncherClearance,
   type FixedLauncherPlan,
 } from '../outline-assembly/launcher';
+import { LauncherExteriorExpansionExceededError } from '../outline-assembly/launcher-exterior-expansion';
 import { validateLauncherFitOffsetMm } from '../outline-assembly/launcher-fit';
 import {
   materializeFastenerHoles,
@@ -98,7 +99,12 @@ export type AutomaticOutlineRequest = {
 };
 export type AutomaticOutlineProgress = (event: AutomaticOutlineProgressEvent) => void | Promise<void>;
 export type AutomaticOutlineErrorCode =
-  | 'INVALID_STL' | 'NO_OUTLINE' | 'RESOURCE_LIMIT' | 'TIME_LIMIT' | 'LAUNCHER_INCOMPATIBLE';
+  | 'INVALID_STL'
+  | 'NO_OUTLINE'
+  | 'RESOURCE_LIMIT'
+  | 'TIME_LIMIT'
+  | 'LAUNCHER_INCOMPATIBLE'
+  | 'LAUNCHER_EXTERIOR_EXPANSION_EXCEEDED';
 
 export class AutomaticOutlineError extends Error {
   readonly name = 'AutomaticOutlineError';
@@ -326,9 +332,17 @@ function planAssemblyBlackCuts(
     deadline: context.deadline,
     checkpoint,
   });
-  const launcherByLayer = materializeLauncherCuts(launcher, bareLayers);
+  const expandedLayers = bareLayers.map((layer, index) => ({
+    ...layer,
+    exterior: index === bareLayers.length - 1
+      ? launcher.expandedTopExterior
+      : index === bareLayers.length - 2
+        ? launcher.expandedSecondExterior
+        : layer.exterior,
+  }));
+  const launcherByLayer = materializeLauncherCuts(launcher, expandedLayers);
   const fastenerPlan = planFastenerHoles({
-    layers: bareLayers.map((layer, index) => ({
+    layers: expandedLayers.map((layer, index) => ({
       id: layer.id,
       exterior: layer.exterior,
       centralHole: layer.centralHole,
@@ -339,18 +353,19 @@ function planAssemblyBlackCuts(
     deadline: context.deadline,
     checkpoint,
   });
-  const layersWithLauncher = bareLayers.map((layer, index) => ({
+  const layersWithLauncher = expandedLayers.map((layer, index) => ({
     ...layer,
     launcherCuts: launcherByLayer[index],
   }));
   const fastenerByLayer = materializeFastenerHoles(
     fastenerPlan, layersWithLauncher, context.deadline, checkpoint,
   );
-  const cuts = bareLayers.map((_, index) => ({
+  const cuts = expandedLayers.map((layer, index) => ({
     launcherCuts: launcherByLayer[index],
     fastenerHoles: fastenerByLayer[index],
+    ...(index >= expandedLayers.length - 2 ? { exteriorOverride: layer.exterior } : {}),
     engravingProtection: createPhysicalCutProtection({
-      centralHole: bareLayers[index].centralHole,
+      centralHole: layer.centralHole,
       launcherCuts: launcherByLayer[index],
       fastenerHoles: fastenerByLayer[index],
       material,
@@ -374,6 +389,10 @@ function planAssemblyBlackCuts(
         rotationRad: launcher.rotationRad,
         fitOffsetMm: launcher.fitOffsetMm,
         finishedAllowanceMm: launcher.finishedAllowanceMm,
+        exteriorExpansion: {
+          ...launcher.exteriorExpansion,
+          affectedLayerIds: [second.id, top.id],
+        },
       },
       fastener: fastenerSummary(fastenerPlan),
     },
@@ -426,6 +445,13 @@ function automaticAxis(mesh: TriangleMesh): OutlineAxisSelection {
 
 function asAutomaticOutlineError(error: unknown, fallbackCode: AutomaticOutlineErrorCode): AutomaticOutlineError {
   if (error instanceof AutomaticOutlineError) return error;
+  if (error instanceof LauncherExteriorExpansionExceededError) {
+    return new AutomaticOutlineError(
+      'LAUNCHER_EXTERIOR_EXPANSION_EXCEEDED',
+      error.message,
+      { cause: error },
+    );
+  }
   if (error instanceof LauncherCompatibilityError) {
     return new AutomaticOutlineError('LAUNCHER_INCOMPATIBLE', error.message, { cause: error });
   }
