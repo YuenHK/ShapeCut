@@ -191,6 +191,7 @@ function automaticResult(sourceLayers = coloredLayerSet(6)): AutomaticOutlineRes
         ? layer.diagnostics.hole.axisDistanceMm
         : 0,
     })),
+    decorationOmissionSourceEvidence: [],
     coloredLayers,
     featureWarnings: [FASTENER_OMISSION_WARNING],
     warnings: [],
@@ -254,8 +255,10 @@ function withSharedHoleEvidence(
   return { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
 }
 
-function withProtectedWorkOmissions(indices: readonly number[] = [1, 3]): AutomaticOutlineResult {
-  const source = automaticResult();
+function withProtectedWorkOmissions(
+  indices: readonly number[] = [1, 3],
+  source = automaticResult(),
+): AutomaticOutlineResult {
   const omittedIndices = new Set(indices);
   const coloredLayers = source.coloredLayers.map((layer, index) => omittedIndices.has(index) ? {
     ...layer,
@@ -277,6 +280,17 @@ function withProtectedWorkOmissions(indices: readonly number[] = [1, 3]): Automa
   const changed = {
     ...source,
     status: 'warning' as const,
+    decorationOmissionSourceEvidence: indices.map((index) => ({
+      layerId: coloredLayers[index].id,
+      omissionCode: 'PROTECTED_CUT_WORK_BUDGET' as const,
+      diagnostics: {
+        contrastMm: 0 as const,
+        redThresholdMm: 0 as const,
+        blueThresholdMm: 0 as const,
+        retained: { red: 0 as const, blue: 0 as const },
+        omitted: { red: 0 as const, blue: 0 as const },
+      },
+    })),
     assembly: {
       ...source.assembly,
       decorationOmissions: indices.map((index) => ({
@@ -284,6 +298,14 @@ function withProtectedWorkOmissions(indices: readonly number[] = [1, 3]): Automa
         reason: 'protected-cut-work-budget' as const,
         roles: ['DEEP_RED', 'LIGHT_BLUE'] as const,
       })),
+      topFeatures: {
+        ...source.assembly.topFeatures,
+        retained: {
+          red: coloredLayers.at(-1)?.deepFeatures.length ?? 0,
+          blue: coloredLayers.at(-1)?.lightFeatures.length ?? 0,
+        },
+        omitted: coloredLayers.at(-1)?.diagnostics.depth.omitted ?? { red: 0, blue: 0 },
+      },
     },
     coloredLayers,
     preview: { ...source.preview, layers: coloredLayers },
@@ -1351,6 +1373,10 @@ describe('colored outline contracts', () => {
       ...omitted,
       assembly: { ...omitted.assembly, decorationOmissions: [] },
     };
+    const withoutSourceEvidence = {
+      ...omitted,
+      decorationOmissionSourceEvidence: [],
+    };
 
     expect(() => validateAutomaticColoredResult(omitted)).not.toThrow();
     expect(omitted.assembly.decorationOmissions.map(({ layerId }) => layerId)).toEqual([
@@ -1358,6 +1384,148 @@ describe('colored outline contracts', () => {
       omitted.coloredLayers[3].id,
     ]);
     expect(featureEvidenceFingerprint(withoutEvidence)).not.toBe(omitted.featureEvidenceFingerprint);
+    expect(featureEvidenceFingerprint(withoutSourceEvidence)).not.toBe(omitted.featureEvidenceFingerprint);
+  });
+
+  it('fingerprints protected-work warning status and rejects success with unchanged or recomputed evidence', () => {
+    const source = withProtectedWorkOmissions();
+    const success = { ...source, status: 'success' as const };
+
+    expect(featureEvidenceFingerprint(success)).not.toBe(source.featureEvidenceFingerprint);
+    expect(() => validateAutomaticColoredResult({
+      ...success,
+      featureEvidenceFingerprint: source.featureEvidenceFingerprint,
+    })).toThrow(/status|warning/i);
+    expect(() => validateAutomaticColoredResult({
+      ...success,
+      featureEvidenceFingerprint: featureEvidenceFingerprint(success),
+    })).toThrow(/status|warning/i);
+  });
+
+  it.each([
+    ['missing retained counts', (result: any) => {
+      delete result.coloredLayers[1].diagnostics.depth.retained;
+    }],
+    ['missing omitted counts', (result: any) => {
+      delete result.coloredLayers[1].diagnostics.depth.omitted;
+    }],
+    ['nonzero retained counts', (result: any) => {
+      result.coloredLayers[1].diagnostics.depth.retained = { red: 1, blue: 0 };
+    }],
+    ['nonzero omitted counts', (result: any) => {
+      result.coloredLayers[1].diagnostics.depth.omitted = { red: 0, blue: 1 };
+    }],
+    ['nonzero contrast', (result: any) => {
+      result.coloredLayers[1].diagnostics.depth.contrastMm = 0.1;
+    }],
+    ['nonzero red threshold', (result: any) => {
+      result.coloredLayers[1].diagnostics.depth.redThresholdMm = 0.1;
+    }],
+    ['nonzero blue threshold', (result: any) => {
+      result.coloredLayers[1].diagnostics.depth.redThresholdMm = 0.1;
+      result.coloredLayers[1].diagnostics.depth.blueThresholdMm = 0.1;
+    }],
+    ['extra diagnostic key', (result: any) => {
+      result.coloredLayers[1].diagnostics.depth.privateCount = 0;
+    }],
+  ])('rejects incomplete protected-work diagnostics: %s', (_label, mutate) => {
+    const forged = structuredClone(withProtectedWorkOmissions()) as any;
+    mutate(forged);
+    forged.preview.layers = forged.coloredLayers;
+    forged.featureEvidenceFingerprint = featureEvidenceFingerprint(forged);
+
+    expect(() => validateAutomaticColoredResult(forged))
+      .toThrow(/diagnostic|protected|omission|count|unexpected/i);
+  });
+
+  it.each([
+    ['missing source evidence', (result: any) => {
+      delete result.decorationOmissionSourceEvidence;
+    }],
+    ['extra source key', (result: any) => {
+      result.decorationOmissionSourceEvidence[0].privateDetail = true;
+    }],
+    ['reordered source evidence', (result: any) => {
+      result.decorationOmissionSourceEvidence.reverse();
+    }],
+    ['duplicated source layer', (result: any) => {
+      result.decorationOmissionSourceEvidence[1]
+        = structuredClone(result.decorationOmissionSourceEvidence[0]);
+    }],
+    ['unknown source layer', (result: any) => {
+      result.decorationOmissionSourceEvidence[0].layerId = 'unknown-layer';
+    }],
+    ['wrong source code', (result: any) => {
+      result.decorationOmissionSourceEvidence[0].omissionCode = 'INSUFFICIENT_CONTRAST';
+    }],
+    ['nonzero source diagnostics', (result: any) => {
+      result.decorationOmissionSourceEvidence[0].diagnostics.omitted.red = 1;
+    }],
+    ['extra source diagnostic key', (result: any) => {
+      result.decorationOmissionSourceEvidence[0].diagnostics.cellSizeMm = 0.1;
+    }],
+  ])('rejects malformed pre-colorization omission source evidence: %s', (_label, mutate) => {
+    const forged = structuredClone(withProtectedWorkOmissions()) as any;
+    mutate(forged);
+    forged.featureEvidenceFingerprint = featureEvidenceFingerprint(forged);
+
+    expect(() => validateAutomaticColoredResult(forged))
+      .toThrow(/source|omission|evidence|diagnostic|unexpected/i);
+  });
+
+  it('rejects a coordinated public omission rewrite when pre-colorization source evidence is unchanged', () => {
+    const baseline = automaticResult();
+    const forged = structuredClone(withProtectedWorkOmissions()) as any;
+    for (const index of [1, 3]) forged.coloredLayers[index] = structuredClone(baseline.coloredLayers[index]);
+    forged.preview.layers = forged.coloredLayers;
+    forged.assembly.decorationOmissions = [];
+    forged.featureWarnings = forged.featureWarnings.filter(
+      (warning: string) => warning !== PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING,
+    );
+    forged.status = 'success';
+    forged.featureEvidenceFingerprint = featureEvidenceFingerprint(forged);
+
+    expect(() => validateAutomaticColoredResult(forged))
+      .toThrow(/source|omission|evidence/i);
+  });
+
+  it.each([
+    ['exterior', () => withProtectedWorkOmissions([1]), (result: any) => {
+      result.coloredLayers[1].exterior = square(61, result.coloredLayers[1].exterior.id);
+    }],
+    ['central hole', () => withProtectedWorkOmissions([1]), (result: any) => {
+      const source = result.coloredLayers[1].centralHole;
+      result.coloredLayers[1].centralHole = contour(
+        source.id,
+        'CUT_BLACK',
+        source.outer.map(([x, y]: Point2) => [x + 0.1, y] as const),
+      );
+    }],
+    ['launcher cut', () => withProtectedWorkOmissions([5]), (result: any) => {
+      const source = result.coloredLayers[5].launcherCuts[0];
+      result.coloredLayers[5].launcherCuts[0] = contour(
+        source.id,
+        'CUT_BLACK',
+        source.outer.map(([x, y]: Point2) => [x + 0.1, y] as const),
+      );
+    }],
+    ['fastener hole', () => withProtectedWorkOmissions([1], withThreeFasteners()), (result: any) => {
+      const source = result.coloredLayers[1].fastenerHoles[0];
+      const center = result.assembly.fastener.centers[0];
+      result.coloredLayers[1].fastenerHoles[0] = circle48At(
+        [center[0] + 0.1, center[1]],
+        result.assembly.fastener.pathDiameterMm / 2,
+        source.id,
+      );
+    }],
+  ])('rejects protected-work evidence with changed black %s geometry', (_label, makeResult, mutate) => {
+    const forged = structuredClone(makeResult()) as any;
+    mutate(forged);
+    forged.preview.layers = forged.coloredLayers;
+    forged.featureEvidenceFingerprint = featureEvidenceFingerprint(forged);
+
+    expect(() => validateAutomaticColoredResult(forged))
+      .toThrow(/exterior|central|launcher|fastener|geometry|source|assembly/i);
   });
 
   it.each([
@@ -1415,7 +1583,7 @@ describe('colored outline contracts', () => {
 
     expect(forged.featureEvidenceFingerprint).toBe(featureEvidenceFingerprint(forged));
     expect(() => validateAutomaticColoredResult(forged))
-      .toThrow(/decoration|omission|warning|contour|exterior|source/i);
+      .toThrow(/protected|decoration|omission|warning|contour|exterior|source/i);
   });
 
   it('rejects fingerprint-consistent omission evidence without its sanitized warning', () => {

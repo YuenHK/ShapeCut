@@ -72,10 +72,13 @@ describe('App real browser one-click flow', () => {
         removedComponentCount: 0,
       }],
       centralHoleSourceEvidence: [{ status: 'omitted' }],
+      decorationOmissionSourceEvidence: [],
       coloredLayers: [coloredLayer],
       featureWarnings: [],
       featureEvidenceFingerprint: featureEvidenceFingerprint({
-        sourceHash: 'c'.repeat(32), mode: 'exact', coloredLayers: [coloredLayer],
+        sourceHash: 'c'.repeat(32), status: 'success', mode: 'exact',
+        centralHoleSourceEvidence: [{ status: 'omitted' }],
+        decorationOmissionSourceEvidence: [], coloredLayers: [coloredLayer],
         preview: { axis: {
           origin: [0, 0, 0], direction: [0, 0, 1], planeX: [0, 1, 0], planeY: [-1, 0, 0],
         } },

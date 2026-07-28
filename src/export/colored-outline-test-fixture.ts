@@ -154,6 +154,7 @@ export function coloredResult(): AutomaticOutlineResult {
         ? layer.diagnostics.hole.axisDistanceMm
         : 0,
     })),
+    decorationOmissionSourceEvidence: [],
     coloredLayers,
     material: MATERIAL,
     assembly: {

@@ -38,6 +38,7 @@ import {
   type ColoredOutlineLayer,
   type AutomaticOutlineAssembly,
   type DecorationOmission,
+  type DecorationOmissionSourceEvidence,
   type OutlinePreviewPayload,
   type SharedCentralHoleLayerEvidence,
 } from '../outline-features/types';
@@ -67,6 +68,8 @@ export type AutomaticOutlineResult = {
   readonly layers: readonly OutlineLayer[];
   /** Bounded pre-colorization evidence used to preserve the extracted shared central hole exactly. */
   readonly centralHoleSourceEvidence: readonly SharedCentralHoleLayerEvidence[];
+  /** Bounded public evidence derived before colorization from protected-work depth omissions. */
+  readonly decorationOmissionSourceEvidence: readonly DecorationOmissionSourceEvidence[];
   readonly coloredLayers: readonly ColoredOutlineLayer[];
   readonly featureWarnings: readonly string[];
   readonly featureEvidenceFingerprint: string;
@@ -236,13 +239,43 @@ function copyCentralHoleSourceEvidence(
 }
 
 function withResultEvidence(
-  result: Omit<AutomaticOutlineResult, 'assembly' | 'centralHoleSourceEvidence' | 'coloredLayers' | 'featureWarnings' | 'featureEvidenceFingerprint' | 'preview' | 'removalEvidenceFingerprint' | 'internalValidationEvidence'>,
+  result: Omit<AutomaticOutlineResult, 'assembly' | 'centralHoleSourceEvidence' | 'decorationOmissionSourceEvidence' | 'coloredLayers' | 'featureWarnings' | 'featureEvidenceFingerprint' | 'preview' | 'removalEvidenceFingerprint' | 'internalValidationEvidence'>,
   previewMesh: TriangleMesh,
   deadline: number,
   extraction: Pick<OutlineExtraction, 'holeSelections' | 'depthFeatures' | 'blackCuts' | 'featureWarnings' | 'launcherDecorationOverlap' | 'launcherDecorationEvidence'>,
   material: ManufacturingGeometryProfile,
   assembly: Omit<AutomaticOutlineAssembly, 'topFeatures' | 'decorationOmissions'>,
 ): AutomaticOutlineResult {
+  const decorationOmissionSourceEvidence = extraction.depthFeatures.flatMap(
+    (feature, index): DecorationOmissionSourceEvidence[] => {
+      if (feature.omissionCode !== 'PROTECTED_CUT_WORK_BUDGET') return [];
+      const diagnostics = feature.diagnostics;
+      if (!result.layers[index]
+        || diagnostics.omissionCode !== 'PROTECTED_CUT_WORK_BUDGET'
+        || feature.red.length !== 0
+        || feature.blue.length !== 0
+        || diagnostics.contrastMm !== 0
+        || diagnostics.redThresholdMm !== 0
+        || diagnostics.blueThresholdMm !== 0
+        || diagnostics.retained.red !== 0
+        || diagnostics.retained.blue !== 0
+        || diagnostics.omitted.red !== 0
+        || diagnostics.omitted.blue !== 0) {
+        throw new RangeError('Protected-cut work source omission evidence must contain exact zero diagnostics');
+      }
+      return [{
+        layerId: result.layers[index].id,
+        omissionCode: 'PROTECTED_CUT_WORK_BUDGET',
+        diagnostics: {
+          contrastMm: 0,
+          redThresholdMm: 0,
+          blueThresholdMm: 0,
+          retained: { red: 0, blue: 0 },
+          omitted: { red: 0, blue: 0 },
+        },
+      }];
+    },
+  );
   let coloredLayers: readonly ColoredOutlineLayer[];
   let previewMeshCopy: OutlinePreviewPayload['mesh'];
   try {
@@ -263,6 +296,7 @@ function withResultEvidence(
   const coloredResult = {
     ...result,
     centralHoleSourceEvidence: copyCentralHoleSourceEvidence(extraction.holeSelections),
+    decorationOmissionSourceEvidence,
     coloredLayers,
     featureWarnings: extraction.featureWarnings,
     preview: {
@@ -277,23 +311,19 @@ function withResultEvidence(
     },
   };
   try {
-    const decorationOmissions = extraction.depthFeatures.flatMap((feature, index): DecorationOmission[] => {
-      const coloredLayer = coloredLayers[index];
+    const decorationOmissions = decorationOmissionSourceEvidence.map((source): DecorationOmission => {
+      const coloredLayer = coloredLayers.find((layer) => layer.id === source.layerId);
       if (!coloredLayer
-        || feature.omissionCode !== feature.diagnostics.omissionCode
-        || feature.omissionCode === 'PROTECTED_CUT_WORK_BUDGET'
-          && (feature.red.length !== 0
-            || feature.blue.length !== 0
-            || coloredLayer.deepFeatures.length !== 0
-            || coloredLayer.lightFeatures.length !== 0
-            || coloredLayer.diagnostics.depth.omissionCode !== 'PROTECTED_CUT_WORK_BUDGET')) {
+        || coloredLayer.deepFeatures.length !== 0
+        || coloredLayer.lightFeatures.length !== 0
+        || coloredLayer.diagnostics.depth.omissionCode !== 'PROTECTED_CUT_WORK_BUDGET') {
         throw new RangeError('Depth decoration omission evidence does not match canonical colored layers');
       }
-      return feature.omissionCode === 'PROTECTED_CUT_WORK_BUDGET' ? [{
-        layerId: coloredLayer.id,
+      return {
+        layerId: source.layerId,
         reason: 'protected-cut-work-budget',
         roles: ['DEEP_RED', 'LIGHT_BLUE'],
-      }] : [];
+      };
     });
     const assemblyEvidence: AutomaticOutlineAssembly = {
       ...assembly,

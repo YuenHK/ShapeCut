@@ -90,6 +90,17 @@ function protectedWorkOmissionResult() {
   const changed = {
     ...result,
     status: 'warning' as const,
+    decorationOmissionSourceEvidence: [1, 3].map((index) => ({
+      layerId: coloredLayers[index].id,
+      omissionCode: 'PROTECTED_CUT_WORK_BUDGET' as const,
+      diagnostics: {
+        contrastMm: 0 as const,
+        redThresholdMm: 0 as const,
+        blueThresholdMm: 0 as const,
+        retained: { red: 0 as const, blue: 0 as const },
+        omitted: { red: 0 as const, blue: 0 as const },
+      },
+    })),
     assembly: {
       ...result.assembly,
       decorationOmissions: [1, 3].map((index) => ({
@@ -214,6 +225,8 @@ describe('canonical colored outline document', () => {
     ]);
     expect(document.assembly.decorationOmissions)
       .not.toBe(result.assembly.decorationOmissions);
+    expect(document).not.toHaveProperty('decorationOmissionSourceEvidence');
+    expect(JSON.stringify(document)).not.toContain('decorationOmissionSourceEvidence');
     expect(document.safetyNotes).toContain(PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING);
     expect(document.layers[1].roles.DEEP_RED).toEqual([]);
     expect(document.layers[1].roles.LIGHT_BLUE).toEqual([]);

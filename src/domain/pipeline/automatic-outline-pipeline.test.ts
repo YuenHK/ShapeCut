@@ -610,10 +610,19 @@ describe('automatic outline pipeline', () => {
     const originalExactExtraction = extraction.extractExactContours;
     let affectedIndex = -1;
     let expectedBlack: extraction.OutlineExtraction['blackCuts'][number] | undefined;
+    let expectedCentralHole: FeatureContour | undefined;
     const exact = vi.spyOn(extraction, 'extractExactContours').mockImplementationOnce((...args) => {
       const extracted = originalExactExtraction(...args);
-      affectedIndex = 1;
+      affectedIndex = extracted.layers.length - 1;
       expectedBlack = extracted.blackCuts[affectedIndex];
+      const selectedHole = extracted.holeSelections[affectedIndex].hole;
+      expectedCentralHole = selectedHole ? {
+        id: `${extracted.layers[affectedIndex].id}-central-hole`,
+        role: 'CUT_BLACK',
+        outer: selectedHole.outer,
+        boundsMm: selectedHole.boundsMm,
+        areaMm2: selectedHole.areaMm2,
+      } : undefined;
       const retained: FeatureContour = {
         id: `${extracted.layers[2].id}-deep-retained`,
         role: 'DEEP_RED',
@@ -668,10 +677,21 @@ describe('automatic outline pipeline', () => {
     });
     try {
       const result = await convertAutomatically({
-        bytes: writeBinarySTL(cylinder(), 'safe'),
+        bytes: writeBinarySTL(squareTube(), 'safe'),
       });
       const affected = result.coloredLayers[affectedIndex];
 
+      expect(result.decorationOmissionSourceEvidence).toEqual([{
+        layerId: affected.id,
+        omissionCode: 'PROTECTED_CUT_WORK_BUDGET',
+        diagnostics: {
+          contrastMm: 0,
+          redThresholdMm: 0,
+          blueThresholdMm: 0,
+          retained: { red: 0, blue: 0 },
+          omitted: { red: 0, blue: 0 },
+        },
+      }]);
       expect(result.assembly.decorationOmissions).toEqual([{
         layerId: affected.id,
         reason: 'protected-cut-work-budget',
@@ -682,8 +702,14 @@ describe('automatic outline pipeline', () => {
       expect(affected.deepFeatures).toEqual([]);
       expect(affected.lightFeatures).toEqual([]);
       expect(affected.diagnostics.depth.omissionCode).toBe('PROTECTED_CUT_WORK_BUDGET');
-      expect(affected.launcherCuts).toEqual(expectedBlack?.launcherCuts ?? []);
-      expect(affected.fastenerHoles).toEqual(expectedBlack?.fastenerHoles ?? []);
+      expect(expectedBlack?.exteriorOverride).toBeDefined();
+      expect(expectedCentralHole).toBeDefined();
+      expect(expectedBlack?.launcherCuts.length).toBeGreaterThan(0);
+      expect(expectedBlack?.fastenerHoles.length).toBeGreaterThan(0);
+      expect(affected.exterior).toEqual(expectedBlack!.exteriorOverride);
+      expect(affected.centralHole).toEqual(expectedCentralHole);
+      expect(affected.launcherCuts).toEqual(expectedBlack!.launcherCuts);
+      expect(affected.fastenerHoles).toEqual(expectedBlack!.fastenerHoles);
       expect(result.coloredLayers.some((layer, index) => (
         index !== affectedIndex && layer.deepFeatures.length + layer.lightFeatures.length > 0
       ))).toBe(true);

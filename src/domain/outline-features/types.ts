@@ -3,7 +3,11 @@ import type { ManufacturingGeometryProfile } from '../materials/manufacturing-pr
 import type { OutlineLayer } from '../outline-2.5d/extract';
 import { createOutlineAxisBasis } from '../outline-2.5d/raster';
 import { contourBounds, signedArea as contourSignedArea, type Bounds2 } from '../outline-2.5d/simplify';
-import { DEFAULT_OUTLINE_BUDGETS, type OutlineMode } from '../outline-2.5d/types';
+import {
+  DEFAULT_OUTLINE_BUDGETS,
+  type OutlineMode,
+  type OutlineResultStatus,
+} from '../outline-2.5d/types';
 import { validateOutlineLayer } from '../outline-2.5d/validate';
 import { validatePolygon } from '../engraving/geometry';
 import {
@@ -114,6 +118,18 @@ export type DecorationOmission = {
   readonly roles: readonly ['DEEP_RED', 'LIGHT_BLUE'];
 };
 
+export type DecorationOmissionSourceEvidence = {
+  readonly layerId: string;
+  readonly omissionCode: 'PROTECTED_CUT_WORK_BUDGET';
+  readonly diagnostics: {
+    readonly contrastMm: 0;
+    readonly redThresholdMm: 0;
+    readonly blueThresholdMm: 0;
+    readonly retained: { readonly red: 0; readonly blue: 0 };
+    readonly omitted: { readonly red: 0; readonly blue: 0 };
+  };
+};
+
 export type AutomaticOutlineAssembly = {
   readonly material: ManufacturingGeometryProfile;
   readonly launcher: AutomaticLauncherAssembly;
@@ -132,9 +148,11 @@ export type AutomaticOutlineAssembly = {
 export type ColoredLayerValidation = { readonly ok: boolean; readonly reasons: readonly string[] };
 type FeatureFingerprintSource = {
   readonly sourceHash: string;
+  readonly status: OutlineResultStatus;
   readonly material?: ManufacturingGeometryProfile;
   readonly assembly?: AutomaticOutlineAssembly;
-  readonly centralHoleSourceEvidence?: readonly SharedCentralHoleLayerEvidence[];
+  readonly centralHoleSourceEvidence: readonly SharedCentralHoleLayerEvidence[];
+  readonly decorationOmissionSourceEvidence: readonly DecorationOmissionSourceEvidence[];
   readonly mode: OutlineMode;
   readonly coloredLayers: readonly ColoredOutlineLayer[];
   readonly preview: { readonly axis: OutlinePreviewAxis };
@@ -415,6 +433,118 @@ function centralHoleSourceEvidenceReasons(
   return reasons;
 }
 
+function decorationOmissionSourceEvidenceReasons(
+  value: unknown,
+  coloredLayers: readonly ColoredOutlineLayer[],
+  featureWarnings: readonly string[],
+  status: unknown,
+  budget: ValidationBudget,
+): {
+  readonly reasons: readonly string[];
+  readonly evidence: readonly DecorationOmissionSourceEvidence[];
+} {
+  checkRuntimeBudget(budget.deadline, budget.checkpoint);
+  if (!Array.isArray(value) || value.length > DEFAULT_OUTLINE_BUDGETS.maxLayers) {
+    return {
+      reasons: ['Decoration omission extraction source evidence must be a bounded ordered array'],
+      evidence: [],
+    };
+  }
+  const reasons: string[] = [];
+  let structurallyValid = true;
+  let previousLayerPosition = -1;
+  const seenLayerIds = new Set<string>();
+  for (const [index, candidate] of value.entries()) {
+    checkRuntimeBudget(budget.deadline, budget.checkpoint, 'decoration-omission-source-loop');
+    if (!isRecord(candidate)) {
+      structurallyValid = false;
+      reasons.push(`Decoration omission extraction source evidence ${index} must be an object`);
+      continue;
+    }
+    const keyReasons = unexpectedKeys(
+      candidate,
+      new Set(['layerId', 'omissionCode', 'diagnostics']),
+      `Decoration omission extraction source evidence ${index}`,
+    );
+    reasons.push(...keyReasons);
+    if (keyReasons.length > 0
+      || Object.keys(candidate).length !== 3
+      || typeof candidate.layerId !== 'string'
+      || candidate.layerId.trim().length === 0
+      || candidate.omissionCode !== 'PROTECTED_CUT_WORK_BUDGET'
+      || !isRecord(candidate.diagnostics)) {
+      structurallyValid = false;
+      reasons.push(`Decoration omission extraction source evidence ${index} is invalid`);
+      continue;
+    }
+    const diagnostics = candidate.diagnostics;
+    const diagnosticKeyReasons = unexpectedKeys(
+      diagnostics,
+      new Set(['contrastMm', 'redThresholdMm', 'blueThresholdMm', 'retained', 'omitted']),
+      `Decoration omission extraction source evidence ${index} diagnostics`,
+    );
+    reasons.push(...diagnosticKeyReasons);
+    const zeroCounts = (counts: unknown): boolean => isRecord(counts)
+      && Object.keys(counts).length === 2
+      && Object.hasOwn(counts, 'red')
+      && Object.hasOwn(counts, 'blue')
+      && counts.red === 0
+      && counts.blue === 0;
+    if (diagnosticKeyReasons.length > 0
+      || Object.keys(diagnostics).length !== 5
+      || diagnostics.contrastMm !== 0
+      || diagnostics.redThresholdMm !== 0
+      || diagnostics.blueThresholdMm !== 0
+      || !zeroCounts(diagnostics.retained)
+      || !zeroCounts(diagnostics.omitted)) {
+      structurallyValid = false;
+      reasons.push(`Decoration omission extraction source evidence ${index} diagnostics must be exact zero evidence`);
+      continue;
+    }
+    const layerPosition = coloredLayers.findIndex((layer) => layer.id === candidate.layerId);
+    if (layerPosition <= previousLayerPosition
+      || layerPosition < 0
+      || seenLayerIds.has(candidate.layerId)) {
+      reasons.push('Decoration omission extraction source layer IDs must be known, unique, and ordered');
+    }
+    seenLayerIds.add(candidate.layerId);
+    previousLayerPosition = layerPosition;
+  }
+  const evidence = structurallyValid
+    ? value as unknown as readonly DecorationOmissionSourceEvidence[]
+    : [];
+  const expectedLayerIds = coloredLayers
+    .filter((layer) => layer.diagnostics.depth.omissionCode === 'PROTECTED_CUT_WORK_BUDGET')
+    .map((layer) => layer.id);
+  if (evidence.length !== expectedLayerIds.length
+    || evidence.some((candidate, index) => candidate.layerId !== expectedLayerIds[index])) {
+    reasons.push('Decoration omission extraction source evidence must exactly match canonical colored diagnostics');
+  }
+  for (const candidate of evidence) {
+    checkRuntimeBudget(budget.deadline, budget.checkpoint, 'decoration-omission-source-layer-loop');
+    const layer = coloredLayers.find((item) => item.id === candidate.layerId);
+    if (!layer
+      || layer.diagnostics.depth.omissionCode !== candidate.omissionCode
+      || layer.diagnostics.depth.contrastMm !== candidate.diagnostics.contrastMm
+      || layer.diagnostics.depth.redThresholdMm !== candidate.diagnostics.redThresholdMm
+      || layer.diagnostics.depth.blueThresholdMm !== candidate.diagnostics.blueThresholdMm
+      || JSON.stringify(layer.diagnostics.depth.retained) !== JSON.stringify(candidate.diagnostics.retained)
+      || JSON.stringify(layer.diagnostics.depth.omitted) !== JSON.stringify(candidate.diagnostics.omitted)
+      || layer.deepFeatures.length !== 0
+      || layer.lightFeatures.length !== 0) {
+      reasons.push('Decoration omission extraction source evidence must reconcile zero colored diagnostics and roles');
+    }
+  }
+  const warningPresent = featureWarnings.includes(PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING);
+  if (warningPresent !== (evidence.length > 0)) {
+    reasons.push('Decoration omission extraction source warning provenance is inconsistent');
+  }
+  if (evidence.length > 0 && status !== 'warning') {
+    reasons.push('Protected-cut work decoration omission requires warning result status');
+  }
+  return { reasons, evidence };
+}
+
 function finiteTuple(value: unknown, length: number): value is readonly number[] {
   return Array.isArray(value) && value.length === length && value.every(Number.isFinite);
 }
@@ -597,6 +727,21 @@ function diagnosticsReasons(value: unknown): string[] {
       if (!isRecord(counts) || !Number.isSafeInteger(counts.red) || (counts.red as number) < 0
         || !Number.isSafeInteger(counts.blue) || (counts.blue as number) < 0) {
         reasons.push(`Depth diagnostics ${label} counts must be non-negative safe integers`);
+      }
+    }
+    if (depth.omissionCode === 'PROTECTED_CUT_WORK_BUDGET') {
+      const zeroCounts = (counts: unknown): boolean => isRecord(counts)
+        && Object.keys(counts).length === 2
+        && Object.hasOwn(counts, 'red')
+        && Object.hasOwn(counts, 'blue')
+        && counts.red === 0
+        && counts.blue === 0;
+      if (depth.contrastMm !== 0
+        || depth.redThresholdMm !== 0
+        || depth.blueThresholdMm !== 0
+        || !zeroCounts(depth.retained)
+        || !zeroCounts(depth.omitted)) {
+        reasons.push('Protected-cut work diagnostics require exact zero thresholds and retained/omitted counts');
       }
     }
   }
@@ -856,11 +1001,11 @@ export function featureEvidenceFingerprint(
   const fingerprintMaterial = material ?? result.material;
   const serialized = JSON.stringify({
     sourceHash: result.sourceHash,
+    status: result.status,
     ...(fingerprintMaterial ? { material: fingerprintMaterial } : {}),
     ...(result.assembly ? { assembly: result.assembly } : {}),
-    ...(result.centralHoleSourceEvidence
-      ? { centralHoleSourceEvidence: result.centralHoleSourceEvidence }
-      : {}),
+    centralHoleSourceEvidence: result.centralHoleSourceEvidence,
+    decorationOmissionSourceEvidence: result.decorationOmissionSourceEvidence,
     mode: result.mode,
     previewAxis: result.preview.axis,
     layers: orderedLayerRecords(result.coloredLayers, deadline, checkpoint),
@@ -1190,6 +1335,7 @@ function assemblyReasons(
   value: unknown,
   layers: readonly ColoredOutlineLayer[],
   sourceLayers: readonly OutlineLayer[],
+  decorationOmissionSourceEvidence: readonly DecorationOmissionSourceEvidence[],
   featureWarnings: readonly string[],
   material: ManufacturingGeometryProfile | undefined,
   internalValidationEvidence: unknown,
@@ -1362,10 +1508,9 @@ function assemblyReasons(
       reasons.push('Automatic assembly fastener omission warning provenance is inconsistent');
     }
   }
-  const expectedDecorationOmissions = layers
-    .filter((layer) => layer.diagnostics.depth.omissionCode === 'PROTECTED_CUT_WORK_BUDGET')
-    .map((layer): DecorationOmission => ({
-      layerId: layer.id,
+  const expectedDecorationOmissions = decorationOmissionSourceEvidence
+    .map((source): DecorationOmission => ({
+      layerId: source.layerId,
       reason: 'protected-cut-work-budget',
       roles: ['DEEP_RED', 'LIGHT_BLUE'],
     }));
@@ -1572,6 +1717,9 @@ export function validateAutomaticColoredResult(
   };
   if (typeof value.sourceHash !== 'string' || value.sourceHash.trim().length === 0) reasons.push('Source hash must be non-empty');
   if (value.mode !== 'exact' && value.mode !== 'outline-2.5d') reasons.push('Outline mode is invalid');
+  if (value.status !== 'success' && value.status !== 'warning' && value.status !== 'failure') {
+    reasons.push('Automatic result status is invalid');
+  }
   let selectedAxis: { readonly origin: readonly number[]; readonly direction: readonly number[] } | undefined;
   if (!isRecord(value.axis)) {
     reasons.push('Selected automatic axis must be present');
@@ -1678,9 +1826,22 @@ export function validateAutomaticColoredResult(
     && JSON.stringify(value.material) !== JSON.stringify(material)) {
     reasons.push('Automatic result material must match the validated manufacturing geometry profile');
   }
+  let decorationOmissionSourceEvidence: readonly DecorationOmissionSourceEvidence[] = [];
+  if (coloredLayersValid && featureWarnings) {
+    const validation = decorationOmissionSourceEvidenceReasons(
+      value.decorationOmissionSourceEvidence,
+      coloredLayers,
+      featureWarnings,
+      value.status,
+      budget,
+    );
+    reasons.push(...validation.reasons);
+    decorationOmissionSourceEvidence = validation.evidence;
+  }
   if (coloredLayersValid && featureWarnings) {
     reasons.push(...assemblyReasons(
-      value.assembly, coloredLayers, legacyLayers ?? [], featureWarnings, validatedMaterial,
+      value.assembly, coloredLayers, legacyLayers ?? [], decorationOmissionSourceEvidence,
+      featureWarnings, validatedMaterial,
       value.internalValidationEvidence, deadline, checkpoint,
     ));
     if (validatedMaterial) {
@@ -1786,11 +1947,12 @@ export function validateAutomaticColoredResult(
   } else if (previewAxis && coloredLayersValid && (value.mode === 'exact' || value.mode === 'outline-2.5d') && typeof value.sourceHash === 'string'
     && value.featureEvidenceFingerprint !== featureEvidenceFingerprint({
       sourceHash: value.sourceHash,
+      status: value.status as OutlineResultStatus,
       material: validatedMaterial,
       assembly: value.assembly as AutomaticOutlineAssembly | undefined,
-      centralHoleSourceEvidence: value.centralHoleSourceEvidence as
-        | readonly SharedCentralHoleLayerEvidence[]
-        | undefined,
+      centralHoleSourceEvidence: value.centralHoleSourceEvidence as readonly SharedCentralHoleLayerEvidence[],
+      decorationOmissionSourceEvidence: value.decorationOmissionSourceEvidence as
+        readonly DecorationOmissionSourceEvidence[],
       mode: value.mode,
       coloredLayers,
       preview: { axis: previewAxis },
