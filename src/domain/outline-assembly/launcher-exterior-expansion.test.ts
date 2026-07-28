@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Point2, Polygon2 } from '../decomposition/types';
-import { simpleMiterPolygonKernel } from '../layout/polygon-kernel';
+import { pointLocation, validatePolygon } from '../engraving/geometry';
+import {
+  constructRawMiterOffset,
+  simpleMiterPolygonKernel,
+} from '../layout/polygon-kernel';
 import type { FeatureContour } from '../outline-features/types';
+import { resolveLauncherExteriorMiterOffset } from './launcher-exterior-offset-adapter';
 import {
   expandLauncherExterior,
   LAUNCHER_EXTERIOR_EXPANSION_MAX_MM,
@@ -25,6 +30,53 @@ function squareExterior(id: string, sizeMm: number): FeatureContour {
     outer,
     boundsMm: { minX: -halfSize, minY: -halfSize, maxX: halfSize, maxY: halfSize },
     areaMm2: sizeMm * sizeMm,
+  };
+}
+
+function collapsedNotchExterior(): FeatureContour {
+  const outer: readonly Point2[] = [
+    [0, 0],
+    [10, 0],
+    [10, 4],
+    [6, 5],
+    [10, 6],
+    [10, 10],
+    [0, 10],
+  ];
+  return {
+    id: 'collapsed-notch',
+    role: 'CUT_BLACK',
+    outer,
+    boundsMm: { minX: 0, minY: 0, maxX: 10, maxY: 10 },
+    areaMm2: 96,
+  };
+}
+
+function collapsedMultiNotchExterior(): FeatureContour {
+  const outer: readonly Point2[] = [
+    [-6.271804108856543, 22.021065918753003],
+    [-3.4710371721379083, 19.4749141580997],
+    [2.003189113266693, 19.347606570067036],
+    [5.695109166213985, 18.329145865805714],
+    [7.222800222605965, 17.437992749577056],
+    [8.877798867030613, 17.947223101707714],
+    [11.29664303965125, 16.29222445728307],
+    [15, -10],
+    [5, -10],
+    [5, -5],
+    [1, -5],
+    [1, -10],
+    [-15, -10],
+  ];
+  return {
+    id: 'collapsed-multi-notch',
+    role: 'CUT_BLACK',
+    outer,
+    boundsMm: { minX: -15, minY: -10, maxX: 15, maxY: 22.021065918753003 },
+    areaMm2: Math.abs(outer.reduce((sum, point, index) => {
+      const next = outer[(index + 1) % outer.length];
+      return sum + point[0] * next[1] - next[0] * point[1];
+    }, 0) / 2),
   };
 }
 
@@ -82,6 +134,96 @@ describe('launcher exterior expansion contract', () => {
       return sum + point[0] * next[1] - next[0] * point[1];
     }, 0)).toBeLessThan(0);
     expect(original.outer).toEqual(originalPoints);
+  });
+
+  it('clips a collapsed concave-notch loop into one exact outer miter contour', () => {
+    const original = collapsedNotchExterior();
+    const snapshot = structuredClone(original);
+    const source = { points: original.outer };
+
+    expect(() => simpleMiterPolygonKernel.offset(
+      source,
+      2.10,
+    )).toThrow('Offset collapsed or self-intersected the polygon');
+
+    const rawOffset = constructRawMiterOffset(source, 2.10);
+    expect(Array.isArray(rawOffset)).toBe(true);
+    const resolved = resolveLauncherExteriorMiterOffset(
+      source,
+      rawOffset,
+      Infinity,
+      () => undefined,
+    );
+    expect(validatePolygon(resolved)).toBe(true);
+    expect(resolved.points.reduce((sum, point, index) => {
+      const next = resolved.points[(index + 1) % resolved.points.length];
+      return sum + point[0] * next[1] - next[0] * point[1];
+    }, 0)).toBeLessThan(0);
+
+    const expanded = expandLauncherExterior(original, 2.1);
+
+    expect(validatePolygon({ points: expanded.outer })).toBe(true);
+    expect(expanded.outer).toHaveLength(4);
+    expect(expanded.boundsMm).toEqual({ minX: -2.1, minY: -2.1, maxX: 12.1, maxY: 12.1 });
+    expect(expanded.areaMm2).toBeCloseTo(14.2 ** 2, 10);
+    expect(expanded.outer.every((point) => pointLocation(
+      { points: expanded.outer },
+      point,
+    ) === 0)).toBe(true);
+    expect(original.outer.every((point) => pointLocation(
+      { points: expanded.outer },
+      point,
+    ) >= 0)).toBe(true);
+    expect(original).toEqual(snapshot);
+  });
+
+  it('preserves signed traversal while splitting a collinear overlap', () => {
+    const source: Polygon2 = {
+      points: [[1, 1], [2, 1], [2, 2], [1, 2]],
+    };
+    const rawOffset: readonly Point2[] = [
+      [-1, -1],
+      [4, -1],
+      [4, 4],
+      [-1, 4],
+      [-1, -1],
+      [2, -1],
+    ];
+
+    const resolved = resolveLauncherExteriorMiterOffset(
+      source,
+      rawOffset,
+      Infinity,
+      () => undefined,
+    );
+
+    expect(new Set(resolved.points.map((point) => point.join(',')))).toEqual(new Set([
+      '-1,-1',
+      '4,-1',
+      '4,4',
+      '-1,4',
+    ]));
+    expect(resolved.points.reduce((sum, point, index) => {
+      const next = resolved.points[(index + 1) % resolved.points.length];
+      return sum + point[0] * next[1] - next[0] * point[1];
+    }, 0)).toBeLessThan(0);
+  });
+
+  it('traces a collapsed multi-notch arrangement across a near-zero connector', () => {
+    const original = collapsedMultiNotchExterior();
+    const snapshot = structuredClone(original);
+
+    const expanded = expandLauncherExterior(original, 5.74);
+
+    expect(validatePolygon({ points: expanded.outer })).toBe(true);
+    expect(expanded.outer).toHaveLength(9);
+    expect(expanded.areaMm2).toBeCloseTo(1470.0823732768595, 9);
+    expect(original.outer.every((point) => pointLocation(
+      { points: expanded.outer },
+      point,
+    ) >= 0)).toBe(true);
+    expect(expandLauncherExterior(original, 5.74)).toEqual(expanded);
+    expect(original).toEqual(snapshot);
   });
 
   it('normalizes the supplied offset before expanding', () => {
@@ -159,6 +301,62 @@ describe('launcher exterior expansion contract', () => {
       thrown = error;
     }
     expect(calls).toBe(4);
+    expect(thrown).toBe(cancellation);
+
+    const collision = new RangeError('Offset collapsed or self-intersected the polygon');
+    let collisionThrown: unknown;
+    let collisionRaised = false;
+    try {
+      expandLauncherExterior(collapsedNotchExterior(), 2.10, Infinity, () => {
+        if (!collisionRaised && new Error().stack?.includes('offsetMitered')) {
+          collisionRaised = true;
+          throw collision;
+        }
+      });
+    } catch (error) {
+      collisionThrown = error;
+    }
+    expect(collisionRaised).toBe(true);
+    expect(collisionThrown).toBe(collision);
+  });
+
+  it('bounds raw adapter input and propagates in-arrangement cancellation by identity', () => {
+    const source = { points: collapsedNotchExterior().outer };
+    const rawOffset = constructRawMiterOffset(source, 2.10);
+    expect(() => resolveLauncherExteriorMiterOffset(
+      source,
+      Array.from({ length: 4_097 }, (_, index) => [index, index % 2] as Point2),
+      Infinity,
+      () => undefined,
+    )).toThrow(/bounded finite geometry/i);
+
+    let topologyFailure: unknown;
+    try {
+      resolveLauncherExteriorMiterOffset(
+        source,
+        [[100, 100], [110, 100], [100, 110]],
+        Infinity,
+        () => undefined,
+      );
+    } catch (error) {
+      topologyFailure = error;
+    }
+    expect(topologyFailure).toMatchObject({
+      name: 'LauncherExteriorOffsetTopologyError',
+    });
+
+    const cancellation = new Error('cancel half-edge arrangement');
+    let calls = 0;
+    let thrown: unknown;
+    try {
+      resolveLauncherExteriorMiterOffset(source, rawOffset, Infinity, () => {
+        calls += 1;
+        if (calls === 8) throw cancellation;
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(calls).toBe(8);
     expect(thrown).toBe(cancellation);
   });
 });

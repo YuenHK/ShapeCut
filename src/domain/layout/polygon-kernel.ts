@@ -32,16 +32,12 @@ function intersection(a: Point2, directionA: Point2, b: Point2, directionB: Poin
   return [a[0] + directionA[0] * t, a[1] + directionA[1] * t];
 }
 
-function offsetMitered(
+function constructRawMiterOffsetUnchecked(
   polygon: Polygon2,
   mm: number,
-  allowConcave: boolean,
-  checkpoint: () => void = () => undefined,
-): Polygon2[] {
-  checkpoint();
-  if (!validatePolygon(polygon, checkpoint) || !Number.isFinite(mm)) throw new RangeError('Offset requires finite valid polygon geometry');
-  if (!allowConcave && !isConvex(polygon)) throw new RangeError('Built-in offset kernel accepts convex polygons only');
-  if (mm === 0) return [{ points: polygon.points.map(([x, y]) => [x, y]) }];
+  checkpoint: () => void,
+): readonly Point2[] {
+  if (mm === 0) return polygon.points.map(([x, y]): Point2 => [x, y]);
   const orientation = Math.sign(signedArea(polygon));
   const lines = polygon.points.map((point, index) => {
     const next = polygon.points[(index + 1) % polygon.points.length];
@@ -71,7 +67,39 @@ function offsetMitered(
     if (!previous || Math.hypot(point[0] - previous[0], point[1] - previous[1]) > scale * 256 * Number.EPSILON) points.push(point);
   }
   if (points.length > 1 && Math.hypot(points[0][0] - points.at(-1)![0], points[0][1] - points.at(-1)![1]) <= scale * 256 * Number.EPSILON) points.pop();
-  const result = { points };
+  return points;
+}
+
+/**
+ * Builds the exact shifted-line miter path without accepting it as a simple polygon.
+ * Launcher exterior expansion uses this bounded intermediate to resolve collapsed
+ * concave-notch loops; general polygon-kernel callers retain the validated behavior.
+ */
+export function constructRawMiterOffset(
+  polygon: Polygon2,
+  mm: number,
+  checkpoint: () => void = () => undefined,
+): readonly Point2[] {
+  checkpoint();
+  if (!validatePolygon(polygon, checkpoint) || !Number.isFinite(mm)) {
+    throw new RangeError('Offset requires finite valid polygon geometry');
+  }
+  return constructRawMiterOffsetUnchecked(polygon, mm, checkpoint);
+}
+
+function offsetMitered(
+  polygon: Polygon2,
+  mm: number,
+  allowConcave: boolean,
+  checkpoint: () => void = () => undefined,
+): Polygon2[] {
+  checkpoint();
+  if (!validatePolygon(polygon, checkpoint) || !Number.isFinite(mm)) throw new RangeError('Offset requires finite valid polygon geometry');
+  if (!allowConcave && !isConvex(polygon)) throw new RangeError('Built-in offset kernel accepts convex polygons only');
+  if (mm === 0) return [{ points: polygon.points.map(([x, y]) => [x, y]) }];
+  const result = {
+    points: constructRawMiterOffsetUnchecked(polygon, mm, checkpoint),
+  };
   if (!validatePolygon(result, checkpoint)) throw new RangeError('Offset collapsed or self-intersected the polygon');
   return [result];
 }

@@ -1,8 +1,12 @@
 import type { Point2 } from '../decomposition/types';
 import { validatePolygon } from '../engraving/geometry';
-import { simpleMiterPolygonKernel } from '../layout/polygon-kernel';
+import {
+  constructRawMiterOffset,
+  simpleMiterPolygonKernel,
+} from '../layout/polygon-kernel';
 import type { FeatureContour } from '../outline-features/types';
 import { contourBounds, signedArea } from '../outline-2.5d/simplify';
+import { resolveLauncherExteriorMiterOffset } from './launcher-exterior-offset-adapter';
 
 export const LAUNCHER_EXTERIOR_EXPANSION_MODE = 'shared-uniform' as const;
 export const LAUNCHER_EXTERIOR_EXPANSION_STEP_MM = 0.01 as const;
@@ -66,16 +70,47 @@ export function expandLauncherExterior(
   checkpoint: () => void = () => undefined,
 ): FeatureContour {
   const normalizedOffsetMm = normalizeLauncherExteriorExpansionMm(offsetMm);
-  const kernelCheckpoint = (): void => checkExpansionRuntime(deadline, checkpoint);
+  let checkpointInterrupted = false;
+  let checkpointInterruption: unknown;
+  const kernelCheckpoint = (): void => {
+    try {
+      checkExpansionRuntime(deadline, checkpoint);
+    } catch (error) {
+      checkpointInterrupted = true;
+      checkpointInterruption = error;
+      throw error;
+    }
+  };
   checkExpansionRuntime(deadline, checkpoint);
   if (!validatePolygon({ points: exterior.outer }, kernelCheckpoint)) {
     throw new RangeError('Launcher exterior expansion requires one valid simple polygon');
   }
-  const expanded = simpleMiterPolygonKernel.offset(
-    { points: exterior.outer },
-    normalizedOffsetMm,
-    kernelCheckpoint,
-  );
+  const source = { points: exterior.outer };
+  let expanded;
+  try {
+    expanded = simpleMiterPolygonKernel.offset(
+      source,
+      normalizedOffsetMm,
+      kernelCheckpoint,
+    );
+  } catch (error) {
+    if (checkpointInterrupted && error === checkpointInterruption) throw error;
+    if (!(error instanceof RangeError)
+      || error.message !== 'Offset collapsed or self-intersected the polygon') {
+      throw error;
+    }
+    const rawOffset = constructRawMiterOffset(
+      source,
+      normalizedOffsetMm,
+      kernelCheckpoint,
+    );
+    expanded = [resolveLauncherExteriorMiterOffset(
+      source,
+      rawOffset,
+      deadline,
+      checkpoint,
+    )];
+  }
   if (expanded.length !== 1 || !validatePolygon(expanded[0], kernelCheckpoint)) {
     throw new RangeError('Launcher exterior expansion must remain one valid simple polygon');
   }

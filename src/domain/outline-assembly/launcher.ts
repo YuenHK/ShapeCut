@@ -12,6 +12,7 @@ import {
   LauncherExteriorExpansionExceededError,
   type LauncherExteriorExpansion,
 } from './launcher-exterior-expansion';
+import { LauncherExteriorOffsetTopologyError } from './launcher-exterior-offset-adapter';
 import {
   KNIGHT_FORTRESS_LAUNCHER_TEMPLATE,
   LAUNCHER_TEMPLATE_MAX_POINTS,
@@ -747,7 +748,8 @@ export function compareLauncherPlacementScores(
 }
 
 function recoverableLauncherExteriorExpansionError(error: unknown): boolean {
-  return error instanceof RangeError
+  return error instanceof LauncherExteriorOffsetTopologyError
+    || error instanceof RangeError
     && !/runtime budget/i.test(error.message)
     && /^(?:Offset |Built-in offset|Launcher exterior expansion must remain)/.test(error.message);
 }
@@ -942,18 +944,25 @@ export function planFixedLauncherClearance(request: FixedLauncherClearanceReques
     if (offsetHundredths === LAUNCHER_EXTERIOR_EXPANSION_MAX_MM * 100) {
       finalGridHasValidTopology = true;
     }
-    const rectangularExteriors = expandedExteriors.rectangleBounds.every(
-      (bounds): bounds is Bounds2 => bounds !== undefined,
-    );
-    const eligibleCandidates = repairableCandidates.filter(
+    const boundsEligible = repairableCandidates.filter(
       (candidate) => finishedCutsFitExpandedExteriorBounds(
         candidate.finishedCuts,
         expandedExteriors,
         clearances.toolpathBoundaryMm,
       ),
     );
-    if (eligibleCandidates.length === 0) continue;
-    const ranked = eligibleCandidates.map((candidate): ScoredFixedLauncherPlan => ({
+    if (boundsEligible.length === 0) continue;
+    const exactlyContained = boundsEligible.filter(
+      (candidate) => finishedCutsFitExpandedExteriors(
+        candidate.finishedCuts,
+        expandedExteriors,
+        clearances.toolpathBoundaryMm,
+        deadline,
+        checkpoint,
+      ),
+    );
+    if (exactlyContained.length === 0) continue;
+    const ranked = exactlyContained.map((candidate): ScoredFixedLauncherPlan => ({
       ...candidate,
       minimumStructuralClearanceMm: offsetHundredths === 0
         ? candidate.minimumOriginalStructuralClearanceMm
@@ -966,23 +975,14 @@ export function planFixedLauncherClearance(request: FixedLauncherClearanceReques
           checkpoint,
         ),
     })).sort(compareLauncherPlacementScores);
-    const selected = ranked.find((candidate) => {
-      if (!rectangularExteriors && !finishedCutsFitExpandedExteriors(
-        candidate.finishedCuts,
-        expandedExteriors,
-        clearances.toolpathBoundaryMm,
-        deadline,
-        checkpoint,
-      )) return false;
-      return launcherCutsArePhysicallySafe({
-        cuts: candidate.cuts,
-        top: { exterior: expandedExteriors.topExterior, centralHole: request.topCentralHole },
-        second: { exterior: expandedExteriors.secondExterior, centralHole: request.secondCentralHole },
-        material: request.material,
-        deadline,
-        checkpoint,
-      });
-    });
+    const selected = ranked.find((candidate) => launcherCutsArePhysicallySafe({
+      cuts: candidate.cuts,
+      top: { exterior: expandedExteriors.topExterior, centralHole: request.topCentralHole },
+      second: { exterior: expandedExteriors.secondExterior, centralHole: request.secondCentralHole },
+      material: request.material,
+      deadline,
+      checkpoint,
+    }));
     if (!selected) continue;
     return withoutPrivatePlacementScore(
       selected,

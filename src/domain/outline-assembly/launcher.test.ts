@@ -297,6 +297,52 @@ describe('fixed three-prong launcher planning', () => {
     expect(result.cuts.map(({ outer }) => outer)).toEqual(baseline.cuts.map(({ outer }) => outer));
   });
 
+  it('checks exact containment before structural scoring without changing the selected ranking', () => {
+    const half = FIXED_SQUARE_SAFE_GRID_HALF_MM - 0.02;
+    const notchedExterior = contour('notched', [
+      [-half, -half],
+      [-half, half],
+      [half, half],
+      [half, 3],
+      [23.4, 3],
+      [23.4, -3],
+      [half, -3],
+      [half, -half],
+    ]);
+    const request = {
+      ...safeRequest,
+      topExterior: notchedExterior,
+      secondExterior: notchedExterior,
+      fitOffsetMm: 0,
+    };
+    const selected = planFixedLauncherClearance(request);
+
+    expect(selected.exteriorExpansion.offsetMm).toBe(0.06);
+    expect(selected.rotationRad).toBe(0);
+
+    const exactContainmentReached = new Error('exact containment reached');
+    const unsafeCandidateScored = new Error('unsafe candidate was structurally scored');
+    let exactContainmentPolls = 0;
+    let checkpointPolls = 0;
+    const thrown = captureThrown(() => planFixedLauncherClearance({
+      ...request,
+      checkpoint: () => {
+        checkpointPolls += 1;
+        if (checkpointPolls % 256 !== 0) return;
+        const stack = new Error().stack ?? '';
+        if (stack.includes('fixedStructuralClearance') && !stack.includes('materializeFixedCuts')) {
+          throw unsafeCandidateScored;
+        }
+        if (!stack.includes('finishedCutsFitExpandedExteriors')) return;
+        exactContainmentPolls += 1;
+        throw exactContainmentReached;
+      },
+    }));
+
+    expect(thrown).toBe(exactContainmentReached);
+    expect(exactContainmentPolls).toBe(1);
+  });
+
   it('accepts exactly 6.00 mm of shared expansion', () => {
     const exactExterior = exterior(
       'exact-six',
