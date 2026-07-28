@@ -1022,6 +1022,11 @@ async function coloredManifestJson(
       launcherRotationRad: document.assembly.launcher.rotationRad,
       launcherFitOffsetMm: document.assembly.launcher.fitOffsetMm,
       launcherFinishedAllowanceMm: document.assembly.launcher.finishedAllowanceMm,
+      launcherExteriorExpansionMode: document.assembly.launcher.exteriorExpansion.mode,
+      launcherExteriorExpansionMm: document.assembly.launcher.exteriorExpansion.offsetMm,
+      launcherExteriorExpansionMaxMm: document.assembly.launcher.exteriorExpansion.maxOffsetMm,
+      launcherExteriorExpansionLayerIds:
+        document.assembly.launcher.exteriorExpansion.affectedLayerIds,
       topFeatures: document.assembly.topFeatures,
     },
     members,

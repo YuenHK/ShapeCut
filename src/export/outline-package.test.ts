@@ -26,6 +26,7 @@ import { writeOutlineProjectJson } from './project-json';
 import { coloredResult } from './colored-outline-test-fixture';
 import { featureEvidenceFingerprint } from '../domain/outline-features/types';
 import { createColoredOutlineDocument } from './colored-outline-document';
+import { expandLauncherExterior } from '../domain/outline-assembly/launcher-exterior-expansion';
 
 const testMaterial = { id: 'test-material', name: 'Test material', thicknessMm: 3, kerfMm: 0.1, minFeatureMm: 0.8, minWebMm: 0.5, fitAllowanceMm: { loose: 0.2, slip: 0.1, snug: 0, press: -0.1 } } as const;
 function convertAutomatically(request: { readonly bytes: ArrayBuffer }, onProgress?: Parameters<typeof convertAutomaticOutline>[1]) {
@@ -70,6 +71,40 @@ function coloredResultWithSharedHoleMutation(
     preview: { ...result.preview, layers: coloredLayers },
   };
   return { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
+}
+
+function coloredResultWithExteriorExpansion(offsetMm = 2.35): AutomaticOutlineResult {
+  const result = coloredResult();
+  const expandedLayerIds = result.assembly.launcher.exteriorExpansion.affectedLayerIds;
+  const coloredLayers = result.coloredLayers.map((layer) => (
+    expandedLayerIds.includes(layer.id)
+      ? { ...layer, exterior: expandLauncherExterior(layer.exterior, offsetMm) }
+      : layer
+  ));
+  const changed = {
+    ...result,
+    coloredLayers,
+    assembly: {
+      ...result.assembly,
+      launcher: {
+        ...result.assembly.launcher,
+        exteriorExpansion: {
+          ...result.assembly.launcher.exteriorExpansion,
+          offsetMm,
+        },
+      },
+    },
+    preview: { ...result.preview, layers: coloredLayers },
+  };
+  return {
+    ...changed,
+    featureEvidenceFingerprint: featureEvidenceFingerprint(
+      changed,
+      undefined,
+      undefined,
+      result.assembly.material,
+    ),
+  };
 }
 
 function layer(
@@ -388,7 +423,7 @@ describe('material-independent outline package', () => {
   });
 
   it('adds sanitized canonical project and manifest metadata to the release ZIP', async () => {
-    const runtime = coloredResult();
+    const runtime = coloredResultWithExteriorExpansion();
     const output = await createColoredOutlinePackage(runtime);
     const zip = await JSZip.loadAsync(output.zip);
 
@@ -419,8 +454,20 @@ describe('material-independent outline package', () => {
           templateFingerprint: runtime.assembly.launcher.templateFingerprint,
           rotationRad: runtime.assembly.launcher.rotationRad,
           fitOffsetMm: runtime.assembly.launcher.fitOffsetMm,
+          exteriorExpansion: {
+            mode: 'shared-uniform',
+            offsetMm: 2.35,
+            maxOffsetMm: 6,
+            affectedLayerIds: ['layer-5', 'layer-6'],
+          },
         },
       },
+    });
+    expect(manifest.decisions).toMatchObject({
+      launcherExteriorExpansionMode: 'shared-uniform',
+      launcherExteriorExpansionMm: 2.35,
+      launcherExteriorExpansionMaxMm: 6,
+      launcherExteriorExpansionLayerIds: ['layer-5', 'layer-6'],
     });
     expect(manifest.members).toHaveLength(6);
     expect(manifest.members).toEqual(expect.arrayContaining([
@@ -432,6 +479,57 @@ describe('material-independent outline package', () => {
     ]));
     expect(JSON.stringify({ project, manifest })).not.toMatch(/private|provisional|validationEvidence|\.stl|file:/i);
     await expect(verifyColoredOutlinePackage(output, runtime)).resolves.toBeUndefined();
+  });
+
+  it.each([
+    ['mode', (manifest: any) => { manifest.decisions.launcherExteriorExpansionMode = 'independent'; }],
+    ['offset', (manifest: any) => { manifest.decisions.launcherExteriorExpansionMm = 2.36; }],
+    ['maximum', (manifest: any) => { manifest.decisions.launcherExteriorExpansionMaxMm = 7; }],
+    ['affected layer order', (manifest: any) => {
+      manifest.decisions.launcherExteriorExpansionLayerIds.reverse();
+    }],
+    ['missing decision member', (manifest: any) => {
+      delete manifest.decisions.launcherExteriorExpansionLayerIds;
+    }],
+  ])('rejects a forged manifest exterior-expansion %s decision', async (_label, mutate) => {
+    const runtime = coloredResultWithExteriorExpansion();
+    const output = await createColoredOutlinePackage(runtime);
+    const manifest = JSON.parse(output.manifestJson);
+    mutate(manifest);
+
+    await expect(verifyColoredOutlinePackage({
+      ...output,
+      manifestJson: JSON.stringify(manifest, null, 2),
+    }, runtime)).rejects.toThrow(/project|manifest|metadata|reconcile|mismatch/i);
+  });
+
+  it('rejects a replaced expanded exterior path', async () => {
+    const runtime = coloredResultWithExteriorExpansion();
+    const output = await createColoredOutlinePackage(runtime);
+    const mutatedSvg = output.cutSvg.replace(
+      /(<polygon id="layer-6-exterior"[^>]*points=")([^"]+)/,
+      (_match, prefix: string, points: string) => `${prefix}99,99 ${points}`,
+    );
+    expect(mutatedSvg).not.toBe(output.cutSvg);
+
+    await expect(verifyColoredOutlinePackage({
+      ...output,
+      cutSvg: mutatedSvg,
+    }, runtime)).rejects.toThrow(/SVG|geometry|canonical|mismatch/i);
+  });
+
+  it('carries expansion only as geometry and machine metadata, never as fabrication labels', async () => {
+    const output = await createColoredOutlinePackage(coloredResultWithExteriorExpansion());
+    const fabricationText = [
+      output.cutSvg,
+      output.cutDxf,
+      new TextDecoder('latin1').decode(output.previewPdf),
+      new TextDecoder('latin1').decode(output.explodedViewPdf),
+    ].join('\n');
+
+    expect(fabricationText).not.toMatch(
+      /頂部兩層外框已共同擴大|launcherExteriorExpansion|shared-uniform|exterior expansion/i,
+    );
   });
 
   it.each([

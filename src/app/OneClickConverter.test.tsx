@@ -64,7 +64,7 @@ const result: AutomaticOutlineResult = {
       rotationRad: 0, fitOffsetMm: 0, finishedAllowanceMm: 0.2,
       exteriorExpansion: {
         mode: 'shared-uniform', offsetMm: 0, maxOffsetMm: 6,
-        affectedLayerIds: ['layer-0', 'layer-0'],
+        affectedLayerIds: ['layer-0', 'layer-1'],
       },
     },
     fastener: { count: 0, centers: [], finishedDiameterMm: 3, pathDiameterMm: 2.85 },
@@ -178,7 +178,7 @@ describe('OneClickConverter', () => {
     const saveProject = vi.fn().mockResolvedValue(undefined);
     const deleteSavedProject = vi.fn().mockResolvedValue(undefined);
     const initialSavedProject = {
-      schemaVersion: 1 as const,
+      schemaVersion: 2 as const,
       id: 'one-click-current' as const,
       updatedAt: '2026-07-28T00:00:00.000Z',
       sourceSha256: await sha256Hex(bytes),
@@ -186,6 +186,7 @@ describe('OneClickConverter', () => {
       launcherFitOffsetMm: 0.05,
       launcherTemplateVersion: OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
       launcherTemplateFingerprint: OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
+      launcherExteriorExpansion: null,
       canonicalSourceHash: result.sourceHash,
       status: 'regeneration-required' as const,
     };
@@ -212,8 +213,10 @@ describe('OneClickConverter', () => {
       expect.any(Function),
     );
     expect(saveProject).toHaveBeenCalledWith(expect.objectContaining({
+      schemaVersion: 2,
       status: 'ready',
       launcherTemplateFingerprint: OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
+      launcherExteriorExpansion: result.assembly.launcher.exteriorExpansion,
     }));
 
     await user.click(screen.getByRole('button', { name: '捨棄已儲存專案並選擇另一個模型' }));
@@ -229,6 +232,99 @@ describe('OneClickConverter', () => {
     expect(await screen.findByRole('button', { name: '捨棄已儲存專案並選擇另一個模型' })).toBeVisible();
     expect(screen.queryByLabelText('選擇 STL 模型')).toBeNull();
     expect(replacement.sourceSha256).toBe(await sha256Hex(new TextEncoder().encode('different')));
+    expect(replacement.launcherExteriorExpansion).toEqual(
+      result.assembly.launcher.exteriorExpansion,
+    );
+  });
+
+  it('keeps a changed stored expansion blocked until the replacement decision is reattached and regenerated', async () => {
+    const user = userEvent.setup();
+    const bytes = new TextEncoder().encode('saved mesh');
+    const saveProject = vi.fn().mockResolvedValue(undefined);
+    const api = services({
+      convert: vi.fn().mockResolvedValue(result),
+      saveProject,
+      savedProject: {
+        schemaVersion: 2,
+        id: 'one-click-current',
+        updatedAt: '2026-07-28T00:00:00.000Z',
+        sourceSha256: await sha256Hex(bytes),
+        material: manufacturingGeometryProfile(READY_TEST_MATERIAL),
+        launcherFitOffsetMm: 0,
+        launcherTemplateVersion: OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+        launcherTemplateFingerprint: OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
+        launcherExteriorExpansion: {
+          ...result.assembly.launcher.exteriorExpansion,
+          offsetMm: 2.35,
+        },
+        canonicalSourceHash: result.sourceHash,
+        status: 'regeneration-required',
+      },
+    });
+    const view = render(<OneClickConverter services={api} />);
+    const file = new File([bytes], 'reattached.stl');
+
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), file);
+    await user.click(await screen.findByRole('button', { name: '重新產生正式輸出' }));
+
+    expect(api.package).not.toHaveBeenCalled();
+    expect(screen.queryByRole('link', { name: /下載/ })).not.toBeInTheDocument();
+    expect(saveProject).toHaveBeenLastCalledWith(expect.objectContaining({
+      status: 'regeneration-required',
+      launcherExteriorExpansion: result.assembly.launcher.exteriorExpansion,
+    }));
+    expect(screen.getByRole('button', { name: '重新產生正式輸出' })).toBeDisabled();
+
+    const replacement = vi.mocked(saveProject).mock.calls.at(-1)![0];
+    view.rerender(<OneClickConverter services={{ ...api, savedProject: replacement }} />);
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), file);
+    await user.click(await screen.findByRole('button', { name: '重新產生正式輸出' }));
+
+    expect(await screen.findByRole('heading', { name: '轉換完成' })).toBeVisible();
+    expect(api.package).toHaveBeenCalledOnce();
+    expect(saveProject).toHaveBeenLastCalledWith(expect.objectContaining({
+      status: 'ready',
+      launcherExteriorExpansion: result.assembly.launcher.exteriorExpansion,
+    }));
+  });
+
+  it('re-arms source reattachment when only the stored expansion decision is replaced', async () => {
+    const user = userEvent.setup();
+    const bytes = new TextEncoder().encode('saved mesh');
+    const savedProject = {
+      schemaVersion: 2 as const,
+      id: 'one-click-current' as const,
+      updatedAt: '2026-07-28T00:00:00.000Z',
+      sourceSha256: await sha256Hex(bytes),
+      material: manufacturingGeometryProfile(READY_TEST_MATERIAL),
+      launcherFitOffsetMm: 0,
+      launcherTemplateVersion: OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+      launcherTemplateFingerprint: OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
+      launcherExteriorExpansion: result.assembly.launcher.exteriorExpansion,
+      canonicalSourceHash: result.sourceHash,
+      status: 'regeneration-required' as const,
+    };
+    const api = services({ savedProject });
+    const view = render(<OneClickConverter services={api} />);
+
+    await user.upload(
+      screen.getByLabelText('選擇 STL 模型'),
+      new File([bytes], 'reattached.stl'),
+    );
+    expect(await screen.findByRole('button', { name: '重新產生正式輸出' })).toBeEnabled();
+
+    view.rerender(<OneClickConverter services={{
+      ...api,
+      savedProject: {
+        ...savedProject,
+        launcherExteriorExpansion: {
+          ...savedProject.launcherExteriorExpansion,
+          offsetMm: 2.35,
+        },
+      },
+    }} />);
+
+    expect(screen.getByRole('button', { name: '重新產生正式輸出' })).toBeDisabled();
   });
 
   it('keeps every workflow state inside one workbench without changing actions', async () => {
@@ -573,7 +669,13 @@ describe('OneClickConverter', () => {
       ...result,
       assembly: {
         material: manufacturingGeometryProfile(defaultPendingMaterialProfile('plywood-3')!),
-        launcher: result.assembly.launcher,
+        launcher: {
+          ...result.assembly.launcher,
+          exteriorExpansion: {
+            ...result.assembly.launcher.exteriorExpansion,
+            offsetMm: 2.35,
+          },
+        },
         fastener: {
           count: 2 as const, centers: [[6, 0], [-6, 0]] as const,
           finishedDiameterMm: 3 as const, pathDiameterMm: 2.85, radiusMm: 6, rotationRad: 0,
@@ -596,6 +698,7 @@ describe('OneClickConverter', () => {
     expect(screen.getByText('頂層紅色特徵').nextElementSibling).toHaveTextContent('保留 4，省略 2');
     expect(screen.getByText('頂層藍色特徵').nextElementSibling).toHaveTextContent('保留 3，省略 1');
     expect(screen.getByText('製作材料').nextElementSibling).toHaveTextContent(/3 mm.*kerf 0\.15 mm/i);
+    expect(screen.getByText('頂部兩層外框已共同擴大 2.35 mm')).toBeVisible();
     expect(screen.getAllByRole('link', { name: /下載/ })).toHaveLength(6);
   });
 
@@ -771,6 +874,7 @@ describe('OneClickConverter', () => {
     expect(screen.getByText('官方三爪孔：已加入頂部兩層')).toBeVisible();
     expect(screen.getByText(/模板版本 1/)).toBeVisible();
     expect(screen.getByText(/配合微調 \+0\.05 mm/)).toBeVisible();
+    expect(screen.getByText('頂部兩層外框已共同擴大 0.00 mm')).toBeVisible();
     expect(screen.getByText(/已裁切紅色 1/)).toBeVisible();
     expect(screen.getByText('依 Knight Fortress 樣本建立，待官方發射器實物校準')).toBeVisible();
     expect(screen.getByRole('link', { name: '下載三爪尺寸測試片' })).toBeVisible();
@@ -1355,7 +1459,7 @@ describe('OneClickConverter', () => {
     await uploadAndSelectMaterial(user, new File(['mesh'], 'launcher-expansion-blocked.stl'));
 
     expect(await screen.findByRole('alert'))
-      .toHaveTextContent('發射器外框所需擴張超過 6.00 mm 上限，已停止所有輸出。');
+      .toHaveTextContent('頂部兩層外框需要擴大超過 6.00 mm，已停止所有輸出。');
     expect(screen.queryByRole('link', { name: /下載/ })).not.toBeInTheDocument();
     expect(api.package).not.toHaveBeenCalled();
   });

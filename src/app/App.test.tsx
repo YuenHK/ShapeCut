@@ -8,7 +8,7 @@ import { App, createDownloadUrls } from './App';
 import { BLOCKED_TEST_MATERIAL, READY_TEST_MATERIAL } from '../test/ready-material';
 import { defaultPendingMaterialProfile } from '../domain/materials/default-profiles';
 import { manufacturingGeometryProfile } from '../domain/materials/manufacturing-profile';
-import type { StoredOneClickProjectV1 } from '../persistence/one-click-project-repository';
+import type { StoredOneClickProjectV2 } from '../persistence/one-click-project-repository';
 import {
   OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
   OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
@@ -37,8 +37,8 @@ function deferred<T>() {
 }
 
 describe('App', () => {
-  const savedProject: StoredOneClickProjectV1 = {
-    schemaVersion: 1,
+  const savedProject: StoredOneClickProjectV2 = {
+    schemaVersion: 2,
     id: 'one-click-current',
     updatedAt: '2026-07-28T00:00:00.000Z',
     sourceSha256: 'a'.repeat(64),
@@ -46,12 +46,18 @@ describe('App', () => {
     launcherFitOffsetMm: 0,
     launcherTemplateVersion: OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
     launcherTemplateFingerprint: OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
+    launcherExteriorExpansion: {
+      mode: 'shared-uniform',
+      offsetMm: 2.35,
+      maxOffsetMm: 6,
+      affectedLayerIds: ['layer-5', 'layer-6'],
+    },
     canonicalSourceHash: 'b'.repeat(32),
     status: 'ready',
   };
 
   it('does not expose conversion while saved-project loading is unsettled', async () => {
-    const pending = deferred<StoredOneClickProjectV1 | undefined>();
+    const pending = deferred<StoredOneClickProjectV2 | undefined>();
     render(<App services={services} materialRepository={emptyMaterialRepository} oneClickProjectRepository={{
       load: vi.fn(() => pending.promise),
       save: vi.fn(),

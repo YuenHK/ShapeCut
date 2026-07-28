@@ -25,8 +25,9 @@ import {
 } from '../domain/materials/manufacturing-profile';
 import { classifyMaterialReadiness, type MaterialProfileV1 } from '../domain/materials/schema';
 import { validateLauncherFitOffsetMm } from '../domain/outline-assembly/launcher-fit';
+import type { LauncherExteriorExpansion } from '../domain/outline-assembly/launcher-exterior-expansion';
 import { sha256Hex } from '../persistence/project-repository';
-import type { StoredOneClickProjectV1 } from '../persistence/one-click-project-repository';
+import type { StoredOneClickProjectV2 } from '../persistence/one-click-project-repository';
 import {
   OutlineProcessViewport,
 } from '../preview/OutlineProcessViewport';
@@ -79,8 +80,8 @@ export type OneClickConverterServices = {
   readonly createTimeline?: (clock: ProcessingTimelineClock<number>) => ProcessingTimeline;
   /** Saved profiles supplied by the app's material store. Invalid profiles are never displayed. */
   readonly materialProfiles?: readonly MaterialProfileV1[];
-  readonly savedProject?: StoredOneClickProjectV1;
-  readonly saveProject?: (project: StoredOneClickProjectV1) => Promise<void>;
+  readonly savedProject?: StoredOneClickProjectV2;
+  readonly saveProject?: (project: StoredOneClickProjectV2) => Promise<void>;
   readonly deleteSavedProject?: () => Promise<void>;
 };
 
@@ -122,7 +123,8 @@ function failureMessage(error: unknown): string {
       RESOURCE_LIMIT: '模型太複雜，超出這次可處理的上限。請先簡化模型再試。',
       TIME_LIMIT: '處理時間過長，已安全停止。請先簡化模型再試。',
       LAUNCHER_INCOMPATIBLE: '官方三爪孔會破壞外框或必要承托結構，已停止所有輸出。',
-      LAUNCHER_EXTERIOR_EXPANSION_EXCEEDED: '發射器外框所需擴張超過 6.00 mm 上限，已停止所有輸出。',
+      LAUNCHER_EXTERIOR_EXPANSION_EXCEEDED:
+        '頂部兩層外框需要擴大超過 6.00 mm，已停止所有輸出。',
     }[error.code];
   }
   if (error instanceof OutlineArtifactError) {
@@ -252,6 +254,17 @@ function parsedLauncherFitOffset(value: string): number | undefined {
 function signedMillimeters(value: number): string {
   const normalized = Object.is(value, -0) ? 0 : value;
   return `${normalized >= 0 ? '+' : ''}${normalized.toFixed(2)} mm`;
+}
+
+function launcherExteriorExpansionEquals(
+  left: LauncherExteriorExpansion,
+  right: LauncherExteriorExpansion,
+): boolean {
+  return left.mode === right.mode
+    && left.offsetMm === right.offsetMm
+    && left.maxOffsetMm === right.maxOffsetMm
+    && left.affectedLayerIds[0] === right.affectedLayerIds[0]
+    && left.affectedLayerIds[1] === right.affectedLayerIds[1];
 }
 
 type ModelInputProps = Readonly<{
@@ -414,7 +427,18 @@ export function OneClickConverter({
 
   useEffect(() => {
     setSavedProjectDiscarded(false);
-  }, [services.savedProject?.sourceSha256, services.savedProject?.updatedAt]);
+    setSavedSourceReattached(false);
+  }, [
+    services.savedProject?.sourceSha256,
+    services.savedProject?.updatedAt,
+    services.savedProject?.launcherTemplateVersion,
+    services.savedProject?.launcherTemplateFingerprint,
+    services.savedProject?.launcherExteriorExpansion?.mode,
+    services.savedProject?.launcherExteriorExpansion?.offsetMm,
+    services.savedProject?.launcherExteriorExpansion?.maxOffsetMm,
+    services.savedProject?.launcherExteriorExpansion?.affectedLayerIds[0],
+    services.savedProject?.launcherExteriorExpansion?.affectedLayerIds[1],
+  ]);
 
   const releaseCurrentDownloads = useCallback(() => {
     revokeDownloads(downloadsRef.current);
@@ -472,6 +496,42 @@ export function OneClickConverter({
       if (current !== requestId.current) return;
       workerFinished = true;
       completedResult = result;
+      const launcherExteriorExpansion = structuredClone(
+        result.assembly.launcher.exteriorExpansion,
+      );
+      const storedDecisionMismatch = savedProject !== undefined
+        && savedProject.launcherExteriorExpansion !== null
+        && (
+          savedProject.launcherTemplateVersion !== result.assembly.launcher.templateVersion
+          || savedProject.launcherTemplateFingerprint
+            !== result.assembly.launcher.templateFingerprint
+          || !launcherExteriorExpansionEquals(
+            savedProject.launcherExteriorExpansion,
+            launcherExteriorExpansion,
+          )
+        );
+      if (storedDecisionMismatch) {
+        timeline.cancel();
+        if (timelineRef.current === timeline) timelineRef.current = undefined;
+        if (sourceSha256 && services.saveProject) {
+          await services.saveProject({
+            schemaVersion: 2,
+            id: 'one-click-current',
+            updatedAt: new Date().toISOString(),
+            sourceSha256,
+            material,
+            launcherFitOffsetMm,
+            launcherTemplateVersion: result.assembly.launcher.templateVersion,
+            launcherTemplateFingerprint: result.assembly.launcher.templateFingerprint,
+            launcherExteriorExpansion,
+            canonicalSourceHash: result.sourceHash,
+            status: 'regeneration-required',
+          });
+        }
+        setSavedSourceReattached(false);
+        setView({ kind: 'material', fileName, bytes });
+        return;
+      }
       const packaged = runtimeServices.package(result, fileName).then((downloads) => {
         if (current !== requestId.current) {
           revokeDownloads(downloads);
@@ -490,7 +550,7 @@ export function OneClickConverter({
       if (timelineRef.current === timeline) timelineRef.current = undefined;
       if (sourceSha256 && services.saveProject) {
         await services.saveProject({
-          schemaVersion: 1,
+          schemaVersion: 2,
           id: 'one-click-current',
           updatedAt: new Date().toISOString(),
           sourceSha256,
@@ -498,6 +558,7 @@ export function OneClickConverter({
           launcherFitOffsetMm,
           launcherTemplateVersion: result.assembly.launcher.templateVersion,
           launcherTemplateFingerprint: result.assembly.launcher.templateFingerprint,
+          launcherExteriorExpansion,
           canonicalSourceHash: result.sourceHash,
           status: 'ready',
         });
@@ -524,7 +585,7 @@ export function OneClickConverter({
         } : {}),
       });
     }
-  }, [releaseCurrentDownloads, runtimeServices, services, sourceSha256]);
+  }, [releaseCurrentDownloads, runtimeServices, savedProject, services, sourceSha256]);
 
   const selectFile = useCallback(async (file: File) => {
     const current = ++requestId.current;
@@ -656,7 +717,11 @@ export function OneClickConverter({
       <p>請選擇本次製作的材料，系統只會把所需的幾何資料傳送到處理程序。</p>
       {savedProject && (
         <section aria-label="已儲存專案重新產生">
-          <p role="status">重新連結完成；下載仍被鎖定，直至 canonical 正式輸出重新產生。</p>
+          {savedSourceReattached ? (
+            <p role="status">重新連結完成；下載仍被鎖定，直至 canonical 正式輸出重新產生。</p>
+          ) : (
+            <p role="status">外框擴大決策已更新；請重新連結原本 STL 後再次產生正式輸出。</p>
+          )}
           <button
             type="button"
             disabled={!savedSourceReattached}
@@ -843,6 +908,12 @@ export function OneClickConverter({
             <div><dt>發射器相容性</dt><dd>{launcherSummary(assembly.launcher.status)}</dd></div>
             <div><dt>三爪樣板</dt><dd>模板版本 {assembly.launcher.templateVersion}</dd></div>
             <div><dt>三爪配合</dt><dd>配合微調 {signedMillimeters(assembly.launcher.fitOffsetMm)}</dd></div>
+            <div>
+              <dt>外框擴大</dt>
+              <dd>
+                {`頂部兩層外框已共同擴大 ${assembly.launcher.exteriorExpansion.offsetMm.toFixed(2)} mm`}
+              </dd>
+            </div>
             <div><dt>固定螺絲孔</dt><dd>{assembly.fastener.count === 0 ? '已安全省略' : `${assembly.fastener.count} 個`}</dd></div>
             <div><dt>頂層紅色特徵</dt><dd>保留 {assembly.topFeatures.retained.red}，省略 {assembly.topFeatures.omitted.red}</dd></div>
             <div><dt>頂層藍色特徵</dt><dd>保留 {assembly.topFeatures.retained.blue}，省略 {assembly.topFeatures.omitted.blue}</dd></div>
