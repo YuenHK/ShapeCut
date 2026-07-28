@@ -5,6 +5,7 @@ import { DEFAULT_OUTLINE_BUDGETS, type OutlineBudgets } from '../outline-2.5d/ty
 import {
   DEPTH_CONTRAST_OMISSION_WARNING,
   DEPTH_DATA_OMISSION_WARNING,
+  ProtectedCutWorkBudgetError,
   buildDepthField,
   closeDepthBandMask,
   extractAdaptiveDepthFeatures,
@@ -98,6 +99,108 @@ function boundsOverlap(
 }
 
 describe('adaptive source-triangle depth features', () => {
+  it('uses a dedicated typed error only for protected-cut work-product exhaustion', () => {
+    const protectedCut = Array.from({ length: 2_000 }, (_, index) => {
+      const angle = index * Math.PI * 2 / 2_000;
+      return [Math.cos(angle), Math.sin(angle)] as const;
+    });
+
+    expect(() => buildDepthField(steppedSurface(), request({
+      cellSizeMm: 0.05,
+      protectedCuts: [protectedCut],
+    }))).toThrow(ProtectedCutWorkBudgetError);
+  });
+
+  it('does not type unrelated raster, hit, component, topology, deadline, or cancellation errors as protected-cut work exhaustion', () => {
+    const thrown = (action: () => unknown): unknown => {
+      try {
+        action();
+      } catch (error) {
+        return error;
+      }
+      throw new Error('Expected action to throw');
+    };
+    const invalidTopology = {
+      ...steppedSurface(),
+      triangles: [[Number.MAX_SAFE_INTEGER, 1, 2] as const],
+    };
+    const cancellation = new Error('cancelled exactly');
+    const errors = [
+      thrown(() => buildDepthField(steppedSurface(), request({
+        budgets: {
+          ...DEFAULT_OUTLINE_BUDGETS,
+          maxRasterWidth: 1,
+        } as unknown as OutlineBudgets,
+      }))),
+      thrown(() => buildDepthField(steppedSurface(), request({ maximumSurfaceHits: 1 }))),
+      thrown(() => buildDepthField(steppedSurface(), request({
+        maximumComponentBytes: 64 * 1024 * 1024 + 1,
+      }))),
+      thrown(() => buildDepthField(invalidTopology, request())),
+      thrown(() => buildDepthField(steppedSurface(), request({
+        deadline: 0,
+        checkpoint: () => undefined,
+      }))),
+      thrown(() => buildDepthField(steppedSurface(), request({
+        checkpoint: () => { throw cancellation; },
+      }))),
+    ];
+
+    expect(errors.every((error) => error instanceof Error)).toBe(true);
+    expect(errors.every((error) => !(error instanceof ProtectedCutWorkBudgetError))).toBe(true);
+    expect(errors.at(-1)).toBe(cancellation);
+  });
+
+  it('omits decoration only for the layer whose protected-cut work product exceeds the bound', () => {
+    const protectedCut = Array.from({ length: 2_000 }, (_, index) => {
+      const angle = index * Math.PI * 2 / 2_000;
+      return [Math.cos(angle), Math.sin(angle)] as const;
+    });
+
+    const affected = extractAdaptiveDepthFeatures(steppedSurface(), request({
+      layerId: 'outline-layer-0',
+      cellSizeMm: 0.05,
+      protectedCuts: [protectedCut],
+    }));
+    const unaffected = extractAdaptiveDepthFeatures(steppedSurface(), request({
+      layerId: 'outline-layer-1',
+    }));
+
+    expect(affected.red).toEqual([]);
+    expect(affected.blue).toEqual([]);
+    expect(affected.omissionCode).toBe('PROTECTED_CUT_WORK_BUDGET');
+    expect(affected.diagnostics.omissionCode).toBe('PROTECTED_CUT_WORK_BUDGET');
+    expect(unaffected.red.length + unaffected.blue.length).toBeGreaterThan(0);
+  });
+
+  it('identity-propagates exact deadline, cancellation, topology, and resource failures around field construction', () => {
+    const deadline = new Error('deadline identity');
+    let deadlinePolls = 0;
+    expect(() => extractAdaptiveDepthFeatures(steppedSurface(), request({
+      checkpoint: () => {
+        deadlinePolls += 1;
+        if (deadlinePolls === 2) throw deadline;
+      },
+    }))).toThrow(deadline);
+
+    const cancellation = new Error('cancellation identity');
+    expect(() => extractAdaptiveDepthFeatures(steppedSurface(), request({
+      checkpoint: () => { throw cancellation; },
+    }))).toThrow(cancellation);
+
+    const topology = new Error('topology identity');
+    const invalidTopology = { ...steppedSurface() };
+    Object.defineProperty(invalidTopology, 'triangles', {
+      get: () => { throw topology; },
+    });
+    expect(() => extractAdaptiveDepthFeatures(invalidTopology, request())).toThrow(topology);
+
+    const resource = new Error('resource identity');
+    expect(() => extractAdaptiveDepthFeatures(steppedSurface(), request({
+      resourceObserver: () => { throw resource; },
+    }))).toThrow(resource);
+  });
+
   it('closes a one-cell crack while respecting valid-domain and competing-role masks', () => {
     const width = 7, height = 7;
     const source = new Uint8Array(width * height);

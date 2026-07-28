@@ -37,6 +37,7 @@ import {
   validateAutomaticColoredResult,
   type ColoredOutlineLayer,
   type AutomaticOutlineAssembly,
+  type DecorationOmission,
   type OutlinePreviewPayload,
   type SharedCentralHoleLayerEvidence,
 } from '../outline-features/types';
@@ -240,7 +241,7 @@ function withResultEvidence(
   deadline: number,
   extraction: Pick<OutlineExtraction, 'holeSelections' | 'depthFeatures' | 'blackCuts' | 'featureWarnings' | 'launcherDecorationOverlap' | 'launcherDecorationEvidence'>,
   material: ManufacturingGeometryProfile,
-  assembly: Omit<AutomaticOutlineAssembly, 'topFeatures'>,
+  assembly: Omit<AutomaticOutlineAssembly, 'topFeatures' | 'decorationOmissions'>,
 ): AutomaticOutlineResult {
   let coloredLayers: readonly ColoredOutlineLayer[];
   let previewMeshCopy: OutlinePreviewPayload['mesh'];
@@ -276,8 +277,27 @@ function withResultEvidence(
     },
   };
   try {
+    const decorationOmissions = extraction.depthFeatures.flatMap((feature, index): DecorationOmission[] => {
+      const coloredLayer = coloredLayers[index];
+      if (!coloredLayer
+        || feature.omissionCode !== feature.diagnostics.omissionCode
+        || feature.omissionCode === 'PROTECTED_CUT_WORK_BUDGET'
+          && (feature.red.length !== 0
+            || feature.blue.length !== 0
+            || coloredLayer.deepFeatures.length !== 0
+            || coloredLayer.lightFeatures.length !== 0
+            || coloredLayer.diagnostics.depth.omissionCode !== 'PROTECTED_CUT_WORK_BUDGET')) {
+        throw new RangeError('Depth decoration omission evidence does not match canonical colored layers');
+      }
+      return feature.omissionCode === 'PROTECTED_CUT_WORK_BUDGET' ? [{
+        layerId: coloredLayer.id,
+        reason: 'protected-cut-work-budget',
+        roles: ['DEEP_RED', 'LIGHT_BLUE'],
+      }] : [];
+    });
     const assemblyEvidence: AutomaticOutlineAssembly = {
       ...assembly,
+      decorationOmissions,
       topFeatures: {
         retained: {
           red: coloredLayers.at(-1)?.deepFeatures.length ?? 0,
@@ -308,7 +328,7 @@ function withResultEvidence(
 }
 
 type PlannedAssembly = {
-  readonly summary: Omit<AutomaticOutlineAssembly, 'topFeatures'>;
+  readonly summary: Omit<AutomaticOutlineAssembly, 'topFeatures' | 'decorationOmissions'>;
   readonly cuts: OutlineExtraction['blackCuts'];
   readonly warnings: readonly string[];
 };

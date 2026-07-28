@@ -68,6 +68,7 @@ const result: AutomaticOutlineResult = {
       },
     },
     fastener: { count: 0, centers: [], finishedDiameterMm: 3, pathDiameterMm: 2.85 },
+    decorationOmissions: [],
     topFeatures: {
       retained: { red: 0, blue: 0 }, omitted: { red: 0, blue: 0 },
       launcherOverlap: {
@@ -720,6 +721,7 @@ describe('OneClickConverter', () => {
           count: 2 as const, centers: [[6, 0], [-6, 0]] as const,
           finishedDiameterMm: 3 as const, pathDiameterMm: 2.85, radiusMm: 6, rotationRad: 0,
         },
+        decorationOmissions: [],
         topFeatures: {
           retained: { red: 4, blue: 3 }, omitted: { red: 2, blue: 1 },
           launcherOverlap: {

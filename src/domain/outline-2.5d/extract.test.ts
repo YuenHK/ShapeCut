@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import type { TriangleMesh } from '../mesh/types';
 import { CENTRAL_HOLE_OMISSION_WARNING } from '../outline-features/hole';
+import { PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING } from '../outline-features/depth-field';
 import { DEFAULT_OUTLINE_BUDGETS, type OutlineAxisSelection, type OutlineLayerSpec } from './types';
 import {
   colorizeExteriorLayers,
@@ -143,6 +144,49 @@ describe('extractProjectedContours', () => {
     expect(result.depthFeatures[0].blue.length).toBeLessThanOrEqual(1);
     expect(result.depthFeatures[1].red.length).toBeLessThanOrEqual(12);
     expect(result.depthFeatures[1].blue.length).toBeLessThanOrEqual(12);
+  });
+
+  test('localizes protected-cut work exhaustion to the affected ordered layer', () => {
+    const ordered = [
+      { index: 0, zStart: -1, zMid: -0.75, zEnd: -0.5 },
+      { index: 1, zStart: 0.5, zMid: 0.75, zEnd: 1 },
+    ];
+    const protectedEnvelope = Array.from({ length: 1_000 }, (_, index) => {
+      const angle = index * Math.PI * 2 / 1_000;
+      return [Math.cos(angle), Math.sin(angle)] as const;
+    });
+
+    const result = extractProjectedContours(
+      box(0, 0, 20, 20, 3),
+      selection,
+      ordered,
+      DEFAULT_OUTLINE_BUDGETS,
+      undefined,
+      {
+        existingBlackCuts: [
+          {
+            launcherCuts: [],
+            fastenerHoles: [],
+            engravingProtection: {
+              exteriorClearanceMm: 0,
+              removalEnvelopes: [protectedEnvelope],
+              requiredClearanceMm: 0,
+            },
+          },
+          { launcherCuts: [], fastenerHoles: [] },
+        ],
+      },
+    );
+
+    expect(result.depthFeatures[0]).toMatchObject({
+      red: [],
+      blue: [],
+      warning: PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING,
+      omissionCode: 'PROTECTED_CUT_WORK_BUDGET',
+      diagnostics: { omissionCode: 'PROTECTED_CUT_WORK_BUDGET' },
+    });
+    expect(result.depthFeatures[1].omissionCode).not.toBe('PROTECTED_CUT_WORK_BUDGET');
+    expect(result.featureWarnings).toContain(PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING);
   });
 
   test('preserves supplied black arrays while their contours remain protected from engraving', () => {

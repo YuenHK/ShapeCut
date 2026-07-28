@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { diagnosticsFingerprint } from '../domain/pipeline/automatic-outline-pipeline';
 import { CENTRAL_HOLE_OMISSION_WARNING } from '../domain/outline-features/hole';
+import { PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING } from '../domain/outline-features/depth-field';
 import { featureEvidenceFingerprint } from '../domain/outline-features/types';
 import type { Point2 } from '../domain/decomposition/types';
 import type { FeatureContour } from '../domain/outline-features/types';
@@ -61,6 +62,47 @@ function withColoredLayers(
   const changed = {
     ...result,
     coloredLayers,
+    preview: { ...result.preview, layers: coloredLayers },
+  };
+  return { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
+}
+
+function protectedWorkOmissionResult() {
+  const result = coloredResult();
+  const omittedIndices = new Set([1, 3]);
+  const coloredLayers = result.coloredLayers.map((layer, index) => omittedIndices.has(index) ? {
+    ...layer,
+    deepFeatures: [],
+    lightFeatures: [],
+    diagnostics: {
+      ...layer.diagnostics,
+      depth: {
+        cellSizeMm: layer.diagnostics.depth.cellSizeMm,
+        contrastMm: 0,
+        redThresholdMm: 0,
+        blueThresholdMm: 0,
+        retained: { red: 0, blue: 0 },
+        omitted: { red: 0, blue: 0 },
+        omissionCode: 'PROTECTED_CUT_WORK_BUDGET' as const,
+      },
+    },
+  } : layer);
+  const changed = {
+    ...result,
+    status: 'warning' as const,
+    assembly: {
+      ...result.assembly,
+      decorationOmissions: [1, 3].map((index) => ({
+        layerId: coloredLayers[index].id,
+        reason: 'protected-cut-work-budget' as const,
+        roles: ['DEEP_RED', 'LIGHT_BLUE'] as const,
+      })),
+    },
+    coloredLayers,
+    featureWarnings: [
+      ...result.featureWarnings,
+      PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING,
+    ],
     preview: { ...result.preview, layers: coloredLayers },
   };
   return { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
@@ -152,6 +194,68 @@ describe('canonical colored outline document', () => {
       affectedLayerIds: ['layer-5', 'layer-6'],
     });
     expect(() => validateColoredOutlineDocument(document, result)).not.toThrow();
+  });
+
+  it('copies ordered protected-work omission evidence into the canonical document', () => {
+    const result = protectedWorkOmissionResult();
+    const document = createColoredOutlineDocument(result);
+
+    expect(document.assembly.decorationOmissions).toEqual([
+      {
+        layerId: result.coloredLayers[1].id,
+        reason: 'protected-cut-work-budget',
+        roles: ['DEEP_RED', 'LIGHT_BLUE'],
+      },
+      {
+        layerId: result.coloredLayers[3].id,
+        reason: 'protected-cut-work-budget',
+        roles: ['DEEP_RED', 'LIGHT_BLUE'],
+      },
+    ]);
+    expect(document.assembly.decorationOmissions)
+      .not.toBe(result.assembly.decorationOmissions);
+    expect(document.safetyNotes).toContain(PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING);
+    expect(document.layers[1].roles.DEEP_RED).toEqual([]);
+    expect(document.layers[1].roles.LIGHT_BLUE).toEqual([]);
+    expect(() => validateColoredOutlineDocument(document, result)).not.toThrow();
+  });
+
+  it.each([
+    ['missing evidence', (document: any) => { delete document.assembly.decorationOmissions; }],
+    ['extra evidence key', (document: any) => {
+      Object.assign(document.assembly.decorationOmissions[0], { privateDetail: true });
+    }],
+    ['duplicate layer ID', (document: any) => {
+      document.assembly.decorationOmissions[1]
+        = structuredClone(document.assembly.decorationOmissions[0]);
+    }],
+    ['reordered layer IDs', (document: any) => {
+      document.assembly.decorationOmissions.reverse();
+    }],
+    ['unknown layer ID', (document: any) => {
+      document.assembly.decorationOmissions[0].layerId = 'unknown-layer';
+    }],
+    ['wrong reason', (document: any) => {
+      document.assembly.decorationOmissions[0].reason = 'resource-limit';
+    }],
+    ['wrong roles', (document: any) => {
+      document.assembly.decorationOmissions[0].roles = ['LIGHT_BLUE', 'DEEP_RED'];
+    }],
+    ['decoration on omitted layer', (document: any) => {
+      document.layers[1].roles.DEEP_RED = [structuredClone(document.layers[0].roles.DEEP_RED[0])];
+    }],
+    ['missing warning', (document: any) => {
+      document.safetyNotes = document.safetyNotes.filter(
+        (warning: string) => warning !== PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING,
+      );
+    }],
+  ])('rejects forged canonical protected-work evidence: %s', (_label, mutate) => {
+    const result = protectedWorkOmissionResult();
+    const document = structuredClone(createColoredOutlineDocument(result)) as any;
+    mutate(document);
+
+    expect(() => validateColoredOutlineDocument(document, result))
+      .toThrow(/canonical|decoration|omission|warning|role|mismatch/i);
   });
 
   it('rejects a mixed launcher or fastener assembly forgery independently of the source result', () => {

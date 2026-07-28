@@ -55,6 +55,7 @@ describe('App real browser one-click flow', () => {
           },
         },
         fastener: { count: 0, centers: [], finishedDiameterMm: 3, pathDiameterMm: 2.85 },
+        decorationOmissions: [],
         topFeatures: {
           retained: { red: 0, blue: 0 }, omitted: { red: 0, blue: 0 },
           launcherOverlap: {

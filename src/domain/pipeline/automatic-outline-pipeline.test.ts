@@ -25,6 +25,7 @@ import {
 } from '../outline-assembly/launcher-template';
 import { planFixedLauncherClearance } from '../outline-assembly/launcher';
 import { expandLauncherExterior } from '../outline-assembly/launcher-exterior-expansion';
+import { PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING } from '../outline-features/depth-field';
 
 const testMaterial = { id: 'test-material', name: 'Test material', thicknessMm: 3, kerfMm: 0.1, minFeatureMm: 0.8, minWebMm: 0.5, fitAllowanceMm: { loose: 0.2, slip: 0.1, snug: 0, press: -0.1 } } as const;
 function convertAutomatically(request: { readonly bytes: ArrayBuffer }, onProgress?: Parameters<typeof convertAutomaticOutline>[1]) {
@@ -603,6 +604,93 @@ describe('automatic outline pipeline', () => {
     ))).toBe(true);
     expect(result.featureWarnings).toContain('表面深度差不足，已省略雕刻特徵');
     expect(result.featureWarnings.join('\n')).not.toMatch(/[\\/@]|[\w.+-]+@[\w.-]+/);
+  });
+
+  it('derives ordered per-layer protected-work omission evidence without changing black geometry', async () => {
+    const originalExactExtraction = extraction.extractExactContours;
+    let affectedIndex = -1;
+    let expectedBlack: extraction.OutlineExtraction['blackCuts'][number] | undefined;
+    const exact = vi.spyOn(extraction, 'extractExactContours').mockImplementationOnce((...args) => {
+      const extracted = originalExactExtraction(...args);
+      affectedIndex = 1;
+      expectedBlack = extracted.blackCuts[affectedIndex];
+      const retained: FeatureContour = {
+        id: `${extracted.layers[2].id}-deep-retained`,
+        role: 'DEEP_RED',
+        outer: [[-20, 14], [-20, 15], [-19, 15], [-19, 14]],
+        boundsMm: { minX: -20, minY: 14, maxX: -19, maxY: 15 },
+        areaMm2: 1,
+      };
+      const depthFeatures = extracted.depthFeatures.map((feature, index) => {
+        if (index === affectedIndex) return {
+          ...feature,
+          red: [],
+          blue: [],
+          warning: PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING,
+          omissionCode: 'PROTECTED_CUT_WORK_BUDGET' as const,
+          diagnostics: {
+            cellSizeMm: feature.diagnostics.cellSizeMm,
+            contrastMm: 0,
+            redThresholdMm: 0,
+            blueThresholdMm: 0,
+            retained: { red: 0, blue: 0 },
+            omitted: { red: 0, blue: 0 },
+            omissionCode: 'PROTECTED_CUT_WORK_BUDGET' as const,
+          },
+          evidence: { red: [], blue: [] },
+        };
+        if (index === 2) return {
+          ...feature,
+          red: [retained],
+          blue: [],
+          warning: undefined,
+          omissionCode: undefined,
+          diagnostics: {
+            ...feature.diagnostics,
+            contrastMm: 1,
+            redThresholdMm: 1,
+            blueThresholdMm: 0,
+            retained: { red: 1, blue: 0 },
+            omitted: { red: 0, blue: 0 },
+            omissionCode: undefined,
+          },
+        };
+        return feature;
+      });
+      return {
+        ...extracted,
+        depthFeatures,
+        featureWarnings: [...new Set([
+          ...extracted.featureWarnings,
+          PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING,
+        ])],
+      };
+    });
+    try {
+      const result = await convertAutomatically({
+        bytes: writeBinarySTL(cylinder(), 'safe'),
+      });
+      const affected = result.coloredLayers[affectedIndex];
+
+      expect(result.assembly.decorationOmissions).toEqual([{
+        layerId: affected.id,
+        reason: 'protected-cut-work-budget',
+        roles: ['DEEP_RED', 'LIGHT_BLUE'],
+      }]);
+      expect(result.status).toBe('warning');
+      expect(result.featureWarnings).toContain(PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING);
+      expect(affected.deepFeatures).toEqual([]);
+      expect(affected.lightFeatures).toEqual([]);
+      expect(affected.diagnostics.depth.omissionCode).toBe('PROTECTED_CUT_WORK_BUDGET');
+      expect(affected.launcherCuts).toEqual(expectedBlack?.launcherCuts ?? []);
+      expect(affected.fastenerHoles).toEqual(expectedBlack?.fastenerHoles ?? []);
+      expect(result.coloredLayers.some((layer, index) => (
+        index !== affectedIndex && layer.deepFeatures.length + layer.lightFeatures.length > 0
+      ))).toBe(true);
+      expect(result.featureEvidenceFingerprint).toBe(featureEvidenceFingerprint(result));
+    } finally {
+      exact.mockRestore();
+    }
   });
 
   it('publishes a retained exact hole through colored layers, preview, diagnostics, and fingerprint evidence', async () => {

@@ -15,11 +15,18 @@ import { rankTopFeatures, type TopFeatureCandidate } from './top-feature-planner
 export const DEPTH_CONTRAST_OMISSION_WARNING = '表面深度差不足，已省略雕刻特徵';
 export const DEPTH_DATA_OMISSION_WARNING = '表面深度資料不足，已省略雕刻特徵';
 export const DEPTH_GEOMETRY_OMISSION_WARNING = '雕刻特徵不可靠，已局部省略';
+export const PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING = '三爪孔保護運算量超出上限，已省略此層紅藍裝飾';
+
+export class ProtectedCutWorkBudgetError extends RangeError {
+  readonly name = 'ProtectedCutWorkBudgetError';
+  readonly code = 'PROTECTED_CUT_WORK_BUDGET';
+}
 
 export type DepthFeatureOmissionCode =
   | 'INSUFFICIENT_CONTRAST'
   | 'INSUFFICIENT_DEPTH_DATA'
-  | 'UNRELIABLE_DEPTH_GEOMETRY';
+  | 'UNRELIABLE_DEPTH_GEOMETRY'
+  | 'PROTECTED_CUT_WORK_BUDGET';
 
 export type DepthField = {
   readonly width: number;
@@ -254,7 +261,9 @@ function validateRequest(projected: ProjectedMesh, request: DepthFeatureRequest,
     }
   }
   if (protectedPointCount * width * height > MAX_DEPTH_COMPONENT_BYTES) {
-    throw new RangeError('Depth feature extraction exceeds the protected cut work budget');
+    throw new ProtectedCutWorkBudgetError(
+      'Depth feature extraction exceeds the protected cut work budget',
+    );
   }
   for (const cut of protectedCuts) {
     const validation = validateDepthFeatureContours({ exterior: cut, clearanceMm: 0, deadline, checkpoint });
@@ -1222,7 +1231,22 @@ export function extractAdaptiveDepthFeatures(projected: ProjectedMesh, request: 
   const checkpoint = request.checkpoint ?? (() => undefined);
   checkRuntime(deadline, checkpoint);
   const effectiveRequest = { ...request, deadline, checkpoint };
-  const field = buildDepthField(projected, effectiveRequest);
+  let field: DepthField;
+  try {
+    field = buildDepthField(projected, effectiveRequest);
+  } catch (error) {
+    if (!(error instanceof ProtectedCutWorkBudgetError)) throw error;
+    return omission(
+      'PROTECTED_CUT_WORK_BUDGET',
+      PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING,
+      {
+        cellSizeMm: request.cellSizeMm,
+        contrastMm: 0,
+        redThresholdMm: 0,
+        blueThresholdMm: 0,
+      },
+    );
+  }
   const samples: number[] = [];
   for (let index = 0; index < field.depthMm.length; index += 1) {
     if ((index & 1023) === 0) checkRuntime(deadline, checkpoint);

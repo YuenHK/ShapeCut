@@ -15,6 +15,7 @@ import {
   OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
   OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
 } from '../domain/outline-assembly/launcher-template';
+import { PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING } from '../domain/outline-features/depth-field';
 import {
   LAUNCHER_EXTERIOR_EXPANSION_MAX_MM,
   LAUNCHER_EXTERIOR_EXPANSION_MODE,
@@ -111,6 +112,30 @@ function copyAssembly(
 ): AutomaticOutlineAssembly {
   checkpoint('canonical:assembly:start');
   const material = validateManufacturingGeometryProfile(assembly.material);
+  if (!Array.isArray(assembly.decorationOmissions) || assembly.decorationOmissions.length > 24) {
+    throw new RangeError('Colored canonical decoration omission evidence is invalid');
+  }
+  const decorationOmissions = assembly.decorationOmissions.map((omission) => {
+    checkpoint('canonical:assembly-decoration-omission-loop');
+    if (!omission || typeof omission !== 'object'
+      || Object.keys(omission).length !== 3
+      || !Object.hasOwn(omission, 'layerId')
+      || !Object.hasOwn(omission, 'reason')
+      || !Object.hasOwn(omission, 'roles')
+      || typeof omission.layerId !== 'string'
+      || omission.reason !== 'protected-cut-work-budget'
+      || !Array.isArray(omission.roles)
+      || omission.roles.length !== 2
+      || omission.roles[0] !== 'DEEP_RED'
+      || omission.roles[1] !== 'LIGHT_BLUE') {
+      throw new RangeError('Colored canonical decoration omission evidence is invalid');
+    }
+    return {
+      layerId: omission.layerId,
+      reason: 'protected-cut-work-budget' as const,
+      roles: ['DEEP_RED', 'LIGHT_BLUE'] as const,
+    };
+  });
   return {
     material: { ...material, fitAllowanceMm: { ...material.fitAllowanceMm } },
     launcher: {
@@ -142,6 +167,7 @@ function copyAssembly(
       ...(assembly.fastener.radiusMm === undefined ? {} : { radiusMm: assembly.fastener.radiusMm }),
       ...(assembly.fastener.rotationRad === undefined ? {} : { rotationRad: assembly.fastener.rotationRad }),
     },
+    decorationOmissions,
     topFeatures: {
       retained: { ...assembly.topFeatures.retained },
       omitted: { ...assembly.topFeatures.omitted },
@@ -264,6 +290,26 @@ function assertCanonicalShape(
       )
       .every((count) => Number.isSafeInteger(count) && count >= 0)) {
     throw new RangeError('Colored canonical assembly summary is invalid');
+  }
+  let previousOmissionPosition = -1;
+  const omittedLayerIds = new Set<string>();
+  for (const omission of assembly.decorationOmissions) {
+    checkpoint('canonical:validate-decoration-omission-loop');
+    const position = document.layers.findIndex((layer) => layer.id === omission.layerId);
+    const layer = document.layers[position];
+    if (position <= previousOmissionPosition
+      || omittedLayerIds.has(omission.layerId)
+      || !layer
+      || layer.roles.DEEP_RED.length !== 0
+      || layer.roles.LIGHT_BLUE.length !== 0) {
+      throw new RangeError('Colored canonical decoration omission layer order or roles are inconsistent');
+    }
+    omittedLayerIds.add(omission.layerId);
+    previousOmissionPosition = position;
+  }
+  if (safetyNotes.includes(PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING)
+    !== (assembly.decorationOmissions.length > 0)) {
+    throw new RangeError('Colored canonical decoration omission warning provenance is inconsistent');
   }
   const layerIds = new Set<string>(), featureIds = new Set<string>();
   for (const [position, layer] of document.layers.entries()) {

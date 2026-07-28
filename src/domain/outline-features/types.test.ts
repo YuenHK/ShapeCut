@@ -3,6 +3,7 @@ import type { Point2 } from '../decomposition/types';
 import type { OutlineLayer } from '../outline-2.5d/extract';
 import type { AutomaticOutlineResult } from '../pipeline/automatic-outline-pipeline';
 import { CENTRAL_HOLE_OMISSION_WARNING } from './hole';
+import { PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING } from './depth-field';
 import { FASTENER_OMISSION_WARNING } from '../outline-assembly/fasteners';
 import {
   planFixedLauncherClearance,
@@ -159,6 +160,7 @@ function automaticResult(sourceLayers = coloredLayerSet(6)): AutomaticOutlineRes
         },
       },
       fastener: { count: 0 as const, centers: [], finishedDiameterMm: 3 as const, pathDiameterMm: 2.9 },
+      decorationOmissions: [],
       topFeatures: {
         retained: { red: coloredLayers.at(-1)?.deepFeatures.length ?? 0, blue: coloredLayers.at(-1)?.lightFeatures.length ?? 0 },
         omitted: coloredLayers.at(-1)?.diagnostics.depth.omitted ?? { red: 0, blue: 0 },
@@ -248,6 +250,47 @@ function withSharedHoleEvidence(
     coloredLayers,
     featureWarnings: reconciledWarnings,
     preview: { ...result.preview, layers: coloredLayers },
+  };
+  return { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
+}
+
+function withProtectedWorkOmissions(indices: readonly number[] = [1, 3]): AutomaticOutlineResult {
+  const source = automaticResult();
+  const omittedIndices = new Set(indices);
+  const coloredLayers = source.coloredLayers.map((layer, index) => omittedIndices.has(index) ? {
+    ...layer,
+    deepFeatures: [],
+    lightFeatures: [],
+    diagnostics: {
+      ...layer.diagnostics,
+      depth: {
+        cellSizeMm: layer.diagnostics.depth.cellSizeMm,
+        contrastMm: 0,
+        redThresholdMm: 0,
+        blueThresholdMm: 0,
+        retained: { red: 0, blue: 0 },
+        omitted: { red: 0, blue: 0 },
+        omissionCode: 'PROTECTED_CUT_WORK_BUDGET' as const,
+      },
+    },
+  } : layer);
+  const changed = {
+    ...source,
+    status: 'warning' as const,
+    assembly: {
+      ...source.assembly,
+      decorationOmissions: indices.map((index) => ({
+        layerId: coloredLayers[index].id,
+        reason: 'protected-cut-work-budget' as const,
+        roles: ['DEEP_RED', 'LIGHT_BLUE'] as const,
+      })),
+    },
+    coloredLayers,
+    preview: { ...source.preview, layers: coloredLayers },
+    featureWarnings: [
+      ...source.featureWarnings,
+      PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING,
+    ],
   };
   return { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
 }
@@ -1300,6 +1343,79 @@ describe('colored outline contracts', () => {
     expect(() => validateAutomaticColoredResult({
       ...automaticResult(), featureEvidenceFingerprint: '0'.repeat(32),
     })).toThrow(/feature.*fingerprint/i);
+  });
+
+  it('accepts ordered protected-work omissions and fingerprints the canonical evidence', () => {
+    const omitted = withProtectedWorkOmissions();
+    const withoutEvidence = {
+      ...omitted,
+      assembly: { ...omitted.assembly, decorationOmissions: [] },
+    };
+
+    expect(() => validateAutomaticColoredResult(omitted)).not.toThrow();
+    expect(omitted.assembly.decorationOmissions.map(({ layerId }) => layerId)).toEqual([
+      omitted.coloredLayers[1].id,
+      omitted.coloredLayers[3].id,
+    ]);
+    expect(featureEvidenceFingerprint(withoutEvidence)).not.toBe(omitted.featureEvidenceFingerprint);
+  });
+
+  it.each([
+    ['missing evidence key', (result: any) => {
+      delete result.assembly.decorationOmissions;
+    }],
+    ['extra evidence key', (result: any) => {
+      Object.assign(result.assembly.decorationOmissions[0], { privateDetail: true });
+    }],
+    ['duplicated layer ID', (result: any) => {
+      result.assembly.decorationOmissions = [
+        result.assembly.decorationOmissions[0],
+        result.assembly.decorationOmissions[0],
+      ];
+    }],
+    ['reordered layer IDs', (result: any) => {
+      result.assembly.decorationOmissions.reverse();
+    }],
+    ['unknown layer ID', (result: any) => {
+      result.assembly.decorationOmissions[0].layerId = 'unknown-layer';
+    }],
+    ['wrong reason', (result: any) => {
+      result.assembly.decorationOmissions[0].reason = 'resource-limit';
+    }],
+    ['wrong role order', (result: any) => {
+      result.assembly.decorationOmissions[0].roles = ['LIGHT_BLUE', 'DEEP_RED'];
+    }],
+    ['decoration on an omitted layer', (result: any) => {
+      const retained = automaticResult().coloredLayers[1].deepFeatures[0];
+      result.coloredLayers[1].deepFeatures = [retained];
+      result.coloredLayers[1].diagnostics.depth.retained = { red: 1, blue: 0 };
+      result.preview.layers = result.coloredLayers;
+    }],
+    ['cleared decoration without evidence', (result: any) => {
+      result.assembly.decorationOmissions = [];
+    }],
+    ['missing protected-work warning', (result: any) => {
+      result.featureWarnings = result.featureWarnings.filter(
+        (warning: string) => warning !== PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING,
+      );
+    }],
+    ['wrong diagnostic code', (result: any) => {
+      result.coloredLayers[1].diagnostics.depth.omissionCode = 'INSUFFICIENT_CONTRAST';
+      result.preview.layers = result.coloredLayers;
+      result.featureWarnings.push('表面深度差不足，已省略雕刻特徵');
+    }],
+    ['changed lower black contour', (result: any) => {
+      result.coloredLayers[1].exterior = square(61, result.coloredLayers[1].exterior.id);
+      result.preview.layers = result.coloredLayers;
+    }],
+  ])('rejects fingerprint-consistent protected-work mutation: %s', (_label, mutate) => {
+    const forged = structuredClone(withProtectedWorkOmissions()) as any;
+    mutate(forged);
+    forged.featureEvidenceFingerprint = featureEvidenceFingerprint(forged);
+
+    expect(forged.featureEvidenceFingerprint).toBe(featureEvidenceFingerprint(forged));
+    expect(() => validateAutomaticColoredResult(forged))
+      .toThrow(/decoration|omission|warning|contour|exterior|source/i);
   });
 
   it('rejects fingerprint-consistent omission evidence without its sanitized warning', () => {

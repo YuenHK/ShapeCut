@@ -176,6 +176,7 @@ export function coloredResult(): AutomaticOutlineResult {
       fastener: {
         count: 0 as const, centers: [], finishedDiameterMm: 3 as const, pathDiameterMm: 2.85,
       },
+      decorationOmissions: [],
       topFeatures: {
         retained: { red: 0, blue: 0 },
         omitted: { red: 0, blue: 0 },

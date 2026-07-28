@@ -30,7 +30,10 @@ import {
 import { createPhysicalCutProtection } from '../outline-assembly/physical-cut-envelope';
 import type { Vec3 } from '../types';
 import { CENTRAL_HOLE_OMISSION_WARNING, isStrictlyContainedLoop } from './hole';
-import type { DepthFeatureOmissionCode } from './depth-field';
+import {
+  PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING,
+  type DepthFeatureOmissionCode,
+} from './depth-field';
 import { validateDepthFeatureContours } from './validate';
 import {
   MAX_INTERNAL_PROVISIONAL_CONTOURS_PER_ROLE,
@@ -105,6 +108,12 @@ export type AutomaticTopFeatureAssembly = {
   };
 };
 
+export type DecorationOmission = {
+  readonly layerId: string;
+  readonly reason: 'protected-cut-work-budget';
+  readonly roles: readonly ['DEEP_RED', 'LIGHT_BLUE'];
+};
+
 export type AutomaticOutlineAssembly = {
   readonly material: ManufacturingGeometryProfile;
   readonly launcher: AutomaticLauncherAssembly;
@@ -116,6 +125,7 @@ export type AutomaticOutlineAssembly = {
     readonly radiusMm?: number;
     readonly rotationRad?: number;
   };
+  readonly decorationOmissions: readonly DecorationOmission[];
   readonly topFeatures: AutomaticTopFeatureAssembly;
 };
 
@@ -138,11 +148,13 @@ type ValidationBudget = {
 const FEATURE_ROLES = new Set<FeatureRole>(['CUT_BLACK', 'DEEP_RED', 'LIGHT_BLUE']);
 const DEPTH_OMISSION_CODES = new Set<DepthFeatureOmissionCode>([
   'INSUFFICIENT_CONTRAST', 'INSUFFICIENT_DEPTH_DATA', 'UNRELIABLE_DEPTH_GEOMETRY',
+  'PROTECTED_CUT_WORK_BUDGET',
 ]);
 const DEPTH_OMISSION_WARNINGS: Readonly<Record<DepthFeatureOmissionCode, string>> = Object.freeze({
   INSUFFICIENT_CONTRAST: '表面深度差不足，已省略雕刻特徵',
   INSUFFICIENT_DEPTH_DATA: '表面深度資料不足，已省略雕刻特徵',
   UNRELIABLE_DEPTH_GEOMETRY: '雕刻特徵不可靠，已局部省略',
+  PROTECTED_CUT_WORK_BUDGET: PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING,
 });
 const LAYER_KEYS = new Set([
   'id', 'index', 'zStart', 'zEnd', 'exterior', 'centralHole',
@@ -648,6 +660,16 @@ function validateColoredLayerWithBudget(value: unknown, budget: ValidationBudget
   }
   const diagnosticReasons = diagnosticsReasons(value.diagnostics);
   reasons.push(...diagnosticReasons);
+  if (diagnosticReasons.length === 0
+    && Array.isArray(value.deepFeatures)
+    && Array.isArray(value.lightFeatures)
+    && isRecord(value.diagnostics)
+    && isRecord(value.diagnostics.depth)
+    && isRecord(value.diagnostics.depth.retained)
+    && (value.diagnostics.depth.retained.red !== value.deepFeatures.length
+      || value.diagnostics.depth.retained.blue !== value.lightFeatures.length)) {
+    reasons.push('Depth diagnostics retained counts must match canonical red and blue contours');
+  }
   if (exteriorValid && centralHoleValid && diagnosticReasons.length === 0
     && isRecord(value.exterior) && Array.isArray(value.exterior.outer)
     && isRecord(value.centralHole) && Array.isArray(value.centralHole.outer)
@@ -1177,7 +1199,9 @@ function assemblyReasons(
   const reasons: string[] = [];
   checkRuntimeBudget(deadline, checkpoint);
   if (!isRecord(value)) return ['Automatic assembly summary must be present'];
-  reasons.push(...unexpectedKeys(value, new Set(['material', 'launcher', 'fastener', 'topFeatures']), 'Automatic assembly'));
+  reasons.push(...unexpectedKeys(value, new Set([
+    'material', 'launcher', 'fastener', 'decorationOmissions', 'topFeatures',
+  ]), 'Automatic assembly'));
   if (!material || JSON.stringify(value.material) !== JSON.stringify(material)) {
     reasons.push('Automatic assembly material must match the validated manufacturing geometry profile');
   }
@@ -1337,6 +1361,58 @@ function assemblyReasons(
     if (featureWarnings.includes(FASTENER_OMISSION_WARNING_TEXT) !== (count === 0)) {
       reasons.push('Automatic assembly fastener omission warning provenance is inconsistent');
     }
+  }
+  const expectedDecorationOmissions = layers
+    .filter((layer) => layer.diagnostics.depth.omissionCode === 'PROTECTED_CUT_WORK_BUDGET')
+    .map((layer): DecorationOmission => ({
+      layerId: layer.id,
+      reason: 'protected-cut-work-budget',
+      roles: ['DEEP_RED', 'LIGHT_BLUE'],
+    }));
+  const decorationOmissions = value.decorationOmissions;
+  if (!Array.isArray(decorationOmissions)) {
+    reasons.push('Automatic assembly decoration omissions must be an ordered array');
+  } else {
+    if (decorationOmissions.length !== expectedDecorationOmissions.length) {
+      reasons.push('Automatic assembly decoration omissions must exactly match omitted layer diagnostics');
+    }
+    const seenLayerIds = new Set<string>();
+    for (let index = 0; index < decorationOmissions.length; index += 1) {
+      checkRuntimeBudget(deadline, checkpoint, 'assembly:decoration-omission-loop');
+      const omission = decorationOmissions[index];
+      const expected = expectedDecorationOmissions[index];
+      if (!isRecord(omission)) {
+        reasons.push('Automatic assembly decoration omission must be an object');
+        continue;
+      }
+      reasons.push(...unexpectedKeys(
+        omission,
+        new Set(['layerId', 'reason', 'roles']),
+        'Automatic assembly decoration omission',
+      ));
+      if (typeof omission.layerId !== 'string'
+        || seenLayerIds.has(omission.layerId)
+        || omission.layerId !== expected?.layerId
+        || omission.reason !== 'protected-cut-work-budget'
+        || !Array.isArray(omission.roles)
+        || omission.roles.length !== 2
+        || omission.roles[0] !== 'DEEP_RED'
+        || omission.roles[1] !== 'LIGHT_BLUE') {
+        reasons.push('Automatic assembly decoration omission layer, reason, roles, uniqueness, or order is invalid');
+      }
+      if (typeof omission.layerId === 'string') seenLayerIds.add(omission.layerId);
+    }
+  }
+  for (const layer of layers) {
+    checkRuntimeBudget(deadline, checkpoint, 'assembly:decoration-omission-layer-loop');
+    if (layer.diagnostics.depth.omissionCode === 'PROTECTED_CUT_WORK_BUDGET'
+      && (layer.deepFeatures.length !== 0 || layer.lightFeatures.length !== 0)) {
+      reasons.push(`Protected-cut work omission layer ${layer.id} must contain zero red and blue contours`);
+    }
+  }
+  if (featureWarnings.includes(PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING)
+    !== (expectedDecorationOmissions.length > 0)) {
+    reasons.push('Protected-cut work omission warning provenance is inconsistent');
   }
   const topFeatures = value.topFeatures;
   const top = layers.at(-1);
