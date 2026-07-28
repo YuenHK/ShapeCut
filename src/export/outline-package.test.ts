@@ -1,5 +1,11 @@
 import JSZip from 'jszip';
-import { PDFDocument, StandardFonts } from 'pdf-lib';
+import {
+  decodePDFRawStream,
+  PDFArray,
+  PDFDocument,
+  PDFRawStream,
+  StandardFonts,
+} from 'pdf-lib';
 import { describe, expect, it } from 'vitest';
 import type { OutlineLayer } from '../domain/outline-2.5d/extract';
 import type { AutomaticOutlineResult } from '../domain/pipeline/automatic-outline-pipeline';
@@ -11,6 +17,7 @@ import {
   createOutlineDocument,
   createLegacyOutlinePackage as createOutlinePackage,
   createOutlinePackage as createColoredOutlinePackage,
+  type ColoredOutlinePackage,
   type OutlinePackage,
   verifyLegacyOutlinePackage as verifyOutlinePackage,
   verifyOutlinePackage as verifyColoredOutlinePackage,
@@ -21,6 +28,7 @@ import {
   writeOutlinePreviewPdf,
   writeOutlineSvg,
   writeOutlineZip,
+  writeColoredOutlineZip,
 } from './package';
 import { writeOutlineProjectJson } from './project-json';
 import { coloredResult } from './colored-outline-test-fixture';
@@ -105,6 +113,79 @@ function coloredResultWithExteriorExpansion(offsetMm = 2.35): AutomaticOutlineRe
       result.assembly.material,
     ),
   };
+}
+
+function coloredPackagePayloadBytes(
+  output: Omit<ColoredOutlinePackage, 'zip' | 'manifestJson'>,
+): ReadonlyMap<string, Uint8Array> {
+  const encoder = new TextEncoder();
+  return new Map([
+    ['cut-and-engrave.svg', encoder.encode(output.cutSvg)],
+    ['cut-and-engrave.dxf', encoder.encode(output.cutDxf)],
+    ['preview.pdf', output.previewPdf],
+    ['exploded-view.pdf', output.explodedViewPdf],
+    ['launcher-fit-coupon.svg', encoder.encode(output.launcherCouponSvg)],
+    ['project.json', encoder.encode(output.projectJson)],
+  ]);
+}
+
+async function sha256Fixture(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', Uint8Array.from(bytes).buffer);
+  return [...new Uint8Array(digest)]
+    .map((value) => value.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+async function synchronizedColoredPackage(
+  output: ColoredOutlinePackage,
+  replacements: Partial<Omit<ColoredOutlinePackage, 'zip' | 'manifestJson'>>,
+): Promise<ColoredOutlinePackage> {
+  const replaced = { ...output, ...replacements };
+  const payloads = coloredPackagePayloadBytes(replaced);
+  const manifest = JSON.parse(output.manifestJson);
+  manifest.members = await Promise.all(manifest.members.map(async (member: {
+    path: string;
+    byteLength: number;
+    sha256: string;
+  }) => {
+    const bytes = payloads.get(member.path);
+    if (!bytes) throw new Error(`Missing colored package fixture member: ${member.path}`);
+    return {
+      ...member,
+      byteLength: bytes.byteLength,
+      sha256: await sha256Fixture(bytes),
+    };
+  }));
+  const manifestJson = JSON.stringify(manifest, null, 2);
+  const zip = await writeColoredOutlineZip({
+    cutSvg: replaced.cutSvg,
+    cutDxf: replaced.cutDxf,
+    previewPdf: replaced.previewPdf,
+    explodedViewPdf: replaced.explodedViewPdf,
+    launcherCouponSvg: replaced.launcherCouponSvg,
+    projectJson: replaced.projectJson,
+    manifestJson,
+  });
+  return { ...replaced, manifestJson, zip };
+}
+
+function visiblePdfText(pdf: PDFDocument): string {
+  return pdf.getPages().flatMap((page) => {
+    const contents = page.node.Contents();
+    const values = contents instanceof PDFArray ? contents.asArray() : contents ? [contents] : [];
+    return values.flatMap((value) => {
+      const stream = pdf.context.lookup(value);
+      if (!(stream instanceof PDFRawStream)) {
+        throw new Error('Expected a raw canonical colored PDF content stream');
+      }
+      const decoded = new TextDecoder('latin1').decode(decodePDFRawStream(stream).decode());
+      return [...decoded.matchAll(/<([0-9A-F]+)> Tj/g)].map((match) => (
+        new TextDecoder('latin1').decode(Uint8Array.from(
+          match[1].match(/../g)!.map((pair) => Number.parseInt(pair, 16)),
+        ))
+      ));
+    });
+  }).join('\n');
 }
 
 function layer(
@@ -503,7 +584,41 @@ describe('material-independent outline package', () => {
     }, runtime)).rejects.toThrow(/project|manifest|metadata|reconcile|mismatch/i);
   });
 
-  it('rejects a replaced expanded exterior path', async () => {
+  it('rejects every forged project expansion decision after rebuilding its hash, manifest, and ZIP', async () => {
+    const runtime = coloredResultWithExteriorExpansion();
+    const output = await createColoredOutlinePackage(runtime);
+    const mutations = [
+      ['mode', (project: any) => {
+        project.assembly.launcher.exteriorExpansion.mode = 'independent';
+      }],
+      ['offset', (project: any) => {
+        project.assembly.launcher.exteriorExpansion.offsetMm = 2.36;
+      }],
+      ['maximum', (project: any) => {
+        project.assembly.launcher.exteriorExpansion.maxOffsetMm = 7;
+      }],
+      ['missing member', (project: any) => {
+        delete project.assembly.launcher.exteriorExpansion.maxOffsetMm;
+      }],
+      ['affected layer order', (project: any) => {
+        project.assembly.launcher.exteriorExpansion.affectedLayerIds.reverse();
+      }],
+    ] as const;
+
+    for (const [label, mutate] of mutations) {
+      const project = JSON.parse(output.projectJson);
+      mutate(project);
+      const forged = await synchronizedColoredPackage(output, {
+        projectJson: JSON.stringify(project, null, 2),
+      });
+      await expect(
+        verifyColoredOutlinePackage(forged, runtime),
+        label,
+      ).rejects.toThrow(/project|manifest|metadata|reconcile|mismatch/i);
+    }
+  });
+
+  it('rejects a replaced expanded exterior path with synchronized manifest hashes and ZIP bytes', async () => {
     const runtime = coloredResultWithExteriorExpansion();
     const output = await createColoredOutlinePackage(runtime);
     const mutatedSvg = output.cutSvg.replace(
@@ -511,20 +626,50 @@ describe('material-independent outline package', () => {
       (_match, prefix: string, points: string) => `${prefix}99,99 ${points}`,
     );
     expect(mutatedSvg).not.toBe(output.cutSvg);
+    const forged = await synchronizedColoredPackage(output, { cutSvg: mutatedSvg });
 
+    await expect(verifyColoredOutlinePackage(forged, runtime))
+      .rejects.toThrow(/SVG|geometry|canonical|mismatch/i);
+  });
+
+  it('rejects alternate expanded DXF/PDF geometry and a ZIP-only expanded exterior with synchronized wrappers', async () => {
+    const runtime = coloredResultWithExteriorExpansion(2.35);
+    const output = await createColoredOutlinePackage(runtime);
+    const alternate = await createColoredOutlinePackage(
+      coloredResultWithExteriorExpansion(2.36),
+    );
+
+    for (const replacements of [
+      { cutDxf: alternate.cutDxf },
+      { previewPdf: alternate.previewPdf },
+      { explodedViewPdf: alternate.explodedViewPdf },
+    ]) {
+      const forged = await synchronizedColoredPackage(output, replacements);
+      await expect(verifyColoredOutlinePackage(forged, runtime))
+        .rejects.toThrow(/DXF|PDF|geometry|canonical|mismatch/i);
+    }
+
+    const synchronizedZipMutation = await synchronizedColoredPackage(output, {
+      cutSvg: alternate.cutSvg,
+    });
     await expect(verifyColoredOutlinePackage({
       ...output,
-      cutSvg: mutatedSvg,
-    }, runtime)).rejects.toThrow(/SVG|geometry|canonical|mismatch/i);
+      zip: synchronizedZipMutation.zip,
+    }, runtime)).rejects.toThrow(/ZIP|byte-identical|canonical|payload/i);
   });
 
   it('carries expansion only as geometry and machine metadata, never as fabrication labels', async () => {
     const output = await createColoredOutlinePackage(coloredResultWithExteriorExpansion());
+    const pdfText = await Promise.all([
+      output.previewPdf,
+      output.explodedViewPdf,
+    ].map(async (bytes) => visiblePdfText(
+      await PDFDocument.load(bytes, { updateMetadata: false }),
+    )));
     const fabricationText = [
       output.cutSvg,
       output.cutDxf,
-      new TextDecoder('latin1').decode(output.previewPdf),
-      new TextDecoder('latin1').decode(output.explodedViewPdf),
+      ...pdfText,
     ].join('\n');
 
     expect(fabricationText).not.toMatch(

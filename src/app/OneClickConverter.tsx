@@ -375,6 +375,9 @@ export function OneClickConverter({
   const [selectedMaterialId, setSelectedMaterialId] = useState('');
   const [sourceSha256, setSourceSha256] = useState<string | undefined>();
   const [savedSourceReattached, setSavedSourceReattached] = useState(false);
+  const [savedDecisionMismatchCause, setSavedDecisionMismatchCause] = useState<
+    'template' | 'expansion' | undefined
+  >();
   const [savedProjectDiscarded, setSavedProjectDiscarded] = useState(false);
   const savedProject = savedProjectDiscarded ? undefined : services.savedProject;
   const effectLevel = useEffectLevel(view.kind === 'processing');
@@ -499,17 +502,20 @@ export function OneClickConverter({
       const launcherExteriorExpansion = structuredClone(
         result.assembly.launcher.exteriorExpansion,
       );
-      const storedDecisionMismatch = savedProject !== undefined
+      const storedTemplateMismatch = savedProject !== undefined
         && savedProject.launcherExteriorExpansion !== null
         && (
           savedProject.launcherTemplateVersion !== result.assembly.launcher.templateVersion
           || savedProject.launcherTemplateFingerprint
             !== result.assembly.launcher.templateFingerprint
-          || !launcherExteriorExpansionEquals(
-            savedProject.launcherExteriorExpansion,
-            launcherExteriorExpansion,
-          )
         );
+      const storedExpansionMismatch = savedProject !== undefined
+        && savedProject.launcherExteriorExpansion !== null
+        && !launcherExteriorExpansionEquals(
+          savedProject.launcherExteriorExpansion,
+          launcherExteriorExpansion,
+        );
+      const storedDecisionMismatch = storedTemplateMismatch || storedExpansionMismatch;
       if (storedDecisionMismatch) {
         timeline.cancel();
         if (timelineRef.current === timeline) timelineRef.current = undefined;
@@ -528,6 +534,7 @@ export function OneClickConverter({
             status: 'regeneration-required',
           });
         }
+        setSavedDecisionMismatchCause(storedExpansionMismatch ? 'expansion' : 'template');
         setSavedSourceReattached(false);
         setView({ kind: 'material', fileName, bytes });
         return;
@@ -591,6 +598,7 @@ export function OneClickConverter({
     const current = ++requestId.current;
     setLauncherFitInput('0.00');
     setSelectedMaterialId('');
+    setSavedDecisionMismatchCause(undefined);
     clearPresentationPreview();
     timelineRef.current?.cancel();
     timelineRef.current = undefined;
@@ -657,6 +665,7 @@ export function OneClickConverter({
     setSelectedMaterialId('');
     setSourceSha256(undefined);
     setSavedSourceReattached(false);
+    setSavedDecisionMismatchCause(undefined);
     setView({ kind: 'upload' });
   };
 
@@ -719,8 +728,12 @@ export function OneClickConverter({
         <section aria-label="已儲存專案重新產生">
           {savedSourceReattached ? (
             <p role="status">重新連結完成；下載仍被鎖定，直至 canonical 正式輸出重新產生。</p>
-          ) : (
+          ) : savedDecisionMismatchCause === 'template' ? (
+            <p role="status">三爪樣板決策已更新；請重新連結原本 STL 後再次產生正式輸出。</p>
+          ) : savedDecisionMismatchCause === 'expansion' ? (
             <p role="status">外框擴大決策已更新；請重新連結原本 STL 後再次產生正式輸出。</p>
+          ) : (
+            <p role="status">已儲存的發射器決策需要重新連結原本 STL 後再次產生正式輸出。</p>
           )}
           <button
             type="button"

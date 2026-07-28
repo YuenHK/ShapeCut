@@ -288,6 +288,46 @@ describe('OneClickConverter', () => {
     }));
   });
 
+  it('reports a template-only replacement without claiming the exterior expansion changed', async () => {
+    const user = userEvent.setup();
+    const bytes = new TextEncoder().encode('saved mesh');
+    const saveProject = vi.fn().mockResolvedValue(undefined);
+    const api = services({
+      convert: vi.fn().mockResolvedValue(result),
+      saveProject,
+      savedProject: {
+        schemaVersion: 2,
+        id: 'one-click-current',
+        updatedAt: '2026-07-28T00:00:00.000Z',
+        sourceSha256: await sha256Hex(bytes),
+        material: manufacturingGeometryProfile(READY_TEST_MATERIAL),
+        launcherFitOffsetMm: 0,
+        launcherTemplateVersion: OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+        launcherTemplateFingerprint: 'f'.repeat(32),
+        launcherExteriorExpansion: result.assembly.launcher.exteriorExpansion,
+        canonicalSourceHash: result.sourceHash,
+        status: 'regeneration-required',
+      },
+    });
+    render(<OneClickConverter services={api} />);
+
+    await user.upload(
+      screen.getByLabelText('選擇 STL 模型'),
+      new File([bytes], 'reattached.stl'),
+    );
+    await user.click(await screen.findByRole('button', { name: '重新產生正式輸出' }));
+
+    expect(api.package).not.toHaveBeenCalled();
+    expect(saveProject).toHaveBeenLastCalledWith(expect.objectContaining({
+      status: 'regeneration-required',
+      launcherExteriorExpansion: result.assembly.launcher.exteriorExpansion,
+    }));
+    expect(screen.getByText(
+      '三爪樣板決策已更新；請重新連結原本 STL 後再次產生正式輸出。',
+    )).toBeVisible();
+    expect(screen.queryByText(/外框擴大決策已更新/)).not.toBeInTheDocument();
+  });
+
   it('re-arms source reattachment when only the stored expansion decision is replaced', async () => {
     const user = userEvent.setup();
     const bytes = new TextEncoder().encode('saved mesh');

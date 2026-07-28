@@ -13,6 +13,8 @@ import {
   OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
   OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
 } from '../domain/outline-assembly/launcher-template';
+import { sha256Hex } from '../persistence/project-repository';
+import { coloredResult } from '../export/colored-outline-test-fixture';
 
 const services: OneClickConverterServices = {
   convert: vi.fn(() => new Promise<AutomaticOutlineResult>(() => undefined)),
@@ -69,6 +71,72 @@ describe('App', () => {
 
     await act(async () => { pending.resolve(savedProject); await pending.promise; });
     expect(await screen.findByText(/需要重新連結原本 STL/)).toBeVisible();
+  });
+
+  it('propagates a replacement expansion decision and keeps regeneration blocked through the App adapter', async () => {
+    const user = userEvent.setup();
+    const bytes = new TextEncoder().encode('saved mesh');
+    const result = coloredResult();
+    const initialProject: StoredOneClickProjectV2 = {
+      ...savedProject,
+      sourceSha256: await sha256Hex(bytes),
+      canonicalSourceHash: result.sourceHash,
+      status: 'regeneration-required',
+      launcherExteriorExpansion: {
+        ...result.assembly.launcher.exteriorExpansion,
+        offsetMm: 2.35,
+      },
+    };
+    const save = vi.fn().mockResolvedValue(undefined);
+    const activeServices: OneClickConverterServices = {
+      convert: vi.fn().mockResolvedValue(result),
+      package: vi.fn().mockResolvedValue({
+        zip: { href: 'blob:zip', fileName: 'shapecut-files.zip' },
+        svg: { href: 'blob:svg', fileName: 'cut-and-engrave.svg' },
+        dxf: { href: 'blob:dxf', fileName: 'cut-and-engrave.dxf' },
+        previewPdf: { href: 'blob:preview', fileName: 'preview.pdf' },
+        explodedPdf: { href: 'blob:exploded', fileName: 'exploded-view.pdf' },
+        launcherCoupon: { href: 'blob:coupon', fileName: 'launcher-fit-coupon.svg' },
+      }),
+      cancel: vi.fn(),
+      createTimeline: () => ({
+        advance: vi.fn(),
+        finish: () => Promise.resolve(),
+        cancel: vi.fn(),
+      }),
+    };
+    render(<App
+      services={activeServices}
+      materialRepository={emptyMaterialRepository}
+      oneClickProjectRepository={{
+        load: vi.fn().mockResolvedValue(initialProject),
+        save,
+        delete: vi.fn(),
+      }}
+    />);
+    const file = new File([bytes], 'reattached.stl');
+
+    await user.upload(await screen.findByLabelText('選擇 STL 模型'), file);
+    await user.click(await screen.findByRole('button', { name: '重新產生正式輸出' }));
+
+    expect(activeServices.package).not.toHaveBeenCalled();
+    expect(save).toHaveBeenLastCalledWith(expect.objectContaining({
+      status: 'regeneration-required',
+      launcherExteriorExpansion: result.assembly.launcher.exteriorExpansion,
+    }));
+    expect(screen.getByRole('button', { name: '重新產生正式輸出' })).toBeDisabled();
+    expect(screen.queryByRole('link', { name: /下載/ })).not.toBeInTheDocument();
+
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), file);
+    expect(screen.getByRole('button', { name: '重新產生正式輸出' })).toBeEnabled();
+    await user.click(screen.getByRole('button', { name: '重新產生正式輸出' }));
+
+    expect(await screen.findByRole('heading', { name: '轉換完成' })).toBeVisible();
+    expect(activeServices.package).toHaveBeenCalledOnce();
+    expect(save).toHaveBeenLastCalledWith(expect.objectContaining({
+      status: 'ready',
+      launcherExteriorExpansion: result.assembly.launcher.exteriorExpansion,
+    }));
   });
 
   it('fails closed on saved-project load failure and only offers sanitized retry', async () => {
