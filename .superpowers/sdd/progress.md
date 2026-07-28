@@ -67,3 +67,13 @@ Task 4 release evidence:
 - `npm run typecheck`, `npm run build`, working-tree `git diff --check`, and complete-range `git diff --check 3dc11a0` passed.
 - A supplemental sequential browser rerun passed happy-path Chromium 7/7, then model A timed out with the material selector still disabled and model B was interrupted when that extra run was stopped; the scoped Knight and real-worker release evidence above remains unchanged.
 - `physical coupon + official launcher latch/release/play/damage test: outstanding`.
+
+## 2026-07-29 Verification Continuation
+
+- The supplemental Playwright determinism flow now explicitly discards the saved project before its second conversion. Supplied model A and B each passed their isolated two-conversion Chromium case.
+- Vitest was migrated from the unsupported 3.2 line to the supported 4.1 line with the official `@vitest/browser-playwright` provider. `vite-node` is now an explicit direct development dependency instead of an accidental Vitest transitive dependency.
+- The previous post-assertion `[vitest-worker]: Timeout calling "onTaskUpdate"` blocker is resolved. The complete serial suite passed 65/65 files and 1,659/1,659 tests with process exit 0 under Vitest 4.1.10.
+- Browser Mode passed 6/6 files and 82/82 tests under Vitest 4.1.10. Browser UI tests now await the existing project loading gate instead of racing it.
+- The protected-boundary hot path now exits on the first qualifying edge while preserving the original `Math.hypot` and tolerance predicates. Under concurrent Google Drive load, the post-review release validator passed reference A in 27,798.824 ms and reference B in 29,239.318 ms.
+- Full private fixture validation passed: 10/10 fixtures, 8/8 automatic models, deterministic launcher template, output comparison, black-geometry stability, and artifact geometry reconciliation.
+- `physical coupon + official launcher latch/release/play/damage test: outstanding`.

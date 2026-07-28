@@ -55,3 +55,15 @@ For both references, the top two layers retain all three official launcher cuts;
 `physical coupon + official launcher latch/release/play/damage test: outstanding`
 
 No physical compatibility or merge claim is made.
+
+## 2026-07-29 continuation
+
+The two software verification exceptions recorded above are now closed:
+
+- The supplemental Chromium determinism cases explicitly discard the saved project before the repeated conversion. Supplied model A and supplied model B each passed their isolated two-conversion case.
+- Vitest was migrated to the supported 4.1 line and Browser Mode to the official `@vitest/browser-playwright` provider. The complete serial command passed 65/65 files and 1,659/1,659 tests with exit 0; the former post-assertion `onTaskUpdate` RPC error did not recur.
+- The complete browser-mode command passed 6/6 files and 82/82 tests.
+- `vite-node` is declared directly because the release validation scripts invoke it directly.
+- First-match exit reduced the protected-boundary hot-path cost while preserving the original `Math.hypot` and tolerance predicates. Post-review private fixture validation passed with reference A at 27,798.824 ms and reference B at 29,239.318 ms.
+
+The physical coupon and official-launcher latch/release/play/damage gate remains outstanding.

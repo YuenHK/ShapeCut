@@ -1,7 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { cdp } from '@vitest/browser/context';
-import type {} from '@vitest/browser/providers/playwright';
+import { cdp } from 'vitest/browser';
 import { BufferGeometry, Line, Material, type LineBasicMaterial, type WebGLRenderer } from 'three';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AutomaticOutlineProgressEvent } from '../domain/pipeline/automatic-outline-pipeline';

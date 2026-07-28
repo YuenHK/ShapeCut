@@ -1,6 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { cdp, page, userEvent } from '@vitest/browser/context';
-import type {} from '@vitest/browser/providers/playwright';
+import { cdp, page, userEvent } from 'vitest/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import stylesText from '../styles.css?raw';
 import '../styles.css';
@@ -14,6 +13,16 @@ function services(): OneClickConverterServices {
     package: vi.fn(() => new Promise<never>(() => undefined)),
     cancel: vi.fn(),
   };
+}
+
+async function renderReadyApp(activeServices: OneClickConverterServices = services()) {
+  const view = render(<App services={activeServices} oneClickProjectRepository={{
+    load: vi.fn().mockResolvedValue(undefined),
+    save: vi.fn(),
+    delete: vi.fn(),
+  }} />);
+  await screen.findByLabelText('選擇 STL 模型');
+  return view;
 }
 
 type Rgb = readonly [number, number, number];
@@ -74,7 +83,7 @@ async function renderProcessingSurfaces(): Promise<readonly HTMLElement[]> {
       return new Promise<never>(() => undefined);
     }),
   };
-  render(<App services={activeServices} />);
+  await renderReadyApp(activeServices);
   fireEvent.change(screen.getByLabelText('選擇 STL 模型'), {
     target: { files: [new File(['mesh'], 'media-query.stl', { type: 'model/stl' })] },
   });
@@ -98,7 +107,7 @@ afterEach(async () => {
 
 describe('Apple workbench visual contracts', () => {
   it('exposes centralized glass tokens, adaptive effects, and a 48px primary action', async () => {
-    render(<App services={services()} />);
+    await renderReadyApp();
 
     const workbench = screen.getByTestId('apple-workbench');
     expect(getComputedStyle(workbench).getPropertyValue('--glass-blur')).not.toBe('');
@@ -117,7 +126,7 @@ describe('Apple workbench visual contracts', () => {
 
   it('keeps the main action visible at 390px without horizontal page overflow', async () => {
     await page.viewport(390, 844);
-    render(<App services={services()} />);
+    await renderReadyApp();
     fireEvent.change(screen.getByLabelText('選擇 STL 模型'), {
       target: { files: [new File(['not an stl'], 'invalid.txt', { type: 'text/plain' })] },
     });
@@ -133,7 +142,7 @@ describe('Apple workbench visual contracts', () => {
   it('keeps launcher fit validation accessible and contained beside material selection', async () => {
     await page.viewport(390, 844);
     const activeServices = services();
-    render(<App services={activeServices} />);
+    await renderReadyApp(activeServices);
     fireEvent.change(screen.getByLabelText('選擇 STL 模型'), {
       target: { files: [new File(['mesh'], 'launcher-fit.stl', { type: 'model/stl' })] },
     });
@@ -164,7 +173,7 @@ describe('Apple workbench visual contracts', () => {
       ...services(),
       materialProfiles: [READY_TEST_MATERIAL],
     };
-    render(<App services={activeServices} />);
+    await renderReadyApp(activeServices);
     await userEvent.upload(
       screen.getByLabelText('選擇 STL 模型'),
       new File(['mesh'], 'raw-decimal-fit.stl', { type: 'model/stl' }),
@@ -191,7 +200,7 @@ describe('Apple workbench visual contracts', () => {
 
   it('keeps a compact local-processing privacy status visible in mobile chrome', async () => {
     await page.viewport(390, 844);
-    render(<App services={services()} />);
+    await renderReadyApp();
 
     const privacy = screen.getByText('私隱優先 · 本機處理');
     const style = getComputedStyle(privacy);
@@ -202,7 +211,7 @@ describe('Apple workbench visual contracts', () => {
   });
 
   it('tracks bounded drag attraction and clears it on leave, drop, static mode, and unmount', async () => {
-    const view = render(<App services={services()} />);
+    const view = await renderReadyApp();
     const target = screen.getByText('拖放 STL 到這裏').closest('label')!;
     await waitFor(() => {
       expect(screen.getByTestId('apple-workbench')).not.toHaveAttribute('data-effect-level', 'static');
@@ -252,7 +261,7 @@ describe('Apple workbench visual contracts', () => {
     });
     expect(window.matchMedia('(prefers-reduced-motion: reduce)').matches).toBe(true);
 
-    render(<App services={services()} />);
+    await renderReadyApp();
 
     await waitFor(() => {
       expect(screen.getByTestId('apple-workbench')).toHaveAttribute('data-effect-level', 'static');

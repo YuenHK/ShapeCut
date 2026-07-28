@@ -98,6 +98,8 @@ for (const fixture of fixtures) {
     const first = await captureCompleteReleaseRun(page, fixture);
     expectFullRunDuration(first.durationMs);
 
+    await page.getByRole('button', { name: '捨棄已儲存專案並選擇另一個模型' }).click();
+    await expect(page.getByTestId('apple-workbench')).toHaveAttribute('data-state', 'upload');
     await page.reload();
     const repeated = await captureCompleteReleaseRun(page, fixture);
     expectFullRunDuration(repeated.durationMs);

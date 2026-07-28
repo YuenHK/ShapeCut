@@ -1,6 +1,6 @@
 import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { page } from '@vitest/browser/context';
+import { page } from 'vitest/browser';
 import { describe, expect, it, vi } from 'vitest';
 import type { AutomaticOutlineProgressEvent, AutomaticOutlineResult } from '../domain/pipeline/automatic-outline-pipeline';
 import { featureEvidenceFingerprint, type ColoredOutlineLayer } from '../domain/outline-features/types';
@@ -172,9 +172,20 @@ describe('App real browser one-click flow', () => {
       get: vi.fn(),
       importJson: vi.fn(),
     };
-    render(<App services={services} materialRepository={materialRepository} />);
+    const projectRepository = {
+      load: vi.fn().mockResolvedValue(undefined),
+      save: vi.fn(),
+      delete: vi.fn(),
+    };
+    render(
+      <App
+        services={services}
+        materialRepository={materialRepository}
+        oneClickProjectRepository={projectRepository}
+      />,
+    );
 
-    const input = screen.getByLabelText('選擇 STL 模型');
+    const input = await screen.findByLabelText('選擇 STL 模型');
     input.focus();
     await user.upload(input, new File(['mesh'], 'keyboard.stl', { type: 'model/stl' }));
     expect(services.convert).not.toHaveBeenCalled();

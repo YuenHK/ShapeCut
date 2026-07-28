@@ -188,18 +188,26 @@ function pointSegmentDistance(point: Point2, start: Point2, end: Point2): number
   return Math.hypot(point[0] - start[0] - parameter * dx, point[1] - start[1] - parameter * dy);
 }
 
-function pointBoundaryDistance(
+function pointWithinBoundaryDistance(
   point: Point2,
   polygon: readonly Point2[],
+  threshold: number,
+  comparison: 'strict-after-tolerance' | 'inclusive',
   deadline: number,
   checkpoint: () => void,
-): number {
-  let minimum = Infinity;
+): boolean {
   for (let index = 0; index < polygon.length; index += 1) {
     if ((index & 63) === 0) checkRuntime(deadline, checkpoint);
-    minimum = Math.min(minimum, pointSegmentDistance(point, polygon[index], polygon[(index + 1) % polygon.length]));
+    const distance = pointSegmentDistance(
+      point,
+      polygon[index],
+      polygon[(index + 1) % polygon.length],
+    );
+    if (comparison === 'inclusive' ? distance <= threshold : distance + 1e-12 < threshold) {
+      return true;
+    }
   }
-  return minimum;
+  return false;
 }
 
 function validateRequest(projected: ProjectedMesh, request: DepthFeatureRequest, deadline: number, checkpoint: () => void): void {
@@ -542,9 +550,13 @@ export function buildDepthField(projected: ProjectedMesh, request: DepthFeatureR
       if ((x & 255) === 0) checkRuntime(deadline, checkpoint);
       const point: Point2 = [origin[0] + (x + 0.5) * cellSize, origin[1] + (y + 0.5) * cellSize];
       if (pointLocation(point, request.exterior, deadline, checkpoint) !== 1
-        || pointBoundaryDistance(point, request.exterior, deadline, checkpoint) + 1e-12 < centerMargin) continue;
+        || pointWithinBoundaryDistance(
+          point, request.exterior, centerMargin, 'strict-after-tolerance', deadline, checkpoint,
+        )) continue;
       if (retainedHole && (pointLocation(point, retainedHole, deadline, checkpoint) >= 0
-        || pointBoundaryDistance(point, retainedHole, deadline, checkpoint) <= centerMargin + 1e-12)) continue;
+        || pointWithinBoundaryDistance(
+          point, retainedHole, centerMargin + 1e-12, 'inclusive', deadline, checkpoint,
+        ))) continue;
       eligible[y * width + x] = 1;
     }
   }
@@ -1049,7 +1061,9 @@ function protectedCell(
 ): boolean {
   for (const cut of cuts) {
     if (pointLocation(point, cut, deadline, checkpoint) >= 0
-      || pointBoundaryDistance(point, cut, deadline, checkpoint) <= clearanceMm + 1e-12) return true;
+      || pointWithinBoundaryDistance(
+        point, cut, clearanceMm + 1e-12, 'inclusive', deadline, checkpoint,
+      )) return true;
   }
   return false;
 }
