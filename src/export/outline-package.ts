@@ -976,6 +976,7 @@ function coloredProjectJson(document: ReturnType<typeof createColoredOutlineDocu
       },
       launcher: document.assembly.launcher,
       fastener: document.assembly.fastener,
+      decorationOmissions: document.assembly.decorationOmissions,
       topFeatures: document.assembly.topFeatures,
     },
     layers: document.layers.map((layer) => ({
@@ -1027,6 +1028,7 @@ async function coloredManifestJson(
       launcherExteriorExpansionMaxMm: document.assembly.launcher.exteriorExpansion.maxOffsetMm,
       launcherExteriorExpansionLayerIds:
         document.assembly.launcher.exteriorExpansion.affectedLayerIds,
+      decorationOmissions: document.assembly.decorationOmissions,
       topFeatures: document.assembly.topFeatures,
     },
     members,

@@ -14,7 +14,8 @@ import {
   type AutomaticOutlineProgressStage,
   type AutomaticOutlineResult,
 } from '../domain/pipeline/automatic-outline-pipeline';
-import type { OutlinePreviewPayload } from '../domain/outline-features/types';
+import type { DecorationOmission, OutlinePreviewPayload } from '../domain/outline-features/types';
+import { PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING } from '../domain/outline-features/depth-field';
 import { SupersededError } from '../workers/geometry-client';
 import { OutlineArtifactError, type OutlineArtifactId } from '../workers/geometry-api';
 import { MAX_STL_BYTES } from '../domain/mesh/parse-stl';
@@ -27,7 +28,7 @@ import { classifyMaterialReadiness, type MaterialProfileV1 } from '../domain/mat
 import { validateLauncherFitOffsetMm } from '../domain/outline-assembly/launcher-fit';
 import type { LauncherExteriorExpansion } from '../domain/outline-assembly/launcher-exterior-expansion';
 import { sha256Hex } from '../persistence/project-repository';
-import type { StoredOneClickProjectV2 } from '../persistence/one-click-project-repository';
+import type { StoredOneClickProjectV3 } from '../persistence/one-click-project-repository';
 import {
   OutlineProcessViewport,
 } from '../preview/OutlineProcessViewport';
@@ -80,8 +81,8 @@ export type OneClickConverterServices = {
   readonly createTimeline?: (clock: ProcessingTimelineClock<number>) => ProcessingTimeline;
   /** Saved profiles supplied by the app's material store. Invalid profiles are never displayed. */
   readonly materialProfiles?: readonly MaterialProfileV1[];
-  readonly savedProject?: StoredOneClickProjectV2;
-  readonly saveProject?: (project: StoredOneClickProjectV2) => Promise<void>;
+  readonly savedProject?: StoredOneClickProjectV3;
+  readonly saveProject?: (project: StoredOneClickProjectV3) => Promise<void>;
   readonly deleteSavedProject?: () => Promise<void>;
 };
 
@@ -226,6 +227,7 @@ function presentationWarnings(result: AutomaticOutlineResult): readonly string[]
   warnings.push(...result.featureWarnings.filter((item) => (
     !/reliable central axle hole/i.test(item)
     && !/省略雕刻特徵/.test(item)
+    && item !== PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING
   )));
   return [...new Set(warnings)];
 }
@@ -265,6 +267,21 @@ function launcherExteriorExpansionEquals(
     && left.maxOffsetMm === right.maxOffsetMm
     && left.affectedLayerIds[0] === right.affectedLayerIds[0]
     && left.affectedLayerIds[1] === right.affectedLayerIds[1];
+}
+
+function decorationOmissionsEqual(
+  left: readonly DecorationOmission[],
+  right: readonly DecorationOmission[],
+): boolean {
+  return left.length === right.length
+    && left.every((omission, index) => {
+      const candidate = right[index];
+      return candidate !== undefined
+        && omission.layerId === candidate.layerId
+        && omission.reason === candidate.reason
+        && omission.roles[0] === candidate.roles[0]
+        && omission.roles[1] === candidate.roles[1];
+    });
 }
 
 type ModelInputProps = Readonly<{
@@ -376,10 +393,13 @@ export function OneClickConverter({
   const [sourceSha256, setSourceSha256] = useState<string | undefined>();
   const [savedSourceReattached, setSavedSourceReattached] = useState(false);
   const [savedDecisionMismatchCause, setSavedDecisionMismatchCause] = useState<
-    'template' | 'expansion' | undefined
+    'template' | 'expansion' | 'decoration' | undefined
   >();
   const [savedProjectDiscarded, setSavedProjectDiscarded] = useState(false);
   const savedProject = savedProjectDiscarded ? undefined : services.savedProject;
+  const savedDecorationOmissionKey = JSON.stringify(
+    services.savedProject?.decorationOmissions,
+  );
   const effectLevel = useEffectLevel(view.kind === 'processing');
   const materials = selectableMaterials(services.materialProfiles);
   const requestId = useRef(0);
@@ -441,6 +461,7 @@ export function OneClickConverter({
     services.savedProject?.launcherExteriorExpansion?.maxOffsetMm,
     services.savedProject?.launcherExteriorExpansion?.affectedLayerIds[0],
     services.savedProject?.launcherExteriorExpansion?.affectedLayerIds[1],
+    savedDecorationOmissionKey,
   ]);
 
   const releaseCurrentDownloads = useCallback(() => {
@@ -502,26 +523,35 @@ export function OneClickConverter({
       const launcherExteriorExpansion = structuredClone(
         result.assembly.launcher.exteriorExpansion,
       );
+      const decorationOmissions = structuredClone(
+        result.assembly.decorationOmissions,
+      );
       const storedTemplateMismatch = savedProject !== undefined
-        && savedProject.launcherExteriorExpansion !== null
         && (
           savedProject.launcherTemplateVersion !== result.assembly.launcher.templateVersion
           || savedProject.launcherTemplateFingerprint
             !== result.assembly.launcher.templateFingerprint
         );
       const storedExpansionMismatch = savedProject !== undefined
-        && savedProject.launcherExteriorExpansion !== null
         && !launcherExteriorExpansionEquals(
           savedProject.launcherExteriorExpansion,
           launcherExteriorExpansion,
         );
-      const storedDecisionMismatch = storedTemplateMismatch || storedExpansionMismatch;
+      const storedDecorationOmissionMismatch = savedProject !== undefined
+        && savedProject.decorationOmissions !== null
+        && !decorationOmissionsEqual(
+          savedProject.decorationOmissions,
+          decorationOmissions,
+        );
+      const storedDecisionMismatch = storedTemplateMismatch
+        || storedExpansionMismatch
+        || storedDecorationOmissionMismatch;
       if (storedDecisionMismatch) {
         timeline.cancel();
         if (timelineRef.current === timeline) timelineRef.current = undefined;
         if (sourceSha256 && services.saveProject) {
           await services.saveProject({
-            schemaVersion: 2,
+            schemaVersion: 3,
             id: 'one-click-current',
             updatedAt: new Date().toISOString(),
             sourceSha256,
@@ -530,11 +560,18 @@ export function OneClickConverter({
             launcherTemplateVersion: result.assembly.launcher.templateVersion,
             launcherTemplateFingerprint: result.assembly.launcher.templateFingerprint,
             launcherExteriorExpansion,
+            decorationOmissions,
             canonicalSourceHash: result.sourceHash,
             status: 'regeneration-required',
           });
         }
-        setSavedDecisionMismatchCause(storedExpansionMismatch ? 'expansion' : 'template');
+        setSavedDecisionMismatchCause(
+          storedDecorationOmissionMismatch
+            ? 'decoration'
+            : storedExpansionMismatch
+              ? 'expansion'
+              : 'template',
+        );
         setSavedSourceReattached(false);
         setView({ kind: 'material', fileName, bytes });
         return;
@@ -557,7 +594,7 @@ export function OneClickConverter({
       if (timelineRef.current === timeline) timelineRef.current = undefined;
       if (sourceSha256 && services.saveProject) {
         await services.saveProject({
-          schemaVersion: 2,
+          schemaVersion: 3,
           id: 'one-click-current',
           updatedAt: new Date().toISOString(),
           sourceSha256,
@@ -566,6 +603,7 @@ export function OneClickConverter({
           launcherTemplateVersion: result.assembly.launcher.templateVersion,
           launcherTemplateFingerprint: result.assembly.launcher.templateFingerprint,
           launcherExteriorExpansion,
+          decorationOmissions,
           canonicalSourceHash: result.sourceHash,
           status: 'ready',
         });
@@ -732,6 +770,8 @@ export function OneClickConverter({
             <p role="status">三爪樣板決策已更新；請重新連結原本 STL 後再次產生正式輸出。</p>
           ) : savedDecisionMismatchCause === 'expansion' ? (
             <p role="status">外框擴大決策已更新；請重新連結原本 STL 後再次產生正式輸出。</p>
+          ) : savedDecisionMismatchCause === 'decoration' ? (
+            <p role="status">紅藍裝飾省略決策已更新；請重新連結原本 STL 後再次產生正式輸出。</p>
           ) : (
             <p role="status">已儲存的發射器決策需要重新連結原本 STL 後再次產生正式輸出。</p>
           )}
@@ -904,6 +944,17 @@ export function OneClickConverter({
         <section className="warning-panel" aria-label="模型處理提示">
           <strong>處理提示</strong>
           <ul>{warnings.map((item) => <li key={item}>{item}</li>)}</ul>
+        </section>
+      )}
+      {assembly.decorationOmissions.length > 0 && (
+        <section className="warning-panel" aria-label="紅藍裝飾省略提示">
+          <strong>{PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING}</strong>
+          <ul>
+            {assembly.decorationOmissions.map((omission) => (
+              <li key={omission.layerId}>受影響層：{omission.layerId}</li>
+            ))}
+          </ul>
+          <p>官方三爪孔及黑色切割幾何已保留</p>
         </section>
       )}
       <div className="result-grid">

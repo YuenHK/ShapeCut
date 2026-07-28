@@ -8,7 +8,7 @@ import { App, createDownloadUrls } from './App';
 import { BLOCKED_TEST_MATERIAL, READY_TEST_MATERIAL } from '../test/ready-material';
 import { defaultPendingMaterialProfile } from '../domain/materials/default-profiles';
 import { manufacturingGeometryProfile } from '../domain/materials/manufacturing-profile';
-import type { StoredOneClickProjectV2 } from '../persistence/one-click-project-repository';
+import type { StoredOneClickProjectV3 } from '../persistence/one-click-project-repository';
 import {
   OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
   OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
@@ -39,8 +39,8 @@ function deferred<T>() {
 }
 
 describe('App', () => {
-  const savedProject: StoredOneClickProjectV2 = {
-    schemaVersion: 2,
+  const savedProject: StoredOneClickProjectV3 = {
+    schemaVersion: 3,
     id: 'one-click-current',
     updatedAt: '2026-07-28T00:00:00.000Z',
     sourceSha256: 'a'.repeat(64),
@@ -54,12 +54,13 @@ describe('App', () => {
       maxOffsetMm: 6,
       affectedLayerIds: ['layer-5', 'layer-6'],
     },
+    decorationOmissions: [],
     canonicalSourceHash: 'b'.repeat(32),
     status: 'ready',
   };
 
   it('does not expose conversion while saved-project loading is unsettled', async () => {
-    const pending = deferred<StoredOneClickProjectV2 | undefined>();
+    const pending = deferred<StoredOneClickProjectV3 | undefined>();
     render(<App services={services} materialRepository={emptyMaterialRepository} oneClickProjectRepository={{
       load: vi.fn(() => pending.promise),
       save: vi.fn(),
@@ -73,19 +74,29 @@ describe('App', () => {
     expect(await screen.findByText(/需要重新連結原本 STL/)).toBeVisible();
   });
 
-  it('propagates a replacement expansion decision and keeps regeneration blocked through the App adapter', async () => {
+  it('propagates a replacement omission decision and keeps regeneration blocked through the App adapter', async () => {
     const user = userEvent.setup();
     const bytes = new TextEncoder().encode('saved mesh');
-    const result = coloredResult();
-    const initialProject: StoredOneClickProjectV2 = {
+    const baseResult = coloredResult();
+    const result: AutomaticOutlineResult = {
+      ...baseResult,
+      status: 'warning',
+      assembly: {
+        ...baseResult.assembly,
+        decorationOmissions: [{
+          layerId: baseResult.coloredLayers[1].id,
+          reason: 'protected-cut-work-budget',
+          roles: ['DEEP_RED', 'LIGHT_BLUE'],
+        }],
+      },
+    };
+    const initialProject: StoredOneClickProjectV3 = {
       ...savedProject,
       sourceSha256: await sha256Hex(bytes),
       canonicalSourceHash: result.sourceHash,
       status: 'regeneration-required',
-      launcherExteriorExpansion: {
-        ...result.assembly.launcher.exteriorExpansion,
-        offsetMm: 2.35,
-      },
+      launcherExteriorExpansion: result.assembly.launcher.exteriorExpansion,
+      decorationOmissions: [],
     };
     const save = vi.fn().mockResolvedValue(undefined);
     const activeServices: OneClickConverterServices = {
@@ -123,6 +134,7 @@ describe('App', () => {
     expect(save).toHaveBeenLastCalledWith(expect.objectContaining({
       status: 'regeneration-required',
       launcherExteriorExpansion: result.assembly.launcher.exteriorExpansion,
+      decorationOmissions: result.assembly.decorationOmissions,
     }));
     expect(screen.getByRole('button', { name: '重新產生正式輸出' })).toBeDisabled();
     expect(screen.queryByRole('link', { name: /下載/ })).not.toBeInTheDocument();
@@ -136,6 +148,7 @@ describe('App', () => {
     expect(save).toHaveBeenLastCalledWith(expect.objectContaining({
       status: 'ready',
       launcherExteriorExpansion: result.assembly.launcher.exteriorExpansion,
+      decorationOmissions: result.assembly.decorationOmissions,
     }));
   });
 

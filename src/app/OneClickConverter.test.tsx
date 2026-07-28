@@ -19,6 +19,7 @@ import {
   OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
   OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
 } from '../domain/outline-assembly/launcher-template';
+import { PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING } from '../domain/outline-features/depth-field';
 import { sha256Hex } from '../persistence/project-repository';
 import {
   OneClickConverter,
@@ -118,6 +119,24 @@ const result: AutomaticOutlineResult = {
   diagnostics: { topology: { triangleCount: 0, boundaryEdgeCount: 0, nonManifoldEdgeCount: 0, degenerateTriangleCount: 0, duplicateTriangleCount: 0, inconsistentWindingEdgeCount: 0, selfIntersectionCount: 0, selfIntersectionAnalysisComplete: true }, repairDecision: 'accepted', rasterCellSizeMm: null, layers: [{ id: 'layer-0', simplificationToleranceMm: 0.01, boundsDriftRatio: 0, areaDriftRatio: 0, areaEvidenceBasis: 'exact-slice-pre-simplification' }] },
 };
 
+function resultWithDecorationOmissions(
+  layerIds: readonly string[] = ['layer-0'],
+): AutomaticOutlineResult {
+  return {
+    ...result,
+    status: 'warning',
+    assembly: {
+      ...result.assembly,
+      decorationOmissions: layerIds.map((layerId) => ({
+        layerId,
+        reason: 'protected-cut-work-budget',
+        roles: ['DEEP_RED', 'LIGHT_BLUE'],
+      })),
+    },
+    featureWarnings: [PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING],
+  };
+}
+
 const downloads: OutlineDownloads = {
   zip: { href: 'blob:zip', fileName: 'shapecut-files.zip' },
   svg: { href: 'blob:svg', fileName: 'cut-and-engrave.svg' },
@@ -175,14 +194,14 @@ async function uploadAndSelectMaterial(user: ReturnType<typeof userEvent.setup>,
 }
 
 describe('OneClickConverter', () => {
-  it('keeps reopened downloads gated after source reattachment until explicit canonical regeneration', async () => {
+  it('keeps a migrated v2 shell gated after source reattachment until explicit canonical regeneration', async () => {
     const user = userEvent.setup();
     const bytes = new TextEncoder().encode('saved mesh');
     const convert = vi.fn().mockResolvedValue(result);
     const saveProject = vi.fn().mockResolvedValue(undefined);
     const deleteSavedProject = vi.fn().mockResolvedValue(undefined);
     const initialSavedProject = {
-      schemaVersion: 2 as const,
+      schemaVersion: 3 as const,
       id: 'one-click-current' as const,
       updatedAt: '2026-07-28T00:00:00.000Z',
       sourceSha256: await sha256Hex(bytes),
@@ -190,7 +209,8 @@ describe('OneClickConverter', () => {
       launcherFitOffsetMm: 0.05,
       launcherTemplateVersion: OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
       launcherTemplateFingerprint: OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
-      launcherExteriorExpansion: null,
+      launcherExteriorExpansion: result.assembly.launcher.exteriorExpansion,
+      decorationOmissions: null,
       canonicalSourceHash: result.sourceHash,
       status: 'regeneration-required' as const,
     };
@@ -217,10 +237,11 @@ describe('OneClickConverter', () => {
       expect.any(Function),
     );
     expect(saveProject).toHaveBeenCalledWith(expect.objectContaining({
-      schemaVersion: 2,
+      schemaVersion: 3,
       status: 'ready',
       launcherTemplateFingerprint: OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
       launcherExteriorExpansion: result.assembly.launcher.exteriorExpansion,
+      decorationOmissions: result.assembly.decorationOmissions,
     }));
 
     await user.click(screen.getByRole('button', { name: '捨棄已儲存專案並選擇另一個模型' }));
@@ -249,7 +270,7 @@ describe('OneClickConverter', () => {
       convert: vi.fn().mockResolvedValue(result),
       saveProject,
       savedProject: {
-        schemaVersion: 2,
+        schemaVersion: 3,
         id: 'one-click-current',
         updatedAt: '2026-07-28T00:00:00.000Z',
         sourceSha256: await sha256Hex(bytes),
@@ -261,6 +282,7 @@ describe('OneClickConverter', () => {
           ...result.assembly.launcher.exteriorExpansion,
           offsetMm: 2.35,
         },
+        decorationOmissions: result.assembly.decorationOmissions,
         canonicalSourceHash: result.sourceHash,
         status: 'regeneration-required',
       },
@@ -276,6 +298,7 @@ describe('OneClickConverter', () => {
     expect(saveProject).toHaveBeenLastCalledWith(expect.objectContaining({
       status: 'regeneration-required',
       launcherExteriorExpansion: result.assembly.launcher.exteriorExpansion,
+      decorationOmissions: result.assembly.decorationOmissions,
     }));
     expect(screen.getByRole('button', { name: '重新產生正式輸出' })).toBeDisabled();
 
@@ -289,6 +312,60 @@ describe('OneClickConverter', () => {
     expect(saveProject).toHaveBeenLastCalledWith(expect.objectContaining({
       status: 'ready',
       launcherExteriorExpansion: result.assembly.launcher.exteriorExpansion,
+      decorationOmissions: result.assembly.decorationOmissions,
+    }));
+  });
+
+  it('keeps a changed stored decoration-omission decision blocked until replacement save, reattachment, and regeneration', async () => {
+    const user = userEvent.setup();
+    const bytes = new TextEncoder().encode('saved mesh');
+    const omissionResult = resultWithDecorationOmissions();
+    const saveProject = vi.fn().mockResolvedValue(undefined);
+    const api = services({
+      convert: vi.fn().mockResolvedValue(omissionResult),
+      saveProject,
+      savedProject: {
+        schemaVersion: 3,
+        id: 'one-click-current',
+        updatedAt: '2026-07-28T00:00:00.000Z',
+        sourceSha256: await sha256Hex(bytes),
+        material: manufacturingGeometryProfile(READY_TEST_MATERIAL),
+        launcherFitOffsetMm: 0,
+        launcherTemplateVersion: OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+        launcherTemplateFingerprint: OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
+        launcherExteriorExpansion: omissionResult.assembly.launcher.exteriorExpansion,
+        decorationOmissions: [],
+        canonicalSourceHash: omissionResult.sourceHash,
+        status: 'regeneration-required',
+      },
+    });
+    const view = render(<OneClickConverter services={api} />);
+    const file = new File([bytes], 'reattached.stl');
+
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), file);
+    await user.click(await screen.findByRole('button', { name: '重新產生正式輸出' }));
+
+    expect(api.package).not.toHaveBeenCalled();
+    expect(saveProject).toHaveBeenLastCalledWith(expect.objectContaining({
+      schemaVersion: 3,
+      status: 'regeneration-required',
+      decorationOmissions: omissionResult.assembly.decorationOmissions,
+    }));
+    expect(screen.getByText(
+      '紅藍裝飾省略決策已更新；請重新連結原本 STL 後再次產生正式輸出。',
+    )).toBeVisible();
+    expect(screen.getByRole('button', { name: '重新產生正式輸出' })).toBeDisabled();
+
+    const replacement = vi.mocked(saveProject).mock.calls.at(-1)![0];
+    view.rerender(<OneClickConverter services={{ ...api, savedProject: replacement }} />);
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), file);
+    await user.click(await screen.findByRole('button', { name: '重新產生正式輸出' }));
+
+    expect(await screen.findByRole('heading', { name: '轉換完成' })).toBeVisible();
+    expect(api.package).toHaveBeenCalledOnce();
+    expect(saveProject).toHaveBeenLastCalledWith(expect.objectContaining({
+      status: 'ready',
+      decorationOmissions: omissionResult.assembly.decorationOmissions,
     }));
   });
 
@@ -300,7 +377,7 @@ describe('OneClickConverter', () => {
       convert: vi.fn().mockResolvedValue(result),
       saveProject,
       savedProject: {
-        schemaVersion: 2,
+        schemaVersion: 3,
         id: 'one-click-current',
         updatedAt: '2026-07-28T00:00:00.000Z',
         sourceSha256: await sha256Hex(bytes),
@@ -309,6 +386,7 @@ describe('OneClickConverter', () => {
         launcherTemplateVersion: OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
         launcherTemplateFingerprint: 'f'.repeat(32),
         launcherExteriorExpansion: result.assembly.launcher.exteriorExpansion,
+        decorationOmissions: result.assembly.decorationOmissions,
         canonicalSourceHash: result.sourceHash,
         status: 'regeneration-required',
       },
@@ -325,6 +403,7 @@ describe('OneClickConverter', () => {
     expect(saveProject).toHaveBeenLastCalledWith(expect.objectContaining({
       status: 'regeneration-required',
       launcherExteriorExpansion: result.assembly.launcher.exteriorExpansion,
+      decorationOmissions: result.assembly.decorationOmissions,
     }));
     expect(screen.getByText(
       '三爪樣板決策已更新；請重新連結原本 STL 後再次產生正式輸出。',
@@ -336,7 +415,7 @@ describe('OneClickConverter', () => {
     const user = userEvent.setup();
     const bytes = new TextEncoder().encode('saved mesh');
     const savedProject = {
-      schemaVersion: 2 as const,
+      schemaVersion: 3 as const,
       id: 'one-click-current' as const,
       updatedAt: '2026-07-28T00:00:00.000Z',
       sourceSha256: await sha256Hex(bytes),
@@ -345,6 +424,7 @@ describe('OneClickConverter', () => {
       launcherTemplateVersion: OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
       launcherTemplateFingerprint: OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
       launcherExteriorExpansion: result.assembly.launcher.exteriorExpansion,
+      decorationOmissions: result.assembly.decorationOmissions,
       canonicalSourceHash: result.sourceHash,
       status: 'regeneration-required' as const,
     };
@@ -365,6 +445,43 @@ describe('OneClickConverter', () => {
           ...savedProject.launcherExteriorExpansion,
           offsetMm: 2.35,
         },
+      },
+    }} />);
+
+    expect(screen.getByRole('button', { name: '重新產生正式輸出' })).toBeDisabled();
+  });
+
+  it('re-arms source reattachment when only the stored decoration-omission decision is replaced', async () => {
+    const user = userEvent.setup();
+    const bytes = new TextEncoder().encode('saved mesh');
+    const savedProject = {
+      schemaVersion: 3 as const,
+      id: 'one-click-current' as const,
+      updatedAt: '2026-07-28T00:00:00.000Z',
+      sourceSha256: await sha256Hex(bytes),
+      material: manufacturingGeometryProfile(READY_TEST_MATERIAL),
+      launcherFitOffsetMm: 0,
+      launcherTemplateVersion: OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+      launcherTemplateFingerprint: OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
+      launcherExteriorExpansion: result.assembly.launcher.exteriorExpansion,
+      decorationOmissions: [],
+      canonicalSourceHash: result.sourceHash,
+      status: 'regeneration-required' as const,
+    };
+    const api = services({ savedProject });
+    const view = render(<OneClickConverter services={api} />);
+
+    await user.upload(
+      screen.getByLabelText('選擇 STL 模型'),
+      new File([bytes], 'reattached.stl'),
+    );
+    expect(await screen.findByRole('button', { name: '重新產生正式輸出' })).toBeEnabled();
+
+    view.rerender(<OneClickConverter services={{
+      ...api,
+      savedProject: {
+        ...savedProject,
+        decorationOmissions: resultWithDecorationOmissions().assembly.decorationOmissions,
       },
     }} />);
 
@@ -745,6 +862,46 @@ describe('OneClickConverter', () => {
     expect(screen.getByText('製作材料').nextElementSibling).toHaveTextContent(/3 mm.*kerf 0\.15 mm/i);
     expect(screen.getByText('頂部兩層外框已共同擴大 2.35 mm')).toBeVisible();
     expect(screen.getAllByRole('link', { name: /下載/ })).toHaveLength(6);
+  });
+
+  it('shows ordered affected layers and retained black geometry as a warning for protected-work omissions', async () => {
+    const user = userEvent.setup();
+    const omissionResult = resultWithDecorationOmissions(['layer-2', 'layer-4']);
+    render(<OneClickConverter services={services({
+      convert: vi.fn().mockResolvedValue(omissionResult),
+    })} />);
+
+    await uploadAndSelectMaterial(user, new File(['mesh'], 'protected-work-warning.stl'));
+    await screen.findByRole('heading', { name: '轉換完成' });
+
+    expect(screen.getByText(
+      PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING,
+    )).toBeVisible();
+    const affected = screen.getAllByText(/^受影響層：/);
+    expect(affected.map((item) => item.textContent)).toEqual([
+      '受影響層：layer-2',
+      '受影響層：layer-4',
+    ]);
+    expect(screen.getByText('官方三爪孔及黑色切割幾何已保留')).toBeVisible();
+    expect(screen.getByText('需注意')).toHaveClass('warning');
+    expect(screen.queryByText('成功')).not.toBeInTheDocument();
+    expect(screen.getByText(
+      '依 Knight Fortress 樣本建立，待官方發射器實物校準',
+    )).toBeVisible();
+  });
+
+  it('does not show the protected-work omission warning for an empty decision', async () => {
+    const user = userEvent.setup();
+    render(<OneClickConverter services={services()} />);
+
+    await uploadAndSelectMaterial(user, new File(['mesh'], 'no-protected-work-omission.stl'));
+    await screen.findByRole('heading', { name: '轉換完成' });
+
+    expect(screen.queryByText(PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING))
+      .not.toBeInTheDocument();
+    expect(screen.queryByText(/^受影響層：/)).not.toBeInTheDocument();
+    expect(screen.queryByText('官方三爪孔及黑色切割幾何已保留'))
+      .not.toBeInTheDocument();
   });
 
   it('drains the idle renderer pool when the application workflow unmounts', () => {

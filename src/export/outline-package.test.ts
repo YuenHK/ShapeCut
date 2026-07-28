@@ -24,6 +24,8 @@ import {
 } from './outline-package';
 import {
   flattenOutlineSheets,
+  writeColoredOutlineDxf,
+  writeColoredOutlineSvg,
   writeOutlineDxf,
   writeOutlinePreviewPdf,
   writeOutlineSvg,
@@ -33,7 +35,9 @@ import {
 import { writeOutlineProjectJson } from './project-json';
 import { coloredResult } from './colored-outline-test-fixture';
 import { featureEvidenceFingerprint } from '../domain/outline-features/types';
+import { PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING } from '../domain/outline-features/depth-field';
 import { createColoredOutlineDocument } from './colored-outline-document';
+import { writeColoredPreviewPdf, writeExplodedViewPdf } from './exploded-pdf';
 import { expandLauncherExterior } from '../domain/outline-assembly/launcher-exterior-expansion';
 
 const testMaterial = { id: 'test-material', name: 'Test material', thicknessMm: 3, kerfMm: 0.1, minFeatureMm: 0.8, minWebMm: 0.5, fitAllowanceMm: { loose: 0.2, slip: 0.1, snug: 0, press: -0.1 } } as const;
@@ -115,6 +119,58 @@ function coloredResultWithExteriorExpansion(offsetMm = 2.35): AutomaticOutlineRe
   };
 }
 
+function protectedWorkOmissionResult(): AutomaticOutlineResult {
+  const result = coloredResult();
+  const omittedIndices = new Set([1, 3]);
+  const coloredLayers = result.coloredLayers.map((layer, index) => omittedIndices.has(index) ? {
+    ...layer,
+    deepFeatures: [],
+    lightFeatures: [],
+    diagnostics: {
+      ...layer.diagnostics,
+      depth: {
+        cellSizeMm: layer.diagnostics.depth.cellSizeMm,
+        contrastMm: 0,
+        redThresholdMm: 0,
+        blueThresholdMm: 0,
+        retained: { red: 0, blue: 0 },
+        omitted: { red: 0, blue: 0 },
+        omissionCode: 'PROTECTED_CUT_WORK_BUDGET' as const,
+      },
+    },
+  } : layer);
+  const changed = {
+    ...result,
+    status: 'warning' as const,
+    decorationOmissionSourceEvidence: [1, 3].map((index) => ({
+      layerId: coloredLayers[index].id,
+      omissionCode: 'PROTECTED_CUT_WORK_BUDGET' as const,
+      diagnostics: {
+        contrastMm: 0 as const,
+        redThresholdMm: 0 as const,
+        blueThresholdMm: 0 as const,
+        retained: { red: 0 as const, blue: 0 as const },
+        omitted: { red: 0 as const, blue: 0 as const },
+      },
+    })),
+    coloredLayers,
+    assembly: {
+      ...result.assembly,
+      decorationOmissions: [1, 3].map((index) => ({
+        layerId: coloredLayers[index].id,
+        reason: 'protected-cut-work-budget' as const,
+        roles: ['DEEP_RED', 'LIGHT_BLUE'] as const,
+      })),
+    },
+    featureWarnings: [
+      ...result.featureWarnings,
+      PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING,
+    ],
+    preview: { ...result.preview, layers: coloredLayers },
+  };
+  return { ...changed, featureEvidenceFingerprint: featureEvidenceFingerprint(changed) };
+}
+
 function coloredPackagePayloadBytes(
   output: Omit<ColoredOutlinePackage, 'zip' | 'manifestJson'>,
 ): ReadonlyMap<string, Uint8Array> {
@@ -139,10 +195,12 @@ async function sha256Fixture(bytes: Uint8Array): Promise<string> {
 async function synchronizedColoredPackage(
   output: ColoredOutlinePackage,
   replacements: Partial<Omit<ColoredOutlinePackage, 'zip' | 'manifestJson'>>,
+  mutateManifest: (manifest: any) => void = () => undefined,
 ): Promise<ColoredOutlinePackage> {
   const replaced = { ...output, ...replacements };
   const payloads = coloredPackagePayloadBytes(replaced);
   const manifest = JSON.parse(output.manifestJson);
+  mutateManifest(manifest);
   manifest.members = await Promise.all(manifest.members.map(async (member: {
     path: string;
     byteLength: number;
@@ -167,6 +225,35 @@ async function synchronizedColoredPackage(
     manifestJson,
   });
   return { ...replaced, manifestJson, zip };
+}
+
+function forgedOmittedLayerDocument(
+  result: AutomaticOutlineResult,
+  omissionIndex: number,
+  role: 'DEEP_RED' | 'LIGHT_BLUE',
+) {
+  const document = structuredClone(createColoredOutlineDocument(result)) as any;
+  const sourceContour = document.layers[2].roles[role][0];
+  const layer = document.layers.find(
+    (candidate: { readonly id: string }) => (
+      candidate.id === result.assembly.decorationOmissions[omissionIndex].layerId
+    ),
+  );
+  const contourId = `${layer.id}-forged-${role.toLowerCase()}`;
+  layer.roles[role] = [{ ...sourceContour, id: contourId, role }];
+  return { document, contourId, layerId: layer.id, role };
+}
+
+function projectWithForgedMember(
+  projectJson: string,
+  layerId: string,
+  role: 'DEEP_RED' | 'LIGHT_BLUE',
+  contourId: string,
+): string {
+  const project = JSON.parse(projectJson);
+  const layer = project.layers.find((candidate: { readonly id: string }) => candidate.id === layerId);
+  layer.members[role] = [contourId];
+  return JSON.stringify(project, null, 2);
 }
 
 function visiblePdfText(pdf: PDFDocument): string {
@@ -560,6 +647,126 @@ describe('material-independent outline package', () => {
     ]));
     expect(JSON.stringify({ project, manifest })).not.toMatch(/private|provisional|validationEvidence|\.stl|file:/i);
     await expect(verifyColoredOutlinePackage(output, runtime)).resolves.toBeUndefined();
+  });
+
+  it('stores the identical ordered protected-work omission decision in project and manifest metadata', async () => {
+    const runtime = protectedWorkOmissionResult();
+    const output = await createColoredOutlinePackage(runtime);
+    const project = JSON.parse(output.projectJson);
+    const manifest = JSON.parse(output.manifestJson);
+
+    expect(project.assembly.decorationOmissions).toEqual(
+      runtime.assembly.decorationOmissions,
+    );
+    expect(manifest.decisions.decorationOmissions).toEqual(
+      runtime.assembly.decorationOmissions,
+    );
+    expect(project.assembly.decorationOmissions).toEqual(
+      manifest.decisions.decorationOmissions,
+    );
+    expect(JSON.stringify({ project, manifest }))
+      .not.toContain('decorationOmissionSourceEvidence');
+    await expect(verifyColoredOutlinePackage(output, runtime)).resolves.toBeUndefined();
+  });
+
+  it('rejects synchronized protected-work omission decision forgeries', async () => {
+    const runtime = protectedWorkOmissionResult();
+    const output = await createColoredOutlinePackage(runtime);
+    const omissions = runtime.assembly.decorationOmissions;
+    const [first] = omissions;
+    const mutations = [
+      ['wrong-layer', [{ ...first, layerId: 'missing' }, omissions[1]]],
+      ['wrong-reason', [{ ...first, reason: 'other' }, omissions[1]]],
+      ['wrong-roles', [{ ...first, roles: ['DEEP_RED'] }, omissions[1]]],
+      ['reordered', [...omissions].reverse()],
+      ['missing', undefined],
+    ] as const;
+
+    for (const [label, mutation] of mutations) {
+      const project = JSON.parse(output.projectJson);
+      if (mutation === undefined) delete project.assembly.decorationOmissions;
+      else project.assembly.decorationOmissions = structuredClone(mutation);
+      const forged = await synchronizedColoredPackage(output, {
+        projectJson: JSON.stringify(project, null, 2),
+      }, (manifest) => {
+        if (mutation === undefined) delete manifest.decisions.decorationOmissions;
+        else manifest.decisions.decorationOmissions = structuredClone(mutation);
+      });
+
+      await expect(
+        verifyColoredOutlinePackage(forged, runtime),
+        label,
+      ).rejects.toThrow(/project|manifest|metadata|reconcile|decision|mismatch/i);
+    }
+  });
+
+  it('rejects synchronized red or blue contours added to protected-work omission layers in every artifact', async () => {
+    const runtime = protectedWorkOmissionResult();
+    const output = await createColoredOutlinePackage(runtime);
+    const forgeries = await Promise.all(([
+      ['SVG', 0, 'DEEP_RED'],
+      ['DXF', 1, 'LIGHT_BLUE'],
+      ['preview PDF', 0, 'LIGHT_BLUE'],
+      ['exploded PDF', 1, 'DEEP_RED'],
+    ] as const).map(async ([label, omissionIndex, role]) => {
+      const forged = forgedOmittedLayerDocument(runtime, omissionIndex, role);
+      const projectJson = projectWithForgedMember(
+        output.projectJson,
+        forged.layerId,
+        forged.role,
+        forged.contourId,
+      );
+      const replacements = label === 'SVG'
+        ? { cutSvg: writeColoredOutlineSvg(forged.document), projectJson }
+        : label === 'DXF'
+          ? { cutDxf: writeColoredOutlineDxf(forged.document), projectJson }
+          : label === 'preview PDF'
+            ? { previewPdf: await writeColoredPreviewPdf(forged.document), projectJson }
+            : { explodedViewPdf: await writeExplodedViewPdf(forged.document), projectJson };
+      return [label, await synchronizedColoredPackage(output, replacements)] as const;
+    }));
+
+    for (const [label, forged] of forgeries) {
+      await expect(
+        verifyColoredOutlinePackage(forged, runtime),
+        label,
+      ).rejects.toThrow(/SVG|DXF|PDF|geometry|role|project|canonical|mismatch/i);
+    }
+
+    const zipForgery = forgedOmittedLayerDocument(runtime, 0, 'DEEP_RED');
+    const synchronizedZip = await synchronizedColoredPackage(output, {
+      cutSvg: writeColoredOutlineSvg(zipForgery.document),
+      projectJson: projectWithForgedMember(
+        output.projectJson,
+        zipForgery.layerId,
+        zipForgery.role,
+        zipForgery.contourId,
+      ),
+    });
+    await expect(verifyColoredOutlinePackage({
+      ...output,
+      zip: synchronizedZip.zip,
+    }, runtime)).rejects.toThrow(/ZIP|byte-identical|canonical|payload/i);
+  });
+
+  it('keeps protected-work omission prose out of fabrication artifacts', async () => {
+    const output = await createColoredOutlinePackage(protectedWorkOmissionResult());
+    const pdfText = await Promise.all([
+      output.previewPdf,
+      output.explodedViewPdf,
+    ].map(async (bytes) => visiblePdfText(
+      await PDFDocument.load(bytes, { updateMetadata: false }),
+    )));
+    const fabricationText = [
+      output.cutSvg,
+      output.cutDxf,
+      ...pdfText,
+    ].join('\n');
+
+    expect(fabricationText).not.toContain(PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING);
+    expect(fabricationText).not.toMatch(
+      /decorationOmissions|protected-cut-work-budget|受影響層/i,
+    );
   });
 
   it.each([
