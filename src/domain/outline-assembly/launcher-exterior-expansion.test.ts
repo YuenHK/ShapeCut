@@ -6,7 +6,11 @@ import {
   simpleMiterPolygonKernel,
 } from '../layout/polygon-kernel';
 import type { FeatureContour } from '../outline-features/types';
-import { resolveLauncherExteriorMiterOffset } from './launcher-exterior-offset-adapter';
+import {
+  LauncherExteriorOffsetComplexityError,
+  launcherExteriorOffsetAdapterTestSeam,
+  resolveLauncherExteriorMiterOffset,
+} from './launcher-exterior-offset-adapter';
 import {
   expandLauncherExterior,
   LAUNCHER_EXTERIOR_EXPANSION_MAX_MM,
@@ -31,6 +35,22 @@ function squareExterior(id: string, sizeMm: number): FeatureContour {
     boundsMm: { minX: -halfSize, minY: -halfSize, maxX: halfSize, maxY: halfSize },
     areaMm2: sizeMm * sizeMm,
   };
+}
+
+function regularCycle(pointCount: number, radius = 10): readonly Point2[] {
+  return Array.from({ length: pointCount }, (_, index): Point2 => {
+    const angle = index * Math.PI * 2 / pointCount;
+    return [Math.cos(angle) * radius, Math.sin(angle) * radius];
+  });
+}
+
+function captureThrown(operation: () => void): unknown {
+  try {
+    operation();
+  } catch (error) {
+    return error;
+  }
+  return undefined;
 }
 
 function collapsedNotchExterior(): FeatureContour {
@@ -358,5 +378,85 @@ describe('launcher exterior expansion contract', () => {
     }
     expect(calls).toBe(8);
     expect(thrown).toBe(cancellation);
+  });
+
+  it('polls exact cancellation and deadline failures from inside pair intersection splitting', () => {
+    const source: Polygon2 = { points: squareExterior('source', 2).outer };
+    const rawOffset = regularCycle(128);
+    const cancellation = new Error('cancel pair intersection splitting');
+    let cancellationReached = false;
+
+    const cancellationThrown = captureThrown(() => resolveLauncherExteriorMiterOffset(
+      source,
+      rawOffset,
+      Infinity,
+      () => {
+        if (!new Error().stack?.includes('splitAtPairIntersections')) return;
+        cancellationReached = true;
+        throw cancellation;
+      },
+    ));
+
+    expect(cancellationReached).toBe(true);
+    expect(cancellationThrown).toBe(cancellation);
+
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => (
+      new Error().stack?.includes('splitAtPairIntersections') ? 2 : 0
+    ));
+    const deadlineThrown = captureThrown(() => resolveLauncherExteriorMiterOffset(
+      source,
+      rawOffset,
+      1,
+      () => undefined,
+    ));
+    nowSpy.mockRestore();
+
+    expect(deadlineThrown).toMatchObject({
+      name: 'RangeError',
+      message: expect.stringMatching(/runtime budget/i),
+    });
+  });
+
+  it('throws a typed non-recoverable bound when intersections exceed 4,096 pieces', () => {
+    const source: Polygon2 = { points: squareExterior('source', 2).outer };
+    const rawOffset: readonly Point2[] = [
+      [-10, -10],
+      [10, 10],
+      [-10, 10],
+      [10, -10],
+      ...Array.from({ length: 4_092 }, (_, index): Point2 => [
+        100 + index,
+        100 + index % 2,
+      ]),
+    ];
+
+    const thrown = captureThrown(() => resolveLauncherExteriorMiterOffset(
+      source,
+      rawOffset,
+      Infinity,
+      () => undefined,
+    ));
+
+    expect(thrown).toBeInstanceOf(LauncherExteriorOffsetComplexityError);
+    expect(thrown).toMatchObject({
+      name: 'LauncherExteriorOffsetComplexityError',
+      message: 'Launcher exterior offset exceeded the 4096-point arrangement bound',
+    });
+  });
+
+  it('throws the typed 4,096-point output bound for an oversized selected interface cycle', () => {
+    const thrown = captureThrown(() => {
+      launcherExteriorOffsetAdapterTestSeam.traceSelectedInterfaceCycle(
+        regularCycle(4_097),
+        Infinity,
+        () => undefined,
+      );
+    });
+
+    expect(thrown).toBeInstanceOf(LauncherExteriorOffsetComplexityError);
+    expect(thrown).toMatchObject({
+      name: 'LauncherExteriorOffsetComplexityError',
+      message: 'Launcher exterior offset exceeded the 4096-point output bound',
+    });
   });
 });

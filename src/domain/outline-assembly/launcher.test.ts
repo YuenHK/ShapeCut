@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Point2 } from '../decomposition/types';
+import { simpleMiterPolygonKernel } from '../layout/polygon-kernel';
 import type { FeatureContour } from '../outline-features/types';
 import {
   LAUNCHER_FIT_OFFSET_MAX_MM,
@@ -341,6 +342,37 @@ describe('fixed three-prong launcher planning', () => {
 
     expect(thrown).toBe(exactContainmentReached);
     expect(exactContainmentPolls).toBe(1);
+  });
+
+  it('propagates a bounded-geometry exterior offset failure by exact identity', () => {
+    const boundedGeometryFailure = new RangeError(
+      'Offset miter exceeds the bounded geometry limit',
+    );
+    const expansionRequiredExterior = exterior(
+      'bounded-offset-witness',
+      FIXED_SQUARE_SAFE_GRID_HALF_MM - 0.02,
+    );
+    const originalOffset = simpleMiterPolygonKernel.offset;
+    const offsetSpy = vi.spyOn(simpleMiterPolygonKernel, 'offset').mockImplementation((
+      polygon,
+      offsetMm,
+      checkpoint,
+    ) => {
+      if (polygon.points === expansionRequiredExterior.outer && offsetMm > 0) {
+        throw boundedGeometryFailure;
+      }
+      return originalOffset(polygon, offsetMm, checkpoint);
+    });
+
+    const thrown = captureThrown(() => planFixedLauncherClearance({
+      ...safeRequest,
+      topExterior: expansionRequiredExterior,
+      secondExterior: expansionRequiredExterior,
+      fitOffsetMm: 0,
+    }));
+    offsetSpy.mockRestore();
+
+    expect(thrown).toBe(boundedGeometryFailure);
   });
 
   it('accepts exactly 6.00 mm of shared expansion', () => {

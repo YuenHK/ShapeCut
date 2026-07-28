@@ -750,8 +750,11 @@ export function compareLauncherPlacementScores(
 function recoverableLauncherExteriorExpansionError(error: unknown): boolean {
   return error instanceof LauncherExteriorOffsetTopologyError
     || error instanceof RangeError
-    && !/runtime budget/i.test(error.message)
-    && /^(?:Offset |Built-in offset|Launcher exterior expansion must remain)/.test(error.message);
+    && (
+      error.message === 'Offset cannot resolve a folded or numerically unstable polygon vertex'
+      || error.message === 'Offset collapsed or self-intersected the polygon'
+      || error.message === 'Launcher exterior expansion must remain one valid simple polygon'
+    );
 }
 
 function expandedFixedLauncherExteriors(

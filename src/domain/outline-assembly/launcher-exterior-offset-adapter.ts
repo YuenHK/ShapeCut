@@ -37,6 +37,10 @@ export class LauncherExteriorOffsetTopologyError extends RangeError {
   readonly name = 'LauncherExteriorOffsetTopologyError';
 }
 
+export class LauncherExteriorOffsetComplexityError extends RangeError {
+  readonly name = 'LauncherExteriorOffsetComplexityError';
+}
+
 function checkRuntime(deadline: number, checkpoint: () => void): void {
   checkpoint();
   if (Date.now() > deadline) {
@@ -118,7 +122,11 @@ function splitAtPairIntersections(
   left: SplitSegment,
   right: SplitSegment,
   lengthTolerance: number,
+  rightIndex: number,
+  deadline: number,
+  checkpoint: () => void,
 ): number {
+  if ((rightIndex & 63) === 0) checkRuntime(deadline, checkpoint);
   const leftDirection = subtract(left.end, left.start);
   const rightDirection = subtract(right.end, right.start);
   const leftLength = Math.hypot(...leftDirection);
@@ -210,7 +218,9 @@ function buildArrangement(
           netTraversal: forward ? 1 : -1,
         });
         if (byUndirectedKey.size > MAX_POLYGON_POINTS) {
-          throw new RangeError('Launcher exterior offset exceeded the 4096-point arrangement bound');
+          throw new LauncherExteriorOffsetComplexityError(
+            'Launcher exterior offset exceeded the 4096-point arrangement bound',
+          );
         }
       }
     }
@@ -463,7 +473,9 @@ function traceBoundaryCycles(
     );
   }
   if (edges.length > MAX_POLYGON_POINTS) {
-    throw new RangeError('Launcher exterior offset exceeded the bounded outer-face complexity');
+    throw new LauncherExteriorOffsetComplexityError(
+      'Launcher exterior offset exceeded the 4096-point output bound',
+    );
   }
   const outgoing = new Map<string, number[]>();
   for (let index = 0; index < edges.length; index += 1) {
@@ -526,7 +538,9 @@ function traceBoundaryCycles(
     }
     const simplified = simplifyCollinear(points, areaTolerance, deadline, checkpoint);
     if (simplified.length > MAX_POLYGON_POINTS) {
-      throw new RangeError('Launcher exterior offset exceeded the 4096-point output bound');
+      throw new LauncherExteriorOffsetComplexityError(
+        'Launcher exterior offset exceeded the 4096-point output bound',
+      );
     }
     const polygon = { points: simplified };
     if (!validatePolygon(polygon, () => checkRuntime(deadline, checkpoint))) {
@@ -692,14 +706,18 @@ export function resolveLauncherExteriorMiterOffset(
   for (let leftIndex = 0; leftIndex < segments.length; leftIndex += 1) {
     checkRuntime(deadline, checkpoint);
     for (let rightIndex = leftIndex + 1; rightIndex < segments.length; rightIndex += 1) {
-      if ((rightIndex & 63) === 0) checkRuntime(deadline, checkpoint);
       splitEdgeCount += splitAtPairIntersections(
         segments[leftIndex],
         segments[rightIndex],
         lengthTolerance,
+        rightIndex,
+        deadline,
+        checkpoint,
       );
       if (splitEdgeCount > MAX_POLYGON_POINTS) {
-        throw new RangeError('Launcher exterior offset exceeded the 4096-point arrangement bound');
+        throw new LauncherExteriorOffsetComplexityError(
+          'Launcher exterior offset exceeded the 4096-point arrangement bound',
+        );
       }
     }
   }
@@ -716,7 +734,9 @@ export function resolveLauncherExteriorMiterOffset(
     );
   }
   if (arrangement.length > MAX_POLYGON_POINTS) {
-    throw new RangeError('Launcher exterior offset exceeded the bounded arrangement complexity');
+    throw new LauncherExteriorOffsetComplexityError(
+      'Launcher exterior offset exceeded the 4096-point arrangement bound',
+    );
   }
   const halfEdges = createHalfEdges(arrangement, deadline, checkpoint);
   const { faces, faceByHalfEdge } = tracePlanarFaces(
@@ -779,3 +799,32 @@ export function resolveLauncherExteriorMiterOffset(
   }
   return clockwise;
 }
+
+/**
+ * @internal Test-only access to the otherwise unreachable selected-interface
+ * output guard. Production callers must use resolveLauncherExteriorMiterOffset.
+ */
+export const launcherExteriorOffsetAdapterTestSeam = Object.freeze({
+  traceSelectedInterfaceCycle(
+    points: readonly Point2[],
+    deadline: number,
+    checkpoint: () => void,
+  ): readonly Polygon2[] {
+    const edges: HalfEdge[] = points.map((start, index) => ({
+      start,
+      end: points[(index + 1) % points.length],
+      startKey: `test-${index}`,
+      endKey: `test-${(index + 1) % points.length}`,
+      sourceIndex: index,
+      arrangementIndex: index,
+      twinIndex: index,
+    }));
+    return traceBoundaryCycles(
+      edges,
+      Number.EPSILON,
+      Number.EPSILON,
+      deadline,
+      checkpoint,
+    );
+  },
+});
