@@ -38,6 +38,7 @@ import {
   type ColoredOutlineLayer,
   type AutomaticOutlineAssembly,
   type OutlinePreviewPayload,
+  type SharedCentralHoleLayerEvidence,
 } from '../outline-features/types';
 import {
   copyInternalLauncherDecorationEvidence,
@@ -63,6 +64,8 @@ export type AutomaticOutlineResult = {
   readonly status: OutlineResultStatus;
   readonly axis: OutlineAxisSelection;
   readonly layers: readonly OutlineLayer[];
+  /** Bounded pre-colorization evidence used to preserve the extracted shared central hole exactly. */
+  readonly centralHoleSourceEvidence: readonly SharedCentralHoleLayerEvidence[];
   readonly coloredLayers: readonly ColoredOutlineLayer[];
   readonly featureWarnings: readonly string[];
   readonly featureEvidenceFingerprint: string;
@@ -216,8 +219,23 @@ function clonePreviewPayload(preview: OutlinePreviewPayload): OutlinePreviewPayl
   };
 }
 
+function copyCentralHoleSourceEvidence(
+  holeSelections: OutlineExtraction['holeSelections'],
+): readonly SharedCentralHoleLayerEvidence[] {
+  return holeSelections.map((selection) => selection.hole ? {
+    status: 'retained',
+    contour: {
+      outer: selection.hole.outer.map(([x, y]) => [x, y] as const),
+      boundsMm: { ...selection.hole.boundsMm },
+      areaMm2: selection.hole.areaMm2,
+    },
+    equivalentDiameterMm: selection.hole.equivalentDiameterMm,
+    axisDistanceMm: selection.hole.axisDistanceMm,
+  } : { status: 'omitted' });
+}
+
 function withResultEvidence(
-  result: Omit<AutomaticOutlineResult, 'assembly' | 'coloredLayers' | 'featureWarnings' | 'featureEvidenceFingerprint' | 'preview' | 'removalEvidenceFingerprint' | 'internalValidationEvidence'>,
+  result: Omit<AutomaticOutlineResult, 'assembly' | 'centralHoleSourceEvidence' | 'coloredLayers' | 'featureWarnings' | 'featureEvidenceFingerprint' | 'preview' | 'removalEvidenceFingerprint' | 'internalValidationEvidence'>,
   previewMesh: TriangleMesh,
   deadline: number,
   extraction: Pick<OutlineExtraction, 'holeSelections' | 'depthFeatures' | 'blackCuts' | 'featureWarnings' | 'launcherDecorationOverlap' | 'launcherDecorationEvidence'>,
@@ -243,6 +261,7 @@ function withResultEvidence(
   const previewBasis = createOutlineAxisBasis(result.axis.axis);
   const coloredResult = {
     ...result,
+    centralHoleSourceEvidence: copyCentralHoleSourceEvidence(extraction.holeSelections),
     coloredLayers,
     featureWarnings: extraction.featureWarnings,
     preview: {

@@ -70,6 +70,7 @@ describe('App real browser one-click flow', () => {
         simplificationToleranceMm: 0.01, boundsDriftRatio: 0, areaDriftRatio: 0,
         removedComponentCount: 0,
       }],
+      centralHoleSourceEvidence: [{ status: 'omitted' }],
       coloredLayers: [coloredLayer],
       featureWarnings: [],
       featureEvidenceFingerprint: featureEvidenceFingerprint({

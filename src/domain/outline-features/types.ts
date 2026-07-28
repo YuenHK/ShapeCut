@@ -124,6 +124,7 @@ type FeatureFingerprintSource = {
   readonly sourceHash: string;
   readonly material?: ManufacturingGeometryProfile;
   readonly assembly?: AutomaticOutlineAssembly;
+  readonly centralHoleSourceEvidence?: readonly SharedCentralHoleLayerEvidence[];
   readonly mode: OutlineMode;
   readonly coloredLayers: readonly ColoredOutlineLayer[];
   readonly preview: { readonly axis: OutlinePreviewAxis };
@@ -287,6 +288,119 @@ function unexpectedKeys(value: UnknownRecord, permitted: ReadonlySet<string>, la
   return Object.keys(value)
     .filter((key) => !permitted.has(key))
     .map((key) => `${label} has unexpected enumerable field ${key}`);
+}
+
+function centralHoleSourceEvidenceReasons(
+  value: unknown,
+  coloredLayers: readonly ColoredOutlineLayer[],
+  featureWarnings: readonly string[],
+  budget: ValidationBudget,
+): string[] {
+  checkRuntimeBudget(budget.deadline, budget.checkpoint);
+  if (!Array.isArray(value)) {
+    return ['Central hole extraction source evidence must be a bounded ordered array'];
+  }
+  const reasons: string[] = [];
+  if (!validLayerCount(value.length) || value.length !== coloredLayers.length) {
+    return ['Central hole extraction source evidence must match the ordered colored layer count'];
+  }
+  let structurallyValid = true;
+  for (const [index, candidate] of value.entries()) {
+    checkRuntimeBudget(budget.deadline, budget.checkpoint);
+    if (!isRecord(candidate)) {
+      structurallyValid = false;
+      reasons.push(`Central hole extraction source evidence ${index} must be an object`);
+      continue;
+    }
+    if (candidate.status === 'omitted') {
+      const keyReasons = unexpectedKeys(
+        candidate, new Set(['status']), `Central hole extraction source evidence ${index}`,
+      );
+      reasons.push(...keyReasons);
+      structurallyValid &&= keyReasons.length === 0;
+      continue;
+    }
+    if (candidate.status !== 'retained') {
+      structurallyValid = false;
+      reasons.push(`Central hole extraction source evidence ${index} status is invalid`);
+      continue;
+    }
+    const keyReasons = unexpectedKeys(
+      candidate,
+      new Set(['status', 'contour', 'equivalentDiameterMm', 'axisDistanceMm']),
+      `Central hole extraction source evidence ${index}`,
+    );
+    reasons.push(...keyReasons);
+    if (keyReasons.length > 0
+      || !Number.isFinite(candidate.equivalentDiameterMm)
+      || (candidate.equivalentDiameterMm as number) <= 0
+      || !Number.isFinite(candidate.axisDistanceMm)
+      || (candidate.axisDistanceMm as number) < 0
+      || !isRecord(candidate.contour)) {
+      structurallyValid = false;
+      reasons.push(`Central hole extraction source evidence ${index} retained metadata is invalid`);
+      continue;
+    }
+    const contourReasons = unexpectedKeys(
+      candidate.contour,
+      new Set(['outer', 'boundsMm', 'areaMm2']),
+      `Central hole extraction source evidence ${index} contour`,
+    );
+    reasons.push(...contourReasons);
+    if (contourReasons.length > 0 || !isRecord(candidate.contour.boundsMm)) {
+      structurallyValid = false;
+      continue;
+    }
+    const boundsReasons = unexpectedKeys(
+      candidate.contour.boundsMm,
+      new Set(['minX', 'minY', 'maxX', 'maxY']),
+      `Central hole extraction source evidence ${index} bounds`,
+    );
+    reasons.push(...boundsReasons);
+    structurallyValid &&= boundsReasons.length === 0;
+  }
+  if (!structurallyValid) return reasons;
+
+  const sourceEvidence = value as unknown as readonly SharedCentralHoleLayerEvidence[];
+  try {
+    validateSharedCentralHoleDecision(
+      sourceEvidence,
+      featureWarnings,
+      budget.deadline,
+      budget.checkpoint,
+      'Central hole extraction source',
+    );
+  } catch (error) {
+    if (error instanceof RangeError && error.message === RUNTIME_REASON) throw error;
+    reasons.push(error instanceof Error
+      ? error.message
+      : 'Central hole extraction source evidence is invalid');
+    return reasons;
+  }
+  for (let index = 0; index < sourceEvidence.length; index += 1) {
+    checkRuntimeBudget(budget.deadline, budget.checkpoint);
+    const source = sourceEvidence[index];
+    const layer = coloredLayers[index];
+    const canonical: SharedCentralHoleLayerEvidence = {
+      status: layer.diagnostics.hole.status,
+      ...(layer.centralHole ? {
+        contour: layer.centralHole,
+        equivalentDiameterMm: layer.diagnostics.hole.status === 'retained'
+          ? layer.diagnostics.hole.equivalentDiameterMm
+          : undefined,
+        axisDistanceMm: layer.diagnostics.hole.status === 'retained'
+          ? layer.diagnostics.hole.axisDistanceMm
+          : undefined,
+      } : {}),
+    };
+    if (source.status !== canonical.status
+      || source.status === 'retained'
+      && !sharedHoleGeometryMatches(source, canonical, budget.deadline, budget.checkpoint)) {
+      reasons.push('Central hole extraction source evidence must exactly match canonical colored holes');
+      break;
+    }
+  }
+  return reasons;
 }
 
 function finiteTuple(value: unknown, length: number): value is readonly number[] {
@@ -722,6 +836,9 @@ export function featureEvidenceFingerprint(
     sourceHash: result.sourceHash,
     ...(fingerprintMaterial ? { material: fingerprintMaterial } : {}),
     ...(result.assembly ? { assembly: result.assembly } : {}),
+    ...(result.centralHoleSourceEvidence
+      ? { centralHoleSourceEvidence: result.centralHoleSourceEvidence }
+      : {}),
     mode: result.mode,
     previewAxis: result.preview.axis,
     layers: orderedLayerRecords(result.coloredLayers, deadline, checkpoint),
@@ -1497,6 +1614,12 @@ export function validateAutomaticColoredResult(
     }
   }
   if (coloredLayersValid && featureWarnings) {
+    reasons.push(...centralHoleSourceEvidenceReasons(
+      value.centralHoleSourceEvidence,
+      coloredLayers,
+      featureWarnings,
+      budget,
+    ));
     try {
       validateSharedCentralHoleDecision(coloredLayers.map((layer) => ({
         status: layer.diagnostics.hole.status,
@@ -1589,6 +1712,9 @@ export function validateAutomaticColoredResult(
       sourceHash: value.sourceHash,
       material: validatedMaterial,
       assembly: value.assembly as AutomaticOutlineAssembly | undefined,
+      centralHoleSourceEvidence: value.centralHoleSourceEvidence as
+        | readonly SharedCentralHoleLayerEvidence[]
+        | undefined,
       mode: value.mode,
       coloredLayers,
       preview: { axis: previewAxis },

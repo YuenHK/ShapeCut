@@ -140,6 +140,20 @@ export function coloredResult(): AutomaticOutlineResult {
       axis: { origin: [0, 0, 0] as const, direction: [0, 0, 1] as const, confidence: 1, confirmed: true },
     },
     layers,
+    centralHoleSourceEvidence: coloredLayers.map((layer) => ({
+      status: 'retained' as const,
+      contour: {
+        outer: layer.centralHole!.outer,
+        boundsMm: { ...layer.centralHole!.boundsMm },
+        areaMm2: layer.centralHole!.areaMm2,
+      },
+      equivalentDiameterMm: layer.diagnostics.hole.status === 'retained'
+        ? layer.diagnostics.hole.equivalentDiameterMm
+        : 0,
+      axisDistanceMm: layer.diagnostics.hole.status === 'retained'
+        ? layer.diagnostics.hole.axisDistanceMm
+        : 0,
+    })),
     coloredLayers,
     material: MATERIAL,
     assembly: {

@@ -175,6 +175,20 @@ function automaticResult(sourceLayers = coloredLayerSet(6)): AutomaticOutlineRes
       axis: { origin: [0, 0, 0] as const, direction: [0, 0, 1] as const, confidence: 1, confirmed: true },
     },
     layers: coloredLayers.map((layer) => legacyLayer(layer)),
+    centralHoleSourceEvidence: coloredLayers.map((layer) => ({
+      status: 'retained' as const,
+      contour: {
+        outer: layer.centralHole!.outer,
+        boundsMm: layer.centralHole!.boundsMm,
+        areaMm2: layer.centralHole!.areaMm2,
+      },
+      equivalentDiameterMm: layer.diagnostics.hole.status === 'retained'
+        ? layer.diagnostics.hole.equivalentDiameterMm
+        : 0,
+      axisDistanceMm: layer.diagnostics.hole.status === 'retained'
+        ? layer.diagnostics.hole.axisDistanceMm
+        : 0,
+    })),
     coloredLayers,
     featureWarnings: [FASTENER_OMISSION_WARNING],
     warnings: [],
@@ -341,6 +355,9 @@ function omitCentralHoleEvidence(source: AutomaticOutlineResult): AutomaticOutli
   }));
   const changed = {
     ...source,
+    centralHoleSourceEvidence: source.centralHoleSourceEvidence.map(() => ({
+      status: 'omitted' as const,
+    })),
     coloredLayers,
     featureWarnings: [...source.featureWarnings, CENTRAL_HOLE_OMISSION_WARNING],
     preview: { ...source.preview, layers: coloredLayers },
@@ -562,6 +579,69 @@ describe('colored outline contracts', () => {
       deepFeatures: layer.deepFeatures,
       lightFeatures: layer.lightFeatures,
     })));
+  });
+
+  it('rejects a coordinated all-layer central-hole shift against extraction source evidence', () => {
+    const source = withExteriorExpansion();
+    const coloredLayers = source.coloredLayers.map((layer) => {
+      if (!layer.centralHole) return layer;
+      return {
+        ...layer,
+        centralHole: contour(
+          layer.centralHole.id,
+          layer.centralHole.role,
+          layer.centralHole.outer.map(([x, y]) => [x + 0.01, y] as const),
+        ),
+      };
+    });
+    const changed = {
+      ...source,
+      coloredLayers,
+      preview: { ...source.preview, layers: coloredLayers },
+    };
+    const forged = {
+      ...changed,
+      featureEvidenceFingerprint: featureEvidenceFingerprint(changed),
+    };
+
+    expect(forged.featureEvidenceFingerprint).toBe(featureEvidenceFingerprint(forged));
+    expect(() => validateAutomaticColoredResult(forged))
+      .toThrow(/central hole.*source|source.*central hole|extraction.*hole/i);
+  });
+
+  it('requires and fingerprints exact bounded central-hole extraction source evidence', () => {
+    const source = withExteriorExpansion();
+    const missing = structuredClone(source);
+    delete (missing as unknown as Record<string, unknown>).centralHoleSourceEvidence;
+    const missingWithFingerprint = {
+      ...missing,
+      featureEvidenceFingerprint: featureEvidenceFingerprint(missing),
+    };
+    expect(() => validateAutomaticColoredResult(missingWithFingerprint))
+      .toThrow(/central hole.*source.*bounded.*array/i);
+
+    const extra = structuredClone(source);
+    Object.assign(extra.centralHoleSourceEvidence[0], { privateCandidateId: 'forged' });
+    const extraWithFingerprint = {
+      ...extra,
+      featureEvidenceFingerprint: featureEvidenceFingerprint(extra),
+    };
+    expect(() => validateAutomaticColoredResult(extraWithFingerprint))
+      .toThrow(/central hole.*source.*unexpected.*privateCandidateId/i);
+
+    const changed = structuredClone(source);
+    const evidence = changed.centralHoleSourceEvidence[0];
+    if (evidence.status !== 'retained' || !evidence.contour) {
+      throw new Error('expected retained central-hole extraction source evidence');
+    }
+    (evidence.contour as { areaMm2: number }).areaMm2 += 0.01;
+    expect(featureEvidenceFingerprint(changed)).not.toBe(source.featureEvidenceFingerprint);
+    const forged = {
+      ...changed,
+      featureEvidenceFingerprint: featureEvidenceFingerprint(changed),
+    };
+    expect(() => validateAutomaticColoredResult(forged))
+      .toThrow(/central hole.*source.*(?:exactly match|geometrically identical)/i);
   });
 
   it.each(['mode', 'offsetMm', 'maxOffsetMm', 'affectedLayerIds'])(
@@ -932,11 +1012,7 @@ describe('colored outline contracts', () => {
     }));
     expect(() => validateAutomaticColoredResult(withSharedHoleEvidence(retained, omittedLayers, [])))
       .toThrow(/shared central hole.*omission warning/i);
-    expect(() => validateAutomaticColoredResult(withSharedHoleEvidence(
-      retained,
-      omittedLayers,
-      [CENTRAL_HOLE_OMISSION_WARNING],
-    ))).not.toThrow();
+    expect(() => validateAutomaticColoredResult(omitCentralHoleEvidence(retained))).not.toThrow();
   });
 
   it('rejects a forged self-intersecting role contour', () => {
