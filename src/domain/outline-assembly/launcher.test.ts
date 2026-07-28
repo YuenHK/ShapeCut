@@ -11,6 +11,10 @@ import {
   OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
 } from './launcher-template';
 import {
+  expandLauncherExterior,
+  LauncherExteriorExpansionExceededError,
+} from './launcher-exterior-expansion';
+import {
   detectLauncherTemplate,
   compareLauncherPlacementScores,
   LAUNCHER_OMISSION_WARNING,
@@ -116,6 +120,17 @@ function exterior(id: string, halfSize: number): FeatureContour {
   };
 }
 
+function rectangleExterior(id: string, width: number, height: number): FeatureContour {
+  return contour(id, rectangle([0, 0], width, height));
+}
+
+function denseExterior(id: string, radius: number, pointCount = 4_096): FeatureContour {
+  return contour(id, Array.from({ length: pointCount }, (_, index): Point2 => {
+    const angle = index * Math.PI * 2 / pointCount;
+    return [Math.cos(angle) * radius, Math.sin(angle) * radius];
+  }));
+}
+
 function contour(id: string, outer: readonly Point2[]): FeatureContour {
   const xs = outer.map(([x]) => x), ys = outer.map(([, y]) => y);
   return {
@@ -146,6 +161,8 @@ describe('launcher fit contract', () => {
 });
 
 describe('fixed three-prong launcher planning', () => {
+  // Adjacent public-safety witnesses: this half-size is safe and 0.01 mm less is unsafe.
+  const FIXED_SQUARE_SAFE_GRID_HALF_MM = 23.7027318272;
   const safeRequest = {
     axisPoint: [0, 0],
     topExterior: exterior('fixed-top', 30),
@@ -202,11 +219,180 @@ describe('fixed three-prong launcher planning', () => {
     expect(first).not.toHaveProperty('decorationOverlapCount');
   });
 
-  it('blocks instead of omitting the fixed launcher when no rotation is structurally safe', () => {
+  it('returns zero expansion with byte-equivalent original-safe exteriors', () => {
+    const topExterior = rectangleExterior('top-safe', 60, 62);
+    const secondExterior = rectangleExterior('second-safe', 58, 60);
+    const topBytes = JSON.stringify(topExterior);
+    const secondBytes = JSON.stringify(secondExterior);
+
+    const result = planFixedLauncherClearance({
+      ...safeRequest,
+      topExterior,
+      secondExterior,
+      fitOffsetMm: 0,
+    });
+
+    expect(result.exteriorExpansion).toEqual({
+      mode: 'shared-uniform',
+      offsetMm: 0,
+      maxOffsetMm: 6,
+      affectedLayerIds: ['second-safe', 'top-safe'],
+    });
+    expect(JSON.stringify(result.expandedTopExterior)).toBe(topBytes);
+    expect(JSON.stringify(result.expandedSecondExterior)).toBe(secondBytes);
+  });
+
+  it('selects one shared integer-grid minimum for asymmetric rectangular exteriors', () => {
+    const topExterior = rectangleExterior('top', 45, 46);
+    const secondExterior = rectangleExterior('second', 43, 44);
+    const result = planFixedLauncherClearance({
+      ...safeRequest,
+      topExterior,
+      secondExterior,
+      fitOffsetMm: 0,
+    });
+
+    expect(result.exteriorExpansion).toEqual({
+      mode: 'shared-uniform',
+      offsetMm: expect.any(Number),
+      maxOffsetMm: 6,
+      affectedLayerIds: ['second', 'top'],
+    });
+    expect(Number.isInteger(result.exteriorExpansion.offsetMm * 100)).toBe(true);
+    expect(result.expandedTopExterior.boundsMm.maxX - topExterior.boundsMm.maxX)
+      .toBeCloseTo(result.exteriorExpansion.offsetMm, 10);
+    expect(result.expandedSecondExterior.boundsMm.maxX - secondExterior.boundsMm.maxX)
+      .toBeCloseTo(result.exteriorExpansion.offsetMm, 10);
+  });
+
+  it('uses the first shared grid value when one layer needs less expansion and keeps cuts unchanged', () => {
+    const topExterior = exterior('top-needs-one-hundredth', FIXED_SQUARE_SAFE_GRID_HALF_MM - 0.01);
+    const secondExterior = exterior('second-needs-two-hundredths', FIXED_SQUARE_SAFE_GRID_HALF_MM - 0.02);
+    const result = planFixedLauncherClearance({
+      ...safeRequest,
+      topExterior,
+      secondExterior,
+      fitOffsetMm: 0,
+    });
+    const baseline = planFixedLauncherClearance({
+      ...safeRequest,
+      topExterior: expandLauncherExterior(topExterior, 0.02),
+      secondExterior: expandLauncherExterior(secondExterior, 0.02),
+      fitOffsetMm: 0,
+    });
+
+    expect(result.exteriorExpansion.offsetMm).toBe(0.02);
+    expect(launcherCutsArePhysicallySafe({
+      cuts: result.cuts,
+      top: { exterior: expandLauncherExterior(topExterior, 0.01) },
+      second: { exterior: expandLauncherExterior(topExterior, 0.01) },
+      material: safeRequest.material,
+    })).toBe(true);
+    expect(launcherCutsArePhysicallySafe({
+      cuts: result.cuts,
+      top: { exterior: expandLauncherExterior(secondExterior, 0.01) },
+      second: { exterior: expandLauncherExterior(secondExterior, 0.01) },
+      material: safeRequest.material,
+    })).toBe(false);
+    expect(result.cuts.map(({ outer }) => outer)).toEqual(baseline.cuts.map(({ outer }) => outer));
+  });
+
+  it('accepts exactly 6.00 mm of shared expansion', () => {
+    const exactExterior = exterior(
+      'exact-six',
+      FIXED_SQUARE_SAFE_GRID_HALF_MM - 6,
+    );
+    const result = planFixedLauncherClearance({
+      ...safeRequest,
+      topExterior: exactExterior,
+      secondExterior: exactExterior,
+      fitOffsetMm: 0,
+    });
+
+    expect(result.exteriorExpansion.offsetMm).toBe(6);
+    expect(result.expandedTopExterior.boundsMm.maxX).toBeCloseTo(
+      exactExterior.boundsMm.maxX + 6,
+      10,
+    );
+  }, 60_000);
+
+  it('throws sanitized expansion evidence when the first safe value is above 6.00 mm', () => {
+    const overLimitExterior = exterior(
+      'over-six',
+      FIXED_SQUARE_SAFE_GRID_HALF_MM - 6.01,
+    );
+    const thrown = captureThrown(() => planFixedLauncherClearance({
+      ...safeRequest,
+      topExterior: overLimitExterior,
+      secondExterior: overLimitExterior,
+      fitOffsetMm: 0,
+    }));
+
+    expect(thrown).toBeInstanceOf(LauncherExteriorExpansionExceededError);
+    expect(thrown).toMatchObject({
+      code: 'LAUNCHER_EXTERIOR_EXPANSION_EXCEEDED',
+      requiredOffsetMm: 6.01,
+    });
+  }, 60_000);
+
+  it('keeps central-hole and inter-prong conflicts as compatibility failures', () => {
+    const centralConflict = captureThrown(() => planFixedLauncherClearance({
+      ...safeRequest,
+      topExterior: exterior('large-top', 100),
+      secondExterior: exterior('large-second', 100),
+      topCentralHole: exterior('central-conflict', 25),
+      secondCentralHole: exterior('central-conflict', 25),
+      fitOffsetMm: 0,
+    }));
+    const interProngConflict = captureThrown(() => planFixedLauncherClearance({
+      ...safeRequest,
+      topExterior: exterior('large-top', 100),
+      secondExterior: exterior('large-second', 100),
+      material: { ...safeRequest.material, minWebMm: 50 },
+      fitOffsetMm: 0,
+    }));
+
+    expect(centralConflict).toBeInstanceOf(LauncherCompatibilityError);
+    expect(interProngConflict).toBeInstanceOf(LauncherCompatibilityError);
+  });
+
+  it('interrupts 4,096-point exterior work by deadline and exact caller checkpoint identity', () => {
+    const dense = denseExterior('dense', 30);
+    const deadlineCheckpoint = vi.fn();
+    expect(() => planFixedLauncherClearance({
+      ...safeRequest,
+      topExterior: dense,
+      secondExterior: dense,
+      fitOffsetMm: 0,
+      deadline: Date.now() - 1,
+      checkpoint: deadlineCheckpoint,
+    })).toThrow(/runtime budget/i);
+    expect(deadlineCheckpoint).toHaveBeenCalled();
+
+    const cancellation = new Error('dense exterior cancelled');
+    let densePolls = 0;
+    const thrown = captureThrown(() => planFixedLauncherClearance({
+      ...safeRequest,
+      topExterior: dense,
+      secondExterior: dense,
+      fitOffsetMm: 0,
+      checkpoint: () => {
+        if (!new Error().stack?.includes('validatePolygon')) return;
+        densePolls += 1;
+        if (densePolls === 8) throw cancellation;
+      },
+    }));
+    expect(densePolls).toBe(8);
+    expect(thrown).toBe(cancellation);
+  });
+
+  it('blocks instead of omitting when no rotation is structurally repairable', () => {
     const thrown = captureThrown(() => planFixedLauncherClearance({
       ...safeRequest,
       topExterior: exterior('fixed-small-top', 10),
       secondExterior: exterior('fixed-small-second', 10),
+      topCentralHole: exterior('central-conflict', 25),
+      secondCentralHole: exterior('central-conflict', 25),
       fitOffsetMm: 0,
     }));
     expect(thrown).toBeInstanceOf(LauncherCompatibilityError);

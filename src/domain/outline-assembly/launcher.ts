@@ -4,7 +4,14 @@ import { simpleMiterPolygonKernel } from '../layout/polygon-kernel';
 import type { ManufacturingGeometryProfile } from '../materials/manufacturing-profile';
 import { isStrictlyContainedLoop } from '../outline-features/hole';
 import type { FeatureContour } from '../outline-features/types';
-import { contourBounds, signedArea } from '../outline-2.5d/simplify';
+import { contourBounds, signedArea, type Bounds2 } from '../outline-2.5d/simplify';
+import {
+  expandLauncherExterior,
+  LAUNCHER_EXTERIOR_EXPANSION_MAX_MM,
+  LAUNCHER_EXTERIOR_EXPANSION_MODE,
+  LauncherExteriorExpansionExceededError,
+  type LauncherExteriorExpansion,
+} from './launcher-exterior-expansion';
 import {
   KNIGHT_FORTRESS_LAUNCHER_TEMPLATE,
   LAUNCHER_TEMPLATE_MAX_POINTS,
@@ -76,6 +83,9 @@ export type FixedLauncherPlan = {
   readonly rotationRad: number;
   readonly fitOffsetMm: number;
   readonly finishedAllowanceMm: number;
+  readonly exteriorExpansion: LauncherExteriorExpansion;
+  readonly expandedTopExterior: FeatureContour;
+  readonly expandedSecondExterior: FeatureContour;
 };
 export type FixedLauncherClearanceRequest = {
   readonly axisPoint: Point2;
@@ -362,54 +372,149 @@ function rotateLoop(loop: readonly Point2[], rotationRad: number, axis: Point2):
   ]);
 }
 
-type ScoredFixedLauncherPlan = FixedLauncherPlan & {
-  readonly minimumStructuralClearanceMm: number;
+type FixedLauncherPlanCore = Omit<
+  FixedLauncherPlan,
+  'exteriorExpansion' | 'expandedTopExterior' | 'expandedSecondExterior'
+>;
+type MaterializedFixedLauncherPlan = FixedLauncherPlanCore & {
+  readonly finishedCuts: readonly [FeatureContour, FeatureContour, FeatureContour];
+  readonly minimumNonExteriorClearanceMm: number;
+  readonly minimumOriginalStructuralClearanceMm: number;
+  readonly nonExteriorSafe: boolean;
   readonly decorationOverlapCount: number;
+};
+type ScoredFixedLauncherPlan = MaterializedFixedLauncherPlan & {
+  readonly minimumStructuralClearanceMm: number;
 };
 type FixedLauncherGeometry = {
   readonly cuts: readonly [FeatureContour, FeatureContour, FeatureContour];
   readonly finishedCuts: readonly [FeatureContour, FeatureContour, FeatureContour];
   readonly finishedAllowanceMm: number;
 };
+type FixedLauncherExpandedExteriors = {
+  readonly topExterior: FeatureContour;
+  readonly secondExterior: FeatureContour;
+  readonly exteriorBounds: readonly [Bounds2, Bounds2];
+  readonly rectangleBounds: readonly [
+    Bounds2 | undefined,
+    Bounds2 | undefined,
+  ];
+};
+
+function axisAlignedRectangleBounds(
+  exterior: FeatureContour,
+  deadline: number,
+  checkpoint: () => void,
+): Bounds2 | undefined {
+  if (exterior.outer.length !== 4) return undefined;
+  const bounds = contourBounds(exterior.outer, deadline, checkpoint);
+  const scale = Math.max(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY, 1);
+  const tolerance = scale * 256 * Number.EPSILON;
+  const corners = new Set<string>();
+  for (let index = 0; index < exterior.outer.length; index += 1) {
+    checkRuntime(deadline, checkpoint);
+    const point = exterior.outer[index];
+    const x = Math.abs(point[0] - bounds.minX) <= tolerance
+      ? 0
+      : Math.abs(point[0] - bounds.maxX) <= tolerance ? 1 : undefined;
+    const y = Math.abs(point[1] - bounds.minY) <= tolerance
+      ? 0
+      : Math.abs(point[1] - bounds.maxY) <= tolerance ? 1 : undefined;
+    if (x === undefined || y === undefined) return undefined;
+    corners.add(`${x}:${y}`);
+    const next = exterior.outer[(index + 1) % exterior.outer.length];
+    if (Math.abs(next[0] - point[0]) > tolerance
+      && Math.abs(next[1] - point[1]) > tolerance) return undefined;
+  }
+  return corners.size === 4 ? bounds : undefined;
+}
 
 function fixedStructuralClearance(
   finishedCuts: readonly FeatureContour[],
-  request: FixedLauncherClearanceRequest,
+  expandedExteriors: FixedLauncherExpandedExteriors,
+  minimumNonExteriorClearanceMm: number,
+  exteriorClearanceMm: number,
   deadline: number,
   checkpoint: () => void,
 ): number {
-  const clearances = finishedSafetyClearances(request.material);
-  const layers = [
-    { exterior: request.topExterior, centralHole: request.topCentralHole },
-    { exterior: request.secondExterior, centralHole: request.secondCentralHole },
+  const exteriors = [
+    {
+      contour: expandedExteriors.topExterior,
+      rectangle: expandedExteriors.rectangleBounds[0],
+    },
+    {
+      contour: expandedExteriors.secondExterior,
+      rectangle: expandedExteriors.rectangleBounds[1],
+    },
   ];
-  let minimum = Infinity;
+  let minimum = minimumNonExteriorClearanceMm;
   for (let index = 0; index < finishedCuts.length; index += 1) {
     checkRuntime(deadline, checkpoint);
     const cut = finishedCuts[index];
-    for (const layer of layers) {
+    for (const exterior of exteriors) {
+      const exteriorDistance = exterior.rectangle
+        ? Math.min(
+          cut.boundsMm.minX - exterior.rectangle.minX,
+          exterior.rectangle.maxX - cut.boundsMm.maxX,
+          cut.boundsMm.minY - exterior.rectangle.minY,
+          exterior.rectangle.maxY - cut.boundsMm.maxY,
+        )
+        : boundaryDistance(cut.outer, exterior.contour.outer, deadline, checkpoint);
       minimum = Math.min(
         minimum,
-        boundaryDistance(cut.outer, layer.exterior.outer, deadline, checkpoint)
-          - clearances.toolpathBoundaryMm,
-      );
-      if (layer.centralHole) {
-        minimum = Math.min(
-          minimum,
-          boundaryDistance(cut.outer, layer.centralHole.outer, deadline, checkpoint)
-            - clearances.toolpathBoundaryMm,
-        );
-      }
-    }
-    for (let other = 0; other < index; other += 1) {
-      minimum = Math.min(
-        minimum,
-        boundaryDistance(cut.outer, finishedCuts[other].outer, deadline, checkpoint)
-          - clearances.interLauncherMm,
+        exteriorDistance - exteriorClearanceMm,
       );
     }
   }
   return minimum;
+}
+
+function fixedNonExteriorSafetyEvidence(
+  finishedCuts: readonly FeatureContour[],
+  request: FixedLauncherClearanceRequest,
+  deadline: number,
+  checkpoint: () => void,
+): { readonly minimumClearanceMm: number; readonly safe: boolean } {
+  const clearances = finishedSafetyClearances(request.material);
+  const centralHoles = [request.topCentralHole, request.secondCentralHole];
+  let minimumClearanceMm = Infinity;
+  let safe = true;
+  for (let index = 0; index < finishedCuts.length; index += 1) {
+    checkRuntime(deadline, checkpoint);
+    const cut = finishedCuts[index];
+    for (const centralHole of centralHoles) {
+      if (!centralHole) continue;
+      const intersects = polygonsIntersectOrTouch(
+        { points: cut.outer },
+        { points: centralHole.outer },
+        () => checkRuntime(deadline, checkpoint),
+      );
+      const clearance = boundaryDistance(
+        cut.outer,
+        centralHole.outer,
+        deadline,
+        checkpoint,
+      ) - clearances.toolpathBoundaryMm;
+      minimumClearanceMm = Math.min(minimumClearanceMm, clearance);
+      if (intersects || clearance < -1e-12) safe = false;
+    }
+    for (let other = 0; other < index; other += 1) {
+      const intersects = polygonsIntersectOrTouch(
+        { points: cut.outer },
+        { points: finishedCuts[other].outer },
+        () => checkRuntime(deadline, checkpoint),
+      );
+      const clearance = boundaryDistance(
+        cut.outer,
+        finishedCuts[other].outer,
+        deadline,
+        checkpoint,
+      ) - clearances.interLauncherMm;
+      minimumClearanceMm = Math.min(minimumClearanceMm, clearance);
+      if (intersects || clearance < -1e-12) safe = false;
+    }
+  }
+  return { minimumClearanceMm, safe };
 }
 
 function decorationOverlapCount(
@@ -492,7 +597,8 @@ function materializeFixedCuts(
   request: FixedLauncherClearanceRequest,
   fitOffsetMm: number,
   rotationRad: number,
-): ScoredFixedLauncherPlan | undefined {
+  originalExteriors: FixedLauncherExpandedExteriors,
+): MaterializedFixedLauncherPlan | undefined {
   const deadline = request.deadline ?? Date.now() + 30_000;
   const checkpoint = request.checkpoint ?? (() => undefined);
   const guardedCheckpoint = (): void => {
@@ -503,15 +609,27 @@ function materializeFixedCuts(
     }
   };
   let geometry: FixedLauncherGeometry | undefined;
-  let minimumStructuralClearanceMm: number;
+  let nonExteriorEvidence: ReturnType<typeof fixedNonExteriorSafetyEvidence>;
+  let minimumOriginalStructuralClearanceMm: number;
   let overlapCount: number;
   try {
     geometry = buildFixedLauncherGeometry(
       loops, request.material, fitOffsetMm, deadline, guardedCheckpoint,
     );
     if (!geometry) return undefined;
-    minimumStructuralClearanceMm = fixedStructuralClearance(
-      geometry.finishedCuts, request, deadline, guardedCheckpoint,
+    nonExteriorEvidence = fixedNonExteriorSafetyEvidence(
+      geometry.finishedCuts,
+      request,
+      deadline,
+      guardedCheckpoint,
+    );
+    minimumOriginalStructuralClearanceMm = fixedStructuralClearance(
+      geometry.finishedCuts,
+      originalExteriors,
+      nonExteriorEvidence.minimumClearanceMm,
+      finishedSafetyClearances(request.material).toolpathBoundaryMm,
+      deadline,
+      guardedCheckpoint,
     );
     overlapCount = decorationOverlapCount(
       geometry.finishedCuts, request.decorationContours ?? [], deadline, guardedCheckpoint,
@@ -529,7 +647,10 @@ function materializeFixedCuts(
     rotationRad,
     fitOffsetMm,
     finishedAllowanceMm: geometry.finishedAllowanceMm,
-    minimumStructuralClearanceMm,
+    finishedCuts: geometry.finishedCuts,
+    minimumNonExteriorClearanceMm: nonExteriorEvidence.minimumClearanceMm,
+    minimumOriginalStructuralClearanceMm,
+    nonExteriorSafe: nonExteriorEvidence.safe,
     decorationOverlapCount: overlapCount,
   };
 }
@@ -586,13 +707,26 @@ export function launcherCutsMatchOfficialPlacement(
   }
 }
 
-function withoutPrivatePlacementScore(plan: ScoredFixedLauncherPlan): FixedLauncherPlan {
+function withoutPrivatePlacementScore(
+  plan: ScoredFixedLauncherPlan,
+  exteriorExpansion: LauncherExteriorExpansion,
+  expandedExteriors: FixedLauncherExpandedExteriors,
+): FixedLauncherPlan {
   const {
     minimumStructuralClearanceMm: _minimumStructuralClearanceMm,
+    minimumNonExteriorClearanceMm: _minimumNonExteriorClearanceMm,
+    minimumOriginalStructuralClearanceMm: _minimumOriginalStructuralClearanceMm,
+    nonExteriorSafe: _nonExteriorSafe,
     decorationOverlapCount: _decorationOverlapCount,
+    finishedCuts: _finishedCuts,
     ...publicPlan
   } = plan;
-  return publicPlan;
+  return {
+    ...publicPlan,
+    exteriorExpansion,
+    expandedTopExterior: expandedExteriors.topExterior,
+    expandedSecondExterior: expandedExteriors.secondExterior,
+  };
 }
 
 export function compareLauncherPlacementScores(
@@ -612,6 +746,121 @@ export function compareLauncherPlacementScores(
     || left.rotationRad - right.rotationRad;
 }
 
+function recoverableLauncherExteriorExpansionError(error: unknown): boolean {
+  return error instanceof RangeError
+    && !/runtime budget/i.test(error.message)
+    && /^(?:Offset |Built-in offset|Launcher exterior expansion must remain)/.test(error.message);
+}
+
+function expandedFixedLauncherExteriors(
+  request: FixedLauncherClearanceRequest,
+  offsetHundredths: number,
+  deadline: number,
+  checkpoint: () => void,
+): FixedLauncherExpandedExteriors | undefined {
+  if (offsetHundredths === 0) {
+    return {
+      topExterior: request.topExterior,
+      secondExterior: request.secondExterior,
+      exteriorBounds: [
+        contourBounds(request.topExterior.outer, deadline, checkpoint),
+        contourBounds(request.secondExterior.outer, deadline, checkpoint),
+      ],
+      rectangleBounds: [
+        axisAlignedRectangleBounds(request.topExterior, deadline, checkpoint),
+        axisAlignedRectangleBounds(request.secondExterior, deadline, checkpoint),
+      ],
+    };
+  }
+  const offsetMm = offsetHundredths / 100;
+  try {
+    const topExterior = expandLauncherExterior(
+      request.topExterior,
+      offsetMm,
+      deadline,
+      checkpoint,
+    );
+    const secondExterior = expandLauncherExterior(
+      request.secondExterior,
+      offsetMm,
+      deadline,
+      checkpoint,
+    );
+    return {
+      topExterior,
+      secondExterior,
+      exteriorBounds: [topExterior.boundsMm, secondExterior.boundsMm],
+      rectangleBounds: [
+        axisAlignedRectangleBounds(topExterior, deadline, checkpoint),
+        axisAlignedRectangleBounds(secondExterior, deadline, checkpoint),
+      ],
+    };
+  } catch (error) {
+    if (error instanceof LauncherPlanningCheckpointInterruption) throw error.original;
+    if (recoverableLauncherExteriorExpansionError(error)) return undefined;
+    throw error;
+  }
+}
+
+function finishedCutsFitExpandedExteriorBounds(
+  finishedCuts: readonly FeatureContour[],
+  expandedExteriors: FixedLauncherExpandedExteriors,
+  exteriorClearanceMm: number,
+): boolean {
+  for (const cut of finishedCuts) {
+    for (const bounds of expandedExteriors.exteriorBounds) {
+      if (Math.min(
+        cut.boundsMm.minX - bounds.minX,
+        bounds.maxX - cut.boundsMm.maxX,
+        cut.boundsMm.minY - bounds.minY,
+        bounds.maxY - cut.boundsMm.maxY,
+      ) + 1e-12 < exteriorClearanceMm) return false;
+    }
+  }
+  return true;
+}
+
+function finishedCutsFitExpandedExteriors(
+  finishedCuts: readonly FeatureContour[],
+  expandedExteriors: FixedLauncherExpandedExteriors,
+  exteriorClearanceMm: number,
+  deadline: number,
+  checkpoint: () => void,
+): boolean {
+  const exteriors = [
+    {
+      contour: expandedExteriors.topExterior,
+      rectangle: expandedExteriors.rectangleBounds[0],
+    },
+    {
+      contour: expandedExteriors.secondExterior,
+      rectangle: expandedExteriors.rectangleBounds[1],
+    },
+  ];
+  for (const cut of finishedCuts) {
+    checkRuntime(deadline, checkpoint);
+    for (const exterior of exteriors) {
+      if (exterior.rectangle) {
+        if (Math.min(
+          cut.boundsMm.minX - exterior.rectangle.minX,
+          exterior.rectangle.maxX - cut.boundsMm.maxX,
+          cut.boundsMm.minY - exterior.rectangle.minY,
+          exterior.rectangle.maxY - cut.boundsMm.maxY,
+        ) + 1e-12 < exteriorClearanceMm) return false;
+        continue;
+      }
+      if (!isStrictlyContainedLoop(
+        exterior.contour.outer,
+        cut.outer,
+        exteriorClearanceMm,
+        deadline,
+        checkpoint,
+      )) return false;
+    }
+  }
+  return true;
+}
+
 export function planFixedLauncherClearance(request: FixedLauncherClearanceRequest): FixedLauncherPlan {
   const deadline = request.deadline ?? Date.now() + 30_000;
   const checkpoint = request.checkpoint ?? (() => undefined);
@@ -622,35 +871,138 @@ export function planFixedLauncherClearance(request: FixedLauncherClearanceReques
     throw new RangeError('Fixed launcher planning requires finite non-negative material geometry');
   }
   const fitOffsetMm = validateLauncherFitOffsetMm(request.fitOffsetMm);
+  const geometryCheckpoint = (): void => checkRuntime(deadline, checkpoint);
+  if (!validatePolygon({ points: request.topExterior.outer }, geometryCheckpoint)
+    || !validatePolygon({ points: request.secondExterior.outer }, geometryCheckpoint)) {
+    throw new RangeError('Fixed launcher planning requires valid top-two exterior geometry');
+  }
   if (OFFICIAL_THREE_PRONG_TEMPLATE.loops.length !== 3
     || OFFICIAL_THREE_PRONG_TEMPLATE.loops.some((loop) => !validatePolygon(
       { points: loop }, () => checkRuntime(deadline, checkpoint),
     ))) {
     throw new LauncherCompatibilityError('官方三爪孔模板無效，已停止所有輸出');
   }
-  const candidates: ScoredFixedLauncherPlan[] = [];
+  const originalExteriors = expandedFixedLauncherExteriors(
+    request,
+    0,
+    deadline,
+    geometryCheckpoint,
+  )!;
+  const candidates: MaterializedFixedLauncherPlan[] = [];
   for (let step = 0; step < LAUNCHER_ROTATION_STEPS; step += 1) {
     checkRuntime(deadline, checkpoint);
     const rotationRad = step * Math.PI / 180;
     const loops = OFFICIAL_THREE_PRONG_TEMPLATE.loops.map(
       (loop) => rotateLoop(loop, rotationRad, request.axisPoint),
     ) as unknown as LauncherLoops;
-    const planned = materializeFixedCuts(loops, request, fitOffsetMm, rotationRad);
+    const planned = materializeFixedCuts(
+      loops,
+      request,
+      fitOffsetMm,
+      rotationRad,
+      originalExteriors,
+    );
     if (planned) candidates.push(planned);
   }
-  const ranked = candidates.sort(compareLauncherPlacementScores);
-  const selected = ranked.find((planned) => launcherCutsArePhysicallySafe({
-    cuts: planned.cuts,
-    top: { exterior: request.topExterior, centralHole: request.topCentralHole },
-    second: { exterior: request.secondExterior, centralHole: request.secondCentralHole },
-    material: request.material,
-    deadline,
-    checkpoint,
-  }));
-  if (!selected) throw new LauncherCompatibilityError(
+  const repairableCandidates = candidates.filter(({ nonExteriorSafe }) => nonExteriorSafe);
+  if (repairableCandidates.length === 0) throw new LauncherCompatibilityError(
     '官方三爪孔會破壞外框或必要承托結構，已停止所有輸出',
   );
-  return withoutPrivatePlacementScore(selected);
+  const guardedExpansionCheckpoint = (): void => {
+    try {
+      checkpoint();
+    } catch (error) {
+      throw new LauncherPlanningCheckpointInterruption(error);
+    }
+  };
+  const exteriorCache = new Map<number, FixedLauncherExpandedExteriors | undefined>([
+    [0, originalExteriors],
+  ]);
+  const clearances = finishedSafetyClearances(request.material);
+  let finalGridHasValidTopology = false;
+  for (
+    let offsetHundredths = 0;
+    offsetHundredths <= LAUNCHER_EXTERIOR_EXPANSION_MAX_MM * 100;
+    offsetHundredths += 1
+  ) {
+    checkRuntime(deadline, checkpoint);
+    let expandedExteriors: FixedLauncherExpandedExteriors | undefined;
+    if (exteriorCache.has(offsetHundredths)) {
+      expandedExteriors = exteriorCache.get(offsetHundredths);
+    } else {
+      expandedExteriors = expandedFixedLauncherExteriors(
+        request,
+        offsetHundredths,
+        deadline,
+        guardedExpansionCheckpoint,
+      );
+      exteriorCache.set(offsetHundredths, expandedExteriors);
+    }
+    if (!expandedExteriors) continue;
+    if (offsetHundredths === LAUNCHER_EXTERIOR_EXPANSION_MAX_MM * 100) {
+      finalGridHasValidTopology = true;
+    }
+    const rectangularExteriors = expandedExteriors.rectangleBounds.every(
+      (bounds): bounds is Bounds2 => bounds !== undefined,
+    );
+    const eligibleCandidates = repairableCandidates.filter(
+      (candidate) => finishedCutsFitExpandedExteriorBounds(
+        candidate.finishedCuts,
+        expandedExteriors,
+        clearances.toolpathBoundaryMm,
+      ),
+    );
+    if (eligibleCandidates.length === 0) continue;
+    const ranked = eligibleCandidates.map((candidate): ScoredFixedLauncherPlan => ({
+      ...candidate,
+      minimumStructuralClearanceMm: offsetHundredths === 0
+        ? candidate.minimumOriginalStructuralClearanceMm
+        : fixedStructuralClearance(
+          candidate.finishedCuts,
+          expandedExteriors,
+          candidate.minimumNonExteriorClearanceMm,
+          clearances.toolpathBoundaryMm,
+          deadline,
+          checkpoint,
+        ),
+    })).sort(compareLauncherPlacementScores);
+    const selected = ranked.find((candidate) => {
+      if (!rectangularExteriors && !finishedCutsFitExpandedExteriors(
+        candidate.finishedCuts,
+        expandedExteriors,
+        clearances.toolpathBoundaryMm,
+        deadline,
+        checkpoint,
+      )) return false;
+      return launcherCutsArePhysicallySafe({
+        cuts: candidate.cuts,
+        top: { exterior: expandedExteriors.topExterior, centralHole: request.topCentralHole },
+        second: { exterior: expandedExteriors.secondExterior, centralHole: request.secondCentralHole },
+        material: request.material,
+        deadline,
+        checkpoint,
+      });
+    });
+    if (!selected) continue;
+    return withoutPrivatePlacementScore(
+      selected,
+      {
+        mode: LAUNCHER_EXTERIOR_EXPANSION_MODE,
+        offsetMm: offsetHundredths / 100,
+        maxOffsetMm: LAUNCHER_EXTERIOR_EXPANSION_MAX_MM,
+        affectedLayerIds: [request.secondExterior.id, request.topExterior.id],
+      },
+      expandedExteriors,
+    );
+  }
+  if (finalGridHasValidTopology) {
+    throw new LauncherExteriorExpansionExceededError(
+      (LAUNCHER_EXTERIOR_EXPANSION_MAX_MM * 100 + 1) / 100,
+    );
+  }
+  throw new LauncherCompatibilityError(
+    '官方三爪孔會破壞外框或必要承托結構，已停止所有輸出',
+  );
 }
 
 export function planLauncherClearance(request: LauncherClearanceRequest): LauncherPlan {
