@@ -20,7 +20,7 @@ export type OutlineBudgets = {
   readonly maxRasterCellsTotal: 16_777_216;
   readonly maxTriangleLayerTests: 12_000_000;
   readonly maxContourPointsPerLayer: 4096;
-  readonly maxRuntimeMs: 30_000;
+  readonly maxRuntimeMs: 120_000;
 };
 
 export const DEFAULT_OUTLINE_BUDGETS: OutlineBudgets = Object.freeze({
@@ -31,5 +31,5 @@ export const DEFAULT_OUTLINE_BUDGETS: OutlineBudgets = Object.freeze({
   maxRasterCellsTotal: 16_777_216,
   maxTriangleLayerTests: 12_000_000,
   maxContourPointsPerLayer: 4096,
-  maxRuntimeMs: 30_000,
+  maxRuntimeMs: 120_000,
 });
