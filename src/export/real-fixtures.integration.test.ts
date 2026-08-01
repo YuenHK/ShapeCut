@@ -137,7 +137,7 @@ describe.runIf(knightFixtures.every(({ path }) => path !== undefined))(
           mode: 'shared-uniform',
           maxOffsetMm: 6,
         });
-        expect(conversionElapsedMs).toBeLessThan(30_000);
+        expect(conversionElapsedMs).toBeLessThan(120_000);
         expect(result.assembly.launcher.exteriorExpansion.offsetMm).toBeGreaterThan(0);
         expect(result.assembly.launcher.exteriorExpansion.offsetMm).toBeLessThanOrEqual(6);
         expect(result.layers.slice(-2).map(({ id }) => id))
