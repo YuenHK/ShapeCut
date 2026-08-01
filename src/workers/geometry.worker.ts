@@ -1,4 +1,5 @@
 import { expose, releaseProxy, transfer, wrap, type Remote } from 'comlink';
+import { DEFAULT_OUTLINE_BUDGETS } from '../domain/outline-2.5d/types';
 import { findAxisCandidates } from '../domain/axis/find-axis';
 import { validateManufacturingGeometryProfile } from '../domain/materials/manufacturing-profile';
 import { validateLauncherFitOffsetMm } from '../domain/outline-assembly/launcher-fit';
@@ -127,7 +128,7 @@ const geometryApi: GeometryApi = {
       progressProxy?.[releaseProxy]();
     }
   },
-  async packageOutline(result, deadline = Date.now() + 30_000) {
+  async packageOutline(result, deadline = Date.now() + DEFAULT_OUTLINE_BUDGETS.maxRuntimeMs) {
     let output: Awaited<ReturnType<typeof createOutlinePackage>>;
     let acknowledgedPdfStart = false;
     let activeArtifact: OutlineArtifactId = 'colored-outline-document';
