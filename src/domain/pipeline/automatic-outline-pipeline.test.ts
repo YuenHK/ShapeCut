@@ -901,7 +901,7 @@ endsolid overflow`;
   it('does not reset the overall deadline when exact extraction times out', async () => {
     const originalNow = Date.now;
     let calls = 0;
-    Date.now = () => calls++ === 0 ? 0 : 30_001;
+    Date.now = () => calls++ === 0 ? 0 : 120_001;
     try {
       await expect(convertAutomatically({ bytes: writeBinarySTL(cylinder(), 'safe') }))
         .rejects.toMatchObject({ code: 'TIME_LIMIT' } satisfies Partial<AutomaticOutlineError>);
@@ -913,7 +913,7 @@ endsolid overflow`;
   it('maps deadline expiry during the first bounded preview copy to a typed time limit', async () => {
     const originalNow = Date.now;
     let calls = 0;
-    Date.now = () => calls++ < 2 ? 0 : 30_001;
+    Date.now = () => calls++ < 2 ? 0 : 120_001;
     try {
       await expect(convertAutomatically({ bytes: writeBinarySTL(cylinder(), 'safe') }))
         .rejects.toMatchObject({ code: 'TIME_LIMIT' } satisfies Partial<AutomaticOutlineError>);
@@ -924,7 +924,7 @@ endsolid overflow`;
 
   it('maps deadline expiry during provisional launcher-decoration planning to a typed time limit', async () => {
     const originalNow = Date.now;
-    Date.now = () => new Error().stack?.includes('provisionalDepthFeatures') ? 30_001 : 0;
+    Date.now = () => new Error().stack?.includes('provisionalDepthFeatures') ? 120_001 : 0;
     try {
       await expect(convertAutomatically({ bytes: writeBinarySTL(cylinder(), 'safe') }))
         .rejects.toMatchObject({ code: 'TIME_LIMIT' } satisfies Partial<AutomaticOutlineError>);
@@ -945,7 +945,7 @@ endsolid overflow`;
         (event) => {
           if (event.stage === 'packaging') {
             callsAtPackaging = contourBounds.mock.calls.length;
-            now = 30_001;
+            now = 120_001;
           }
         },
       )).rejects.toMatchObject({ code: 'TIME_LIMIT' } satisfies Partial<AutomaticOutlineError>);
