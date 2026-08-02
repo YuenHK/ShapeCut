@@ -202,9 +202,9 @@ describe('App real browser one-click flow', () => {
     expect(card && overlay).toBeTruthy();
     const cardBox = card!.getBoundingClientRect();
     const overlayBox = overlay!.getBoundingClientRect();
-    expect(overlayBox.x).toBeLessThan(cardBox.x + cardBox.width / 2);
-    expect(overlayBox.y).toBeLessThan(cardBox.y + cardBox.height / 2);
-    expect(overlayBox.width * overlayBox.height).toBeLessThan(cardBox.width * cardBox.height * 0.35);
+    expect(overlayBox.x + overlayBox.width / 2).toBeCloseTo(cardBox.x + cardBox.width / 2, 0);
+    expect(overlayBox.y + overlayBox.height / 2).toBeCloseTo(cardBox.y + cardBox.height / 2, 0);
+    expect(overlayBox.width * overlayBox.height).toBeLessThan(cardBox.width * cardBox.height * 0.8);
     expect(getComputedStyle(processingPreview).cursor).toBe('auto');
 
     await page.viewport(390, 844);
@@ -214,10 +214,9 @@ describe('App real browser one-click flow', () => {
     expect(mobileCard && mobileOverlay).toBeTruthy();
     const mobileCardBox = mobileCard!.getBoundingClientRect();
     const mobileOverlayBox = mobileOverlay!.getBoundingClientRect();
-    expect(getComputedStyle(mobileOverlay!).top).toBe('10px');
-    expect(getComputedStyle(mobileOverlay!).left).toBe('10px');
-    expect(mobileOverlayBox.width).toBeCloseTo(mobileCardBox.width - 22, 0);
-    expect(mobileOverlayBox.width * mobileOverlayBox.height).toBeLessThan(mobileCardBox.width * mobileCardBox.height * 0.35);
+    expect(mobileOverlayBox.x + mobileOverlayBox.width / 2).toBeCloseTo(mobileCardBox.x + mobileCardBox.width / 2, 0);
+    expect(mobileOverlayBox.y + mobileOverlayBox.height / 2).toBeCloseTo(mobileCardBox.y + mobileCardBox.height / 2, 0);
+    expect(mobileOverlayBox.width * mobileOverlayBox.height).toBeLessThan(mobileCardBox.width * mobileCardBox.height * 0.8);
     const changeFile = document.querySelector<HTMLElement>('.processing-card > .change-file-button');
     expect(changeFile).toBeVisible();
     expect(getComputedStyle(changeFile!).zIndex).toBe('3');

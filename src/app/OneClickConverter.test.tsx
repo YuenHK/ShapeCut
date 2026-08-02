@@ -1327,6 +1327,23 @@ describe('OneClickConverter', () => {
     conversion.resolve(result);
   });
 
+  it('cancels active processing and returns to the material chooser without a failure alert', async () => {
+    const user = userEvent.setup();
+    const conversion = deferred<AutomaticOutlineResult>();
+    const cancel = vi.fn();
+    const api = services({ convert: vi.fn().mockReturnValue(conversion.promise), cancel });
+    render(<OneClickConverter services={api} />);
+
+    await uploadAndSelectMaterial(user, new File(['mesh'], 'cancel-me.stl'));
+    cancel.mockClear();
+    await user.click(screen.getByRole('button', { name: '取消處理' }));
+
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(await screen.findByLabelText('選擇製作材料')).toBeVisible();
+    expect(screen.queryByRole('alert')).toBeNull();
+    conversion.resolve(result);
+  });
+
   it('keeps pre-geometry progress neutral, then announces monotonic stages through the preview status', async () => {
     const user = userEvent.setup();
     const conversion = deferred<AutomaticOutlineResult>();
@@ -1372,7 +1389,7 @@ describe('OneClickConverter', () => {
     const preview = await screen.findByRole('img', { name: /模型分層預覽/ });
     expect(container.querySelector('.processing-card')).toHaveClass('has-preview');
     expect(container.querySelector('.processing-status-overlay')).toBeInTheDocument();
-    expect(container.querySelector('.processing-loading-panel')).not.toBeInTheDocument();
+    expect(container.querySelector('.processing-loading-panel')).toBeInTheDocument();
     expect(preview.closest('.outline-process-viewport')).toHaveAttribute('data-stage', 'analyzing');
 
     report?.({ stage: 'slicing', preview: result.preview });

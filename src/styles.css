@@ -657,36 +657,89 @@ summary:focus-visible {
 
 .processing-status-overlay {
   position: absolute;
-  top: 18px;
-  left: 18px;
+  top: 50%;
+  left: 50%;
   z-index: 2;
   display: grid;
-  width: min(20rem, calc(100% - 36px));
+  width: min(30rem, calc(100% - 2rem));
+  place-content: center;
   gap: .5rem;
-  padding: .875rem 1rem;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.processing-status-overlay .processing-loading-panel {
+  padding: 1.25rem;
   border: 1px solid var(--glass-edge);
   border-radius: var(--control-radius);
-  background: var(--glass);
+  background: color-mix(in srgb, var(--glass-solid) 85%, transparent);
   box-shadow:
     0 1px 0 rgba(255, 255, 255, .96) inset,
     0 .75rem 2rem rgba(39, 80, 130, .16);
   -webkit-backdrop-filter: blur(1.125rem) saturate(145%);
   backdrop-filter: blur(1.125rem) saturate(145%);
-  text-align: left;
-  pointer-events: none;
-}
-
-.processing-status-overlay h1 {
-  margin: 0;
-  color: var(--accent-strong);
-  font-size: 1rem;
+  pointer-events: auto;
 }
 
 .processing-loading-panel {
   position: relative;
   z-index: 1;
   margin: auto;
+  display: grid;
+  justify-items: center;
   text-align: center;
+}
+
+.processing-loading-panel .neutral-loading {
+  min-height: auto;
+  margin-bottom: 1rem;
+}
+
+.processing-message {
+  position: relative;
+  display: grid;
+  min-height: 18rem;
+  padding: 6.3rem 1.5rem 1.5rem;
+  align-content: center;
+  justify-items: center;
+}
+
+.processing-orbit {
+  position: absolute;
+  inset: 0;
+  width: min(18rem, 72vw);
+  height: min(18rem, 72vw);
+  margin: auto;
+  border: 2px solid rgba(10, 132, 255, .22);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  box-shadow: 0 0 2.25rem rgba(10, 132, 255, .14);
+  animation: processing-orbit 2.2s linear infinite;
+}
+
+.processing-message h1,
+.processing-message p,
+.processing-cancel-button {
+  position: relative;
+  z-index: 1;
+}
+
+.processing-message h1 {
+  margin: 0;
+}
+
+.processing-elapsed {
+  margin: .55rem 0 1.25rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.processing-cancel-button {
+  min-width: 8rem;
+}
+
+@keyframes processing-orbit {
+  to { transform: rotate(360deg); }
 }
 
 .processing-card > .change-file-button {
@@ -1390,10 +1443,9 @@ progress::-webkit-progress-value {
   }
 
   .processing-status-overlay {
-    top: 10px;
-    left: 10px;
-    width: calc(100% - 20px);
-    padding: .75rem .875rem;
+    top: 50%;
+    left: 50%;
+    width: calc(100% - 2rem);
   }
 
   .processing-card > .change-file-button {

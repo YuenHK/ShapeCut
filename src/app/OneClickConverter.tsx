@@ -41,6 +41,7 @@ import {
 import { AppleWorkbench } from './AppleWorkbench';
 import { MotionSurface } from './MotionSurface';
 import { useEffectLevel, type EffectLevel } from './effect-level';
+import { ProcessingLoadingPanel } from './ProcessingLoadingPanel';
 
 export type DownloadFile = { readonly href: string; readonly fileName: string };
 export type OutlineDownloads = {
@@ -403,8 +404,11 @@ export function OneClickConverter({
   const effectLevel = useEffectLevel(view.kind === 'processing');
   const materials = selectableMaterials(services.materialProfiles);
   const requestId = useRef(0);
+  const viewRef = useRef(view);
   const downloadsRef = useRef<OutlineDownloads | undefined>(undefined);
   const timelineRef = useRef<ProcessingTimeline | undefined>(undefined);
+  const processingStartedAtRef = useRef<number | undefined>(undefined);
+  const activeFileRef = useRef<{ readonly fileName: string; readonly bytes: ArrayBuffer } | undefined>(undefined);
   const dragDepthRef = useRef(0);
   const runtimeServices = useMemo(() => ({
     present: services.present,
@@ -413,6 +417,7 @@ export function OneClickConverter({
     cancel: services.cancel,
     createTimeline: services.createTimeline,
   }), [services.cancel, services.convert, services.createTimeline, services.package, services.present]);
+  viewRef.current = view;
 
   const clearDrag = useCallback(() => {
     dragDepthRef.current = 0;
@@ -474,8 +479,13 @@ export function OneClickConverter({
     requestId.current += 1;
     timelineRef.current?.cancel();
     timelineRef.current = undefined;
+    processingStartedAtRef.current = undefined;
     runtimeServices.cancel();
     releaseCurrentDownloads();
+    if (viewRef.current.kind === 'processing' && activeFileRef.current) {
+      const { fileName, bytes } = activeFileRef.current;
+      setView({ kind: 'material', fileName, bytes });
+    }
   }, [releaseCurrentDownloads, runtimeServices]);
 
   useEffect(() => {
@@ -573,6 +583,7 @@ export function OneClickConverter({
               : 'template',
         );
         setSavedSourceReattached(false);
+        processingStartedAtRef.current = undefined;
         setView({ kind: 'material', fileName, bytes });
         return;
       }
@@ -608,6 +619,7 @@ export function OneClickConverter({
           status: 'ready',
         });
       }
+      processingStartedAtRef.current = undefined;
       setView({ kind: 'result', fileName, result, downloads });
     } catch (error) {
       if (current !== requestId.current || error instanceof SupersededError) return;
@@ -619,6 +631,7 @@ export function OneClickConverter({
       const artifact = completedResult && error instanceof OutlineArtifactError
         ? error.artifact
         : undefined;
+      processingStartedAtRef.current = undefined;
       setView({
         kind: 'failure',
         fileName,
@@ -638,6 +651,8 @@ export function OneClickConverter({
     setSelectedMaterialId('');
     setSavedDecisionMismatchCause(undefined);
     clearPresentationPreview();
+    processingStartedAtRef.current = Date.now();
+    activeFileRef.current = undefined;
     timelineRef.current?.cancel();
     timelineRef.current = undefined;
     runtimeServices.cancel();
@@ -668,10 +683,12 @@ export function OneClickConverter({
           setSavedSourceReattached(true);
         }
       }
+      activeFileRef.current = { fileName: file.name, bytes };
       setView({ kind: 'material', fileName: file.name, bytes });
       schedulePresentationPreview(bytes, current);
     } catch (error) {
       if (current !== requestId.current) return;
+      processingStartedAtRef.current = undefined;
       setView({ kind: 'failure', fileName: file.name, message: failureMessage(error) });
     }
   }, [clearPresentationPreview, releaseCurrentDownloads, runtimeServices, savedProject, schedulePresentationPreview, services.saveProject]);
@@ -697,6 +714,8 @@ export function OneClickConverter({
     requestId.current += 1;
     timelineRef.current?.cancel();
     timelineRef.current = undefined;
+    processingStartedAtRef.current = undefined;
+    activeFileRef.current = undefined;
     runtimeServices.cancel();
     releaseCurrentDownloads();
     setLauncherFitInput('0.00');
@@ -706,6 +725,21 @@ export function OneClickConverter({
     setSavedDecisionMismatchCause(undefined);
     setView({ kind: 'upload' });
   };
+
+  const cancelProcessing = useCallback(() => {
+    const activeFile = activeFileRef.current;
+    clearDrag();
+    requestId.current += 1;
+    timelineRef.current?.cancel();
+    timelineRef.current = undefined;
+    processingStartedAtRef.current = undefined;
+    runtimeServices.cancel();
+    releaseCurrentDownloads();
+    setSelectedMaterialId('');
+    setView(activeFile
+      ? { kind: 'material', fileName: activeFile.fileName, bytes: activeFile.bytes }
+      : { kind: 'upload' });
+  }, [clearDrag, releaseCurrentDownloads, runtimeServices]);
 
   const discardSavedProject = async () => {
     if (!savedProject || !services.deleteSavedProject) return;
@@ -732,6 +766,7 @@ export function OneClickConverter({
       {content}
     </AppleWorkbench>
   );
+  const processingStartedAt = processingStartedAtRef.current ?? Date.now();
 
   if (view.kind === 'upload') return frame(
     <section className="converter-card upload-card" aria-labelledby="converter-title">
@@ -833,11 +868,13 @@ export function OneClickConverter({
 
   if (view.kind === 'reading') return frame(
     <section className="converter-card processing-card" aria-labelledby="reading-title">
-      <div className="processing-loading-panel">
-        <div className="neutral-loading" aria-hidden="true"><span /><span /><span /></div>
-        <h1 id="reading-title">正在讀取模型</h1>
-        <p className="file-name">{view.fileName}</p>
-      </div>
+      <ProcessingLoadingPanel
+        title="正在讀取模型"
+        titleId="reading-title"
+        fileName={view.fileName}
+        startedAt={processingStartedAt}
+        onCancel={cancelProcessing}
+      />
       <ModelInput compact level={effectLevel} onFile={(file) => void selectFile(file)} />
     </section>
   );
@@ -857,17 +894,24 @@ export function OneClickConverter({
               />
             </div>
             <div className="processing-status-overlay">
-              <h1 id="processing-title">{STAGE_LABELS[view.stage]}</h1>
-              <span className="file-name">{view.fileName}</span>
+              <ProcessingLoadingPanel
+                title={STAGE_LABELS[view.stage]}
+                titleId="processing-title"
+                fileName={view.fileName}
+                startedAt={processingStartedAt}
+                onCancel={cancelProcessing}
+              />
               <progress value={active + 1} max={STAGES.length} aria-label="轉換進度" />
             </div>
           </>
         ) : (
-          <div className="processing-loading-panel">
-            <div className="neutral-loading" aria-hidden="true"><span /><span /><span /></div>
-            <h1 id="processing-title">正在讀取模型</h1>
-            <p className="file-name">{view.fileName}</p>
-          </div>
+          <ProcessingLoadingPanel
+            title="正在讀取模型"
+            titleId="processing-title"
+            fileName={view.fileName}
+            startedAt={processingStartedAt}
+            onCancel={cancelProcessing}
+          />
         )}
         <ModelInput compact level={effectLevel} onFile={(file) => void selectFile(file)} />
       </section>,
