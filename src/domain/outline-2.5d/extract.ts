@@ -241,7 +241,11 @@ function checkDeadline(deadline: number): void {
 }
 
 function validateBudgets(budgets: OutlineBudgets): void {
-  if (!Number.isFinite(budgets.maxRuntimeMs) || budgets.maxRuntimeMs <= 0
+  const validRuntimeBudget = budgets.maxRuntimeMs === Number.POSITIVE_INFINITY
+    || (typeof budgets.maxRuntimeMs === 'number'
+      && Number.isFinite(budgets.maxRuntimeMs)
+      && budgets.maxRuntimeMs > 0);
+  if (!validRuntimeBudget
     || !Number.isInteger(budgets.maxContourPointsPerLayer) || budgets.maxContourPointsPerLayer < 3
     || budgets.maxContourPointsPerLayer > 4096) {
     throw new RangeError('Contour extraction requires valid fail-closed budgets');

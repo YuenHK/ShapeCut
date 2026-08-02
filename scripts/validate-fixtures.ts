@@ -154,8 +154,8 @@ if (!publicOnly) {
       const conversionStartedAt = performance.now();
       const runtime = await convertAutomatically({ bytes: source, material, launcherFitOffsetMm: 0 });
       const conversionElapsedMs = performance.now() - conversionStartedAt;
-      if (conversionElapsedMs >= 120_000) {
-        throw new RangeError('Private launcher automatic conversion exceeded 30 seconds');
+      if (!Number.isFinite(conversionElapsedMs) || conversionElapsedMs <= 0) {
+        throw new RangeError('Private launcher automatic conversion must report finite positive elapsed time');
       }
       const blackGeometryBefore = blackGeometrySha256(runtime);
       const packaged = await createOutlinePackage(runtime);

@@ -765,13 +765,31 @@ describe('extractExactContours', () => {
     ], DEFAULT_OUTLINE_BUDGETS)).toThrow(/midpoint|zMid|interval/i);
   });
 
+  test('accepts an unbounded runtime budget', () => {
+    expect(() => extractExactContours(
+      box(0, 0, 20, 12), selection, specs,
+      { ...DEFAULT_OUTLINE_BUDGETS, maxRuntimeMs: Number.POSITIVE_INFINITY },
+    )).not.toThrow();
+  });
+
+  test.each([undefined, 'unbounded', Number.NaN, -1, 0, Number.NEGATIVE_INFINITY])(
+    'rejects malformed runtime budget %p',
+    (maxRuntimeMs) => {
+      expect(() => extractExactContours(
+        box(0, 0, 20, 12), selection, specs,
+        { ...DEFAULT_OUTLINE_BUDGETS, maxRuntimeMs } as typeof DEFAULT_OUTLINE_BUDGETS,
+      )).toThrow(/valid fail-closed budgets/i);
+    },
+  );
+
   test('fails closed when the runtime budget expires during bounded work', () => {
     const originalNow = Date.now;
     let now = 0;
     Date.now = () => { now += 10_001; return now; };
     try {
-      expect(() => extractExactContours(box(0, 0, 20, 12), selection, specs, DEFAULT_OUTLINE_BUDGETS)).toThrow(/runtime budget/i);
-      expect(() => extractProjectedContours(box(0, 0, 20, 12), selection, specs, DEFAULT_OUTLINE_BUDGETS)).toThrow(/runtime budget/i);
+      const boundedBudgets = { ...DEFAULT_OUTLINE_BUDGETS, maxRuntimeMs: 10_000 };
+      expect(() => extractExactContours(box(0, 0, 20, 12), selection, specs, boundedBudgets)).toThrow(/runtime budget/i);
+      expect(() => extractProjectedContours(box(0, 0, 20, 12), selection, specs, boundedBudgets)).toThrow(/runtime budget/i);
     } finally {
       Date.now = originalNow;
     }

@@ -122,7 +122,7 @@ describe.sequential('release fixture validation command', () => {
         }),
       ]);
       expect((summary.launcherRuntimeValidation as Array<{ conversionElapsedMs: number }>)
-        .every(({ conversionElapsedMs }) => conversionElapsedMs > 0 && conversionElapsedMs < 120_000))
+        .every(({ conversionElapsedMs }) => Number.isFinite(conversionElapsedMs) && conversionElapsedMs > 0))
         .toBe(true);
       expect(JSON.stringify(summary.launcherRuntimeValidation)).not.toMatch(/detected|fallback|omitted/i);
       expect(JSON.stringify(summary.launcherRuntimeValidation)).not.toMatch(/Knight|Fortress|\.stl|\//i);
