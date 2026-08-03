@@ -67,7 +67,7 @@ export function coloredDocumentCheckpoint(
   const now = options.now ?? Date.now;
   return (label) => {
     options.onCheckpoint?.(label);
-    if (!Number.isFinite(deadline) || now() > deadline) {
+    if ((deadline !== Number.POSITIVE_INFINITY && !Number.isFinite(deadline)) || now() > deadline) {
       throw new RangeError('Colored outline package exceeded the shared deadline');
     }
   };

@@ -71,7 +71,7 @@ const PROJECTED_WARNINGS = Object.freeze([
 const FALLBACK_AXIS_WARNING = '未找到可信旋轉軸，已使用模型最短包圍盒軸';
 const EXACT_FALLBACK_WARNING = '精確切片失敗，已改用 2.5D 外形模式';
 const checkPackageDeadline = (deadline: number, now: () => number = Date.now): void => {
-  if (!Number.isFinite(deadline) || now() > deadline) throw new RangeError('Outline package exceeded the shared deadline');
+  if ((deadline !== Number.POSITIVE_INFINITY && !Number.isFinite(deadline)) || now() > deadline) throw new RangeError('Outline package exceeded the shared deadline');
 };
 type PackageDeadlineOptions = { readonly now?: () => number; readonly onCheckpoint?: (label: string) => void };
 type PackageDeadlineInput = PackageDeadlineOptions | (() => number);

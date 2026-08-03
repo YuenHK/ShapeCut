@@ -431,6 +431,16 @@ describe('canonical colored outline document', () => {
     expect(labels).toContain('canonical:polygon-loop');
   });
 
+  it('treats a positive-infinite colored-document deadline as unbounded', () => {
+    expect(() => createColoredOutlineDocument(coloredResult(), Number.POSITIVE_INFINITY, {
+      now: () => Number.MAX_VALUE,
+    })).not.toThrow();
+  });
+
+  it.each([Number.NaN, Number.NEGATIVE_INFINITY])('rejects invalid colored-document deadline %s', (deadline) => {
+    expect(() => createColoredOutlineDocument(coloredResult(), deadline)).toThrow(/shared deadline/i);
+  });
+
   it('propagates labeled late assembly cancellation unchanged through canonical validation', () => {
     const cancellation = new Error('cancel canonical fastener reconciliation');
     let polls = 0;
