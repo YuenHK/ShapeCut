@@ -27,6 +27,18 @@ import { planFixedLauncherClearance } from '../outline-assembly/launcher';
 import { expandLauncherExterior } from '../outline-assembly/launcher-exterior-expansion';
 import { PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING } from '../outline-features/depth-field';
 
+const { testOutlineBudgets } = vi.hoisted(() => ({
+  testOutlineBudgets: { maxRuntimeMs: Number.POSITIVE_INFINITY },
+}));
+vi.mock('../outline-2.5d/types', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../outline-2.5d/types')>();
+  Object.assign(testOutlineBudgets, actual.DEFAULT_OUTLINE_BUDGETS);
+  return {
+    ...actual,
+    DEFAULT_OUTLINE_BUDGETS: testOutlineBudgets,
+  };
+});
+
 const testMaterial = { id: 'test-material', name: 'Test material', thicknessMm: 3, kerfMm: 0.1, minFeatureMm: 0.8, minWebMm: 0.5, fitAllowanceMm: { loose: 0.2, slip: 0.1, snug: 0, press: -0.1 } } as const;
 function convertAutomatically(request: { readonly bytes: ArrayBuffer }, onProgress?: Parameters<typeof convertAutomaticOutline>[1]) {
   return convertAutomaticOutline({ ...request, material: testMaterial, launcherFitOffsetMm: 0 }, onProgress);
@@ -901,35 +913,41 @@ endsolid overflow`;
   it('does not reset the overall deadline when exact extraction times out', async () => {
     const originalNow = Date.now;
     let calls = 0;
+    testOutlineBudgets.maxRuntimeMs = 120_000;
     Date.now = () => calls++ === 0 ? 0 : 120_001;
     try {
       await expect(convertAutomatically({ bytes: writeBinarySTL(cylinder(), 'safe') }))
         .rejects.toMatchObject({ code: 'TIME_LIMIT' } satisfies Partial<AutomaticOutlineError>);
     } finally {
       Date.now = originalNow;
+      testOutlineBudgets.maxRuntimeMs = Number.POSITIVE_INFINITY;
     }
   });
 
   it('maps deadline expiry during the first bounded preview copy to a typed time limit', async () => {
     const originalNow = Date.now;
     let calls = 0;
+    testOutlineBudgets.maxRuntimeMs = 120_000;
     Date.now = () => calls++ < 2 ? 0 : 120_001;
     try {
       await expect(convertAutomatically({ bytes: writeBinarySTL(cylinder(), 'safe') }))
         .rejects.toMatchObject({ code: 'TIME_LIMIT' } satisfies Partial<AutomaticOutlineError>);
     } finally {
       Date.now = originalNow;
+      testOutlineBudgets.maxRuntimeMs = Number.POSITIVE_INFINITY;
     }
   });
 
   it('maps deadline expiry during provisional launcher-decoration planning to a typed time limit', async () => {
     const originalNow = Date.now;
+    testOutlineBudgets.maxRuntimeMs = 120_000;
     Date.now = () => new Error().stack?.includes('provisionalDepthFeatures') ? 120_001 : 0;
     try {
       await expect(convertAutomatically({ bytes: writeBinarySTL(cylinder(), 'safe') }))
         .rejects.toMatchObject({ code: 'TIME_LIMIT' } satisfies Partial<AutomaticOutlineError>);
     } finally {
       Date.now = originalNow;
+      testOutlineBudgets.maxRuntimeMs = Number.POSITIVE_INFINITY;
     }
   });
 
@@ -938,6 +956,7 @@ endsolid overflow`;
     const contourBounds = vi.spyOn(simplification, 'contourBounds');
     let now = 0;
     let callsAtPackaging = -1;
+    testOutlineBudgets.maxRuntimeMs = 120_000;
     Date.now = () => now;
     try {
       await expect(convertAutomatically(
@@ -953,6 +972,7 @@ endsolid overflow`;
       expect(contourBounds).toHaveBeenCalledTimes(callsAtPackaging);
     } finally {
       Date.now = originalNow;
+      testOutlineBudgets.maxRuntimeMs = Number.POSITIVE_INFINITY;
       contourBounds.mockRestore();
     }
   });
