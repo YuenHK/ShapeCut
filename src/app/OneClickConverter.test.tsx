@@ -1344,6 +1344,38 @@ describe('OneClickConverter', () => {
     conversion.resolve(result);
   });
 
+  it('cancels a deferred replacement read back to the retained material selection and ignores late bytes', async () => {
+    const user = userEvent.setup();
+    const replacementRead = deferred<ArrayBuffer>();
+    const selectedBytes = new ArrayBuffer(3);
+    const replacementBytes = new ArrayBuffer(4);
+    const selected = new File(['old'], 'selected.stl');
+    const replacement = new File(['replacement'], 'replacement.stl');
+    Object.defineProperty(selected, 'arrayBuffer', { value: vi.fn().mockResolvedValue(selectedBytes) });
+    Object.defineProperty(replacement, 'arrayBuffer', { value: vi.fn(() => replacementRead.promise) });
+    const api = services();
+    render(<OneClickConverter services={api} />);
+
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), selected);
+    expect(await screen.findByRole('heading', { name: 'selected.stl' })).toBeVisible();
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), replacement);
+    expect(screen.getByRole('heading', { name: '正在讀取模型' })).toBeVisible();
+
+    await user.click(screen.getByRole('button', { name: '取消處理' }));
+
+    expect(await screen.findByRole('heading', { name: 'selected.stl' })).toBeVisible();
+    expect(screen.getByLabelText('選擇製作材料')).toBeVisible();
+    await act(async () => {
+      replacementRead.resolve(replacementBytes);
+      await replacementRead.promise;
+    });
+    expect(screen.getByRole('heading', { name: 'selected.stl' })).toBeVisible();
+    expect(screen.queryByRole('heading', { name: 'replacement.stl' })).toBeNull();
+
+    await user.selectOptions(screen.getByLabelText('選擇製作材料'), READY_TEST_MATERIAL.id);
+    expect(api.convert).toHaveBeenCalledWith(selectedBytes, expect.any(Object), 0, expect.any(Function));
+  });
+
   it('keeps pre-geometry progress neutral, then announces monotonic stages through the preview status', async () => {
     const user = userEvent.setup();
     const conversion = deferred<AutomaticOutlineResult>();
@@ -1355,7 +1387,7 @@ describe('OneClickConverter', () => {
     expect(screen.getByRole('heading', { name: '正在讀取模型' })).toBeVisible();
     expect(container.querySelector('.processing-loading-panel')).not.toHaveAttribute('role');
     expect(container.querySelector('.processing-loading-panel')).not.toHaveAttribute('aria-live');
-    expect(container.querySelectorAll('[aria-live="polite"]')).toHaveLength(1);
+    expect(container.querySelectorAll('[aria-live="polite"]')).toHaveLength(2);
     expect(container.querySelector('.processing-status-overlay')).toBeNull();
     report?.({ stage: 'simplifying' });
     await vi.waitFor(() => expect(screen.getByRole('heading', { name: '正在讀取模型' })).toBeVisible());
@@ -1364,7 +1396,7 @@ describe('OneClickConverter', () => {
     await vi.waitFor(() => expect(container.querySelector('.processing-status-overlay')).toBeNull());
     report?.({ stage: 'slicing', preview: result.preview });
     await vi.waitFor(() => expect(screen.getByRole('heading', { name: '正在產生切片' })).toBeVisible());
-    expect(container.querySelectorAll('[aria-live="polite"]')).toHaveLength(1);
+    expect(container.querySelectorAll('[aria-live="polite"]')).toHaveLength(2);
     report?.({ stage: 'analyzing', preview: result.preview });
     await vi.waitFor(() => expect(screen.getByRole('heading', { name: '正在產生切片' })).toBeVisible());
     report?.({ stage: 'packaging' });

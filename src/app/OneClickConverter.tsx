@@ -652,7 +652,6 @@ export function OneClickConverter({
     setSavedDecisionMismatchCause(undefined);
     clearPresentationPreview();
     processingStartedAtRef.current = Date.now();
-    activeFileRef.current = undefined;
     timelineRef.current?.cancel();
     timelineRef.current = undefined;
     runtimeServices.cancel();

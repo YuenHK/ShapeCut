@@ -17,7 +17,9 @@ describe('ProcessingLoadingPanel', () => {
       />,
     );
 
-    expect(screen.getByText('已處理 02:03')).toBeVisible();
+    const elapsed = screen.getByText('已處理 02:03');
+    expect(elapsed).toBeVisible();
+    expect(elapsed).toHaveAttribute('aria-live', 'polite');
     act(() => vi.advanceTimersByTime(1_000));
     expect(screen.getByText('已處理 02:04')).toBeVisible();
     expect(screen.getByRole('button', { name: '取消處理' })).toBeVisible();

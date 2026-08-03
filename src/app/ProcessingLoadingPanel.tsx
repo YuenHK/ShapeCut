@@ -36,7 +36,7 @@ export function ProcessingLoadingPanel({
         <div className="processing-orbit" aria-hidden="true" />
         <h1 id={titleId}>{title}</h1>
         <p className="file-name">{fileName}</p>
-        <p className="processing-elapsed">{elapsed}</p>
+        <p className="processing-elapsed" aria-live="polite">{elapsed}</p>
         <button className="change-file-button processing-cancel-button" type="button" onClick={onCancel}>取消處理</button>
       </div>
     </div>
