@@ -1318,17 +1318,17 @@ progress::-webkit-progress-value {
 }
 
 @media (prefers-reduced-transparency: reduce) {
-  .site-header, .converter-card, .processing-status-overlay { background: var(--glass-solid); backdrop-filter: none; }
+  .site-header, .converter-card, .processing-status-overlay .processing-loading-panel { background: var(--glass-solid); backdrop-filter: none; }
 
   .site-header,
   .converter-card,
-  .processing-status-overlay {
+  .processing-status-overlay .processing-loading-panel {
     -webkit-backdrop-filter: none;
   }
 }
 
 @media (prefers-contrast: more) {
-  .site-header, .converter-card, .processing-status-overlay { background: #fff; border-color: #30435d; }
+  .site-header, .converter-card, .processing-status-overlay .processing-loading-panel { background: #fff; border-color: #30435d; }
 
   .upload-zone,
   .outline-process-viewport,

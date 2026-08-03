@@ -96,7 +96,7 @@ async function renderProcessingSurfaces(): Promise<readonly HTMLElement[]> {
   return [
     screen.getByRole('banner'),
     document.querySelector<HTMLElement>('.converter-card')!,
-    document.querySelector<HTMLElement>('.processing-status-overlay')!,
+    document.querySelector<HTMLElement>('.processing-status-overlay .processing-loading-panel')!,
   ];
 }
 
@@ -304,8 +304,8 @@ describe('Apple workbench visual contracts', () => {
     expect(css).toContain('@media (prefers-reduced-motion: reduce)');
     expect(css).toContain('.workbench-orbit, .workbench-grid, .workbench-particle { animation: none !important; transform: none !important; }');
     expect(css).toContain('@media (prefers-reduced-transparency: reduce)');
-    expect(css).toContain('.site-header, .converter-card, .processing-status-overlay { background: var(--glass-solid); backdrop-filter: none; }');
+    expect(css).toContain('.site-header, .converter-card, .processing-status-overlay .processing-loading-panel { background: var(--glass-solid); backdrop-filter: none; }');
     expect(css).toContain('@media (prefers-contrast: more)');
-    expect(css).toContain('.site-header, .converter-card, .processing-status-overlay { background: #fff; border-color: #30435d; }');
+    expect(css).toContain('.site-header, .converter-card, .processing-status-overlay .processing-loading-panel { background: #fff; border-color: #30435d; }');
   });
 });

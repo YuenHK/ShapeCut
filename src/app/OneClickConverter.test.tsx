@@ -1344,6 +1344,83 @@ describe('OneClickConverter', () => {
     conversion.resolve(result);
   });
 
+  it('starts a fresh monotonic elapsed timer when cancelled processing is retried', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-03T00:00:00.000Z'));
+    const conversions = [deferred<AutomaticOutlineResult>(), deferred<AutomaticOutlineResult>()];
+    const reports: Array<((event: AutomaticOutlineProgressEvent) => void) | undefined> = [];
+    const api = services({
+      convert: vi.fn((_bytes, _material, _launcherFitOffsetMm, onProgress) => {
+        reports.push(onProgress);
+        return conversions[reports.length - 1].promise;
+      }),
+    });
+    const file = new File(['mesh'], 'retry-timer.stl');
+    Object.defineProperty(file, 'arrayBuffer', {
+      value: vi.fn().mockResolvedValue(new ArrayBuffer(4)),
+    });
+    render(<OneClickConverter services={api} />);
+
+    try {
+      await act(async () => {
+        fireEvent.change(screen.getByLabelText('選擇 STL 模型'), {
+          target: { files: [file] },
+        });
+        await Promise.resolve();
+      });
+      fireEvent.change(screen.getByLabelText('選擇製作材料'), {
+        target: { value: READY_TEST_MATERIAL.id },
+      });
+      fireEvent.click(screen.getByRole('button', { name: '取消處理' }));
+
+      act(() => vi.advanceTimersByTime(20_000));
+      fireEvent.change(screen.getByLabelText('選擇製作材料'), {
+        target: { value: READY_TEST_MATERIAL.id },
+      });
+      expect(screen.getByText('已處理 00:00')).toBeVisible();
+
+      act(() => vi.advanceTimersByTime(5_000));
+      act(() => reports[1]?.({ stage: 'analyzing' }));
+      expect(screen.getByText('已處理 00:05')).toBeVisible();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('restores the saved material after cancelling canonical regeneration', async () => {
+    const user = userEvent.setup();
+    const bytes = new TextEncoder().encode('saved cancellation mesh');
+    const conversion = deferred<AutomaticOutlineResult>();
+    const savedMaterial = manufacturingGeometryProfile(READY_TEST_MATERIAL);
+    const savedProject = {
+      schemaVersion: 3 as const,
+      id: 'one-click-current' as const,
+      updatedAt: '2026-08-03T00:00:00.000Z',
+      sourceSha256: await sha256Hex(bytes),
+      material: savedMaterial,
+      launcherFitOffsetMm: 0,
+      launcherTemplateVersion: OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+      launcherTemplateFingerprint: OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
+      launcherExteriorExpansion: result.assembly.launcher.exteriorExpansion,
+      decorationOmissions: result.assembly.decorationOmissions,
+      canonicalSourceHash: result.sourceHash,
+      status: 'regeneration-required' as const,
+    };
+    const api = services({
+      savedProject,
+      convert: vi.fn().mockReturnValue(conversion.promise),
+    });
+    render(<OneClickConverter services={api} />);
+
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File([bytes], 'saved-cancel.stl'));
+    await user.click(await screen.findByRole('button', { name: '重新產生正式輸出' }));
+    await user.click(screen.getByRole('button', { name: '取消處理' }));
+
+    expect(screen.getByLabelText('選擇製作材料')).toBeDisabled();
+    expect(screen.getByLabelText('選擇製作材料')).toHaveValue(savedMaterial.id);
+    conversion.resolve(result);
+  });
+
   it('cancels a deferred replacement read back to the retained material selection and ignores late bytes', async () => {
     const user = userEvent.setup();
     const replacementRead = deferred<ArrayBuffer>();
@@ -1412,7 +1489,8 @@ describe('OneClickConverter', () => {
 
     await uploadAndSelectMaterial(user, new File(['mesh'], 'preview.stl'));
     expect(container.querySelector('.processing-card')).not.toHaveClass('has-preview');
-    expect(container.querySelector('.processing-loading-panel')).toBeInTheDocument();
+    const loadingPanel = container.querySelector('.processing-loading-panel');
+    expect(loadingPanel).toBeInTheDocument();
     expect(container.querySelector('.processing-status-overlay')).not.toBeInTheDocument();
     expect(screen.queryByRole('img', { name: /模型分層預覽/ })).toBeNull();
     expect(container.querySelector('.spinner')).toBeNull();
@@ -1421,7 +1499,7 @@ describe('OneClickConverter', () => {
     const preview = await screen.findByRole('img', { name: /模型分層預覽/ });
     expect(container.querySelector('.processing-card')).toHaveClass('has-preview');
     expect(container.querySelector('.processing-status-overlay')).toBeInTheDocument();
-    expect(container.querySelector('.processing-loading-panel')).toBeInTheDocument();
+    expect(container.querySelector('.processing-loading-panel')).toBe(loadingPanel);
     expect(preview.closest('.outline-process-viewport')).toHaveAttribute('data-stage', 'analyzing');
 
     report?.({ stage: 'slicing', preview: result.preview });

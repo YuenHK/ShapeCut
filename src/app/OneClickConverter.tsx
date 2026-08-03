@@ -503,6 +503,9 @@ export function OneClickConverter({
     material: ManufacturingGeometryProfile,
     launcherFitOffsetMm: number,
   ) => {
+    if (processingStartedAtRef.current === undefined) {
+      processingStartedAtRef.current = Date.now();
+    }
     const current = ++requestId.current;
     timelineRef.current?.cancel();
     releaseCurrentDownloads();
@@ -734,11 +737,11 @@ export function OneClickConverter({
     processingStartedAtRef.current = undefined;
     runtimeServices.cancel();
     releaseCurrentDownloads();
-    setSelectedMaterialId('');
+    setSelectedMaterialId(savedProject?.material.id ?? '');
     setView(activeFile
       ? { kind: 'material', fileName: activeFile.fileName, bytes: activeFile.bytes }
       : { kind: 'upload' });
-  }, [clearDrag, releaseCurrentDownloads, runtimeServices]);
+  }, [clearDrag, releaseCurrentDownloads, runtimeServices, savedProject]);
 
   const discardSavedProject = async () => {
     if (!savedProject || !services.deleteSavedProject) return;
@@ -765,7 +768,7 @@ export function OneClickConverter({
       {content}
     </AppleWorkbench>
   );
-  const processingStartedAt = processingStartedAtRef.current ?? Date.now();
+  const processingStartedAt = processingStartedAtRef.current!;
 
   if (view.kind === 'upload') return frame(
     <section className="converter-card upload-card" aria-labelledby="converter-title">
@@ -883,35 +886,25 @@ export function OneClickConverter({
     const visiblePreview = view.preview ?? presentationPreview;
     return frame(
       <section className={`converter-card processing-card ${visiblePreview ? 'has-preview' : ''}`} aria-labelledby="processing-title">
-        {visiblePreview ? (
-          <>
-            <div className="processing-viewport">
-              <OutlineProcessViewport
-                payload={visiblePreview}
-                stage={view.preview ? view.stage : 'reading'}
-                effectLevel={effectLevel}
-              />
-            </div>
-            <div className="processing-status-overlay">
-              <ProcessingLoadingPanel
-                title={STAGE_LABELS[view.stage]}
-                titleId="processing-title"
-                fileName={view.fileName}
-                startedAt={processingStartedAt}
-                onCancel={cancelProcessing}
-              />
-              <progress value={active + 1} max={STAGES.length} aria-label="轉換進度" />
-            </div>
-          </>
-        ) : (
+        {visiblePreview && (
+          <div className="processing-viewport">
+            <OutlineProcessViewport
+              payload={visiblePreview}
+              stage={view.preview ? view.stage : 'reading'}
+              effectLevel={effectLevel}
+            />
+          </div>
+        )}
+        <div className={visiblePreview ? 'processing-status-overlay' : undefined}>
           <ProcessingLoadingPanel
-            title="正在讀取模型"
+            title={visiblePreview ? STAGE_LABELS[view.stage] : '正在讀取模型'}
             titleId="processing-title"
             fileName={view.fileName}
             startedAt={processingStartedAt}
             onCancel={cancelProcessing}
           />
-        )}
+          {visiblePreview && <progress value={active + 1} max={STAGES.length} aria-label="轉換進度" />}
+        </div>
         <ModelInput compact level={effectLevel} onFile={(file) => void selectFile(file)} />
       </section>,
       view.stage,
