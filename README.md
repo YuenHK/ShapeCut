@@ -46,6 +46,27 @@ npm run build
 
 Production build 位於 `dist/`。應用包含 Web App Manifest 與只快取同源靜態 shell 的 service worker；使用者選取的 STL 不會進入離線 cache。
 
+## 公開網站與範例
+
+ShapeCut 公開網站：[https://yuenhk.github.io/ShapeCut/](https://yuenhk.github.io/ShapeCut/)
+
+可下載的測試檔案：
+
+- [sample1.stl](https://yuenhk.github.io/ShapeCut/samples/sample1.stl)
+- [sample2.stl](https://yuenhk.github.io/ShapeCut/samples/sample2.stl)
+
+這些範例只供工作流程測試。實際切割前，必須再檢查尺寸、材料、切縫補償（kerf）及結構安全。使用者選取的 STL 只在本機處理，不會上載到 GitHub Pages。
+
+## GitHub Pages 部署
+
+每次 push 到 `main` 時，GitHub Actions 會先執行 `npm run typecheck` 及 production build；只有通過這兩項 gate 才會部署到 GitHub Pages。
+
+本機可用以下命令重現 Pages build：
+
+```bash
+SHAPECUT_BASE_PATH=/ShapeCut/ npm run build
+```
+
 ## 安全與限制
 
 - 2.5D 是可驗證的外形近似，不是已修復的封閉 3D 實體。
