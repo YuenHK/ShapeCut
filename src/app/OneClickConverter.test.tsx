@@ -200,6 +200,14 @@ describe('OneClickConverter', () => {
 
     render(<OneClickConverter services={api} />);
 
+    expect(screen.getByRole('heading', {
+      level: 1,
+      name: '把 3D 陀螺 STL 模型轉換成 Laser Cut 平面切片',
+    })).toBeVisible();
+    expect(screen.getByText(
+      '放入 3D 陀螺 STL 模型，ShapeCut 會自動分析、簡化和分層切片，並準備可供 Laser Cut 使用的平面外形與製作檔案。',
+    )).toBeVisible();
+
     const samples = screen.getByRole('region', { name: '範例模型' });
     expect(within(samples).getByRole('link', { name: '下載 sample1' })).toHaveAttribute(
       'href',
