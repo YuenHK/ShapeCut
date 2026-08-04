@@ -8,7 +8,9 @@ self.addEventListener('install', (event) => {
 });
 
 self.addEventListener('activate', (event) => {
-  event.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((key) => key !== CACHE).map((key) => caches.delete(key)))));
+  event.waitUntil(caches.keys().then((keys) => Promise.all(keys
+    .filter((key) => key.startsWith('spinner-laser-kit-shell-') && key !== CACHE)
+    .map((key) => caches.delete(key)))));
   self.clients.claim();
 });
 
@@ -20,7 +22,8 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(fetch(request).then((response) => {
       if (response.ok) {
         const copy = response.clone();
-        void caches.open(CACHE).then((cache) => cache.put(request, copy));
+        const cacheUpdate = caches.open(CACHE).then((cache) => cache.put(request, copy));
+        event.waitUntil(cacheUpdate);
       }
       return response;
     }).catch(() => caches.match(request)));
@@ -29,7 +32,8 @@ self.addEventListener('fetch', (event) => {
   event.respondWith(caches.match(request).then((cached) => cached || fetch(request).then((response) => {
     if (response.ok && ['document', 'script', 'style', 'worker', 'image', 'manifest'].includes(request.destination)) {
       const copy = response.clone();
-      void caches.open(CACHE).then((cache) => cache.put(request, copy));
+      const cacheUpdate = caches.open(CACHE).then((cache) => cache.put(request, copy));
+      event.waitUntil(cacheUpdate);
     }
     return response;
   })));

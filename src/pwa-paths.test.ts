@@ -58,6 +58,7 @@ describe('PWA deployment paths', () => {
 
     const serviceWorker = await readFile(join(output, 'sw.js'), 'utf8');
     expect(serviceWorker).toContain("const CACHE = 'spinner-laser-kit-shell-v3'");
+    expect(serviceWorker).toContain("key.startsWith('spinner-laser-kit-shell-') && key !== CACHE");
     expect(serviceWorker).toContain('self.registration.scope');
     expect(serviceWorker).not.toContain("const SHELL = ['/',");
     expect(serviceWorker).toContain("request.method !== 'GET'");
@@ -73,6 +74,7 @@ describe('PWA deployment paths', () => {
     expect(freshnessBranch).toContain('fetch(request).then((response) => {');
     expect(freshnessBranch).toContain('if (response.ok)');
     expect(freshnessBranch).toContain('cache.put(request, copy)');
+    expect(freshnessBranch).toContain('event.waitUntil(cacheUpdate)');
     expect(freshnessBranch).toContain('.catch(() => caches.match(request))');
   }, 20_000);
 });
