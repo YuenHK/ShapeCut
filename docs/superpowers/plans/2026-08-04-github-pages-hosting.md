@@ -373,12 +373,13 @@ git commit -m "docs: record GitHub Pages verification"
 
 ## 實際本機驗證結果（2026-08-04）
 
-- `npm run typecheck`：退出碼 0，`tsc -b --pretty false` 通過；實際 wall time 4.00 秒。
-- `npm test -- --maxWorkers=1 --fileParallelism=false`：退出碼 0；Node 測試 68 個檔案通過，1677 項通過、4 項跳過（共 1681 項）；Vitest duration 266.35 秒（tests 237.61 秒）。
-- `npm run test:browser -- --run`：退出碼 0；Chromium 測試 6 個檔案、82 項全數通過；Vitest duration 48.22 秒（tests 84.11 秒，跨檔案統計）。
-- `SHAPECUT_BASE_PATH=/ShapeCut/ npm run build`：退出碼 0；TypeScript build 及 Vite 7.3.6 production build 通過，170 modules transformed，Vite built in 2.96 秒（實際 wall time 7.55 秒）。
+- 獨立 review 的完整套件重現 `src/domain/outline-assembly/launcher.test.ts` 中 deterministic rotation 測試超出 Vitest 預設 5 秒；該測試會連續三次執行重型 launcher planning。在不改動 production runtime 或演算法的前提下，該單一測試加入明確 `15_000` ms timeout。修正後目標測試三次新鮮執行均通過，測試本體耗時分別為 3.77、3.78、3.81 秒；整個 launcher 測試檔 51 項全數通過，Vitest duration 31.95 秒（tests 31.44 秒）。
+- `npm run typecheck`：退出碼 0，`tsc -b --pretty false` 通過；實際 wall time 4.44 秒。
+- `npm test -- --maxWorkers=1 --fileParallelism=false`：退出碼 0；Node 測試 68 個檔案通過，1677 項通過、4 項跳過（共 1681 項）；Vitest duration 272.77 秒（tests 244.90 秒）。
+- `npm run test:browser -- --run`：退出碼 0；Chromium 測試 6 個檔案、82 項全數通過；Vitest duration 49.65 秒（tests 85.04 秒，跨檔案統計）。
+- `SHAPECUT_BASE_PATH=/ShapeCut/ npm run build`：退出碼 0；TypeScript build 及 Vite 7.3.6 production build 通過，170 modules transformed，Vite built in 2.61 秒（實際 wall time 7.22 秒）。
 - Pages base：`dist/index.html` 的 JavaScript、module preload 及 CSS 均使用 `/ShapeCut/assets/`；`dist/samples/sample1.stl` 與 `dist/samples/sample2.stl` 均存在。
-- `git diff --check`：退出碼 0，無輸出；修改計劃前的 `git status --short`：退出碼 0，無輸出（clean）。
+- `git diff --check`：退出碼 0，無輸出；提交測試修正後、修改計劃前的 `git status --short`：退出碼 0，無輸出（clean）。
 - `git ls-files | rg '(^|/)(shapecut-outline|Copy of Beyblade)'`：無輸出，沒有相關追蹤檔案。
 - `sample1.stl`：public 與 dist SHA-256 均為 `17269a09c5a56b3c2e62683836781126421e30bfb9dce5599ff8f53667808b4d`，大小 2005084 bytes。
 - `sample2.stl`：public 與 dist SHA-256 均為 `96d0ddd32cc660af31bedf4fb52552d54505169efb7887862bd9943c4f73d5b6`，大小 1855884 bytes。
