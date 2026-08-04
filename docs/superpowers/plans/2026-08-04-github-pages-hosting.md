@@ -389,11 +389,11 @@ git commit -m "docs: record GitHub Pages verification"
 
 **遠端目標：** `YuenHK/ShapeCut`
 
-- [ ] **步驟 1：取得外部寫入批准**
+- [x] **步驟 1：取得外部寫入批准**
 
 在執行前明確列出將進行的外部動作並取得使用者批准：建立 public repository、加入 remote、推送 `main`、執行 Pages workflow。未獲批准不得進行。
 
-- [ ] **步驟 2：以 GitHub 已登入網頁建立空 repository**
+- [x] **步驟 2：以 GitHub 已登入網頁建立空 repository**
 
 建立 `YuenHK/ShapeCut`，可見性選 Public；不要由 GitHub 初始化 README、`.gitignore` 或 license，避免與本機歷史衝突。建立後核對 canonical URL：
 
@@ -401,7 +401,7 @@ git commit -m "docs: record GitHub Pages verification"
 https://github.com/YuenHK/ShapeCut
 ```
 
-- [ ] **步驟 3：加入並核對 remote**
+- [x] **步驟 3：加入並核對 remote**
 
 ```bash
 git remote add origin https://github.com/YuenHK/ShapeCut.git
@@ -410,7 +410,7 @@ git remote -v
 
 預期：fetch/push 都精確指向 `YuenHK/ShapeCut.git`。
 
-- [ ] **步驟 4：取得推送批准並推送**
+- [x] **步驟 4：取得推送批准並推送**
 
 推送是獨立外部寫入；再次確認 staged/unstaged scope 後才執行：
 
@@ -421,7 +421,7 @@ git push -u origin main
 
 預期：只有已提交歷史上傳；本機未追蹤 `shapecut-outline` 輸出不會進入 GitHub。
 
-- [ ] **步驟 5：在 repository Pages 設定選擇 GitHub Actions**
+- [x] **步驟 5：在 repository Pages 設定選擇 GitHub Actions**
 
 在 Settings → Pages，把 Source 設為 GitHub Actions。回到 Actions，確認 `Deploy ShapeCut to GitHub Pages` workflow 已由 `main` push 觸發；若尚未觸發，只在使用者批准後使用 `workflow_dispatch`。
 
@@ -429,11 +429,11 @@ git push -u origin main
 
 **網址：** `https://yuenhk.github.io/ShapeCut/`
 
-- [ ] **步驟 1：等待 workflow 得出終態**
+- [x] **步驟 1：等待 workflow 得出終態**
 
 確認 build 和 deploy jobs 均為 success；若失敗，讀取第一個失敗 step 日誌，先修正根因再重新部署，不盲目重試。
 
-- [ ] **步驟 2：驗證公開資源**
+- [x] **步驟 2：驗證公開資源**
 
 ```bash
 curl -fsSIL https://yuenhk.github.io/ShapeCut/
@@ -448,10 +448,22 @@ curl -fsSL https://yuenhk.github.io/ShapeCut/samples/sample2.stl | shasum -a 256
 96d0ddd32cc660af31bedf4fb52552d54505169efb7887862bd9943c4f73d5b6
 ```
 
-- [ ] **步驟 3：在 Chrome 驗證公開 UI**
+- [x] **步驟 3：在 Chrome 驗證公開 UI**
 
 開啟公開網址，確認：首頁渲染、兩個下載連結為 `/ShapeCut/samples/...`、無 assets／worker 404、console 無 base path 或跨來源錯誤。下載一個範例後用現有選檔流程開啟，至少到達材料選擇與處理畫面。
 
-- [ ] **步驟 4：交付最終證據**
+- [x] **步驟 4：交付最終證據**
 
 報告 repository URL、Pages URL、workflow 成功狀態、commit SHA、完整本機測試數、兩個遠端 STL SHA-256，以及未上傳的 `shapecut-outline` 檔案狀態。
+
+## 實際公開部署結果（2026-08-04）
+
+- 使用者已批准建立公開 repository、加入 remote、推送 `main`、啟用 Pages 及首次部署；公開 repository 已建立於 `https://github.com/YuenHK/ShapeCut`。
+- 本機以只限 `YuenHK/ShapeCut` 的 Ed25519 deploy key 推送；GitHub 顯示該 key 為 Read/write。`main` 已成功推送並追蹤 `origin/main`，推送時的 HEAD 為 `24c9b0532e522e174d5e760c5eced1d93ef1c004`。
+- Settings → Pages 的 Source 已設為 GitHub Actions。首次 workflow `Deploy ShapeCut to GitHub Pages` run `30897225833` 的 `build` 與 `deploy` jobs 均為 `completed / success`。
+- `https://yuenhk.github.io/ShapeCut/` 回應 HTTP 200；production HTML 的 JS、module preload、CSS 及 manifest 均使用 `/ShapeCut/` base path。
+- 遠端 `sample1.stl`：2005084 bytes，SHA-256 `17269a09c5a56b3c2e62683836781126421e30bfb9dce5599ff8f53667808b4d`。
+- 遠端 `sample2.stl`：1855884 bytes，SHA-256 `96d0ddd32cc660af31bedf4fb52552d54505169efb7887862bd9943c4f73d5b6`。
+- Chrome 正式頁面顯示首頁、兩個 `/ShapeCut/samples/...` 下載連結，console 為空。Chrome 擴充功能未啟用 file URL access，故檔案選擇器由同機受控 Chromium 補驗：正式網址成功選取 `sample1.stl` 並到達「選擇製作材料」畫面，page console/pageerror 均為空。
+- 公開驗收後重新執行完整本機門檻：`npm run typecheck` 退出碼 0；Node 68 個檔案、1677 項通過、4 項跳過；Chromium 6 個檔案、82 項全數通過；Pages production build 轉換 170 modules 並於 2.69 秒完成。
+- `shapecut-outline.zip` 與 `shapecut-outline/` 仍只在本機保持未追蹤，沒有上傳至 GitHub。
