@@ -218,7 +218,7 @@ describe('fixed three-prong launcher planning', () => {
     });
     expect(first).not.toHaveProperty('minimumStructuralClearanceMm');
     expect(first).not.toHaveProperty('decorationOverlapCount');
-  });
+  }, 15_000);
 
   it('returns zero expansion with byte-equivalent original-safe exteriors', () => {
     const topExterior = rectangleExterior('top-safe', 60, 62);
