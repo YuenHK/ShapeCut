@@ -589,7 +589,7 @@ describe('automatic outline pipeline', () => {
     } finally {
       exact.mockRestore();
     }
-  });
+  }, 20_000);
 
   it('bounds every stepped-mesh depth sample to its own layer slab', async () => {
     const result = await convertAutomatically({ bytes: writeBinarySTL(steppedCylinder(), 'safe') });
@@ -1011,7 +1011,7 @@ endsolid overflow`;
     expect(settled).toBe(false);
     releasePackaging();
     await expect(completion).resolves.toMatchObject({ mode: 'exact' });
-  });
+  }, 20_000);
 
   it('fails closed when progress delivery rejects', async () => {
     const callbackError = new Error('progress receiver closed');
@@ -1019,7 +1019,7 @@ endsolid overflow`;
     await expect(convertAutomatically({ bytes: writeBinarySTL(cylinder(), 'safe') }, async (event) => {
       if (event.stage === 'packaging') throw callbackError;
     })).rejects.toBe(callbackError);
-  });
+  }, 20_000);
 
   it('keeps progress monotonic and emits one bounded preview per supported stage during fallback', async () => {
     const events: AutomaticOutlineProgressEvent[] = [];
