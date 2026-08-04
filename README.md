@@ -1,6 +1,6 @@
 # ShapeCut
 
-ShapeCut 是一個在瀏覽器內將 STL 轉成通用 Laser Cut 外形切片的一鍵工具。檔案只在本機處理，不會上載到伺服器。
+ShapeCut 是一個把 3D 陀螺 STL 模型轉換成 Laser Cut 平面切片及製作檔案的瀏覽器工具。檔案只在本機處理，不會上載到伺服器。
 
 ## 開始使用
 

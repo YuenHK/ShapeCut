@@ -1,7 +1,7 @@
 {
   "name": "ShapeCut",
   "short_name": "ShapeCut",
-  "description": "私隱優先的一鍵 STL 至 Laser Cut 通用外形工具。",
+  "description": "把 3D 陀螺 STL 模型轉換成 Laser Cut 平面切片及製作檔案的瀏覽器工具。",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
