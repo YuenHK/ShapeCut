@@ -1797,7 +1797,7 @@ describe('OneClickConverter', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent('模型太複雜，超出這次可處理的上限');
     await user.click(screen.getByRole('button', { name: '選擇另一個模型' }));
-    expect(screen.getByRole('heading', { name: '把 3D 模型變成 Laser Cut 切片' })).toBeVisible();
+    expect(screen.getByRole('heading', { name: '把 3D 陀螺 STL 模型轉換成 Laser Cut 平面切片' })).toBeVisible();
   });
 
   it('maps an incompatible fixed launcher to a blocking Traditional Chinese failure', async () => {
@@ -1871,7 +1871,7 @@ describe('OneClickConverter', () => {
     expect(screen.queryByRole('link', { name: /下載/ })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: '選擇另一個模型' }));
-    expect(screen.getByRole('heading', { name: '把 3D 模型變成 Laser Cut 切片' })).toBeVisible();
+    expect(screen.getByRole('heading', { name: '把 3D 陀螺 STL 模型轉換成 Laser Cut 平面切片' })).toBeVisible();
   });
 
   it('retains completed evidence without inventing an artifact identity for a packaging timeout', async () => {

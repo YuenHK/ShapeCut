@@ -33,7 +33,7 @@ describe('PWA deployment paths', () => {
     const index = await readFile(join(output, 'index.html'), 'utf8');
     expect(index).toContain('href="/school/spinner/manifest.webmanifest"');
     expect(index).toContain('href="/school/spinner/icon.svg"');
-    expect(index).toContain('<title>ShapeCut</title>');
+    expect(index).toContain('<title>ShapeCut｜3D 陀螺模型轉 Laser Cut 切片</title>');
     expect(index).toContain('content="#14b8a6"');
     expect(index).not.toMatch(/陀螺 Laser Kit|多材料/i);
 
@@ -41,10 +41,10 @@ describe('PWA deployment paths', () => {
     expect(manifest).toMatchObject({ start_url: './', scope: './' });
     expect(manifest).toMatchObject({
       name: 'ShapeCut', short_name: 'ShapeCut',
-      description: '私隱優先的一鍵 STL 至 Laser Cut 通用外形工具。',
+      description: '把 3D 陀螺 STL 模型轉換成 Laser Cut 平面切片及製作檔案的瀏覽器工具。',
       background_color: '#ffffff', theme_color: '#14b8a6',
     });
-    expect(JSON.stringify(manifest)).not.toMatch(/陀螺|spinner|material/i);
+    expect(JSON.stringify(manifest)).not.toMatch(/spinner|material/i);
     expect(manifest.icons[0].src).toBe('icon.svg');
     const icon = await readFile(join(output, manifest.icons[0].src), 'utf8');
     expect(icon).toContain('ShapeCut layered outline');

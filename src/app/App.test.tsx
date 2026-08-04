@@ -212,7 +212,7 @@ describe('App', () => {
   it('renders only the ShapeCut one-click experience', async () => {
     render(<App services={services} oneClickProjectRepository={emptyProjectRepository} />);
     expect(screen.getByRole('banner')).toHaveTextContent('ShapeCut');
-    expect(await screen.findByRole('heading', { name: '把 3D 模型變成 Laser Cut 切片' })).toBeVisible();
+    expect(await screen.findByRole('heading', { name: '把 3D 陀螺 STL 模型轉換成 Laser Cut 平面切片' })).toBeVisible();
     expect(screen.queryByText('匯入與修復')).toBeNull();
     expect(screen.queryByText('材料設定')).toBeNull();
   });
