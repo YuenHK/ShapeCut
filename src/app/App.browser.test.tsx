@@ -13,6 +13,7 @@ import {
 import '../styles.css';
 import { App } from './App';
 import type { OneClickConverterServices } from './OneClickConverter';
+import { sampleModelUrl } from './sample-models';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -184,6 +185,18 @@ describe('App real browser one-click flow', () => {
         oneClickProjectRepository={projectRepository}
       />,
     );
+
+    const sampleRegion = await screen.findByRole('region', { name: '範例模型' });
+    const sample1 = screen.getByRole('link', { name: '下載 sample1' });
+    const sample2 = screen.getByRole('link', { name: '下載 sample2' });
+    expect(sampleRegion).toBeVisible();
+    expect(sample1).toBeVisible();
+    expect(sample2).toBeVisible();
+    expect(sampleModelUrl('sample1.stl', '/ShapeCut/')).toBe('/ShapeCut/samples/sample1.stl');
+    sample1.focus();
+    expect(sample1).toHaveFocus();
+    await user.tab();
+    expect(sample2).toHaveFocus();
 
     const input = await screen.findByLabelText('選擇 STL 模型');
     input.focus();

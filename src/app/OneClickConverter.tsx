@@ -42,6 +42,7 @@ import { AppleWorkbench } from './AppleWorkbench';
 import { MotionSurface } from './MotionSurface';
 import { useEffectLevel, type EffectLevel } from './effect-level';
 import { ProcessingLoadingPanel } from './ProcessingLoadingPanel';
+import { sampleModels, sampleModelUrl } from './sample-models';
 
 export type DownloadFile = { readonly href: string; readonly fileName: string };
 export type OutlineDownloads = {
@@ -788,6 +789,21 @@ export function OneClickConverter({
         onDrop={clearDrag}
         onFile={(file) => void selectFile(file)}
       />
+      <section className="sample-models" aria-labelledby="sample-models-title">
+        <h2 id="sample-models-title">範例模型</h2>
+        <div className="sample-model-links">
+          {sampleModels.map((sample) => (
+            <a
+              key={sample.id}
+              href={sampleModelUrl(sample.fileName)}
+              download={sample.fileName}
+            >
+              {sample.label}
+            </a>
+          ))}
+        </div>
+        <p>範例只供測試 ShapeCut 工作流程；實際切割前仍須檢查尺寸、材料、刀縫與結構安全。</p>
+      </section>
       <ul className="feature-list" aria-label="處理特點">
         <li>自動保留主要外形</li><li>適合多種材料堆疊</li><li>一次下載所有格式</li>
       </ul>

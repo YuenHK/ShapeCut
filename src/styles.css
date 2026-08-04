@@ -496,6 +496,44 @@ h1 {
   color: var(--muted);
 }
 
+.sample-models {
+  display: grid;
+  justify-items: center;
+  gap: .75rem;
+  text-align: center;
+}
+
+.sample-models h2 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.sample-model-links {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: .75rem;
+}
+
+.sample-model-links a {
+  display: inline-flex;
+  min-height: 48px;
+  padding: .75rem 1.25rem;
+  align-items: center;
+  border-radius: var(--control-radius);
+  color: var(--accent-strong);
+  background: rgba(10, 132, 255, .08);
+  font-weight: 750;
+  text-decoration: underline;
+  text-underline-offset: .2em;
+}
+
+.sample-models p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
 .select-file-button,
 .primary-button {
   display: inline-flex;

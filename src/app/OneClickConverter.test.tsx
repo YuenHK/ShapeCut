@@ -194,6 +194,41 @@ async function uploadAndSelectMaterial(user: ReturnType<typeof userEvent.setup>,
 }
 
 describe('OneClickConverter', () => {
+  it('offers downloadable sample models without selecting or processing them', async () => {
+    const user = userEvent.setup();
+    const api = services();
+
+    render(<OneClickConverter services={api} />);
+
+    const samples = screen.getByRole('region', { name: '範例模型' });
+    expect(within(samples).getByRole('link', { name: '下載 sample1' })).toHaveAttribute(
+      'href',
+      '/samples/sample1.stl',
+    );
+    expect(within(samples).getByRole('link', { name: '下載 sample1' })).toHaveAttribute(
+      'download',
+      'sample1.stl',
+    );
+    expect(within(samples).getByRole('link', { name: '下載 sample2' })).toHaveAttribute(
+      'href',
+      '/samples/sample2.stl',
+    );
+    expect(within(samples).getByRole('link', { name: '下載 sample2' })).toHaveAttribute(
+      'download',
+      'sample2.stl',
+    );
+    expect(within(samples).getByText(
+      '範例只供測試 ShapeCut 工作流程；實際切割前仍須檢查尺寸、材料、刀縫與結構安全。',
+    )).toBeVisible();
+    expect(screen.getByText('檔案只在你的瀏覽器內處理，不會上載到伺服器。')).toBeVisible();
+
+    const sample1 = within(samples).getByRole('link', { name: '下載 sample1' });
+    sample1.addEventListener('click', (event) => event.preventDefault(), { once: true });
+    await user.click(sample1);
+    expect(screen.getByLabelText('選擇 STL 模型')).toBeInTheDocument();
+    expect(api.convert).not.toHaveBeenCalled();
+  });
+
   it('keeps a migrated v2 shell gated after source reattachment until explicit canonical regeneration', async () => {
     const user = userEvent.setup();
     const bytes = new TextEncoder().encode('saved mesh');
