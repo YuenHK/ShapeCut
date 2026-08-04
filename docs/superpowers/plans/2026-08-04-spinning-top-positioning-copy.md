@@ -134,7 +134,7 @@ Run:
 SHAPECUT_BASE_PATH=/ShapeCut/ npm run build
 rg -F '<title>ShapeCut｜3D 陀螺模型轉 Laser Cut 切片</title>' dist/index.html
 rg -F 'name="description" content="把 3D 陀螺 STL 模型轉換成 Laser Cut 平面切片及製作檔案的瀏覽器工具。"' dist/index.html
-node -e 'const m=require("./dist/manifest.webmanifest"); if(m.description!=="把 3D 陀螺 STL 模型轉換成 Laser Cut 平面切片及製作檔案的瀏覽器工具。"){process.exit(1)}'
+node -e 'const fs=require("node:fs"); const m=JSON.parse(fs.readFileSync("./dist/manifest.webmanifest", "utf8")); if(m.description!=="把 3D 陀螺 STL 模型轉換成 Laser Cut 平面切片及製作檔案的瀏覽器工具。"){process.exit(1)}'
 rg -F '/ShapeCut/assets/' dist/index.html
 ```
 
@@ -157,7 +157,7 @@ git commit -m "docs: align ShapeCut spinning-top positioning"
 - Consumes: approved GitHub account access, existing `origin`, Pages workflow and exact repository description from the design.
 - Produces: synchronized `main`, successful Pages run, updated public site and GitHub description.
 
-- [ ] **Step 1: Run the complete local gate**
+- [x] **Step 1: Run the complete local gate**
 
 ```bash
 npm run typecheck
@@ -171,7 +171,7 @@ git ls-files | rg '(^|/)(shapecut-outline|Copy of Beyblade)'
 
 Expected: typecheck, Node tests, Chromium tests, build and `git diff --check` exit 0; the last command has no output; status contains only the plan record plus the two known untracked outputs.
 
-- [ ] **Step 2: Update the GitHub repository description**
+- [x] **Step 2: Update the GitHub repository description**
 
 On `YuenHK/ShapeCut`, set the description exactly to:
 
@@ -181,7 +181,7 @@ On `YuenHK/ShapeCut`, set the description exactly to:
 
 Verify the repository header or About section displays the exact text before leaving GitHub.
 
-- [ ] **Step 3: Record verification and commit the plan result**
+- [x] **Step 3: Record verification and commit the plan result**
 
 Append the actual test counts, build result and GitHub description verification to this plan, then:
 
@@ -189,6 +189,19 @@ Append the actual test counts, build result and GitHub description verification 
 git add -- docs/superpowers/plans/2026-08-04-spinning-top-positioning-copy.md
 git commit -m "docs: record spinning-top copy verification"
 ```
+
+#### Task 3 execution record (2026-08-04)
+
+- Verified commit before this record: `eece20955fa899de1fd2a3b6b48e2478b809153e`.
+- `npm run typecheck`: exit 0.
+- `npm test -- --maxWorkers=1 --fileParallelism=false`: exit 0; 68/68 test files passed; 1,677 tests passed and 4 skipped (1,681 total); duration 277.21 s.
+- `npm run test:browser -- --run`: exit 0; 6/6 Chromium test files and 82/82 tests passed; duration 49.25 s.
+- `SHAPECUT_BASE_PATH=/ShapeCut/ npm run build`: exit 0 with Vite 7.3.6; 170 modules transformed; build completed in 2.71 s.
+- Production artifact checks passed for the exact HTML title and meta description, the `/ShapeCut/assets/` base, and the manifest description using `fs.readFileSync` plus `JSON.parse` on Node 24.18.0.
+- `git diff --check`: exit 0. `git ls-files | rg '(^|/)(shapecut-outline|Copy of Beyblade)'` produced no output.
+- Repository status evidence remained isolated from this commit: the controller-owned `.superpowers/sdd/progress.md` modification and two untracked failed-test diagnostic images were not staged or deleted.
+- In authenticated Chrome, `YuenHK/ShapeCut` → About → Edit repository metadata was saved as `把 3D 陀螺 STL 模型轉換成 Laser Cut 平面切片及製作檔案的瀏覽器工具。`; after the editor closed, a fresh repository-page DOM snapshot showed the exact text in the About paragraph.
+- Steps 4–6 below are intentionally pending controller integration. This feature worktree was not pushed, merged, deployed, or used for public-site/final remote safety checks.
 
 - [ ] **Step 4: Push and wait for the Pages workflow**
 
