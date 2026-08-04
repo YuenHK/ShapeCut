@@ -206,7 +206,7 @@ git commit -m "docs: record spinning-top copy verification"
 - In authenticated Chrome, `YuenHK/ShapeCut` → About → Edit repository metadata was saved as `把 3D 陀螺 STL 模型轉換成 Laser Cut 平面切片及製作檔案的瀏覽器工具。`; after the editor closed, a fresh repository-page DOM snapshot showed the exact text in the About paragraph.
 - Steps 4–6 below are intentionally pending controller integration. This feature worktree was not pushed, merged, deployed, or used for public-site/final remote safety checks.
 
-- [ ] **Step 4: Push and wait for the Pages workflow**
+- [x] **Step 4: Push and wait for the Pages workflow**
 
 ```bash
 git push origin main
@@ -214,7 +214,7 @@ git push origin main
 
 Expected: remote `main` advances to local HEAD; the resulting `Deploy ShapeCut to GitHub Pages` build and deploy jobs both reach `completed / success`.
 
-- [ ] **Step 5: Verify the public deployment**
+- [x] **Step 5: Verify the public deployment**
 
 ```bash
 curl -fsSL https://yuenhk.github.io/ShapeCut/ | rg -F 'ShapeCut｜3D 陀螺模型轉 Laser Cut 切片'
@@ -224,7 +224,7 @@ curl -fsSL https://yuenhk.github.io/ShapeCut/manifest.webmanifest | \
 
 In Chrome, verify the new homepage `h1` and paragraph are visible and console has no errors. Confirm `sample1` and `sample2` links remain under `/ShapeCut/samples/`.
 
-- [ ] **Step 6: Final repository safety check**
+- [x] **Step 6: Final repository safety check**
 
 ```bash
 git rev-parse HEAD
@@ -234,3 +234,14 @@ git ls-files | rg '(^|/)(shapecut-outline|Copy of Beyblade)'
 ```
 
 Expected: local and remote SHA match; only `shapecut-outline.zip` and `shapecut-outline/` are untracked; forbidden tracked-file search has no output.
+
+#### Deployment completion record (2026-08-04)
+
+- Copy release `956b2038344f8614b9d0612358495fb6a3b64d7f` was pushed to `main`; Pages run `30914988146` completed successfully.
+- Live `curl` checks confirmed the exact title, description, manifest copy, and `/ShapeCut/` asset base. The two sample STL files retained their previously verified byte hashes.
+- Existing Chrome state initially remained on the retired shell asset, revealing that service-worker cache v2 was cache-first for navigation. A TDD fix in `cb270db6a96ed2d85dbccd4e50820990e34774fe` changed document and manifest requests to network-first and bumped the ShapeCut shell cache to v3.
+- Independent review identified that the inherited activation cleanup could remove caches belonging to other projects on the same GitHub Pages origin. Commit `006b6ec46e2557288ea093f600719415717e3789` restricted cleanup to `spinner-laser-kit-shell-*` and protected cache writes with `event.waitUntil()`; re-review reported no Critical, Important, or Minor findings and marked it ready to deploy.
+- PWA focused test passed 1/1, TypeScript typecheck passed, the `/ShapeCut/` production build transformed 170 modules, and `git diff --check` passed.
+- Pages run `30915820527` for `006b6ec46e2557288ea093f600719415717e3789` completed successfully. Public `sw.js` showed cache v3, network-first documents, namespaced cleanup, and guarded cache writes.
+- The previously stale Chrome page was reloaded normally twice and then showed title `ShapeCut｜3D 陀螺模型轉 Laser Cut 切片`, the exact new `h1`, both `/ShapeCut/samples/` links, and zero console errors.
+- The final tracked-file audit found no `shapecut-outline` or `Copy of Beyblade` paths. The two user outputs remained untracked and untouched.
