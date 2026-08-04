@@ -28,7 +28,7 @@
 - Consumes: `OneClickConverter` 的既有 upload view 及 `converter-title` accessible heading。
 - Produces: 首頁唯一 `h1` 與說明段落，不新增 component prop 或 exported symbol。
 
-- [ ] **Step 1: Write the failing copy assertions**
+- [x] **Step 1: Write the failing copy assertions**
 
 在 `offers downloadable sample models without selecting or processing them` 測試內、`render(<OneClickConverter ... />)` 後加入：
 
@@ -42,7 +42,7 @@ expect(screen.getByText(
 )).toBeVisible();
 ```
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run:
 
@@ -52,7 +52,7 @@ npx vitest run src/app/OneClickConverter.test.tsx -t "offers downloadable sample
 
 Expected: FAIL because the old generic heading and paragraph do not match either new assertion.
 
-- [ ] **Step 3: Implement the exact homepage copy**
+- [x] **Step 3: Implement the exact homepage copy**
 
 Replace only the upload hero heading and paragraph in `src/app/OneClickConverter.tsx`:
 
@@ -61,7 +61,7 @@ Replace only the upload hero heading and paragraph in `src/app/OneClickConverter
 <p>放入 3D 陀螺 STL 模型，ShapeCut 會自動分析、簡化和分層切片，並準備可供 Laser Cut 使用的平面外形與製作檔案。</p>
 ```
 
-- [ ] **Step 4: Run focused Node and browser tests**
+- [x] **Step 4: Run focused Node and browser tests**
 
 Run:
 
@@ -72,7 +72,7 @@ npm run test:browser -- --run src/app/App.browser.test.tsx
 
 Expected: focused Node test PASS; App Chromium test file PASS with the upload view still accessible.
 
-- [ ] **Step 5: Commit the homepage change**
+- [x] **Step 5: Commit the homepage change**
 
 ```bash
 git add -- src/app/OneClickConverter.test.tsx src/app/OneClickConverter.tsx
@@ -90,7 +90,7 @@ git commit -m "copy: clarify spinning-top conversion purpose"
 - Consumes: Vite `%BASE_URL%` replacement and static public manifest copying.
 - Produces: public title, meta description, manifest description and repository README introduction.
 
-- [ ] **Step 1: Record the expected strings and verify they are initially absent**
+- [x] **Step 1: Record the expected strings and verify they are initially absent**
 
 Run:
 
@@ -101,7 +101,7 @@ rg -F '把 3D 陀螺 STL 模型轉換成 Laser Cut 平面切片及製作檔案�
 
 Expected: both commands exit 1 before implementation because the approved exact strings are absent.
 
-- [ ] **Step 2: Update README introduction**
+- [x] **Step 2: Update README introduction**
 
 Replace the first paragraph after `# ShapeCut` with:
 
@@ -109,7 +109,7 @@ Replace the first paragraph after `# ShapeCut` with:
 ShapeCut 是一個把 3D 陀螺 STL 模型轉換成 Laser Cut 平面切片及製作檔案的瀏覽器工具。檔案只在本機處理，不會上載到伺服器。
 ```
 
-- [ ] **Step 3: Update HTML title and description**
+- [x] **Step 3: Update HTML title and description**
 
 Keep all existing tags and add／replace these values inside `<head>`:
 
@@ -118,7 +118,7 @@ Keep all existing tags and add／replace these values inside `<head>`:
 <title>ShapeCut｜3D 陀螺模型轉 Laser Cut 切片</title>
 ```
 
-- [ ] **Step 4: Update manifest description**
+- [x] **Step 4: Update manifest description**
 
 Set the existing `description` property to:
 
@@ -126,7 +126,7 @@ Set the existing `description` property to:
 "description": "把 3D 陀螺 STL 模型轉換成 Laser Cut 平面切片及製作檔案的瀏覽器工具。"
 ```
 
-- [ ] **Step 5: Build and inspect production artifacts**
+- [x] **Step 5: Build and inspect production artifacts**
 
 Run:
 
@@ -140,7 +140,7 @@ rg -F '/ShapeCut/assets/' dist/index.html
 
 Expected: build exits 0; every inspection command exits 0; manifest value is exact; production assets keep `/ShapeCut/` base.
 
-- [ ] **Step 6: Commit metadata and README**
+- [x] **Step 6: Commit metadata and README**
 
 ```bash
 git add -- README.md index.html public/manifest.webmanifest
@@ -196,6 +196,9 @@ git commit -m "docs: record spinning-top copy verification"
 - `npm run typecheck`: exit 0.
 - `npm test -- --maxWorkers=1 --fileParallelism=false`: exit 0; 68/68 test files passed; 1,677 tests passed and 4 skipped (1,681 total); duration 277.21 s.
 - `npm run test:browser -- --run`: exit 0; 6/6 Chromium test files and 82/82 tests passed; duration 49.25 s.
+- Final-review E2E RED: `npx playwright test e2e/happy-path.spec.ts --grep "reload returns to a private upload state without retaining the STL" --workers=1` exited 1 before the assertion update; 0/1 passed because the retired heading locator found no element; test duration 14.2 s.
+- Final-review E2E focused GREEN: the same command exited 0 after the exact heading assertion update; 1/1 passed; test duration 9.2 s and total Playwright duration 18.2 s.
+- Final-review full `npm run test:e2e`: exit 1; 18 tests discovered, 12 passed, 3 failed, 1 skipped and 2 did not run; total duration 1.9 min. The updated reload test passed in 8.7 s. Two failures were missing external acceptance-fixture variables (`KNIGHT_FORTRESS_STL` and `KNIGHT_FORTRESS_GROUP_STL`); the remaining failure was the 100k-triangle performance test timing out after 35 s without a visible alert. A focused rerun reproduced that performance failure in 35.8 s. These failures are outside the stale-copy assertion scope and were not modified.
 - `SHAPECUT_BASE_PATH=/ShapeCut/ npm run build`: exit 0 with Vite 7.3.6; 170 modules transformed; build completed in 2.71 s.
 - Production artifact checks passed for the exact HTML title and meta description, the `/ShapeCut/assets/` base, and the manifest description using `fs.readFileSync` plus `JSON.parse` on Node 24.18.0.
 - `git diff --check`: exit 0. `git ls-files | rg '(^|/)(shapecut-outline|Copy of Beyblade)'` produced no output.

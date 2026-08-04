@@ -252,7 +252,7 @@ test('reload returns to a private upload state without retaining the STL', async
   await selectModel(page, launcherCompatibleFixture);
   await expectResult(page, '需注意', '精確切片');
   await page.reload();
-  await expect(page.getByRole('heading', { name: '把 3D 模型變成 Laser Cut 切片' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '把 3D 陀螺 STL 模型轉換成 Laser Cut 平面切片' })).toBeVisible();
   await expect(page.getByText('檔案只在你的瀏覽器內處理，不會上載到伺服器。')).toBeVisible();
   await expect(page.getByText(launcherCompatibleFixture.name)).toHaveCount(0);
 });
