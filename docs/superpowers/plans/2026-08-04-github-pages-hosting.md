@@ -31,7 +31,7 @@
 - 新增：`src/app/sample-models.test.ts`
 - 修改：`vite.config.ts`
 
-- [ ] **步驟 1：為固定樣本清單與 base-aware URL 編寫失敗測試**
+- [x] **步驟 1：為固定樣本清單與 base-aware URL 編寫失敗測試**
 
 ```ts
 import { describe, expect, it } from 'vitest';
@@ -54,7 +54,7 @@ describe('sample model catalogue', () => {
 });
 ```
 
-- [ ] **步驟 2：執行測試並確認紅燈**
+- [x] **步驟 2：執行測試並確認紅燈**
 
 執行：
 
@@ -64,7 +64,7 @@ npm test -- src/app/sample-models.test.ts --maxWorkers=1 --fileParallelism=false
 
 預期：FAIL，`./sample-models` 尚不存在。
 
-- [ ] **步驟 3：加入最小資料模組**
+- [x] **步驟 3：加入最小資料模組**
 
 ```ts
 export const sampleModels = [
@@ -78,7 +78,7 @@ export function sampleModelUrl(fileName: string, base = import.meta.env.BASE_URL
 }
 ```
 
-- [ ] **步驟 4：令 Vite Pages base 可明確重現**
+- [x] **步驟 4：令 Vite Pages base 可明確重現**
 
 把 `vite.config.ts` 的 config 加入：
 
@@ -94,7 +94,7 @@ export default defineConfig({
 
 本機預設仍是 `/`；workflow 會明確傳入 `/ShapeCut/`。
 
-- [ ] **步驟 5：執行聚焦測試與 build base 檢查**
+- [x] **步驟 5：執行聚焦測試與 build base 檢查**
 
 ```bash
 npm test -- src/app/sample-models.test.ts --maxWorkers=1 --fileParallelism=false
@@ -104,7 +104,7 @@ rg -n '/ShapeCut/assets/' dist/index.html
 
 預期：測試通過；build 退出碼 0；`dist/index.html` 的 CSS／JS URL 包含 `/ShapeCut/assets/`。
 
-- [ ] **步驟 6：提交任務 1**
+- [x] **步驟 6：提交任務 1**
 
 ```bash
 git add -- src/app/sample-models.ts src/app/sample-models.test.ts vite.config.ts
@@ -117,7 +117,7 @@ git commit -m "feat: add Pages-aware sample URLs"
 - 新增：`public/samples/sample1.stl`
 - 新增：`public/samples/sample2.stl`
 
-- [ ] **步驟 1：記錄來源檔案身份**
+- [x] **步驟 1：記錄來源檔案身份**
 
 ```bash
 shasum -a 256 \
@@ -132,7 +132,7 @@ shasum -a 256 \
 96d0ddd32cc660af31bedf4fb52552d54505169efb7887862bd9943c4f73d5b6
 ```
 
-- [ ] **步驟 2：建立目錄並按已批准對應改名**
+- [x] **步驟 2：建立目錄並按已批准對應改名**
 
 ```bash
 mkdir -p public/samples
@@ -140,7 +140,7 @@ mv -- "Copy of Beyblade X Knight Fortress Group.stl" public/samples/sample1.stl
 mv -- "Copy of Beyblade X Knight Fortress.stl" public/samples/sample2.stl
 ```
 
-- [ ] **步驟 3：驗證名稱、大小與 byte identity**
+- [x] **步驟 3：驗證名稱、大小與 byte identity**
 
 ```bash
 shasum -a 256 public/samples/sample1.stl public/samples/sample2.stl
@@ -149,7 +149,7 @@ stat -f '%N %z bytes' public/samples/sample1.stl public/samples/sample2.stl
 
 預期：SHA-256 與步驟 1 完全相同；大小分別為 `2005084` 和 `1855884` bytes。
 
-- [ ] **步驟 4：確認只 staged 兩個已批准 STL**
+- [x] **步驟 4：確認只 staged 兩個已批准 STL**
 
 ```bash
 git add -- public/samples/sample1.stl public/samples/sample2.stl
@@ -159,7 +159,7 @@ git status --short
 
 預期：staged 只有兩個 `public/samples/*.stl`；`shapecut-outline.zip` 和 `shapecut-outline/` 仍未追蹤。
 
-- [ ] **步驟 5：提交任務 2**
+- [x] **步驟 5：提交任務 2**
 
 ```bash
 git commit -m "feat: add public STL samples"
@@ -173,7 +173,7 @@ git commit -m "feat: add public STL samples"
 - 修改：`src/app/App.browser.test.tsx`
 - 修改：`src/styles.css:422-520`
 
-- [ ] **步驟 1：編寫 React 失敗測試**
+- [x] **步驟 1：編寫 React 失敗測試**
 
 在 upload 畫面測試加入：
 
@@ -186,11 +186,11 @@ expect(screen.getByRole('link', { name: '下載 sample2' }))
 expect(screen.getByText(/實際切割前仍須檢查尺寸、材料、刀縫與結構安全/)).toBeVisible();
 ```
 
-- [ ] **步驟 2：編寫瀏覽器 base path 失敗測試**
+- [x] **步驟 2：編寫瀏覽器 base path 失敗測試**
 
 在 `App.browser.test.tsx` 使用 `sampleModelUrl('sample1.stl', '/ShapeCut/')`，斷言結果為 `/ShapeCut/samples/sample1.stl`，並驗證兩個連結可由鍵盤 focus。
 
-- [ ] **步驟 3：執行兩個測試並確認紅燈**
+- [x] **步驟 3：執行兩個測試並確認紅燈**
 
 ```bash
 npm test -- src/app/OneClickConverter.test.tsx --maxWorkers=1 --fileParallelism=false
@@ -199,7 +199,7 @@ npm run test:browser -- --run src/app/App.browser.test.tsx
 
 預期：範例 region／links 尚不存在而失敗。
 
-- [ ] **步驟 4：加入下載區**
+- [x] **步驟 4：加入下載區**
 
 在 upload card 的 `ModelInput` 後加入：
 
@@ -219,7 +219,7 @@ npm run test:browser -- --run src/app/App.browser.test.tsx
 
 保留 upload zone 內「檔案只在你的瀏覽器內處理，不會上載到伺服器」原文。
 
-- [ ] **步驟 5：加入最小響應式樣式**
+- [x] **步驟 5：加入最小響應式樣式**
 
 ```css
 .sample-models { display: grid; gap: .75rem; text-align: center; }
@@ -231,7 +231,7 @@ npm run test:browser -- --run src/app/App.browser.test.tsx
 
 既有全域 `a:focus-visible` 規則繼續提供 3px focus outline。
 
-- [ ] **步驟 6：執行聚焦測試並提交**
+- [x] **步驟 6：執行聚焦測試並提交**
 
 ```bash
 npm test -- src/app/sample-models.test.ts src/app/OneClickConverter.test.tsx --maxWorkers=1 --fileParallelism=false
@@ -246,7 +246,7 @@ git commit -m "feat: expose downloadable STL samples"
 - 新增：`.github/workflows/deploy-pages.yml`
 - 修改：`README.md`
 
-- [ ] **步驟 1：建立最小權限 Pages workflow**
+- [x] **步驟 1：建立最小權限 Pages workflow**
 
 ```yaml
 name: Deploy ShapeCut to GitHub Pages
@@ -295,7 +295,7 @@ jobs:
         uses: actions/deploy-pages@v4
 ```
 
-- [ ] **步驟 2：更新 README**
+- [x] **步驟 2：更新 README**
 
 加入：
 
@@ -315,7 +315,7 @@ SHAPECUT_BASE_PATH=/ShapeCut/ npm run build
 ```
 ```
 
-- [ ] **步驟 3：檢查 workflow 與 production artifact**
+- [x] **步驟 3：檢查 workflow 與 production artifact**
 
 ```bash
 SHAPECUT_BASE_PATH=/ShapeCut/ npm run build
@@ -328,7 +328,7 @@ git diff --check
 
 預期：兩個 dist STL 的 SHA-256 與任務 2 相同；HTML 使用 `/ShapeCut/assets/`；diff-check 無輸出。
 
-- [ ] **步驟 4：提交 workflow 與 README**
+- [x] **步驟 4：提交 workflow 與 README**
 
 ```bash
 git add -- .github/workflows/deploy-pages.yml README.md
@@ -340,7 +340,7 @@ git commit -m "ci: deploy ShapeCut to GitHub Pages"
 **檔案：**
 - 修改：`docs/superpowers/plans/2026-08-04-github-pages-hosting.md`
 
-- [ ] **步驟 1：執行完整門檻**
+- [x] **步驟 1：執行完整門檻**
 
 ```bash
 npm run typecheck
@@ -353,7 +353,7 @@ git status --short
 
 預期：所有命令退出碼 0；status 只保留 `shapecut-outline.zip`、`shapecut-outline/` 及待提交的計劃驗證記錄。
 
-- [ ] **步驟 2：核對樣本與 staged scope**
+- [x] **步驟 2：核對樣本與 staged scope**
 
 ```bash
 shasum -a 256 public/samples/*.stl dist/samples/*.stl
@@ -362,7 +362,7 @@ git ls-files | rg '(^|/)(shapecut-outline|Copy of Beyblade)'
 
 預期：每個 sample 的 public/dist SHA 相同；第二個命令無輸出。
 
-- [ ] **步驟 3：記錄實際測試數與退出碼並提交計劃**
+- [x] **步驟 3：記錄實際測試數與退出碼並提交計劃**
 
 把實際 Node／Chromium 測試數、build 結果和 SHA 寫入本計劃末段，然後：
 
@@ -370,6 +370,19 @@ git ls-files | rg '(^|/)(shapecut-outline|Copy of Beyblade)'
 git add -- docs/superpowers/plans/2026-08-04-github-pages-hosting.md
 git commit -m "docs: record GitHub Pages verification"
 ```
+
+## 實際本機驗證結果（2026-08-04）
+
+- `npm run typecheck`：退出碼 0，`tsc -b --pretty false` 通過；實際 wall time 4.00 秒。
+- `npm test -- --maxWorkers=1 --fileParallelism=false`：退出碼 0；Node 測試 68 個檔案通過，1677 項通過、4 項跳過（共 1681 項）；Vitest duration 266.35 秒（tests 237.61 秒）。
+- `npm run test:browser -- --run`：退出碼 0；Chromium 測試 6 個檔案、82 項全數通過；Vitest duration 48.22 秒（tests 84.11 秒，跨檔案統計）。
+- `SHAPECUT_BASE_PATH=/ShapeCut/ npm run build`：退出碼 0；TypeScript build 及 Vite 7.3.6 production build 通過，170 modules transformed，Vite built in 2.96 秒（實際 wall time 7.55 秒）。
+- Pages base：`dist/index.html` 的 JavaScript、module preload 及 CSS 均使用 `/ShapeCut/assets/`；`dist/samples/sample1.stl` 與 `dist/samples/sample2.stl` 均存在。
+- `git diff --check`：退出碼 0，無輸出；修改計劃前的 `git status --short`：退出碼 0，無輸出（clean）。
+- `git ls-files | rg '(^|/)(shapecut-outline|Copy of Beyblade)'`：無輸出，沒有相關追蹤檔案。
+- `sample1.stl`：public 與 dist SHA-256 均為 `17269a09c5a56b3c2e62683836781126421e30bfb9dce5599ff8f53667808b4d`，大小 2005084 bytes。
+- `sample2.stl`：public 與 dist SHA-256 均為 `96d0ddd32cc660af31bedf4fb52552d54505169efb7887862bd9943c4f73d5b6`，大小 1855884 bytes。
+- 任務 1 至任務 5 已完成；任務 6 至任務 7 仍待外部寫入批准、部署及公開網站驗收，未在本次本機驗證中執行。
 
 ### 任務 6：建立公開 repository、推送及啟用 Pages
 
