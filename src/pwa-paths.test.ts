@@ -57,7 +57,22 @@ describe('PWA deployment paths', () => {
     expect(javascript.includes('/school/spinner/sw.js'), 'compiled service-worker registration must include the deployment base').toBe(true);
 
     const serviceWorker = await readFile(join(output, 'sw.js'), 'utf8');
+    expect(serviceWorker).toContain("const CACHE = 'spinner-laser-kit-shell-v3'");
     expect(serviceWorker).toContain('self.registration.scope');
     expect(serviceWorker).not.toContain("const SHELL = ['/',");
+    expect(serviceWorker).toContain("request.method !== 'GET'");
+    expect(serviceWorker).toContain('url.origin !== self.location.origin');
+    expect(serviceWorker).toContain("url.pathname.endsWith('.stl')");
+
+    const freshnessBranchStart = serviceWorker.indexOf("request.mode === 'navigate'");
+    const staticCacheFirstStart = serviceWorker.indexOf('event.respondWith(caches.match(request)');
+    expect(freshnessBranchStart).toBeGreaterThan(-1);
+    expect(staticCacheFirstStart).toBeGreaterThan(freshnessBranchStart);
+    const freshnessBranch = serviceWorker.slice(freshnessBranchStart, staticCacheFirstStart);
+    expect(freshnessBranch).toContain("['document', 'manifest'].includes(request.destination)");
+    expect(freshnessBranch).toContain('fetch(request).then((response) => {');
+    expect(freshnessBranch).toContain('if (response.ok)');
+    expect(freshnessBranch).toContain('cache.put(request, copy)');
+    expect(freshnessBranch).toContain('.catch(() => caches.match(request))');
   }, 20_000);
 });
