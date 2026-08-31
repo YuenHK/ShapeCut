@@ -1607,3 +1607,128 @@ logic was changed. The fresh `npm ci` audit remains 1 moderate and 3 high
 vulnerabilities. No round 9 change touches UI/CSS, fonts, colours, production
 deadline, canonical merge, materials, launcher code or official release
 artifacts.
+
+## Re-review round 10: findings 28–29
+
+Date: 2026-08-31
+Implementation commit: `9c13cb2` (`fix(wasm): isolate transfer iterator intrinsics`)
+
+### Finding 28: private iterator with captured own `next`
+
+At module evaluation the adapter captures both `Array.prototype[Symbol.iterator]`
+and `%ArrayIteratorPrototype%.next`. The frozen transfer transport's own
+iterator function creates a private native array iterator and immediately
+defines an own, non-configurable, non-writable captured `next` on it. A test
+patches the shared iterator prototype after module load and substitutes transfer
+identities if called; the malicious function receives zero calls, the private
+iterator exposes the captured own non-configurable `next`, and all original
+source buffers detach in the expected order.
+
+### Finding 29: descriptor-only current-realm snapshot
+
+Clone-result validation no longer performs any ordinary `Reflect.get` of
+`length` or numeric values. Captured prototype, own keys and data descriptors
+alone create the frozen internal snapshot; later postconditions and view
+reconstruction use that snapshot. Tests place throwing ordinary `get` traps on
+both `length` and index `0`; neither trap is invoked and the descriptor-backed
+values transfer normally.
+
+The approved spec and source comments now describe a current-realm
+descriptor-equivalent array snapshot. Trusted native `structuredClone` returns
+an ordinary array in the normal bootstrap. The documentation explicitly does
+not claim that JavaScript can identify every arbitrary transparent malicious
+Proxy; a descriptor-equivalent Proxy cannot change the already frozen snapshot.
+
+### Round 10 TDD and verification
+
+Initial RED:
+
+```text
+npx vitest run src/wasm/slice-kernel-contract.test.ts
+```
+
+Result: 85 passed and 3 failed. The failures directly covered shared iterator
+prototype `next` interception and ordinary `get` rereads of clone-result
+`length` and index `0`. Final direct contract result: 88/88.
+
+Focused gates:
+
+```text
+git diff --check
+npm run typecheck
+npx vitest run src/wasm/slice-kernel-contract.test.ts \
+  src/test/geometry-wasm-build-contract.test.ts
+npm run test:browser -- --run src/wasm/load-slice-kernel.browser.test.ts
+npm run test:geometry-wasm-boundary
+npm run build
+```
+
+Results: diff check and typecheck exited 0; Node contract/workflow 92/92,
+Chromium 34/34 and controlled raw WASM 31/31 passed. Tracked-artifact
+verification and production build exited 0 with one 37,856-byte WASM.
+
+Rust, regeneration and workflow gates:
+
+```text
+cargo fmt --manifest-path crates/geometry-wasm/Cargo.toml -- --check
+cargo test --manifest-path crates/geometry-wasm/Cargo.toml --locked
+cargo clippy --manifest-path crates/geometry-wasm/Cargo.toml --locked \
+  --all-targets -- -D warnings
+cargo clippy --manifest-path crates/geometry-wasm/Cargo.toml --locked \
+  --target wasm32-unknown-unknown -- -D warnings
+cargo check --manifest-path crates/geometry-wasm/Cargo.toml --locked \
+  --target wasm32-unknown-unknown --release
+node scripts/verify-geometry-wasm-regeneration.mjs
+ruby -e 'require "yaml"; ARGV.each { |path| YAML.parse_file(path) }' \
+  .github/workflows/deploy-pages.yml \
+  .github/workflows/verify-geometry-wasm.yml
+```
+
+Results: Rust fmt, 1 unit test, 20 integration tests, native/wasm32 clippy with
+`-D warnings`, wasm32 release check, pinned byte comparison and both workflow
+YAML parses passed.
+
+Fresh checkout at committed `9c13cb2` used a new path containing spaces and
+Chinese:
+
+```text
+git clone --no-local /tmp/shapecut-oracle.QUL6JU/repo \
+  "/tmp/ShapeCut Task 3 round 10 中文 fresh"
+git -C "/tmp/ShapeCut Task 3 round 10 中文 fresh" checkout --detach 9c13cb2
+cd "/tmp/ShapeCut Task 3 round 10 中文 fresh"
+npm_config_cache="/tmp/ShapeCut Task 3 round 10 中文 npm cache" npm ci
+env PATH=/usr/local/bin:/usr/bin:/bin \
+  CARGO_HOME="/tmp/ShapeCut Task 3 round 10 中文 empty cargo" \
+  npm_config_offline=true npm run build
+env PATH=/usr/local/bin:/usr/bin:/bin \
+  CARGO_HOME="/tmp/ShapeCut Task 3 round 10 中文 empty cargo" \
+  npm_config_offline=true npx vitest run \
+    src/wasm/slice-kernel-contract.test.ts \
+    src/test/geometry-wasm-build-contract.test.ts
+env PATH=/usr/local/bin:/usr/bin:/bin \
+  CARGO_HOME="/tmp/ShapeCut Task 3 round 10 中文 empty cargo" \
+  npm_config_offline=true npm run test:browser -- --run \
+    src/wasm/load-slice-kernel.browser.test.ts
+env PATH=/usr/local/bin:/usr/bin:/bin \
+  CARGO_HOME="/tmp/ShapeCut Task 3 round 10 中文 empty cargo" \
+  npm_config_offline=true npm run test:geometry-wasm-boundary
+CARGO_ENCODED_RUSTFLAGS=$'-Cdebuginfo=0\x1f--remap-path-prefix=/tmp/Existing round 10 中文 path=/workspace/existing' \
+  node scripts/verify-geometry-wasm-regeneration.mjs
+git status --short
+```
+
+The empty dependency install completed. With cargo, rustc and wasm-pack absent
+from the restricted `PATH` and an empty Cargo home, the offline standard path
+passed: build, Node 92/92, Chromium 34/34 and raw boundary 31/31. The separate
+pinned regeneration preserved the pre-existing unit-separator flags and
+reproduced the tracked 37,856-byte WASM byte-for-byte. The fresh checkout
+remained clean. This is an offline standard-build claim only; regeneration
+used the separately verified pinned toolchain.
+
+Full `npm test -- --run` completed with 67/71 files, 1,779 passed, 4 skipped
+and 7 failed under parallel load. All seven timeout cases passed when rerun
+serially across extraction, launcher, outline package and E2E conversion. No
+timeout or unrelated UI/geometry logic was changed. The fresh `npm ci` audit
+remains 1 moderate and 3 high vulnerabilities. No round 10 change touches
+UI/CSS, fonts, colours, production deadline, canonical merge, materials,
+launcher code or official release artifacts.
