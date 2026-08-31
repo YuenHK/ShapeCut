@@ -67,3 +67,90 @@ The two software verification exceptions recorded above are now closed:
 - First-match exit reduced the protected-boundary hot-path cost while preserving the original `Math.hypot` and tolerance predicates. Post-review private fixture validation passed with reference A at 27,798.824 ms and reference B at 29,239.318 ms.
 
 The physical coupon and official-launcher latch/release/play/damage gate remains outstanding.
+
+---
+
+# 2026-09-01 Task 4 Continuation: Deterministic Slice Worker Pool
+
+Date: 2026-09-01
+
+## Scope completed
+
+- Added the exact device policy: `hardwareConcurrency <= 2` selects one worker,
+  `3-5` selects two, and `>= 6` selects at most four.
+- Added deterministic longest-processing-time partition assignment using
+  triangle-plane overlap byte estimates. Every plane has one owner, each
+  partition sorts its plane indices, and retained triangles preserve source
+  triangle and edge order.
+- Each worker receives only the vertices and triangles overlapping its assigned
+  planes under the Rust-equivalent axial tolerance. Degenerate triangles are
+  owned once by partition zero so remote and zero-plane evidence is preserved
+  without copying the full mesh to every worker. The pool atomically consumes
+  the caller's three distinct full-span fixed `ArrayBuffer`s after admission,
+  then transfers each partition without `SharedArrayBuffer` or shared WASM
+  memory.
+- Added one-worker-per-partition FIFO submission, generation-token late-message
+  rejection, strict result/error protocols, canonical global-plane merge, and
+  immutable result facades.
+- Added hard cancellation and replacement. All active workers are terminated
+  synchronously, `activeWorkerCount` becomes zero before `cancel()` resolves,
+  and cancelled/deadline/validation errors cannot claim fallback eligibility.
+- Added an unforgeable private capability for pre-publication bundled-worker
+  crash, load, execution, and resource fallback candidates. Injected worker
+  factories cannot obtain the capability. The pool never performs a
+  fallback itself and never retries or publishes a partial result.
+- Added the existing WASM request work/allocation limits and the 8 MiB merged
+  endpoint cap before large pool allocations.
+
+## TDD evidence
+
+The following RED states were observed before their production code was added:
+
+1. `slice-partitioner.test.ts` failed because `./slice-partitioner` did not exist.
+2. `slice-worker-pool.test.ts` failed because `./slice-worker-pool` did not exist.
+3. The first Chromium pool run failed closed as `WORKER_CRASH` because
+   `slice.worker.ts` did not exist.
+4. Review tests failed because extra protocol fields were accepted, resource
+   failure provenance was lost, and callers could forge fallback eligibility.
+5. The oversized-plane test timed out because 16,385 planes were not rejected
+   at admission.
+6. Independent-review tests failed for duplicate planes, near-plane tolerance,
+   remote/zero-plane degeneracy evidence, injected fallback provenance, and
+   impossible diagnostic counters before those boundaries were corrected.
+
+Every RED was followed by a focused GREEN run before the next behavior was
+implemented.
+
+## Fresh verification
+
+- `cargo test --locked --manifest-path crates/geometry-wasm/Cargo.toml`:
+  1 unit and 20 integration tests passed.
+- `cargo clippy --locked --manifest-path crates/geometry-wasm/Cargo.toml --all-targets -- -D warnings`:
+  passed.
+- `npm run test:geometry-wasm-boundary`: 31 controlled-wrapper checks passed.
+- Final Node boundary/partition/pool run: 3 files and 118 tests passed.
+- Node tests include a real `node:worker_threads` isolate loading the tracked
+  controlled wrapper and WASM bytes, executing `sliceLayerBatch`, and
+  transferring its owned result to the pool.
+- Chromium tests exercise four real bundled WASM workers with exact
+  plane/triangle/edge order, zero-plane remote degeneracy, hard cancellation,
+  and real worker crash/malformed/deadline failure paths.
+- Final Chromium loader/pool run: 2 files and 40 tests passed.
+- `npm run verify:geometry-wasm-regeneration`: four generated files reproduced
+  byte-for-byte; WASM size 37,856 bytes and zero source maps.
+- `npm run typecheck`: passed.
+- `npm run build`: passed; the existing hashed WASM asset was emitted and no
+  source maps were produced.
+- `git diff --check`: passed before report generation.
+- Independent review: Approved with no remaining Critical or Important finding.
+
+## Boundaries and remaining work
+
+- Task 4 provides the partitioner, worker module, and pool only. Task 5 must
+  connect this pool to canonical extraction before the worker appears in the
+  production application graph.
+- Task 6/7 retain the heavy-model memory, main-thread long-task, 120-second,
+  Knight A/B, and end-to-end artifact acceptance gates. This report makes no A3
+  performance-completion claim.
+- No UI, CSS, font, material, launcher, canonical artifact, or production
+  deadline code was changed.
