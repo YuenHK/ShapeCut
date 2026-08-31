@@ -22,7 +22,7 @@ describe('linked worktree dependency contract', () => {
     const version = execFileSync('npm', ['exec', 'vite-node', '--', '--version'], {
       cwd: process.cwd(),
       encoding: 'utf8',
-      timeout: 20_000,
+      timeout: 5_000,
     });
     expect(version).toMatch(/vite-node\/3\.2\.4/);
   });
@@ -31,7 +31,7 @@ describe('linked worktree dependency contract', () => {
     const result = spawnSync(
       'npm',
       ['exec', 'vite-node', '--', 'scripts/validate-fixtures.ts', '--dependency-contract'],
-      { cwd: process.cwd(), encoding: 'utf8', timeout: 20_000 },
+      { cwd: process.cwd(), encoding: 'utf8', timeout: 5_000 },
     );
     expect(result.error).toBeUndefined();
     expect(result.status).not.toBe(0);
@@ -77,6 +77,40 @@ describe('geometry benchmark contract', () => {
   ])('rejects %s', async (_label, sample) => {
     const { geometryBenchmarkSampleSchema } = await import('./geometry-benchmark-contract');
     expect(() => geometryBenchmarkSampleSchema.parse(sample)).toThrow();
+  });
+
+  it.each([
+    ['elapsed duration', {
+      ...validSample,
+      stageMilliseconds: { parse: Number.MAX_SAFE_INTEGER + 1, slice: 0, canonicalize: 0, artifacts: 0 },
+      elapsedMilliseconds: Number.MAX_SAFE_INTEGER + 1,
+    }],
+    ['stage duration', {
+      ...validSample,
+      stageMilliseconds: { ...validSample.stageMilliseconds, parse: Number.MAX_SAFE_INTEGER + 1 },
+      elapsedMilliseconds: Number.MAX_SAFE_INTEGER + 9,
+    }],
+  ])('rejects unsafe %s', async (_label, sample) => {
+    const { geometryBenchmarkSampleSchema } = await import('./geometry-benchmark-contract');
+    expect(() => geometryBenchmarkSampleSchema.parse(sample)).toThrow();
+  });
+
+  it('rejects unsafe duration summary percentiles', async () => {
+    const { geometryBenchmarkSummarySchema } = await import('./geometry-benchmark-contract');
+    expect(() => geometryBenchmarkSummarySchema.parse({
+      schemaVersion: 1,
+      sampleCount: 1,
+      elapsedMilliseconds: { median: Number.MAX_SAFE_INTEGER + 1, p95: 1 },
+      estimatedLiveBytes: { median: 1, p95: 1 },
+      triangleCount: 1,
+      layerCount: 1,
+      stageMilliseconds: {
+        parse: { median: 1, p95: 1 },
+        slice: { median: 1, p95: 1 },
+        canonicalize: { median: 1, p95: 1 },
+        artifacts: { median: 1, p95: 1 },
+      },
+    })).toThrow();
   });
 
   it('returns deterministic median and nearest-rank p95 summaries', async () => {

@@ -1,7 +1,7 @@
 # WASM geometry baseline
 
-Date: 2026-08-31  
-Branch: `codex/wasm-geometry`  
+Date: 2026-08-31
+Branch: `codex/wasm-geometry`
 Runtime: Node.js `v24.18.1`, npm `11.16.0`, Vitest `4.1.10`
 
 ## Reproducibility repair

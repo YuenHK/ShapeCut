@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-const finiteNonNegative = z.number().finite().nonnegative();
+const finiteNonNegative = z.number().finite().nonnegative().safe();
 const count = z.number().int().nonnegative().safe();
 
 export const geometryBenchmarkStageMillisecondsSchema = Object.freeze(z.object({
