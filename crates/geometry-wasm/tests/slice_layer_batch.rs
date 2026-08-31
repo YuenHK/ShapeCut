@@ -168,6 +168,45 @@ fn bounded_abort_hook_stops_work_at_a_checkpoint() {
 }
 
 #[test]
+fn validation_checkpoints_large_inputs_even_without_plane_work() {
+    let positions = vec![0.0_f32; (MAX_DEADLINE_CHECK_INTERVAL as usize * 3) + 3];
+    let mut checks = 0_u32;
+    let result = slice_layer_batch_with_abort_check(&positions, &[], &[], 4_096, || {
+        checks += 1;
+        Ok(false)
+    })
+    .expect("finite unreferenced vertices are valid");
+
+    assert_eq!(result.plane_offsets(), &[0]);
+    assert!(
+        checks >= 4,
+        "large finite validation must checkpoint in chunks, observed {checks} checks"
+    );
+}
+
+#[test]
+fn index_validation_and_degeneracy_prepass_are_both_checkpointed() {
+    const TRIANGLE_COUNT: usize = 5_000;
+    let positions = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+    let mut indices = Vec::with_capacity(TRIANGLE_COUNT * 3);
+    for _ in 0..TRIANGLE_COUNT {
+        indices.extend_from_slice(&[0, 1, 2]);
+    }
+    let mut checks = 0_u32;
+    let result = slice_layer_batch_with_abort_check(&positions, &indices, &[], 4_096, || {
+        checks += 1;
+        Ok(false)
+    })
+    .expect("valid triangles with no requested planes are accepted");
+
+    assert_eq!(result.plane_offsets(), &[0]);
+    assert!(
+        checks >= 7,
+        "copy-independent validation and prepass must checkpoint, observed {checks} checks"
+    );
+}
+
+#[test]
 fn rejects_plane_count_and_work_that_exceed_bounded_allocation_contracts() {
     let too_many_planes = vec![0.0; MAX_PLANE_COUNT + 1];
     assert_eq!(

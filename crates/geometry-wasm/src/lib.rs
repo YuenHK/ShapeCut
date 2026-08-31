@@ -57,7 +57,9 @@ impl SliceKernelErrorCode {
             Self::NonFinitePlane => "planes must contain only finite values",
             Self::UnsortedPlanes => "planes must be strictly increasing",
             Self::PlaneCountLimit => "plane count exceeds the kernel limit",
-            Self::InvalidCheckpointInterval => "deadline check interval must be positive",
+            Self::InvalidCheckpointInterval => {
+                "deadline check interval must be a finite safe positive integer"
+            }
             Self::DeadlineCheckIntervalLimit => "deadline check interval exceeds the kernel limit",
             Self::DeadlineCheckFailed => "deadline check failed closed",
             Self::DeadlineExceeded => "slice batch was cancelled at a deadline checkpoint",
@@ -172,6 +174,18 @@ fn checked_increment(counter: &mut u32) -> Result<(), SliceKernelError> {
     Ok(())
 }
 
+fn check_deadline<F>(abort_check: &mut F) -> Result<(), SliceKernelError>
+where
+    F: FnMut() -> Result<bool, SliceKernelErrorCode>,
+{
+    if abort_check().map_err(SliceKernelError::new)? {
+        return Err(SliceKernelError::new(
+            SliceKernelErrorCode::DeadlineExceeded,
+        ));
+    }
+    Ok(())
+}
+
 fn canonical_zero(value: f64) -> f64 {
     if value == 0.0 { 0.0 } else { value }
 }
@@ -268,38 +282,57 @@ fn validate_request_lengths(
     Ok((vertex_count, triangle_count))
 }
 
-fn validate_request(
+fn validate_request<F>(
     positions: &[f32],
     indices: &[u32],
     planes: &[f64],
     deadline_check_interval: u32,
-) -> Result<usize, SliceKernelError> {
+    abort_check: &mut F,
+) -> Result<usize, SliceKernelError>
+where
+    F: FnMut() -> Result<bool, SliceKernelErrorCode>,
+{
     let (vertex_count, triangle_count) = validate_request_lengths(
         positions.len(),
         indices.len(),
         planes.len(),
         deadline_check_interval,
     )?;
-    for chunk in positions.as_chunks::<3>().0 {
-        if chunk.iter().any(|value| !value.is_finite()) {
+    let interval = usize::try_from(deadline_check_interval)
+        .map_err(|_| SliceKernelError::new(SliceKernelErrorCode::IntegerOverflow))?;
+    for values in positions.chunks(interval) {
+        check_deadline(abort_check)?;
+        if values.iter().any(|value| !value.is_finite()) {
             return Err(SliceKernelError::new(
                 SliceKernelErrorCode::NonFinitePosition,
             ));
         }
     }
-    for (plane_index, plane) in planes.iter().copied().enumerate() {
-        if !plane.is_finite() {
-            return Err(SliceKernelError::new(SliceKernelErrorCode::NonFinitePlane));
-        }
-        if plane_index > 0 && plane <= planes[plane_index - 1] {
-            return Err(SliceKernelError::new(SliceKernelErrorCode::UnsortedPlanes));
+    for (chunk_index, plane_chunk) in planes.chunks(interval).enumerate() {
+        check_deadline(abort_check)?;
+        let chunk_start = chunk_index
+            .checked_mul(interval)
+            .ok_or_else(|| SliceKernelError::new(SliceKernelErrorCode::IntegerOverflow))?;
+        for (local_index, plane) in plane_chunk.iter().copied().enumerate() {
+            let plane_index = chunk_start
+                .checked_add(local_index)
+                .ok_or_else(|| SliceKernelError::new(SliceKernelErrorCode::IntegerOverflow))?;
+            if !plane.is_finite() {
+                return Err(SliceKernelError::new(SliceKernelErrorCode::NonFinitePlane));
+            }
+            if plane_index > 0 && plane <= planes[plane_index - 1] {
+                return Err(SliceKernelError::new(SliceKernelErrorCode::UnsortedPlanes));
+            }
         }
     }
-    for index in indices.iter().copied() {
-        let index = usize::try_from(index)
-            .map_err(|_| SliceKernelError::new(SliceKernelErrorCode::IntegerOverflow))?;
-        if index >= vertex_count {
-            return Err(SliceKernelError::new(SliceKernelErrorCode::IndexOutOfRange));
+    for index_chunk in indices.chunks(interval) {
+        check_deadline(abort_check)?;
+        for index in index_chunk.iter().copied() {
+            let index = usize::try_from(index)
+                .map_err(|_| SliceKernelError::new(SliceKernelErrorCode::IntegerOverflow))?;
+            if index >= vertex_count {
+                return Err(SliceKernelError::new(SliceKernelErrorCode::IndexOutOfRange));
+            }
         }
     }
 
@@ -386,9 +419,20 @@ pub fn slice_layer_batch_with_abort_check<F>(
 where
     F: FnMut() -> Result<bool, SliceKernelErrorCode>,
 {
-    let triangle_count = validate_request(positions, indices, planes, deadline_check_interval)?;
+    let triangle_count = validate_request(
+        positions,
+        indices,
+        planes,
+        deadline_check_interval,
+        &mut abort_check,
+    )?;
+    let interval = usize::try_from(deadline_check_interval)
+        .map_err(|_| SliceKernelError::new(SliceKernelErrorCode::IntegerOverflow))?;
 
     let mut degenerate = Vec::new();
+    if triangle_count > 0 {
+        check_deadline(&mut abort_check)?;
+    }
     degenerate
         .try_reserve_exact(triangle_count)
         .or_else(allocation_error)?;
@@ -398,12 +442,15 @@ where
         .or_else(allocation_error)?;
     diagnostics.resize(DIAGNOSTIC_COUNTER_COUNT, 0_u32);
     let triangles = indices.as_chunks::<3>().0;
-    for triangle in triangles {
-        let vertices = triangle_vertices(positions, triangle)?;
-        let triangle_is_degenerate = is_degenerate(vertices);
-        degenerate.push(triangle_is_degenerate);
-        if triangle_is_degenerate {
-            checked_increment(&mut diagnostics[DIAGNOSTIC_DEGENERATE_TRIANGLE_COUNT])?;
+    for triangle_chunk in triangles.chunks(interval) {
+        check_deadline(&mut abort_check)?;
+        for triangle in triangle_chunk {
+            let vertices = triangle_vertices(positions, triangle)?;
+            let triangle_is_degenerate = is_degenerate(vertices);
+            degenerate.push(triangle_is_degenerate);
+            if triangle_is_degenerate {
+                checked_increment(&mut diagnostics[DIAGNOSTIC_DEGENERATE_TRIANGLE_COUNT])?;
+            }
         }
     }
 
@@ -412,24 +459,21 @@ where
         .checked_add(1)
         .ok_or_else(|| SliceKernelError::new(SliceKernelErrorCode::IntegerOverflow))?;
     let mut plane_offsets = Vec::new();
+    if offset_capacity > 1 {
+        check_deadline(&mut abort_check)?;
+    }
     plane_offsets
         .try_reserve_exact(offset_capacity)
         .or_else(allocation_error)?;
     plane_offsets.push(0);
     let mut endpoints = Vec::new();
-    let interval = usize::try_from(deadline_check_interval)
-        .map_err(|_| SliceKernelError::new(SliceKernelErrorCode::IntegerOverflow))?;
     let mut work_index = 0usize;
 
     for plane in planes.iter().copied() {
         for (triangle_index, triangle) in triangles.iter().enumerate() {
             if work_index.is_multiple_of(interval) {
                 checked_increment(&mut diagnostics[DIAGNOSTIC_CHECKPOINT_COUNT])?;
-                if abort_check().map_err(SliceKernelError::new)? {
-                    return Err(SliceKernelError::new(
-                        SliceKernelErrorCode::DeadlineExceeded,
-                    ));
-                }
+                check_deadline(&mut abort_check)?;
                 if endpoints.len() / 4 > MAX_SEGMENT_COUNT {
                     return Err(SliceKernelError::new(SliceKernelErrorCode::OutputLimit));
                 }
@@ -571,8 +615,9 @@ where
 #[cfg(target_arch = "wasm32")]
 mod wasm {
     use super::{
-        SliceBatchResult, SliceKernelError, SliceKernelErrorCode, allocation_error,
-        slice_layer_batch_with_abort_check, validate_request_lengths,
+        MAX_DEADLINE_CHECK_INTERVAL, SliceBatchResult, SliceKernelError, SliceKernelErrorCode,
+        allocation_error, check_deadline, slice_layer_batch_with_abort_check,
+        validate_request_lengths,
     };
     use js_sys::{Float32Array, Float64Array, Uint32Array};
     use wasm_bindgen::prelude::*;
@@ -584,7 +629,7 @@ mod wasm {
             js_name = __shapecut_geometry_should_abort,
             catch
         )]
-        fn deadline_should_abort() -> Result<bool, JsValue>;
+        fn deadline_should_abort() -> Result<JsValue, JsValue>;
     }
 
     impl From<SliceKernelError> for JsValue {
@@ -598,27 +643,112 @@ mod wasm {
             .map_err(|_| SliceKernelError::new(SliceKernelErrorCode::IntegerOverflow))
     }
 
-    fn copy_float32(array: &Float32Array, length: usize) -> Result<Vec<f32>, SliceKernelError> {
+    fn parse_deadline_check_interval(value: &JsValue) -> Result<u32, SliceKernelError> {
+        const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+        let number = value.as_f64().ok_or_else(|| {
+            SliceKernelError::new(SliceKernelErrorCode::InvalidCheckpointInterval)
+        })?;
+        if !number.is_finite()
+            || number <= 0.0
+            || number.fract() != 0.0
+            || number > MAX_SAFE_INTEGER
+        {
+            return Err(SliceKernelError::new(
+                SliceKernelErrorCode::InvalidCheckpointInterval,
+            ));
+        }
+        if number > f64::from(MAX_DEADLINE_CHECK_INTERVAL) {
+            return Err(SliceKernelError::new(
+                SliceKernelErrorCode::DeadlineCheckIntervalLimit,
+            ));
+        }
+        Ok(number as u32)
+    }
+
+    fn copy_float32<F>(
+        array: &Float32Array,
+        length: usize,
+        interval: usize,
+        abort_check: &mut F,
+    ) -> Result<Vec<f32>, SliceKernelError>
+    where
+        F: FnMut() -> Result<bool, SliceKernelErrorCode>,
+    {
         let mut values = Vec::new();
+        if length > 0 {
+            check_deadline(abort_check)?;
+        }
         values.try_reserve_exact(length).or_else(allocation_error)?;
         values.resize(length, 0.0);
-        array.copy_to(&mut values);
+        for start in (0..length).step_by(interval) {
+            check_deadline(abort_check)?;
+            let end = start.saturating_add(interval).min(length);
+            let start_index = u32::try_from(start)
+                .map_err(|_| SliceKernelError::new(SliceKernelErrorCode::IntegerOverflow))?;
+            let end_index = u32::try_from(end)
+                .map_err(|_| SliceKernelError::new(SliceKernelErrorCode::IntegerOverflow))?;
+            array
+                .subarray(start_index, end_index)
+                .copy_to(&mut values[start..end]);
+        }
         Ok(values)
     }
 
-    fn copy_uint32(array: &Uint32Array, length: usize) -> Result<Vec<u32>, SliceKernelError> {
+    fn copy_uint32<F>(
+        array: &Uint32Array,
+        length: usize,
+        interval: usize,
+        abort_check: &mut F,
+    ) -> Result<Vec<u32>, SliceKernelError>
+    where
+        F: FnMut() -> Result<bool, SliceKernelErrorCode>,
+    {
         let mut values = Vec::new();
+        if length > 0 {
+            check_deadline(abort_check)?;
+        }
         values.try_reserve_exact(length).or_else(allocation_error)?;
         values.resize(length, 0);
-        array.copy_to(&mut values);
+        for start in (0..length).step_by(interval) {
+            check_deadline(abort_check)?;
+            let end = start.saturating_add(interval).min(length);
+            let start_index = u32::try_from(start)
+                .map_err(|_| SliceKernelError::new(SliceKernelErrorCode::IntegerOverflow))?;
+            let end_index = u32::try_from(end)
+                .map_err(|_| SliceKernelError::new(SliceKernelErrorCode::IntegerOverflow))?;
+            array
+                .subarray(start_index, end_index)
+                .copy_to(&mut values[start..end]);
+        }
         Ok(values)
     }
 
-    fn copy_float64(array: &Float64Array, length: usize) -> Result<Vec<f64>, SliceKernelError> {
+    fn copy_float64<F>(
+        array: &Float64Array,
+        length: usize,
+        interval: usize,
+        abort_check: &mut F,
+    ) -> Result<Vec<f64>, SliceKernelError>
+    where
+        F: FnMut() -> Result<bool, SliceKernelErrorCode>,
+    {
         let mut values = Vec::new();
+        if length > 0 {
+            check_deadline(abort_check)?;
+        }
         values.try_reserve_exact(length).or_else(allocation_error)?;
         values.resize(length, 0.0);
-        array.copy_to(&mut values);
+        for start in (0..length).step_by(interval) {
+            check_deadline(abort_check)?;
+            let end = start.saturating_add(interval).min(length);
+            let start_index = u32::try_from(start)
+                .map_err(|_| SliceKernelError::new(SliceKernelErrorCode::IntegerOverflow))?;
+            let end_index = u32::try_from(end)
+                .map_err(|_| SliceKernelError::new(SliceKernelErrorCode::IntegerOverflow))?;
+            array
+                .subarray(start_index, end_index)
+                .copy_to(&mut values[start..end]);
+        }
         Ok(values)
     }
 
@@ -670,8 +800,9 @@ mod wasm {
         positions: &Float32Array,
         indices: &Uint32Array,
         planes: &Float64Array,
-        deadline_check_interval: u32,
+        deadline_check_interval: JsValue,
     ) -> Result<SliceBatchResult, JsValue> {
+        let deadline_check_interval = parse_deadline_check_interval(&deadline_check_interval)?;
         let position_length = array_length(positions.length())?;
         let index_length = array_length(indices.length())?;
         let plane_length = array_length(planes.length())?;
@@ -682,15 +813,25 @@ mod wasm {
             deadline_check_interval,
         )?;
 
-        let positions = copy_float32(positions, position_length)?;
-        let indices = copy_uint32(indices, index_length)?;
-        let planes = copy_float64(planes, plane_length)?;
+        let interval = usize::try_from(deadline_check_interval)
+            .map_err(|_| SliceKernelError::new(SliceKernelErrorCode::IntegerOverflow))?;
+        let mut abort_check = || {
+            let value =
+                deadline_should_abort().map_err(|_| SliceKernelErrorCode::DeadlineCheckFailed)?;
+            value
+                .as_bool()
+                .ok_or(SliceKernelErrorCode::DeadlineCheckFailed)
+        };
+        check_deadline(&mut abort_check)?;
+        let positions = copy_float32(positions, position_length, interval, &mut abort_check)?;
+        let indices = copy_uint32(indices, index_length, interval, &mut abort_check)?;
+        let planes = copy_float64(planes, plane_length, interval, &mut abort_check)?;
         slice_layer_batch_with_abort_check(
             &positions,
             &indices,
             &planes,
             deadline_check_interval,
-            || deadline_should_abort().map_err(|_| SliceKernelErrorCode::DeadlineCheckFailed),
+            abort_check,
         )
         .map_err(|error| JsValue::from_str(&error.to_string()))
     }
