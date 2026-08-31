@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import {
   partitionSliceWork,
+  partitionSliceWorkAsync,
   resolveSliceWorkerCount,
+  triangleOverlapsPlaneForPartition,
 } from './slice-partitioner';
 
 function layeredMesh(): { readonly positions: Float32Array; readonly indices: Uint32Array } {
@@ -30,6 +34,51 @@ describe('slice worker device policy', () => {
 });
 
 describe('partitionSliceWork', () => {
+  it('matches the shared Rust overlap corpus with only one-ULP outward over-inclusion', () => {
+    const rows = readFileSync(
+      resolve(process.cwd(), 'crates/geometry-wasm/tests/partition_overlap_corpus.csv'),
+      'utf8',
+    ).trim().split('\n').slice(1);
+    const fromBits = (bits: string): number => {
+      const bytes = new ArrayBuffer(8);
+      const view = new DataView(bytes);
+      view.setBigUint64(0, BigInt(`0x${bits}`), false);
+      return view.getFloat64(0, false);
+    };
+
+    for (const row of rows) {
+      const [name, planeBits, z0Bits, z1Bits, z2Bits, _rustInclude, jsInclude] = row.split(',');
+      expect(triangleOverlapsPlaneForPartition(
+        fromBits(z0Bits),
+        fromBits(z1Bits),
+        fromBits(z2Bits),
+        fromBits(planeBits),
+      ), name).toBe(jsInclude === '1');
+    }
+  });
+
+  it('matches the deterministic synchronous result through bounded async yields', async () => {
+    const mesh = layeredMesh();
+    const planes = new Float64Array([0.5, 1.5, 2.5, 3.5]);
+    let yields = 0;
+
+    const asyncResult = await partitionSliceWorkAsync(mesh, planes, 2, {
+      checkpoint: () => undefined,
+      yieldControl: async () => { yields += 1; },
+    });
+    const syncResult = partitionSliceWork(layeredMesh(), planes, 2);
+
+    expect(asyncResult.map((partition) => ({
+      planes: [...partition.planeIndices],
+      positions: [...partition.positions],
+      indices: [...partition.indices],
+    }))).toEqual(syncResult.map((partition) => ({
+      planes: [...partition.planeIndices],
+      positions: [...partition.positions],
+      indices: [...partition.indices],
+    })));
+    expect(yields).toBeGreaterThan(0);
+  });
   it('assigns every plane exactly once in stable canonical order', () => {
     const planes = new Float64Array([0.5, 1.5, 2.5, 3.5]);
 

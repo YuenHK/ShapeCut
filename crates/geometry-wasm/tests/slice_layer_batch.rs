@@ -4,7 +4,8 @@ use shapecut_geometry_wasm::{
     DIAGNOSTIC_NON_FINITE_INPUT_COUNT, DIAGNOSTIC_ON_PLANE_EDGE_COUNT,
     DIAGNOSTIC_PLANE_TRIANGLE_TEST_COUNT, DIAGNOSTIC_SEGMENT_COUNT, MAX_DEADLINE_CHECK_INTERVAL,
     MAX_PLANE_COUNT, MAX_PLANE_TRIANGLE_TESTS, RESULT_VERSION, STATUS_GEOMETRY_EVIDENCE, STATUS_OK,
-    SliceKernelErrorCode, slice_layer_batch, slice_layer_batch_with_abort_check,
+    SliceKernelErrorCode, partition_overlap_for_worker, slice_layer_batch,
+    slice_layer_batch_with_abort_check,
 };
 
 fn tetrahedron() -> (Vec<f32>, Vec<u32>) {
@@ -33,6 +34,22 @@ fn error_code(
     slice_layer_batch(positions, indices, planes, interval)
         .expect_err("request should fail closed")
         .code()
+}
+
+#[test]
+fn shared_partition_overlap_corpus_matches_rust_kernel_boundary() {
+    let corpus = include_str!("partition_overlap_corpus.csv");
+    for row in corpus.lines().skip(1) {
+        let fields: Vec<&str> = row.split(',').collect();
+        let from_bits = |value: &str| {
+            f64::from_bits(u64::from_str_radix(value, 16).expect("valid f64 bit pattern"))
+        };
+        let actual = partition_overlap_for_worker(
+            [from_bits(fields[2]), from_bits(fields[3]), from_bits(fields[4])],
+            from_bits(fields[1]),
+        );
+        assert_eq!(actual, fields[5] == "1", "{}", fields[0]);
+    }
 }
 
 #[test]

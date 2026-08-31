@@ -113,6 +113,14 @@ export interface SliceBatchResult {
   readonly diagnosticCounters: ReadonlySliceArray;
 }
 
+export interface TransferableSliceBatchResult {
+  readonly version: typeof SLICE_RESULT_VERSION;
+  readonly statusCode: typeof SLICE_STATUS_OK | typeof SLICE_STATUS_GEOMETRY_EVIDENCE;
+  readonly planeOffsets: Uint32Array;
+  readonly endpoints: Float64Array;
+  readonly diagnosticCounters: Uint32Array;
+}
+
 export interface SliceKernel {
   sliceLayerBatch(
     request: SliceBatchRequest,
@@ -242,6 +250,17 @@ const arrayBufferSlice = objectGetOwnPropertyDescriptor(arrayBufferPrototype, 's
 const Float32ArrayIntrinsic = Float32Array;
 const Float64ArrayIntrinsic = Float64Array;
 const Uint32ArrayIntrinsic = Uint32Array;
+const workerGlobalScopeIntrinsic = (globalThis as typeof globalThis & {
+  readonly WorkerGlobalScope?: Function;
+}).WorkerGlobalScope;
+let capturedDedicatedWorkerRealm = false;
+try {
+  capturedDedicatedWorkerRealm = typeof workerGlobalScopeIntrinsic === 'function'
+    && globalThis instanceof (workerGlobalScopeIntrinsic as Function & { prototype: object })
+    && typeof (globalThis as typeof globalThis & { document?: unknown }).document === 'undefined';
+} catch {
+  capturedDedicatedWorkerRealm = false;
+}
 const forbiddenTypedArrayOwnKeys = [
   'constructor',
   'buffer',
@@ -577,6 +596,41 @@ class ImmutableSliceArray implements ReadonlySliceArray {
 }
 objectFreeze(ImmutableSliceArray.prototype);
 
+interface TransferableSliceBatchResultOwnership {
+  readonly planeOffsets: Uint32Array;
+  readonly endpoints: Float64Array;
+  readonly diagnosticCounters: Uint32Array;
+}
+
+const transferableSliceBatchResultOwnership = new WeakMap<
+  SliceBatchResult,
+  TransferableSliceBatchResultOwnership
+>();
+
+/**
+ * One-shot escape hatch for the bundled dedicated worker. The public result
+ * remains an immutable facade in every ordinary window/Node consumer.
+ */
+export function takeTransferableSliceBatchResultForBundledWorker(
+  result: SliceBatchResult,
+): TransferableSliceBatchResult {
+  if (!capturedDedicatedWorkerRealm) {
+    throw new TypeError('transferable slice result is restricted to the bundled worker');
+  }
+  const ownership = transferableSliceBatchResultOwnership.get(result);
+  if (!ownership) {
+    throw new TypeError('bundled worker result ownership is unavailable or already consumed');
+  }
+  transferableSliceBatchResultOwnership.delete(result);
+  return objectFreeze({
+    version: result.version,
+    statusCode: result.statusCode,
+    planeOffsets: ownership.planeOffsets,
+    endpoints: ownership.endpoints,
+    diagnosticCounters: ownership.diagnosticCounters,
+  });
+}
+
 export function readSliceKernelAbort(checkpoint: SliceKernelCheckpoint): SliceKernelAbort | undefined {
   try {
     if (typeof checkpoint !== 'function') {
@@ -652,6 +706,17 @@ interface TrustedSliceBatchRequestSnapshot {
   readonly request: SliceBatchRequest;
   readonly planeCount: number;
   readonly indexCount: number;
+}
+
+/**
+ * Private ownership snapshot for trusted orchestration code. The source record
+ * is descriptor-snapshotted once and all three source buffers are atomically
+ * detached through the same hardened transport used by the kernel boundary.
+ */
+export interface OwnedSliceBatchRequestSnapshot extends SliceBatchRequest {
+  readonly vertexCount: number;
+  readonly triangleCount: number;
+  readonly planeCount: number;
 }
 
 function inspectSliceBatchRequest(value: unknown): InspectedSliceBatchRequest {
@@ -735,6 +800,21 @@ function takeSliceBatchRequestOwnership(
     privateIndices,
     privatePlanes,
   );
+}
+
+export function takeSliceBatchRequestOwnershipSnapshot(
+  value: unknown,
+): OwnedSliceBatchRequestSnapshot {
+  const owned = takeSliceBatchRequestOwnership(inspectSliceBatchRequest(value));
+  return objectFreeze({
+    positions: owned.positions.value,
+    indices: owned.indices.value,
+    planes: owned.planes.value,
+    deadlineCheckInterval: owned.interval,
+    vertexCount: owned.vertexCount,
+    triangleCount: owned.triangleCount,
+    planeCount: owned.planes.length,
+  });
 }
 
 function rebuildSliceBatchRequest(
@@ -964,13 +1044,19 @@ function parseSliceBatchResultWithTrustedRequest(
     failOrdinaryResult('INVALID_RESULT', 'slice status does not match diagnostic evidence');
   }
 
-  return objectFreeze({
+  const result = objectFreeze({
     version: inspected.version as typeof SLICE_RESULT_VERSION,
     statusCode: inspected.statusCode as SliceBatchResult['statusCode'],
     planeOffsets: new ImmutableSliceArray(planeOffsets, 'uint32'),
     endpoints: new ImmutableSliceArray(endpoints, 'float64'),
     diagnosticCounters: new ImmutableSliceArray(diagnosticCounters, 'uint32'),
   });
+  transferableSliceBatchResultOwnership.set(result, objectFreeze({
+    planeOffsets,
+    endpoints,
+    diagnosticCounters,
+  }));
+  return result;
 }
 
 /**

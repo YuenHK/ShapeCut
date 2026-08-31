@@ -4,9 +4,11 @@ import {
   SLICE_STATUS_OK,
   type ReadonlySliceArray,
   type SliceBatchResult,
+  takeSliceBatchRequestOwnershipSnapshot,
+  type OwnedSliceBatchRequestSnapshot,
 } from '../wasm/slice-kernel-contract';
 import {
-  partitionSliceWork,
+  partitionSliceWorkAsync,
   resolveSliceWorkerCount,
   type SliceWorkPartition,
 } from './slice-partitioner';
@@ -160,24 +162,24 @@ interface ActiveJob {
   readonly onProgress: ((event: SliceWorkerProgress) => void) | undefined;
   timeout: ReturnType<typeof setTimeout> | undefined;
   completedPlanes: number;
+  aggregateEndpointBytes: number;
   settled: boolean;
 }
 
-const structuredCloneIntrinsic = globalThis.structuredClone;
-const arrayBufferByteLengthGetter = Object.getOwnPropertyDescriptor(
-  ArrayBuffer.prototype,
-  'byteLength',
-)?.get;
-const arrayBufferResizableGetter = Object.getOwnPropertyDescriptor(
+const MAX_MERGED_ENDPOINT_BYTES = 8 * 1024 * 1024;
+const MAX_PARTITION_SEGMENT_COUNT = 262_144;
+const MAX_RESULT_ARRAY_BYTES = 8 * 1024 * 1024;
+const objectGetPrototypeOf = Object.getPrototypeOf;
+const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+const reflectOwnKeys = Reflect.ownKeys;
+const setTimeoutIntrinsic = globalThis.setTimeout.bind(globalThis);
+const clearTimeoutIntrinsic = globalThis.clearTimeout.bind(globalThis);
+const WorkerIntrinsic = globalThis.Worker;
+const bundledSliceWorkerUrl = new globalThis.URL('./slice.worker.ts', import.meta.url);
+const arrayBufferResizableGetter = objectGetOwnPropertyDescriptor(
   ArrayBuffer.prototype,
   'resizable',
 )?.get;
-const arrayBufferSlice = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'slice')?.value;
-const MAX_VERTEX_COUNT = 3_145_728;
-const MAX_TRIANGLE_COUNT = 1_048_576;
-const MAX_PLANE_COUNT = 16_384;
-const MAX_PLANE_TRIANGLE_TESTS = 250_000_000;
-const MAX_MERGED_ENDPOINT_BYTES = 8 * 1024 * 1024;
 
 export class SliceWorkerPool {
   readonly #hardwareConcurrency: number | undefined;
@@ -202,30 +204,20 @@ export class SliceWorkerPool {
   ): Promise<SliceBatchResult> {
     this.#abortActive(new SliceWorkerPoolError('CANCELLED', 'Slice worker job was superseded'));
     const generation = ++this.#generation;
-    let partitions: readonly SliceWorkPartition[];
-    let totalPlanes: number;
+    let intake: OwnedPoolRequestSnapshot;
     try {
-      validatePoolRequest(request);
-      if (request.deadlineAt <= Date.now()) {
+      intake = takePoolRequestOwnershipSnapshot(request);
+      if (intake.deadlineAt <= Date.now()) {
         throw new SliceWorkerPoolError('DEADLINE_EXCEEDED', 'Slice worker deadline was exceeded');
       }
-      totalPlanes = request.planes.length;
-      partitions = partitionSliceWork(
-        { positions: request.positions, indices: request.indices },
-        request.planes,
-        resolveSliceWorkerCount(this.#hardwareConcurrency ?? globalThis.navigator?.hardwareConcurrency),
-      );
-      consumePoolRequest(request);
     } catch (error) {
       return Promise.reject(asPoolRequestError(error));
     }
 
-    if (partitions.length === 0) return Promise.resolve(emptySliceResult());
-
     return new Promise<SliceBatchResult>((resolve, reject) => {
       const job: ActiveJob = {
         generation,
-        totalPlanes,
+        totalPlanes: intake.owned.planeCount,
         workers: new Set(),
         results: new Map(),
         reject,
@@ -233,28 +225,18 @@ export class SliceWorkerPool {
         onProgress,
         timeout: undefined,
         completedPlanes: 0,
+        aggregateEndpointBytes: 0,
         settled: false,
       };
       this.#activeJob = job;
-      const timeoutMs = Math.max(0, Math.min(2_147_483_647, request.deadlineAt - Date.now()));
-      job.timeout = setTimeout(() => {
+      const timeoutMs = Math.max(0, Math.min(2_147_483_647, intake.deadlineAt - Date.now()));
+      job.timeout = setTimeoutIntrinsic(() => {
         this.#failJob(job, new SliceWorkerPoolError(
           'DEADLINE_EXCEEDED',
           'Slice worker deadline was exceeded',
         ));
       }, timeoutMs);
-
-      try {
-        for (const partition of partitions) this.#submitPartition(job, partition, request);
-      } catch (error) {
-        this.#failJob(job, error instanceof SliceWorkerPoolError
-          ? error
-          : fallbackPoolError(
-              'WORKER_CRASH',
-              'Slice worker could not be started',
-              this.#trustedWorkerFactory,
-            ));
-      }
+      void this.#partitionAndSubmit(job, intake);
     });
   }
 
@@ -262,6 +244,54 @@ export class SliceWorkerPool {
     this.#generation += 1;
     this.#abortActive(new SliceWorkerPoolError('CANCELLED', 'Slice worker job was cancelled'));
     return Promise.resolve();
+  }
+
+  async #partitionAndSubmit(job: ActiveJob, intake: OwnedPoolRequestSnapshot): Promise<void> {
+    const checkpoint = (): void => {
+      if (job !== this.#activeJob || job.generation !== this.#generation || job.settled) {
+        throw new SliceWorkerPoolError('CANCELLED', 'Slice worker job was cancelled');
+      }
+      if (Date.now() >= intake.deadlineAt) {
+        throw new SliceWorkerPoolError('DEADLINE_EXCEEDED', 'Slice worker deadline was exceeded');
+      }
+    };
+    try {
+      const partitions = await partitionSliceWorkAsync(
+        { positions: intake.owned.positions, indices: intake.owned.indices },
+        intake.owned.planes,
+        resolveSliceWorkerCount(
+          this.#hardwareConcurrency ?? globalThis.navigator?.hardwareConcurrency,
+        ),
+        {
+          checkpoint,
+          yieldControl: () => new Promise<void>((resolve) => setTimeoutIntrinsic(resolve, 0)),
+        },
+      );
+      checkpoint();
+      for (const partition of partitions) {
+        checkpoint();
+        this.#submitPartition(job, partition, {
+          deadlineCheckInterval: intake.owned.deadlineCheckInterval,
+          deadlineAt: intake.deadlineAt,
+        });
+      }
+    } catch (error) {
+      if (job.settled) return;
+      if (error instanceof SliceWorkerPoolError) {
+        this.#failJob(job, error);
+      } else if (error instanceof TypeError || error instanceof RangeError) {
+        this.#failJob(job, new SliceWorkerPoolError(
+          'INVALID_REQUEST',
+          'Slice worker request was rejected',
+        ));
+      } else {
+        this.#failJob(job, fallbackPoolError(
+          'WORKER_CRASH',
+          'Slice worker could not be started',
+          this.#trustedWorkerFactory,
+        ));
+      }
+    }
   }
 
   #submitPartition(
@@ -288,6 +318,15 @@ export class SliceWorkerPool {
         if (job.results.has(expected.partitionIndex)) {
           throw new SliceWorkerPoolError('PROTOCOL_ERROR', 'Slice worker sent a duplicate result');
         }
+        const aggregateEndpointBytes = job.aggregateEndpointBytes + result.endpoints.byteLength;
+        if (!Number.isSafeInteger(aggregateEndpointBytes)
+          || aggregateEndpointBytes > MAX_MERGED_ENDPOINT_BYTES) {
+          throw new SliceWorkerPoolError(
+            'PROTOCOL_ERROR',
+            'Slice worker aggregate result exceeded its allocation cap',
+          );
+        }
+        job.aggregateEndpointBytes = aggregateEndpointBytes;
         job.results.set(expected.partitionIndex, result);
         job.completedPlanes += expected.planeCount;
         this.#releaseWorker(job, activeWorker);
@@ -347,7 +386,7 @@ export class SliceWorkerPool {
     try {
       const result = mergePartitionResults([...job.results.values()], job.totalPlanes);
       job.settled = true;
-      if (job.timeout !== undefined) clearTimeout(job.timeout);
+      if (job.timeout !== undefined) clearTimeoutIntrinsic(job.timeout);
       for (const worker of [...job.workers]) this.#releaseWorker(job, worker);
       if (this.#activeJob === job) this.#activeJob = undefined;
       job.resolve(result);
@@ -361,7 +400,7 @@ export class SliceWorkerPool {
   #failJob(job: ActiveJob, error: SliceWorkerPoolError): void {
     if (job.settled) return;
     job.settled = true;
-    if (job.timeout !== undefined) clearTimeout(job.timeout);
+    if (job.timeout !== undefined) clearTimeoutIntrinsic(job.timeout);
     for (const worker of [...job.workers]) this.#releaseWorker(job, worker);
     if (this.#activeJob === job) this.#activeJob = undefined;
     job.reject(error);
@@ -375,28 +414,48 @@ export class SliceWorkerPool {
 }
 
 function createBrowserSliceWorker(): SliceWorkerLike {
-  return new Worker(new URL('./slice.worker.ts', import.meta.url), { type: 'module' });
+  if (typeof WorkerIntrinsic !== 'function') {
+    throw new TypeError('captured bundled Worker constructor is unavailable');
+  }
+  return new WorkerIntrinsic(bundledSliceWorkerUrl, { type: 'module' });
 }
 
-function validatePoolRequest(request: SliceWorkerPoolRequest): void {
-  if (request === null || typeof request !== 'object'
-    || !isExactFullSpanTypedArray(request.positions, Float32Array.prototype)
-    || !isExactFullSpanTypedArray(request.indices, Uint32Array.prototype)
-    || !isExactFullSpanTypedArray(request.planes, Float64Array.prototype)
-    || request.positions.buffer === request.indices.buffer
-    || request.positions.buffer === request.planes.buffer
-    || request.indices.buffer === request.planes.buffer
-    || request.positions.length % 3 !== 0
-    || request.indices.length % 3 !== 0
-    || request.positions.length / 3 > MAX_VERTEX_COUNT
-    || request.indices.length / 3 > MAX_TRIANGLE_COUNT
-    || request.planes.length > MAX_PLANE_COUNT
-    || request.indices.length / 3 * request.planes.length > MAX_PLANE_TRIANGLE_TESTS
-    || !Number.isSafeInteger(request.deadlineCheckInterval)
-    || request.deadlineCheckInterval < 1
-    || request.deadlineCheckInterval > 4_096
-    || !Number.isFinite(request.deadlineAt)
-    || !Number.isSafeInteger(request.deadlineAt)) {
+interface OwnedPoolRequestSnapshot {
+  readonly owned: OwnedSliceBatchRequestSnapshot;
+  readonly deadlineAt: number;
+}
+
+function takePoolRequestOwnershipSnapshot(value: unknown): OwnedPoolRequestSnapshot {
+  try {
+    if (!isRecord(value)) throw new TypeError('invalid pool request record');
+    const prototype = objectGetPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw new TypeError('invalid pool request record');
+    }
+    const expectedKeys = [
+      'positions', 'indices', 'planes', 'deadlineCheckInterval', 'deadlineAt',
+    ] as const;
+    const keys = reflectOwnKeys(value);
+    if (keys.length !== expectedKeys.length
+      || keys.some((key) => typeof key !== 'string' || !expectedKeys.includes(key as never))) {
+      throw new TypeError('invalid pool request keys');
+    }
+    const snapshot = new Map<(typeof expectedKeys)[number], unknown>();
+    for (const key of expectedKeys) {
+      const descriptor = objectGetOwnPropertyDescriptor(value, key);
+      if (!descriptor || !('value' in descriptor)) throw new TypeError('pool request accessor');
+      snapshot.set(key, descriptor.value);
+    }
+    const deadlineAt = snapshot.get('deadlineAt');
+    if (!Number.isSafeInteger(deadlineAt)) throw new TypeError('invalid pool deadline');
+    const owned = takeSliceBatchRequestOwnershipSnapshot({
+      positions: snapshot.get('positions'),
+      indices: snapshot.get('indices'),
+      planes: snapshot.get('planes'),
+      deadlineCheckInterval: snapshot.get('deadlineCheckInterval'),
+    });
+    return Object.freeze({ owned, deadlineAt: deadlineAt as number });
+  } catch {
     throw new SliceWorkerPoolError('INVALID_REQUEST', 'Slice worker request was rejected');
   }
 }
@@ -406,42 +465,14 @@ function isExactFullSpanTypedArray(
   expectedPrototype: object,
 ): boolean {
   try {
-    if (Object.getPrototypeOf(value) !== expectedPrototype
-      || Object.getPrototypeOf(value.buffer) !== ArrayBuffer.prototype
+    if (objectGetPrototypeOf(value) !== expectedPrototype
+      || objectGetPrototypeOf(value.buffer) !== ArrayBuffer.prototype
       || value.byteOffset !== 0
       || value.byteLength !== value.buffer.byteLength) return false;
     return typeof arrayBufferResizableGetter !== 'function'
       || Reflect.apply(arrayBufferResizableGetter, value.buffer, []) === false;
   } catch {
     return false;
-  }
-}
-
-function consumePoolRequest(request: SliceWorkerPoolRequest): void {
-  if (typeof structuredCloneIntrinsic !== 'function') {
-    throw new SliceWorkerPoolError('INVALID_REQUEST', 'Slice worker ownership transfer is unavailable');
-  }
-  const buffers = [
-    request.positions.buffer,
-    request.indices.buffer,
-    request.planes.buffer,
-  ] as ArrayBuffer[];
-  try {
-    structuredCloneIntrinsic(null, { transfer: buffers });
-    if (buffers.some((buffer) => !isDetached(buffer))) throw new Error('source remained attached');
-  } catch {
-    throw new SliceWorkerPoolError('INVALID_REQUEST', 'Slice worker ownership transfer failed');
-  }
-}
-
-function isDetached(buffer: ArrayBuffer): boolean {
-  try {
-    if (typeof arrayBufferByteLengthGetter !== 'function' || typeof arrayBufferSlice !== 'function') return false;
-    if (Reflect.apply(arrayBufferByteLengthGetter, buffer, []) !== 0) return false;
-    Reflect.apply(arrayBufferSlice, buffer, [0, 0]);
-    return false;
-  } catch {
-    return true;
   }
 }
 
@@ -522,6 +553,21 @@ function validateWorkerResult(
   const diagnosticCounters = message.diagnosticCounters as Uint32Array;
   const segmentCount = endpoints.length / 4;
   const work = expected.triangleCount * expected.planeCount;
+  if (segmentCount > MAX_PARTITION_SEGMENT_COUNT
+    || endpoints.byteLength > MAX_RESULT_ARRAY_BYTES
+    || planeOffsets.byteLength > MAX_RESULT_ARRAY_BYTES
+    || diagnosticCounters.byteLength > MAX_RESULT_ARRAY_BYTES) {
+    throw new SliceWorkerPoolError(
+      'PROTOCOL_ERROR',
+      'Slice worker result exceeded its allocation cap',
+    );
+  }
+  if (segmentCount > work) {
+    throw new SliceWorkerPoolError(
+      'PROTOCOL_ERROR',
+      'Slice worker segment count exceeded the submitted work',
+    );
+  }
   const maximumCheckpointCount = work + expected.planeCount;
   if (planeOffsets.length !== expected.planeCount + 1
     || endpoints.length % 4 !== 0

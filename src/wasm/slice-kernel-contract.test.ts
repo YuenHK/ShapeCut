@@ -7,6 +7,8 @@ import {
   SliceKernelError,
   parseSliceBatchResult as parseResult,
   readSliceKernelAbort,
+  takeSliceBatchRequestOwnershipSnapshot,
+  takeTransferableSliceBatchResultForBundledWorker,
   validateSliceBatchRequest as validateRequest,
   type SliceBatchRequest,
 } from './slice-kernel-contract';
@@ -142,6 +144,31 @@ function resizableView<T extends Float32Array | Float64Array | Uint32Array>(
 }
 
 describe('TypeScript WASM slice contract', () => {
+  it('atomically returns one frozen private ownership snapshot for trusted orchestration', () => {
+    const source = request();
+
+    const owned = takeSliceBatchRequestOwnershipSnapshot(source);
+
+    expect(source.positions.byteLength).toBe(0);
+    expect(source.indices.byteLength).toBe(0);
+    expect(source.planes.byteLength).toBe(0);
+    expect(Object.isFrozen(owned)).toBe(true);
+    expect(owned.positions.byteLength).toBe(9 * Float32Array.BYTES_PER_ELEMENT);
+    expect(owned.indices.byteLength).toBe(3 * Uint32Array.BYTES_PER_ELEMENT);
+    expect(owned.planes.byteLength).toBe(Float64Array.BYTES_PER_ELEMENT);
+    expect(new Set([owned.positions.buffer, owned.indices.buffer, owned.planes.buffer]).size).toBe(3);
+  });
+
+  it('rejects shadow ownership fields before detaching any source buffer', () => {
+    const source = request() as SliceBatchRequest & Record<PropertyKey, unknown>;
+    Object.defineProperty(source, 'hidden', { value: true });
+
+    expectKernelCode(() => takeSliceBatchRequestOwnershipSnapshot(source), 'INVALID_REQUEST');
+
+    expect(source.positions.byteLength).toBeGreaterThan(0);
+    expect(source.indices.byteLength).toBeGreaterThan(0);
+    expect(source.planes.byteLength).toBeGreaterThan(0);
+  });
   it('rejects malformed result versions and statuses', () => {
     expectKernelCode(
       () => parseSliceBatchResult(encodedResult({ version: 2 }), request()),
@@ -372,6 +399,14 @@ describe('TypeScript WASM slice contract', () => {
     expect(Array.from(parsed.planeOffsets)).toEqual([0, 1]);
     expect(Array.from(parsed.endpoints)).toEqual([0, 0, 1, 1]);
     expect(parsed.diagnosticCounters.at(4)).toBe(1);
+  });
+
+  it('does not expose the private transferable result capsule to public consumers', () => {
+    const parsed = parseSliceBatchResult(encodedResult(), request());
+
+    expect(() => takeTransferableSliceBatchResultForBundledWorker(parsed))
+      .toThrow(/bundled worker/i);
+    expect([...parsed.endpoints]).toEqual([0, 0, 1, 1]);
   });
 
   it('implements Array.prototype.at ToIntegerOrInfinity semantics', () => {

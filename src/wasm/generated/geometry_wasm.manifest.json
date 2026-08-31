@@ -12,8 +12,8 @@
       "sha256": "0667ff288fb74c4adc7e56ec107a19e4fd2a3a4e1e91619e3ac5ad51232af4d0"
     },
     "geometry_wasm_bg.wasm": {
-      "bytes": 37856,
-      "sha256": "4aa7f77d0e50116c28ee06212408d72efede27e33d1e4723de65ab67d3c3795a"
+      "bytes": 38157,
+      "sha256": "456ea18014108d7bc94a572eab796252c2ceb896ea30086ee2e7a5233bf6d25c"
     },
     "geometry_wasm_bg.wasm.d.ts": {
       "bytes": 929,

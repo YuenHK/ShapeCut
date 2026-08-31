@@ -27,6 +27,28 @@ afterEach(async () => {
 });
 
 describe('real Chromium slice worker pool', () => {
+  it('uses only Worker and URL bootstrap primitives captured at module load', async () => {
+    const originalWorker = globalThis.Worker;
+    const originalUrl = globalThis.URL;
+    class ReplacedWorker {
+      constructor() { throw new Error('post-load replacement must not be trusted'); }
+    }
+    class ReplacedUrl {
+      constructor() { throw new Error('post-load replacement must not be trusted'); }
+    }
+    Object.defineProperty(globalThis, 'Worker', { configurable: true, value: ReplacedWorker });
+    Object.defineProperty(globalThis, 'URL', { configurable: true, value: ReplacedUrl });
+    const pool = new SliceWorkerPool({ hardwareConcurrency: 1 });
+    pools.push(pool);
+    try {
+      const result = await pool.run(tetrahedronRequest());
+      expect(result.planeOffsets.length).toBe(5);
+    } finally {
+      Object.defineProperty(globalThis, 'Worker', { configurable: true, value: originalWorker });
+      Object.defineProperty(globalThis, 'URL', { configurable: true, value: originalUrl });
+    }
+  });
+
   it('loads WASM in bounded workers and merges canonical planes without shared memory', async () => {
     const pool = new SliceWorkerPool({ hardwareConcurrency: 8 });
     pools.push(pool);

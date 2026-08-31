@@ -1,7 +1,7 @@
 import { Worker as NodeWorker } from 'node:worker_threads';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   SliceWorkerPool,
   SliceWorkerPoolError,
@@ -66,6 +66,12 @@ class ControlledWorker implements SliceWorkerLike {
     for (const listener of this.messageListeners) listener(event);
   }
 
+  captureQueuedMessageDelivery(): (data: SliceWorkerOutboundMessage) => void {
+    const listener = [...this.messageListeners][0];
+    if (!listener) throw new Error('worker has no message listener');
+    return (data) => listener({ data } as MessageEvent<SliceWorkerOutboundMessage>);
+  }
+
   crash(): void {
     const event = { message: 'private worker details' } as ErrorEvent;
     for (const listener of this.errorListeners) listener(event);
@@ -92,6 +98,88 @@ afterEach(async () => {
 });
 
 describe('SliceWorkerPool', () => {
+  it('cancels before asynchronous partitioning can create a worker', async () => {
+    const workers: ControlledWorker[] = [];
+    const pool = new SliceWorkerPool({
+      hardwareConcurrency: 4,
+      workerFactory: () => {
+        const worker = new ControlledWorker();
+        workers.push(worker);
+        return worker;
+      },
+    });
+    pools.push(pool);
+    const run = pool.run(request());
+    const rejection = expect(run).rejects.toMatchObject({ code: 'CANCELLED' });
+
+    await pool.cancel();
+
+    await rejection;
+    expect(workers).toHaveLength(0);
+    expect(pool.activeWorkerCount).toBe(0);
+  });
+
+  it('cancels during a yielded maximum-work legal partition without starting workers', async () => {
+    const triangleCount = 500_000;
+    const indices = new Uint32Array(triangleCount * 3);
+    for (let triangle = 0; triangle < triangleCount; triangle += 1) {
+      indices.set([0, 1, 2], triangle * 3);
+    }
+    const input = {
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 2]),
+      indices,
+      planes: Float64Array.from({ length: 500 }, (_value, index) => (index + 1) / 501 * 2),
+      deadlineCheckInterval: 4_096,
+      deadlineAt: Date.now() + 10_000,
+    };
+    const workers: ControlledWorker[] = [];
+    const pool = new SliceWorkerPool({
+      hardwareConcurrency: 8,
+      workerFactory: () => {
+        const worker = new ControlledWorker();
+        workers.push(worker);
+        return worker;
+      },
+    });
+    pools.push(pool);
+    const run = pool.run(input);
+    const rejection = expect(run).rejects.toMatchObject({ code: 'CANCELLED' });
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    const started = performance.now();
+
+    await pool.cancel();
+
+    await rejection;
+    expect(performance.now() - started).toBeLessThan(1_000);
+    expect(workers).toHaveLength(0);
+    expect(pool.activeWorkerCount).toBe(0);
+  });
+  it('never invokes accessor fields while snapshotting pool intake', async () => {
+    const source = request();
+    let getterCalls = 0;
+    const hostile = Object.defineProperty({
+      indices: source.indices,
+      planes: source.planes,
+      deadlineCheckInterval: source.deadlineCheckInterval,
+      deadlineAt: source.deadlineAt,
+    }, 'positions', {
+      enumerable: true,
+      get: () => {
+        getterCalls += 1;
+        return source.positions;
+      },
+    });
+    const pool = new SliceWorkerPool({ hardwareConcurrency: 1, workerFactory: () => new ControlledWorker() });
+    pools.push(pool);
+
+    await expect(pool.run(hostile as ReturnType<typeof request>)).rejects.toMatchObject({
+      code: 'INVALID_REQUEST',
+      fallbackEligible: false,
+    });
+
+    expect(getterCalls).toBe(0);
+    expect(source.positions.byteLength).toBeGreaterThan(0);
+  });
   it('submits partitions FIFO, transfers owned inputs, and consumes caller ownership', async () => {
     const workers: ControlledWorker[] = [];
     const pool = new SliceWorkerPool({
@@ -105,7 +193,7 @@ describe('SliceWorkerPool', () => {
     pools.push(pool);
     const input = request();
     const run = pool.run(input);
-    await Promise.resolve();
+    await vi.waitFor(() => expect(workers).toHaveLength(2));
 
     expect(workers).toHaveLength(2);
     expect(workers.map((worker) => worker.posted[0].partitionIndex)).toEqual([0, 1]);
@@ -131,7 +219,7 @@ describe('SliceWorkerPool', () => {
     });
     pools.push(pool);
     const run = pool.run(request(), (event) => progress.push(event.completedPartitions));
-    await Promise.resolve();
+    await vi.waitFor(() => expect(workers).toHaveLength(2));
 
     workers[1].complete();
     workers[0].complete();
@@ -144,6 +232,53 @@ describe('SliceWorkerPool', () => {
     expect(Object.isFrozen(result)).toBe(true);
     expect(Object.isFrozen(Object.getPrototypeOf(result.endpoints))).toBe(true);
     expect(pool.activeWorkerCount).toBe(0);
+  });
+
+  it('ignores a truly queued old-generation delivery after job replacement', async () => {
+    const workers: ControlledWorker[] = [];
+    const replacementProgress: number[] = [];
+    const pool = new SliceWorkerPool({
+      hardwareConcurrency: 4,
+      workerFactory: () => {
+        const worker = new ControlledWorker();
+        workers.push(worker);
+        return worker;
+      },
+    });
+    pools.push(pool);
+    const oldRun = pool.run(request());
+    const oldRejection = expect(oldRun).rejects.toMatchObject({ code: 'CANCELLED' });
+    await vi.waitFor(() => expect(workers).toHaveLength(2));
+    const oldWorker = workers[0];
+    const oldRequest = oldWorker.posted[0];
+    const deliverQueuedOldMessage = oldWorker.captureQueuedMessageDelivery();
+
+    const replacementRun = pool.run(request(), (event) => {
+      replacementProgress.push(event.completedPartitions);
+    });
+    await oldRejection;
+    await vi.waitFor(() => expect(workers).toHaveLength(4));
+    expect(workers.slice(0, 2).every((worker) => worker.terminated)).toBe(true);
+
+    deliverQueuedOldMessage({
+      type: 'slice-result',
+      generation: oldRequest.generation,
+      partitionIndex: oldRequest.partitionIndex,
+      version: 1,
+      statusCode: 0,
+      planeOffsets: new Uint32Array(oldRequest.planes.length + 1),
+      endpoints: new Float64Array(),
+      diagnosticCounters: Uint32Array.from([
+        0, 0, 0, oldRequest.indices.length / 3 * oldRequest.planes.length, 0, 0, 0, 0, 0,
+      ]),
+    });
+    expect(replacementProgress).toEqual([]);
+    expect(pool.activeWorkerCount).toBe(2);
+
+    workers.slice(2).forEach((worker) => worker.complete());
+    const replacementResult = await replacementRun;
+    expect(replacementProgress).toEqual([1, 2]);
+    expect([...replacementResult.planeOffsets]).toEqual([0, 1, 2, 3, 4]);
   });
 
   it('executes the controlled WASM kernel through a real Node worker', async () => {
@@ -165,7 +300,7 @@ describe('SliceWorkerPool', () => {
     const pool = new SliceWorkerPool({ hardwareConcurrency: 1, workerFactory: () => worker });
     pools.push(pool);
     const run = pool.run(request());
-    await Promise.resolve();
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(1));
     worker.crash();
 
     await expect(run).rejects.toMatchObject({
@@ -181,7 +316,7 @@ describe('SliceWorkerPool', () => {
     const pool = new SliceWorkerPool({ hardwareConcurrency: 1, workerFactory: () => worker });
     pools.push(pool);
     const run = pool.run(request());
-    await Promise.resolve();
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(1));
     const submitted = worker.posted[0];
     worker.emitMessage({
       type: 'slice-result',
@@ -198,12 +333,97 @@ describe('SliceWorkerPool', () => {
     expect(pool.activeWorkerCount).toBe(0);
   });
 
+  it('rejects an oversized partition result before endpoint traversal or storage', async () => {
+    const worker = new ControlledWorker();
+    const pool = new SliceWorkerPool({ hardwareConcurrency: 1, workerFactory: () => worker });
+    pools.push(pool);
+    const run = pool.run(request());
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(1));
+    const submitted = worker.posted[0];
+    const segmentCount = 262_145;
+    const planeOffsets = new Uint32Array(submitted.planes.length + 1);
+    planeOffsets.fill(segmentCount);
+    planeOffsets[0] = 0;
+    const diagnosticCounters = new Uint32Array(9);
+    diagnosticCounters[3] = submitted.indices.length / 3 * submitted.planes.length;
+    diagnosticCounters[4] = segmentCount;
+    const endpoints = new Float64Array(segmentCount * 4);
+    let traversed = false;
+    const originalIterator = Float64Array.prototype[Symbol.iterator];
+    Object.defineProperty(Float64Array.prototype, Symbol.iterator, {
+      configurable: true,
+      value() {
+        traversed = true;
+        throw new Error('oversized endpoints must not be traversed');
+      },
+    });
+    try {
+      worker.emitMessage({
+        type: 'slice-result', generation: submitted.generation,
+        partitionIndex: submitted.partitionIndex, version: 1, statusCode: 0,
+        planeOffsets, endpoints, diagnosticCounters,
+      });
+      await expect(run).rejects.toMatchObject({ code: 'PROTOCOL_ERROR', fallbackEligible: false });
+      expect(traversed).toBe(false);
+    } finally {
+      Object.defineProperty(Float64Array.prototype, Symbol.iterator, {
+        configurable: true,
+        value: originalIterator,
+      });
+    }
+  });
+
+  it('rejects aggregate endpoint bytes before storing the overflowing partition', async () => {
+    const triangleCount = 262_144;
+    const indices = new Uint32Array(triangleCount * 3);
+    for (let triangle = 0; triangle < triangleCount; triangle += 1) {
+      indices.set([0, 1, 2], triangle * 3);
+    }
+    const workers: ControlledWorker[] = [];
+    const progress: number[] = [];
+    const pool = new SliceWorkerPool({
+      hardwareConcurrency: 3,
+      workerFactory: () => {
+        const worker = new ControlledWorker();
+        workers.push(worker);
+        return worker;
+      },
+    });
+    pools.push(pool);
+    const run = pool.run({
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 2]),
+      indices,
+      planes: new Float64Array([0.5, 1.5]),
+      deadlineCheckInterval: 4_096,
+      deadlineAt: Date.now() + 20_000,
+    }, (event) => progress.push(event.completedPartitions));
+    await vi.waitFor(() => expect(workers).toHaveLength(2), { timeout: 10_000 });
+    const segmentCount = 131_073;
+    for (const worker of workers) {
+      const submitted = worker.posted[0];
+      const diagnosticCounters = new Uint32Array(9);
+      diagnosticCounters[3] = submitted.indices.length / 3 * submitted.planes.length;
+      diagnosticCounters[4] = segmentCount;
+      worker.emitMessage({
+        type: 'slice-result', generation: submitted.generation,
+        partitionIndex: submitted.partitionIndex, version: 1, statusCode: 0,
+        planeOffsets: new Uint32Array([0, segmentCount]),
+        endpoints: new Float64Array(segmentCount * 4),
+        diagnosticCounters,
+      });
+    }
+
+    await expect(run).rejects.toMatchObject({ code: 'PROTOCOL_ERROR', fallbackEligible: false });
+    expect(progress).toEqual([1]);
+    expect(pool.activeWorkerCount).toBe(0);
+  }, 15_000);
+
   it('rejects extra worker result fields as a protocol violation', async () => {
     const worker = new ControlledWorker();
     const pool = new SliceWorkerPool({ hardwareConcurrency: 1, workerFactory: () => worker });
     pools.push(pool);
     const run = pool.run(request());
-    await Promise.resolve();
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(1));
     const submitted = worker.posted[0];
     const planeOffsets = new Uint32Array(submitted.planes.length + 1);
     const diagnosticCounters = new Uint32Array(9);
@@ -223,7 +443,7 @@ describe('SliceWorkerPool', () => {
     const pool = new SliceWorkerPool({ hardwareConcurrency: 1, workerFactory: () => worker });
     pools.push(pool);
     const run = pool.run(request());
-    await Promise.resolve();
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(1));
     const submitted = worker.posted[0];
     worker.emitMessage({
       type: 'slice-error',
@@ -240,7 +460,7 @@ describe('SliceWorkerPool', () => {
     const pool = new SliceWorkerPool({ hardwareConcurrency: 1, workerFactory: () => worker });
     pools.push(pool);
     const run = pool.run(request());
-    await Promise.resolve();
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(1));
     const submitted = worker.posted[0];
     const diagnosticCounters = new Uint32Array(9);
     diagnosticCounters[0] = submitted.indices.length / 3 + 1;
@@ -267,7 +487,7 @@ describe('SliceWorkerPool', () => {
     });
     pools.push(pool);
     const run = pool.run(request());
-    await Promise.resolve();
+    await vi.waitFor(() => expect(workers).toHaveLength(4));
     const started = performance.now();
 
     await pool.cancel();

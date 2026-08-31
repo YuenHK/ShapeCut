@@ -439,10 +439,26 @@ fn is_degenerate(vertices: [Vertex; 3]) -> bool {
 }
 
 fn plane_tolerance(vertices: [Vertex; 3], plane: f64) -> f64 {
-    let axial_magnitude = vertices.iter().fold(plane.abs().max(1.0), |scale, vertex| {
-        scale.max(vertex.z.abs())
-    });
+    plane_tolerance_for_z([vertices[0].z, vertices[1].z, vertices[2].z], plane)
+}
+
+fn plane_tolerance_for_z(z_values: [f64; 3], plane: f64) -> f64 {
+    let axial_magnitude = z_values
+        .iter()
+        .fold(plane.abs().max(1.0), |scale, z| scale.max(z.abs()));
     1e-9_f64.max(axial_magnitude * 64.0 * f64::EPSILON)
+}
+
+#[doc(hidden)]
+pub fn partition_overlap_for_worker(z_values: [f64; 3], plane: f64) -> bool {
+    let epsilon = plane_tolerance_for_z(z_values, plane);
+    let distances = [
+        z_values[0] - plane,
+        z_values[1] - plane,
+        z_values[2] - plane,
+    ];
+    !(distances.iter().all(|distance| *distance > epsilon)
+        || distances.iter().all(|distance| *distance < -epsilon))
 }
 
 fn planar_tolerance(vertices: [Vertex; 3]) -> f64 {
@@ -568,9 +584,10 @@ where
                 vertices[1].z - plane,
                 vertices[2].z - plane,
             ];
-            if distances.iter().all(|distance| *distance > epsilon)
-                || distances.iter().all(|distance| *distance < -epsilon)
-            {
+            if !partition_overlap_for_worker(
+                [vertices[0].z, vertices[1].z, vertices[2].z],
+                plane,
+            ) {
                 continue;
             }
             let on_plane = [

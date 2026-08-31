@@ -132,7 +132,7 @@ implemented.
 - Node tests include a real `node:worker_threads` isolate loading the tracked
   controlled wrapper and WASM bytes, executing `sliceLayerBatch`, and
   transferring its owned result to the pool.
-- Chromium tests exercise four real bundled WASM workers with exact
+- Vite Browser Mode tests exercise four real WASM module workers with exact
   plane/triangle/edge order, zero-plane remote degeneracy, hard cancellation,
   and real worker crash/malformed/deadline failure paths.
 - Final Chromium loader/pool run: 2 files and 40 tests passed.
@@ -142,7 +142,9 @@ implemented.
 - `npm run build`: passed; the existing hashed WASM asset was emitted and no
   source maps were produced.
 - `git diff --check`: passed before report generation.
-- Independent review: Approved with no remaining Critical or Important finding.
+- The initial independent-review statement was premature and is superseded by
+  the formal findings and closure evidence below. Task 5 owns production graph
+  and bundled-artifact proof.
 
 ## Boundaries and remaining work
 
@@ -154,3 +156,57 @@ implemented.
   performance-completion claim.
 - No UI, CSS, font, material, launcher, canonical artifact, or production
   deadline code was changed.
+
+## 2026-09-01 formal-review closure
+
+The eight formal findings in `task-4-review-findings.md` were addressed with
+focused RED/GREEN evidence before the fresh matrix:
+
+1. Pool intake now delegates exact request inspection and atomic ownership to
+   the Task 3 hardened helper. Pool-only fields are snapshotted from exact data
+   descriptors; partitioning and submission use only the frozen private
+   snapshot.
+2. The active generation and deadline timer now exist before partitioning.
+   Validation, degeneracy classification, overlap estimation and mesh copying
+   yield in bounded chunks and re-check cancellation, generation and deadline.
+   Cancellation during the maximum legal 500,000-triangle/500-plane
+   (250,000,000 tests) partition starts zero workers and reaches zero active
+   workers in under one second.
+3. The bundled dedicated worker receives a one-shot, realm-gated capsule over
+   the controlled wrapper's private result buffers and transfers them directly.
+   Public window/Node consumers retain only immutable facades; the former
+   `TypedArray.from` result copies were removed.
+4. The default worker constructor and worker URL are captured at module load.
+   A Chromium test replaces both globals after import and proves that the
+   replacement cannot become the trusted worker path.
+5. Per-result segment and byte caps run before endpoint traversal. Aggregate
+   endpoint bytes are checked before a validated partition result enters the
+   job result map. These protocol failures never receive fallback provenance.
+6. A queued old-generation listener is invoked after replacement and cannot
+   update new progress, result or worker count; replacement workers complete
+   normally in canonical plane order.
+7. TypeScript and Rust read the same exact f64 bit-pattern overlap corpus for
+   positive/negative tolerance edges, high magnitudes and next-representable
+   values. Rust follows its kernel boundary; TypeScript expands both bounds by
+   one ULP and therefore only over-includes the immediately adjacent case.
+8. Task 4 claims Vite Browser Mode real-worker behavior only. Production graph
+   and emitted slice-worker artifact proof remain explicitly assigned to Task 5.
+
+Focused and fresh verification before the implementation commit:
+
+- Node contract/partition/pool: 3 files, 129 tests passed.
+- Vite Chromium loader/pool: 2 files, 41 tests passed, including real WASM
+  module workers, cancellation and post-load bootstrap replacement.
+- Raw controlled-wrapper ABI: 31 checks passed.
+- Rust: 1 unit and 21 integration tests passed; clippy with `-D warnings`
+  passed.
+- Shared Rust/TypeScript overlap corpus: 12 exact bit-pattern rows passed in
+  both suites.
+- Pinned WASM regeneration reproduced four tracked files byte-for-byte; WASM
+  size is 38,157 bytes with zero source maps.
+- `npm run typecheck`, `npm run build`, and `git diff --check`: passed.
+
+No SharedArrayBuffer, UI/CSS/typography/colour, material, launcher, canonical
+artifact, or production 120-second deadline code was changed. Formal
+independent re-review and Task 5 production-graph proof remain external gates;
+this section makes no full A3 completion claim.

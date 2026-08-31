@@ -1,6 +1,7 @@
 import {
   SliceKernelError,
   loadSliceKernel,
+  takeTransferableSliceBatchResultForBundledWorker,
   type SliceKernelAbort,
 } from '../wasm/slice-kernel-contract';
 import type {
@@ -33,9 +34,8 @@ async function execute(value: unknown): Promise<void> {
       planes: request.planes,
       deadlineCheckInterval: request.deadlineCheckInterval,
     }, checkpoint);
-    const planeOffsets = Uint32Array.from(result.planeOffsets);
-    const endpoints = Float64Array.from(result.endpoints);
-    const diagnosticCounters = Uint32Array.from(result.diagnosticCounters);
+    const transferableResult = takeTransferableSliceBatchResultForBundledWorker(result);
+    const { planeOffsets, endpoints, diagnosticCounters } = transferableResult;
     const response: SliceWorkerResultMessage = {
       type: 'slice-result',
       generation: request.generation,
