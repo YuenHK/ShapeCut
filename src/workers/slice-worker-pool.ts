@@ -13,6 +13,7 @@ import {
   resolveSliceWorkerCount,
   type SliceWorkPartition,
 } from './slice-partitioner';
+import bundledSliceWorkerUrl from './slice.worker.ts?worker&url';
 
 export type SliceWorkerPoolErrorCode =
   | 'INVALID_REQUEST'
@@ -191,12 +192,6 @@ const setTimeoutIntrinsic = globalThis.setTimeout.bind(globalThis);
 const clearTimeoutIntrinsic = globalThis.clearTimeout.bind(globalThis);
 const reflectApplyIntrinsic = Reflect.apply;
 const WorkerIntrinsic = globalThis.Worker;
-const URLIntrinsic = globalThis.URL;
-const urlHrefGetter = objectGetOwnPropertyDescriptor(URLIntrinsic.prototype, 'href')?.get;
-const bundledSliceWorkerUrlObject = new URLIntrinsic('./slice.worker.ts', import.meta.url);
-const bundledSliceWorkerUrl = typeof urlHrefGetter === 'function'
-  ? reflectApplyIntrinsic(urlHrefGetter, bundledSliceWorkerUrlObject, []) as string
-  : undefined;
 const eventTargetAddEventListener = objectGetOwnPropertyDescriptor(
   globalThis.EventTarget.prototype,
   'addEventListener',

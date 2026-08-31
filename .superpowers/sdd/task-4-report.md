@@ -409,3 +409,40 @@ counts: Node 4 files / 134 tests; real Chromium 2 files / 43 tests; raw WASM
 Vite build; and pinned byte-for-byte regeneration of four files at 38,157 WASM
 bytes and zero source maps. `git diff --check` passed and `git status --short`
 was empty after the matrix. The temporary checkout was then removed.
+
+## 2026-09-01 production worker emission closure
+
+Formal review confirmed the three round-3 security findings, then identified
+that Vite cannot statically analyse aliased `Worker`/`URL` constructors to emit
+the production worker asset once Task 5 imports the pool.
+
+Exact RED command against the aliased bootstrap implementation:
+
+```text
+npm test -- --run src/workers/slice-worker-pool.build.test.ts
+```
+
+Observed before the production change: 1 failed. The independent Vite build
+fixture emitted only `slice-worker-pool.build-fixture-*.js`; no
+`slice.worker-*.js` artifact existed.
+
+The pool now uses Vite's static `./slice.worker.ts?worker&url` import. That
+import is already an immutable primitive URL at module bootstrap, so the pool
+passes it directly to the captured Worker constructor without any later URL
+object coercion. The independent build fixture now proves that Vite emits a
+hashed dedicated `slice.worker-*.js` asset containing the worker protocol and
+that its entry chunk references the exact emitted filename.
+
+Focused GREEN command:
+
+```text
+npm test -- --run src/workers/slice-worker-pool.build.test.ts
+# 1 passed; hashed dedicated worker asset emitted and referenced
+```
+
+The full implementation-worktree matrix then passed: Node 5 files / 135 tests,
+real Chromium 2 files / 43 tests, raw WASM 31 checks, Rust 1 unit / 21
+integration tests, clippy `-D warnings`, typecheck, Vite build, pinned WASM
+regeneration, and `git diff --check`. This fixture verifies worker emission in
+isolation; Task 5 still owns connection to the canonical production graph and
+end-to-end application artifact proof.
