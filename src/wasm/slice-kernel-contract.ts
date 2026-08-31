@@ -196,7 +196,6 @@ function requireStrictRecord<Key extends string>(
 }
 
 const reflectApply = Reflect.apply;
-const reflectGet = Reflect.get;
 const reflectOwnKeys = Reflect.ownKeys;
 const objectDefineProperty = Object.defineProperty;
 const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
@@ -215,6 +214,13 @@ const ArrayIntrinsic = Array;
 const arrayIsArray = Array.isArray;
 const arrayPrototype = ArrayIntrinsic.prototype;
 const arrayIterator = objectGetOwnPropertyDescriptor(arrayPrototype, Symbol.iterator)?.value;
+/** Same trusted-bootstrap boundary as structuredClone: capture both iterator layers. */
+const arrayIteratorPrototype = typeof arrayIterator === 'function'
+  ? objectGetPrototypeOf(reflectApply(arrayIterator, new ArrayIntrinsic(), []))
+  : undefined;
+const arrayIteratorNext = isRecord(arrayIteratorPrototype)
+  ? objectGetOwnPropertyDescriptor(arrayIteratorPrototype, 'next')?.value
+  : undefined;
 const ArrayBufferIntrinsic = ArrayBuffer;
 const arrayBufferPrototype = ArrayBufferIntrinsic.prototype;
 const typedArrayPrototype = objectGetPrototypeOf(Uint8Array.prototype);
@@ -369,6 +375,8 @@ function snapshotTransferredBuffers(
   name: string,
 ): readonly ArrayBuffer[] {
   try {
+    // Native clone returns an ordinary array. Descriptor-equivalent transparent
+    // proxies cannot be identified in general, so never perform an ordinary get.
     if (!arrayIsArray(value) || objectGetPrototypeOf(value) !== arrayPrototype) {
       throw new TypeError('ownership transfer did not return an ordinary array');
     }
@@ -393,8 +401,7 @@ function snapshotTransferredBuffers(
     if (lengthValue !== expectedLength
       || lengthDescriptor.configurable !== false
       || lengthDescriptor.enumerable !== false
-      || lengthDescriptor.writable !== true
-      || reflectGet(value, 'length') !== lengthValue) {
+      || lengthDescriptor.writable !== true) {
       throw new TypeError('ownership transfer returned an invalid length descriptor');
     }
 
@@ -408,8 +415,7 @@ function snapshotTransferredBuffers(
       const descriptorValue = descriptor.value as unknown;
       if (descriptor.configurable !== true
         || descriptor.enumerable !== true
-        || descriptor.writable !== true
-        || reflectGet(value, key) !== descriptorValue) {
+        || descriptor.writable !== true) {
         throw new TypeError('ownership transfer returned an invalid numeric descriptor');
       }
       snapshot[index] = descriptorValue as ArrayBuffer;
@@ -418,6 +424,21 @@ function snapshotTransferredBuffers(
   } catch {
     failInspection(code, name);
   }
+}
+
+function createPrivateTransferIterator(this: unknown): object {
+  if (typeof arrayIterator !== 'function' || typeof arrayIteratorNext !== 'function') {
+    throw new TypeError('array iterator intrinsics unavailable at trusted bootstrap');
+  }
+  const iterator = reflectApply(arrayIterator, this, []) as unknown;
+  if (!isRecord(iterator)) throw new TypeError('array iterator creation failed');
+  objectDefineProperty(iterator, 'next', {
+    configurable: false,
+    enumerable: false,
+    value: arrayIteratorNext,
+    writable: false,
+  });
+  return iterator;
 }
 
 function transferOwnedTypedArrays<T extends readonly AnyExactTypedArray[]>(
@@ -434,13 +455,13 @@ function transferOwnedTypedArrays<T extends readonly AnyExactTypedArray[]>(
     for (let index = 0; index < inspections.length; index += 1) {
       sourceBuffers[index] = inspections[index].buffer;
     }
-    if (typeof arrayIterator !== 'function') {
-      throw new TypeError('array iterator unavailable at trusted bootstrap');
+    if (typeof arrayIterator !== 'function' || typeof arrayIteratorNext !== 'function') {
+      throw new TypeError('array iterator intrinsics unavailable at trusted bootstrap');
     }
     objectDefineProperty(sourceBuffers, Symbol.iterator, {
       configurable: false,
       enumerable: false,
-      value: arrayIterator,
+      value: createPrivateTransferIterator,
       writable: false,
     });
     objectFreeze(sourceBuffers);

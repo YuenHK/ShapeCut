@@ -77,13 +77,21 @@ partial detach，adapter 只能偵測並拒絕；JavaScript 無法 rollback owne
 因此本設計不聲稱可恢復該惡意 bootstrap 狀態。
 
 Transfer transport 只由 preflight inspections 捕獲的原始 buffers 建立；在
-呼叫 clone 前加入以 module-load captured `Array` iterator 定義的 own iterator，
-再 freeze。Clone 回傳值必須以 captured prototype／ownKeys／descriptors 驗證
-為 exact ordinary array，只容許連續 numeric data descriptors 及標準 `length`；
-descriptor values 一次 snapshot 到 frozen internal array，後續 source-detach、
-private/source identity、private/private identity 及 view reconstruction 不再讀取
-transport 或 untrusted return container。Accessor、額外 key、changing／throwing
-Proxy trap 一律 fail closed。
+呼叫 clone 前加入 own iterator。該 function 以 module-load captured `Array`
+iterator 建立 private iterator，再為它定義 own、non-configurable、module-load
+captured `%ArrayIteratorPrototype%.next`，最後 freeze transport。後載對 shared
+`Array.prototype[Symbol.iterator]` 或 iterator prototype `next` 的 monkeypatch
+不會被呼叫，亦不可改變 transfer identities 或順序。
+
+Clone 回傳值只以 captured prototype／ownKeys／data descriptors 建立
+current-realm descriptor-equivalent array snapshot：只容許連續 numeric data
+descriptors 及標準 `length`，descriptor values 一次 snapshot 到 frozen internal
+array；後續 source-detach、private/source identity、private/private identity 及
+view reconstruction 不再讀取 transport 或 untrusted return container，亦不作
+普通 property `get`。Accessor、額外 key 及 throwing reflection traps 一律 fail
+closed。Trusted native bootstrap 的正常 clone 回傳 ordinary array；JavaScript
+無法完美辨識任意 transparent malicious Proxy，因此本設計不作該聲稱。若
+Proxy 在 current realm 呈現完全相同 descriptors，後續仍只使用已凍結 snapshot。
 
 Source detach 不可只以 `byteLength === 0` 判定，因為 attached zero-byte buffer
 亦符合該值；adapter 必須再以 module-load captured

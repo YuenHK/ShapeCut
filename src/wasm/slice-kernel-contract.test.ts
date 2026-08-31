@@ -671,6 +671,64 @@ describe('TypeScript WASM slice contract', () => {
     }
   });
 
+  it('uses an own captured next when the shared array iterator prototype is patched', async () => {
+    vi.resetModules();
+    const nativeClone = globalThis.structuredClone;
+    const iteratorPrototype = Object.getPrototypeOf([][Symbol.iterator]()) as object;
+    const nextDescriptor = Object.getOwnPropertyDescriptor(
+      iteratorPrototype,
+      'next',
+    ) as PropertyDescriptor & { value: (...args: unknown[]) => IteratorResult<unknown> };
+    let maliciousNextCalls = 0;
+    let privateOwnNext = false;
+    let privateNextConfigurable = true;
+    vi.stubGlobal('structuredClone', (
+      buffers: ArrayBuffer[],
+      options: StructuredSerializeOptions,
+    ) => {
+      Object.defineProperty(iteratorPrototype, 'next', {
+        configurable: true,
+        value: function maliciousNext(...args: unknown[]): IteratorResult<unknown> {
+          maliciousNextCalls += 1;
+          const result = Reflect.apply(
+            nextDescriptor.value,
+            this,
+            args,
+          ) as IteratorResult<ArrayBuffer>;
+          if (!result.done) {
+            return { done: false, value: new ArrayBuffer((result.value as ArrayBuffer).byteLength) };
+          }
+          return result;
+        },
+        writable: true,
+      });
+      try {
+        const privateIterator = buffers[Symbol.iterator]();
+        const privateNext = Object.getOwnPropertyDescriptor(privateIterator, 'next');
+        privateOwnNext = Object.hasOwn(privateIterator, 'next')
+          && privateNext?.value === nextDescriptor.value;
+        privateNextConfigurable = privateNext?.configurable ?? true;
+        return nativeClone(buffers, options);
+      } finally {
+        Object.defineProperty(iteratorPrototype, 'next', nextDescriptor);
+      }
+    });
+    try {
+      const isolated = await import('./slice-kernel-contract');
+      const source = request();
+      expect(() => isolated.validateSliceBatchRequest(source, continueCheckpoint)).not.toThrow();
+      expect(maliciousNextCalls).toBe(0);
+      expect(privateOwnNext).toBe(true);
+      expect(privateNextConfigurable).toBe(false);
+      expect([source.positions, source.indices, source.planes].map((view) => view.byteLength))
+        .toEqual([0, 0, 0]);
+    } finally {
+      Object.defineProperty(iteratorPrototype, 'next', nextDescriptor);
+      vi.unstubAllGlobals();
+      vi.resetModules();
+    }
+  });
+
   it.each([
     ['an extra own key', (privateBuffers: ArrayBuffer[]) => {
       Object.defineProperty(privateBuffers, 'extra', { value: true });
@@ -684,19 +742,6 @@ describe('TypeScript WASM slice contract', () => {
         get: () => first,
       });
       return privateBuffers;
-    }],
-    ['a changing Proxy index value', (privateBuffers: ArrayBuffer[]) => {
-      const alternate = privateBuffers[0].slice(0);
-      let firstRead = true;
-      return new Proxy(privateBuffers, {
-        get: (target, key, receiver) => {
-          if (key === '0' && firstRead) {
-            firstRead = false;
-            return alternate;
-          }
-          return Reflect.get(target, key, receiver);
-        },
-      });
     }],
     ['a throwing numeric descriptor trap', (privateBuffers: ArrayBuffer[]) => new Proxy(
       privateBuffers,
@@ -736,25 +781,30 @@ describe('TypeScript WASM slice contract', () => {
   );
 
   it.each(['length', '0'] as const)(
-    'rejects a clone-return Proxy with a throwing %s value trap',
+    'snapshots clone-return descriptors without invoking a %s value trap',
     async (throwingKey) => {
       vi.resetModules();
       const nativeClone = globalThis.structuredClone;
+      let valueTrapCalls = 0;
       vi.stubGlobal('structuredClone', (
         buffers: ArrayBuffer[],
         options: StructuredSerializeOptions,
       ) => new Proxy(nativeClone(buffers, options), {
         get: (target, key, receiver) => {
-          if (key === throwingKey) throw new Error('private clone value');
+          if (key === throwingKey) {
+            valueTrapCalls += 1;
+            throw new Error('private clone value');
+          }
           return Reflect.get(target, key, receiver);
         },
       }));
       try {
         const isolated = await import('./slice-kernel-contract');
-        expectValidationAndFallbackDenied(
-          () => isolated.validateSliceBatchRequest(request(), continueCheckpoint),
-          'INVALID_REQUEST',
-        );
+        const source = request();
+        expect(() => isolated.validateSliceBatchRequest(source, continueCheckpoint)).not.toThrow();
+        expect(valueTrapCalls).toBe(0);
+        expect([source.positions, source.indices, source.planes].map((view) => view.byteLength))
+          .toEqual([0, 0, 0]);
       } finally {
         vi.unstubAllGlobals();
         vi.resetModules();
