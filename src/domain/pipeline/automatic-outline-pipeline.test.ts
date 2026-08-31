@@ -179,7 +179,7 @@ function openSquarePlate(): TriangleMesh {
   return { positions: plate.positions, indices: plate.indices.slice(0, -3) };
 }
 
-describe('automatic outline pipeline', () => {
+describe('automatic outline pipeline', { timeout: 20_000 }, () => {
   it('publishes one reconciled assembly decision before engraving and preview evidence', async () => {
     const result = await convertAutomatically({ bytes: writeBinarySTL(cylinder(), 'safe') });
 

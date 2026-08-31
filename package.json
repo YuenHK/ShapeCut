@@ -11,6 +11,7 @@
     "test:browser": "vitest --config vitest.browser.config.ts",
     "test:e2e": "playwright test",
     "test:performance": "playwright test e2e/performance.spec.ts --workers=1",
+    "benchmark:geometry": "vite-node scripts/benchmark-geometry.ts",
     "validate:fixtures": "vite-node scripts/validate-fixtures.ts",
     "validate:fixtures:public": "vite-node scripts/validate-fixtures.ts --public-only",
     "generate:coupons": "vite-node scripts/generate-material-coupons.ts"
@@ -46,7 +47,7 @@
     "typescript": "^5.9.2",
     "typescript-eslint": "^8.42.0",
     "vite": "^7.1.4",
-    "vite-node": "^3.2.4",
+    "vite-node": "3.2.4",
     "vitest": "^4.1.7"
   }
 }
