@@ -57,6 +57,7 @@
 **Interfaces:**
 - Consumes: finite positions, valid triangle indices and sorted plane values.
 - Produces: `slice_layer_batch` encoded result with version, plane offsets, Float64 endpoints and Uint32 diagnostic counters.
+- Boundary contract: Rust input reserve/resize/copy and plane traversal checkpoint at most every 4,096 items. The controlled JavaScript wrapper owns the sole contiguous allocator primitive: each owned typed-array allocation is hard-capped at 8 MiB with strict checkpoints immediately before and after it; all copy and validation remains chunked.
 
 - [ ] Install/pin the Rust stable toolchain and wasm32-unknown-unknown target in the documented local/CI setup.
 - [ ] Write Rust RED tests for a tetrahedron, coplanar triangle, degenerate triangle, non-finite vertex, out-of-range index, unsorted planes and deterministic repeat output.
@@ -165,4 +166,3 @@
 - [ ] Run typecheck, serial Node, full Chromium, scoped Playwright performance, private/public fixtures, production build and `git diff --check`.
 - [ ] Request independent whole-branch review and fix every Critical/Important finding.
 - [ ] Commit: `docs: verify wasm geometry acceleration`.
-

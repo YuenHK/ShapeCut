@@ -60,7 +60,7 @@ fn slices_tetrahedron_in_plane_triangle_edge_order() {
         result.diagnostic_counters()[DIAGNOSTIC_PLANE_TRIANGLE_TEST_COUNT],
         8
     );
-    assert_eq!(result.diagnostic_counters()[DIAGNOSTIC_CHECKPOINT_COUNT], 4);
+    assert_eq!(result.diagnostic_counters()[DIAGNOSTIC_CHECKPOINT_COUNT], 5);
 }
 
 #[test]
@@ -204,6 +204,20 @@ fn index_validation_and_degeneracy_prepass_are_both_checkpointed() {
         checks >= 7,
         "copy-independent validation and prepass must checkpoint, observed {checks} checks"
     );
+}
+
+#[test]
+fn empty_triangle_plane_traversal_has_an_independent_bounded_checkpoint() {
+    let planes: Vec<f64> = (0..MAX_PLANE_COUNT).map(|plane| plane as f64).collect();
+    let mut checks = 0_u32;
+    let error = slice_layer_batch_with_abort_check(&[], &[], &planes, 4_096, || {
+        checks += 1;
+        Ok(checks >= 6)
+    })
+    .expect_err("the first plane-traversal checkpoint must observe cancellation");
+
+    assert_eq!(error.code(), SliceKernelErrorCode::DeadlineExceeded);
+    assert_eq!(checks, 6);
 }
 
 #[test]

@@ -5,6 +5,7 @@ const STATUS_OK = 0;
 const STATUS_GEOMETRY_EVIDENCE = 1;
 const DIAGNOSTIC_COUNTER_COUNT = 9;
 const MAX_ENDPOINT_VALUE_COUNT = 262_144 * 4;
+const MAX_OWNED_ARRAY_BYTES = 8 * 1024 * 1024;
 const DEADLINE_HOOK_NAME = '__shapecut_geometry_should_abort';
 let activeKernelCall = false;
 
@@ -50,11 +51,35 @@ function checkDeadline(deadlineHook) {
   }
 }
 
-function copyView(rawView, constructor, interval, deadlineHook) {
-  if (rawView.length > 0) {
-    checkDeadline(deadlineHook);
+/**
+ * Sole bounded contiguous owned-output allocator. JavaScript TypedArray
+ * construction unavoidably initializes the complete allocation in one
+ * synchronous primitive, so every allocation is hard-capped at 8 MiB and has
+ * strict fail-closed checkpoints immediately before and after construction.
+ * Copying and semantic validation remain independently chunked afterward.
+ */
+function allocateOwnedArray(constructor, length, deadlineHook) {
+  if (!Number.isSafeInteger(length) || length < 0) {
+    throw new Error('owned output allocation length is invalid');
   }
-  const copy = new constructor(rawView.length);
+  const byteLength = length * constructor.BYTES_PER_ELEMENT;
+  if (!Number.isSafeInteger(byteLength) || byteLength > MAX_OWNED_ARRAY_BYTES) {
+    throw new Error('owned output allocation exceeds the 8 MiB hard cap');
+  }
+
+  checkDeadline(deadlineHook);
+  let owned;
+  try {
+    owned = new constructor(length);
+  } catch {
+    throw new Error('owned output allocation failed closed');
+  }
+  checkDeadline(deadlineHook);
+  return owned;
+}
+
+function copyView(rawView, constructor, interval, deadlineHook) {
+  const copy = allocateOwnedArray(constructor, rawView.length, deadlineHook);
   for (let start = 0; start < rawView.length; start += interval) {
     checkDeadline(deadlineHook);
     const end = Math.min(start + interval, rawView.length);
@@ -111,7 +136,7 @@ function copyAndValidateResult(
 
   const planeOffsets = copyView(rawPlaneOffsets, Uint32Array, interval, deadlineHook);
   const endpoints = copyView(rawEndpoints, Float64Array, interval, deadlineHook);
-  const diagnosticCounters = new Uint32Array(rawDiagnostics);
+  const diagnosticCounters = copyView(rawDiagnostics, Uint32Array, interval, deadlineHook);
 
   if (planeOffsets[0] !== 0) {
     throw new Error('plane offsets must start at zero');

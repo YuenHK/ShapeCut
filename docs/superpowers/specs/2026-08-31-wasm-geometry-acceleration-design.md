@@ -60,6 +60,10 @@ slice_layer_batch(
 
 結果順序固定為plane index、triangle index、edge index；canonical reducer在形成輪廓前再排序及驗證，確保worker完成順序不影響輸出。
 
+WASM 公開邊界接收未經 JavaScript 數值轉型的 `deadline_check_interval`，只接受有限、安全、正整數且不大於 4,096，然後才轉為 `u32`。同一個 strict boolean deadline hook 必須在輸入 allocation 前、每段最多 4,096 items 的 reserve/resize/copy、有限值與 index validation、triangle degeneracy prepass、獨立 plane traversal 及後續大型工作中 fail closed。Rust 輸入 buffer 只先 reserve capacity；不可在 checkpoint 前一次過 resize 或清零完整 maximum buffer，每個 chunk 必須先 checkpoint，才 resize/初始化該 chunk 並複製。
+
+Rust pointer/length 結果只可進入唯一受控 JavaScript wrapper。Wrapper 必須同步驗證 view bounds，複製為 owned typed arrays，並在 `finally` 恰好釋放 raw result；raw views 不得跨越該邊界。JavaScript `TypedArray(length)` 會同步初始化整段連續記憶體，因此唯一允許的 bounded allocator primitive 必須硬性限制每次 allocation 不超過 8 MiB，並在該 primitive 緊接之前及之後各執行一次同一 strict checkpoint。除此以外，所有 output copy 及 validation 仍須以最多 4,096 items 分段；不得擴大 8 MiB cap。
+
 ## Worker與裝置策略
 
 - `hardwareConcurrency <= 2`：1個slice worker。
@@ -104,4 +108,3 @@ WASM遇到退化、共面、開放或非manifold資料時只回傳證據；最�
 ## 完成定義
 
 Rust unit tests、wasm boundary tests、Node differential tests、Chromium worker tests、兩個Knight reference、合成大型模型、artifact reconciliation、取消／替換、typecheck、production build及GitHub Pages bundle inspection全部通過；production bundle包含受hash的WASM資產，不含絕對路徑、source map或模型資料。只有取得上述fresh evidence及獨立review批准，才可稱A3完成。
-

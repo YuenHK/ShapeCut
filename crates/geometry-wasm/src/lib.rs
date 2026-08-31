@@ -167,6 +167,38 @@ fn allocation_error<T>(_: std::collections::TryReserveError) -> Result<T, SliceK
     ))
 }
 
+#[cfg(any(target_arch = "wasm32", test))]
+fn reserve_and_copy_in_chunks<T, F, C>(
+    length: usize,
+    interval: usize,
+    mut checkpoint: F,
+    mut copy_chunk: C,
+) -> Result<Vec<T>, SliceKernelError>
+where
+    T: Clone + Default,
+    F: FnMut(usize) -> Result<(), SliceKernelError>,
+    C: FnMut(usize, usize, &mut [T]) -> Result<(), SliceKernelError>,
+{
+    if interval == 0 {
+        return Err(SliceKernelError::new(
+            SliceKernelErrorCode::InvalidCheckpointInterval,
+        ));
+    }
+    let mut values = Vec::new();
+    if length > 0 {
+        checkpoint(values.len())?;
+    }
+    values.try_reserve_exact(length).or_else(allocation_error)?;
+    while values.len() < length {
+        checkpoint(values.len())?;
+        let start = values.len();
+        let end = start.saturating_add(interval).min(length);
+        values.resize(end, T::default());
+        copy_chunk(start, end, &mut values[start..end])?;
+    }
+    Ok(values)
+}
+
 fn checked_increment(counter: &mut u32) -> Result<(), SliceKernelError> {
     *counter = counter
         .checked_add(1)
@@ -468,8 +500,16 @@ where
     plane_offsets.push(0);
     let mut endpoints = Vec::new();
     let mut work_index = 0usize;
+    let mut plane_traversal_index = 0usize;
 
     for plane in planes.iter().copied() {
+        if plane_traversal_index.is_multiple_of(interval) {
+            checked_increment(&mut diagnostics[DIAGNOSTIC_CHECKPOINT_COUNT])?;
+            check_deadline(&mut abort_check)?;
+        }
+        plane_traversal_index = plane_traversal_index
+            .checked_add(1)
+            .ok_or_else(|| SliceKernelError::new(SliceKernelErrorCode::IntegerOverflow))?;
         for (triangle_index, triangle) in triangles.iter().enumerate() {
             if work_index.is_multiple_of(interval) {
                 checked_increment(&mut diagnostics[DIAGNOSTIC_CHECKPOINT_COUNT])?;
@@ -616,7 +656,7 @@ where
 mod wasm {
     use super::{
         MAX_DEADLINE_CHECK_INTERVAL, SliceBatchResult, SliceKernelError, SliceKernelErrorCode,
-        allocation_error, check_deadline, slice_layer_batch_with_abort_check,
+        check_deadline, reserve_and_copy_in_chunks, slice_layer_batch_with_abort_check,
         validate_request_lengths,
     };
     use js_sys::{Float32Array, Float64Array, Uint32Array};
@@ -674,24 +714,19 @@ mod wasm {
     where
         F: FnMut() -> Result<bool, SliceKernelErrorCode>,
     {
-        let mut values = Vec::new();
-        if length > 0 {
-            check_deadline(abort_check)?;
-        }
-        values.try_reserve_exact(length).or_else(allocation_error)?;
-        values.resize(length, 0.0);
-        for start in (0..length).step_by(interval) {
-            check_deadline(abort_check)?;
-            let end = start.saturating_add(interval).min(length);
-            let start_index = u32::try_from(start)
-                .map_err(|_| SliceKernelError::new(SliceKernelErrorCode::IntegerOverflow))?;
-            let end_index = u32::try_from(end)
-                .map_err(|_| SliceKernelError::new(SliceKernelErrorCode::IntegerOverflow))?;
-            array
-                .subarray(start_index, end_index)
-                .copy_to(&mut values[start..end]);
-        }
-        Ok(values)
+        reserve_and_copy_in_chunks(
+            length,
+            interval,
+            |_| check_deadline(abort_check),
+            |start, end, destination| {
+                let start_index = u32::try_from(start)
+                    .map_err(|_| SliceKernelError::new(SliceKernelErrorCode::IntegerOverflow))?;
+                let end_index = u32::try_from(end)
+                    .map_err(|_| SliceKernelError::new(SliceKernelErrorCode::IntegerOverflow))?;
+                array.subarray(start_index, end_index).copy_to(destination);
+                Ok(())
+            },
+        )
     }
 
     fn copy_uint32<F>(
@@ -703,24 +738,19 @@ mod wasm {
     where
         F: FnMut() -> Result<bool, SliceKernelErrorCode>,
     {
-        let mut values = Vec::new();
-        if length > 0 {
-            check_deadline(abort_check)?;
-        }
-        values.try_reserve_exact(length).or_else(allocation_error)?;
-        values.resize(length, 0);
-        for start in (0..length).step_by(interval) {
-            check_deadline(abort_check)?;
-            let end = start.saturating_add(interval).min(length);
-            let start_index = u32::try_from(start)
-                .map_err(|_| SliceKernelError::new(SliceKernelErrorCode::IntegerOverflow))?;
-            let end_index = u32::try_from(end)
-                .map_err(|_| SliceKernelError::new(SliceKernelErrorCode::IntegerOverflow))?;
-            array
-                .subarray(start_index, end_index)
-                .copy_to(&mut values[start..end]);
-        }
-        Ok(values)
+        reserve_and_copy_in_chunks(
+            length,
+            interval,
+            |_| check_deadline(abort_check),
+            |start, end, destination| {
+                let start_index = u32::try_from(start)
+                    .map_err(|_| SliceKernelError::new(SliceKernelErrorCode::IntegerOverflow))?;
+                let end_index = u32::try_from(end)
+                    .map_err(|_| SliceKernelError::new(SliceKernelErrorCode::IntegerOverflow))?;
+                array.subarray(start_index, end_index).copy_to(destination);
+                Ok(())
+            },
+        )
     }
 
     fn copy_float64<F>(
@@ -732,24 +762,19 @@ mod wasm {
     where
         F: FnMut() -> Result<bool, SliceKernelErrorCode>,
     {
-        let mut values = Vec::new();
-        if length > 0 {
-            check_deadline(abort_check)?;
-        }
-        values.try_reserve_exact(length).or_else(allocation_error)?;
-        values.resize(length, 0.0);
-        for start in (0..length).step_by(interval) {
-            check_deadline(abort_check)?;
-            let end = start.saturating_add(interval).min(length);
-            let start_index = u32::try_from(start)
-                .map_err(|_| SliceKernelError::new(SliceKernelErrorCode::IntegerOverflow))?;
-            let end_index = u32::try_from(end)
-                .map_err(|_| SliceKernelError::new(SliceKernelErrorCode::IntegerOverflow))?;
-            array
-                .subarray(start_index, end_index)
-                .copy_to(&mut values[start..end]);
-        }
-        Ok(values)
+        reserve_and_copy_in_chunks(
+            length,
+            interval,
+            |_| check_deadline(abort_check),
+            |start, end, destination| {
+                let start_index = u32::try_from(start)
+                    .map_err(|_| SliceKernelError::new(SliceKernelErrorCode::IntegerOverflow))?;
+                let end_index = u32::try_from(end)
+                    .map_err(|_| SliceKernelError::new(SliceKernelErrorCode::IntegerOverflow))?;
+                array.subarray(start_index, end_index).copy_to(destination);
+                Ok(())
+            },
+        )
     }
 
     #[wasm_bindgen]
@@ -834,5 +859,36 @@ mod wasm {
             abort_check,
         )
         .map_err(|error| JsValue::from_str(&error.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod input_copy_tests {
+    use super::reserve_and_copy_in_chunks;
+
+    #[test]
+    fn reserved_input_is_initialized_and_copied_only_after_each_chunk_checkpoint() {
+        let mut checkpoint_lengths = Vec::new();
+        let mut copied_ranges = Vec::new();
+        let values = reserve_and_copy_in_chunks::<u32, _, _>(
+            10,
+            4,
+            |initialized_length| {
+                checkpoint_lengths.push(initialized_length);
+                Ok(())
+            },
+            |start, end, destination| {
+                copied_ranges.push((start, end));
+                for (index, value) in destination.iter_mut().enumerate() {
+                    *value = u32::try_from(start + index + 1).expect("small test value fits u32");
+                }
+                Ok(())
+            },
+        )
+        .expect("bounded chunks should copy successfully");
+
+        assert_eq!(checkpoint_lengths, [0, 0, 4, 8]);
+        assert_eq!(copied_ranges, [(0, 4), (4, 8), (8, 10)]);
+        assert_eq!(values, (1_u32..=10).collect::<Vec<_>>());
     }
 }

@@ -199,13 +199,78 @@ test('checkpoints controlled output copy and validation in bounded chunks', () =
   assert.ok(checks >= 34, `expected output copy and validation checkpoints, got ${checks}`);
 });
 
+test('strictly checkpoints before and after each sole bounded owned-array allocation', () => {
+  let checks = 0;
+  const result = kernel.sliceLayerBatch(
+    {
+      positions: new Float32Array(),
+      indices: new Uint32Array(),
+      planes: new Float64Array(),
+      deadlineCheckInterval: 4_096,
+    },
+    {
+      deadlineHook: () => {
+        checks += 1;
+        return false;
+      },
+    },
+  );
+
+  assert.deepEqual(Array.from(result.planeOffsets), [0]);
+  assert.equal(result.endpoints.length, 0);
+  assert.equal(result.diagnosticCounters.length, 9);
+  assert.equal(checks, 10, 'three owned allocations require strict pre/post checkpoints');
+});
+
+test('accepts the exact 8 MiB contiguous owned-output hard cap', () => {
+  const triangleCount = 131_072;
+  const repeatedIndices = new Uint32Array(triangleCount * 3);
+  for (let offset = 0; offset < repeatedIndices.length; offset += 3) {
+    repeatedIndices.set([0, 1, 2], offset);
+  }
+  const result = kernel.sliceLayerBatch(
+    {
+      positions: new Float32Array([0, 0, -1, 2, 0, 1, 0, 2, 1]),
+      indices: repeatedIndices,
+      planes: new Float64Array([-0.5, 0.5]),
+      deadlineCheckInterval: 4_096,
+    },
+    { deadlineHook: () => false },
+  );
+
+  assert.equal(result.endpoints.byteLength, 8 * 1024 * 1024);
+  assert.deepEqual(Array.from(result.planeOffsets), [0, triangleCount, triangleCount * 2]);
+});
+
+test('rejects a raw output above the 8 MiB owned cap before allocation', () => {
+  const descriptor = Object.getOwnPropertyDescriptor(
+    generated.SliceBatchResult.prototype,
+    'endpointsLen',
+  );
+  assert.ok(descriptor);
+  Object.defineProperty(generated.SliceBatchResult.prototype, 'endpointsLen', {
+    configurable: true,
+    get() {
+      return (8 * 1024 * 1024 / Float64Array.BYTES_PER_ELEMENT) + 1;
+    },
+  });
+  try {
+    assert.throws(
+      () => kernel.sliceLayerBatch(request(), { deadlineHook: () => false }),
+      /endpoints length is invalid|8 MiB hard cap/i,
+    );
+  } finally {
+    Object.defineProperty(generated.SliceBatchResult.prototype, 'endpointsLen', descriptor);
+  }
+});
+
 test('retained copied views survive raw free and later WASM memory growth', () => {
   const retained = kernel.sliceLayerBatch(request(), { deadlineHook: () => false });
   const retainedOffsets = Array.from(retained.planeOffsets);
   const retainedEndpoints = Array.from(retained.endpoints);
   const before = runtime.memory.buffer.byteLength;
 
-  const largePositions = new Float32Array(600_000);
+  const largePositions = new Float32Array(9_000_000);
   kernel.sliceLayerBatch(
     {
       positions: largePositions,
