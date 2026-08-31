@@ -925,3 +925,177 @@ implementation was changed. `npm ci` still reports the existing audit state of
 1 moderate and 3 high vulnerabilities; dependency remediation is outside Task
 3. No round 5 change touches UI/CSS, fonts, colours, production deadline,
 canonical merge, materials, launcher code or official release artifacts.
+
+## Re-review round 6: findings 17–18
+
+Date: 2026-08-31
+Implementation commit: `35c809c` (`fix(wasm): close runtime authority and bound snapshots`)
+
+### Finding 17: closed operation-bound fallback authority
+
+- The arbitrary exported `createSliceKernelRuntimeError(code, message)` issuer
+  was removed. Both the contract module and the compatibility loader module
+  expose no code-to-eligible-error mapper.
+- Loader creation, controlled execution mapping, ordinary result validation,
+  the private fallback capability and its membership `WeakSet` now share one
+  module closure. `load-slice-kernel.ts` only re-exports the two closed
+  `loadSliceKernel()` / `disposeSliceKernel()` operations. External importers
+  can no longer choose an error code and mint fallback membership.
+- Public `SliceKernelError` construction, its former fourth argument and
+  subclasses remain ineligible. A real fetch failure still becomes an eligible
+  sanitized `LOAD_FAILED`, and a completely inspected ordinary result with an
+  invalid version remains an eligible `INVALID_RESULT`.
+- Result typed arrays are completely brand/lifecycle inspected before semantic
+  version/status validation can issue ordinary-result fallback. Combining an
+  invalid version with a hostile Proxy view therefore remains typed
+  `INVALID_RESULT` but cannot claim fallback.
+
+Initial RED command:
+
+```text
+npx vitest run src/wasm/slice-kernel-contract.test.ts
+```
+
+RED result: 60 passed and 6 failed. One failure showed the exported mapper
+minting an eligible `LOAD_FAILED`; the remaining failures covered snapshot
+revalidation and cadence below.
+
+Additional issuer/result-validation RED:
+
+```text
+npx vitest run src/wasm/slice-kernel-contract.test.ts \
+  -t 'does not grant ordinary-result fallback before complete typed-array inspection'
+```
+
+Result: 1/1 failed because the invalid version issued eligibility before the
+Proxy typed array had been inspected. Final direct contract result: 71/71.
+
+### Finding 18: bounded intrinsic snapshots and private request reuse
+
+- Request handling is split into a no-checkpoint strict inspection phase and a
+  private materialization phase. Production execution retains a
+  `TrustedSliceBatchRequestSnapshot`; result parsing consumes that same private
+  request and its captured counts without revalidating or re-copying it.
+- Request and result allocations have explicit byte/count/work caps before any
+  allocation. Every destination allocation is bracketed by pre/post
+  checkpoints. The existing controlled wrapper remains the sole approved
+  whole-output 8 MiB copy boundary.
+- Each defensive copy uses captured concrete typed-array constructors to make
+  a fixed source chunk and captured intrinsic `set()` to copy at most the
+  request's approved interval (maximum 4,096 elements). There is a checkpoint
+  after every chunk; near-limit tests require at least 17 request and 28 public
+  result checkpoints for arrays just over two maximum intervals.
+- Before and after every untrusted checkpoint, the adapter intrinsically
+  revalidates exact prototype/brand, length, byte length, backing identity,
+  detached/resizable state and forbidden own properties for all caller-owned
+  views. Captured request inspections remain active through the controlled
+  deadline hook and result parsing, while controlled/private destination views
+  are never exposed to the caller or checkpoint.
+- Immediate and delayed cancellation/deadline retain their original
+  `CANCELLED` / `DEADLINE_EXCEEDED` code and abort source during allocation and
+  chunk copying. Lifecycle/own-property mutation is typed
+  `INVALID_REQUEST`/`INVALID_RESULT` and fallback-ineligible at immediate,
+  delayed and controlled-execution checkpoints.
+
+Initial cadence RED was part of the 60/6 run above: an 8,193-element request
+observed only 6 checkpoints instead of the required minimum 17, and immediate
+request/result own-property or detach mutation was incorrectly accepted.
+
+Delayed controlled-checkpoint RED:
+
+```text
+npm run test:browser -- --run src/wasm/load-slice-kernel.browser.test.ts \
+  -t 'revalidates caller request lifecycle at a delayed controlled checkpoint'
+```
+
+Result: 1/1 failed; mutation at checkpoint 14 was not observed and execution
+continued to checkpoint 50. The final test stops at checkpoint 14 with typed
+`INVALID_REQUEST` and fallback denied.
+
+### Round 6 verification
+
+Focused gates:
+
+```text
+npx vitest run src/wasm/slice-kernel-contract.test.ts \
+  src/test/geometry-wasm-build-contract.test.ts
+npm run test:browser -- --run src/wasm/load-slice-kernel.browser.test.ts
+npm run typecheck
+npm run test:geometry-wasm-boundary
+npm run build
+git diff --check
+```
+
+Results: Node contract/workflow 75/75, Chromium 35/35 and controlled raw WASM
+31/31 passed. Typecheck, tracked artifact verification, production build and
+diff check exited 0; the build contains one 37.86 kB WASM.
+
+Deterministic, workflow and Rust/WASM gates:
+
+```text
+node scripts/verify-geometry-wasm-regeneration.mjs
+ruby -e 'require "yaml"; ARGV.each { |path| YAML.parse_file(path) }' \
+  .github/workflows/deploy-pages.yml \
+  .github/workflows/verify-geometry-wasm.yml
+cargo fmt --manifest-path crates/geometry-wasm/Cargo.toml -- --check
+cargo test --manifest-path crates/geometry-wasm/Cargo.toml --locked
+cargo clippy --manifest-path crates/geometry-wasm/Cargo.toml --locked \
+  --all-targets -- -D warnings
+cargo clippy --manifest-path crates/geometry-wasm/Cargo.toml --locked \
+  --target wasm32-unknown-unknown -- -D warnings
+cargo check --manifest-path crates/geometry-wasm/Cargo.toml --locked \
+  --target wasm32-unknown-unknown --release
+```
+
+Results: pinned regeneration matched all four tracked artifacts byte-for-byte;
+both workflows parsed; Rust fmt, 1 unit test, 20 integration tests,
+native/wasm32 clippy with `-D warnings` and wasm32 release check passed.
+
+Fresh checkout at committed `35c809c`:
+
+```text
+git clone --local . "/tmp/ShapeCut Task 3 round 6 中文 fresh"
+cd "/tmp/ShapeCut Task 3 round 6 中文 fresh"
+npm ci --ignore-scripts --cache "/tmp/ShapeCut Task 3 round 6 中文 npm cache"
+env PATH=/usr/local/bin:/usr/bin:/bin \
+  CARGO_HOME="/tmp/ShapeCut Task 3 round 6 中文 empty cargo" \
+  npm_config_offline=true /bin/sh -c '
+    for tool in cargo rustc rustup wasm-pack; do
+      if command -v "$tool" >/dev/null 2>&1; then exit 1; fi
+    done
+    npm run build &&
+    npm test -- --run src/wasm/slice-kernel-contract.test.ts \
+      src/test/geometry-wasm-build-contract.test.ts &&
+    npm run test:browser -- --run src/wasm/load-slice-kernel.browser.test.ts &&
+    npm run test:geometry-wasm-boundary
+  '
+CARGO_ENCODED_RUSTFLAGS=$'-Cdebuginfo=0\x1f--remap-path-prefix=/tmp/Existing round 6 中文 path=/workspace/existing' \
+  node scripts/verify-geometry-wasm-regeneration.mjs
+git status --porcelain
+```
+
+Results: after clean dependency installation, the standard build/test path ran
+offline with no Rust-family tool in `PATH` and an empty Cargo home. Build,
+Node 75/75, Chromium 35/35 and raw boundary 31/31 passed. The separate pinned
+regeneration preserved the existing unit-separator flags and reproduced the
+tracked 37,856-byte artifact byte-for-byte. The fresh checkout remained clean;
+no offline regeneration claim is made.
+
+Full `npm test` passed 68/71 files and 1766 tests (4 skipped). Two existing
+geometry-heavy tests exceeded their 5-second timeout, and one App async test
+did not settle under full-suite load. Each exact test passed when rerun alone:
+
+```text
+npx vitest run src/app/App.test.tsx \
+  -t 'propagates a replacement omission decision and keeps regeneration blocked through the App adapter'
+npx vitest run src/export/outline-package.test.ts \
+  -t 'packages a real material-bound pipeline result'
+npx vitest run src/test/e2e-helpers.test.ts \
+  -t 'reconciles a genuine converted package with fixed launcher and three shared fasteners'
+```
+
+Results: 1/1 each. No unrelated timeout, UI or geometry implementation was
+changed. `npm ci` still reports the existing audit state of 1 moderate and 3
+high vulnerabilities. No round 6 change touches UI/CSS, fonts, colours,
+production deadline, canonical merge, materials, launcher code or official
+release artifacts.
