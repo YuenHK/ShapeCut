@@ -1,5 +1,6 @@
 import {
   SliceKernelError,
+  createSliceKernelRuntimeError,
   parseSliceBatchResult,
   readSliceKernelAbort,
   sliceKernelAbortError,
@@ -19,7 +20,7 @@ import {
 const WASM_ASSET_URL = new URL('./generated/geometry_wasm_bg.wasm', import.meta.url);
 
 function mappedError(code: SliceKernelErrorCode, message: string): SliceKernelError {
-  return new SliceKernelError(code, message);
+  return createSliceKernelRuntimeError(code, message);
 }
 
 function mapExecutionError(

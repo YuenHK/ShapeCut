@@ -69,6 +69,12 @@ function captureFailure(action: () => unknown): unknown {
   throw new Error('expected action to fail');
 }
 
+function ordinaryInvalidResultFailure(): unknown {
+  return captureFailure(
+    () => parseSliceBatchResult(encodedResult({ version: 2 }), request()),
+  );
+}
+
 function expectValidationAndFallbackDenied(
   action: () => unknown,
   code: 'INVALID_REQUEST' | 'INVALID_RESULT',
@@ -108,6 +114,19 @@ function withThrowingOwnProperty<T extends object>(target: T, key: PropertyKey):
 function detachedView<T extends Float32Array | Uint32Array>(view: T): T {
   structuredClone(view.buffer, { transfer: [view.buffer] });
   return view;
+}
+
+function resizableView<T extends Float32Array | Float64Array | Uint32Array>(
+  constructor: { new(buffer: ArrayBuffer): T; readonly BYTES_PER_ELEMENT: number },
+  length: number,
+): T {
+  const ResizableArrayBuffer = ArrayBuffer as unknown as {
+    new(byteLength: number, options: { maxByteLength: number }): ArrayBuffer;
+  };
+  return new constructor(new ResizableArrayBuffer(
+    length * constructor.BYTES_PER_ELEMENT,
+    { maxByteLength: (length + 1) * constructor.BYTES_PER_ELEMENT },
+  ));
 }
 
 describe('TypeScript WASM slice contract', () => {
@@ -346,10 +365,148 @@ describe('TypeScript WASM slice contract', () => {
     expect(Array.from(parsed.planeOffsets)).toEqual([0, 1]);
   });
 
+  it.each(['LOAD_FAILED', 'EXECUTION_FAILED', 'INVALID_RESULT', 'RESOURCE_LIMIT'] as const)(
+    'never lets public construction mint fallback provenance for %s',
+    (code) => {
+      const forgedDefault = new SliceKernelError(code, 'forged public error');
+      const forgedExplicit = new SliceKernelError(
+        code,
+        'forged public error',
+        undefined,
+        true,
+      );
+      expect(forgedDefault.fallbackEligible).toBe(false);
+      expect(forgedExplicit.fallbackEligible).toBe(false);
+      expectKernelCode(
+        () => new CanonicalFallbackGuard().claimTypeScriptFallback(forgedDefault),
+        'FALLBACK_NOT_ALLOWED',
+      );
+      expectKernelCode(
+        () => new CanonicalFallbackGuard().claimTypeScriptFallback(forgedExplicit),
+        'FALLBACK_NOT_ALLOWED',
+      );
+    },
+  );
+
+  it('denies fallback provenance to public SliceKernelError subclasses', () => {
+    class ForgedSliceKernelError extends SliceKernelError {}
+    const forged = new ForgedSliceKernelError('LOAD_FAILED', 'forged subclass');
+    expect(forged.fallbackEligible).toBe(false);
+    expectKernelCode(
+      () => new CanonicalFallbackGuard().claimTypeScriptFallback(forged),
+      'FALLBACK_NOT_ALLOWED',
+    );
+  });
+
+  it.each([
+    ['own-property mutation', (source: SliceBatchRequest) => {
+      Object.defineProperty(source.positions, 'length', {
+        configurable: true,
+        get: () => { throw new Error('reentrant caller property'); },
+      });
+    }],
+    ['detach', (source: SliceBatchRequest) => {
+      structuredClone(source.positions.buffer, { transfer: [source.positions.buffer] });
+    }],
+  ] as const)(
+    'uses an unexposed fixed request snapshot across checkpoint %s',
+    (_name, mutate) => {
+      const source = request();
+      let mutated = false;
+      const validated = validateRequest(source, () => {
+        if (!mutated) {
+          mutated = true;
+          mutate(source);
+        }
+        return undefined;
+      });
+      expect(Array.from(validated.positions)).toEqual([
+        0, 0, -1,
+        2, 0, 1,
+        0, 2, 1,
+      ]);
+    },
+  );
+
+  it.each([
+    ['own-property mutation', (marked: SliceBatchRequest) => {
+      Object.defineProperty(marked.positions, 'length', { value: 0 });
+    }],
+    ['detach', (marked: SliceBatchRequest) => {
+      structuredClone(marked.positions.buffer, { transfer: [marked.positions.buffer] });
+    }],
+    ['value mutation', (marked: SliceBatchRequest) => {
+      marked.positions[0] = Number.NaN;
+    }],
+  ] as const)(
+    'revalidates a previously marked request after %s and denies fallback',
+    (_name, mutate) => {
+      const marked = validateSliceBatchRequest(request());
+      mutate(marked);
+      expectValidationAndFallbackDenied(
+        () => parseSliceBatchResult(encodedResult(), marked),
+        'INVALID_REQUEST',
+      );
+    },
+  );
+
+  it('rejects resizable request and result buffers with typed validation and no fallback', () => {
+    const resizablePositions = resizableView(Float32Array, 9);
+    let requestCheckpointCount = 0;
+    expectValidationAndFallbackDenied(() => validateRequest(
+      request({ positions: resizablePositions }),
+      () => {
+        requestCheckpointCount += 1;
+        (resizablePositions.buffer as ArrayBuffer & { resize(length: number): void }).resize(0);
+        return undefined;
+      },
+    ), 'INVALID_REQUEST');
+    expect(requestCheckpointCount).toBe(0);
+
+    const resizableOffsets = resizableView(Uint32Array, 2);
+    let resultCheckpointCount = 0;
+    expectValidationAndFallbackDenied(() => parseResult(
+      encodedResult({ planeOffsets: resizableOffsets }),
+      request(),
+      () => {
+        resultCheckpointCount += 1;
+        (resizableOffsets.buffer as ArrayBuffer & { resize(length: number): void }).resize(0);
+        return undefined;
+      },
+    ), 'INVALID_RESULT');
+    expect(resultCheckpointCount).toBe(0);
+  });
+
+  it.each([
+    ['own-property mutation', (encoded: Record<string, unknown>) => {
+      Object.defineProperty(encoded.endpoints, 'length', {
+        configurable: true,
+        get: () => { throw new Error('reentrant result property'); },
+      });
+    }],
+    ['detach', (encoded: Record<string, unknown>) => {
+      const endpoints = encoded.endpoints as Float64Array;
+      structuredClone(endpoints.buffer, { transfer: [endpoints.buffer] });
+    }],
+  ] as const)(
+    'uses an unexposed fixed result snapshot across checkpoint %s',
+    (_name, mutate) => {
+      const encoded = encodedResult() as Record<string, unknown>;
+      let mutated = false;
+      const parsed = parseResult(encoded, request(), () => {
+        if (!mutated) {
+          mutated = true;
+          mutate(encoded);
+        }
+        return undefined;
+      });
+      expect(Array.from(parsed.endpoints)).toEqual([0, 0, 1, 1]);
+    },
+  );
+
   it('atomically claims fallback publication and rejects an interleaved late WASM claim', async () => {
     const guard = new CanonicalFallbackGuard();
-    const loadFailure = new SliceKernelError('LOAD_FAILED', 'sanitized');
-    const fallbackToken = guard.claimTypeScriptFallback(loadFailure);
+    const fallbackToken = guard.claimTypeScriptFallback(ordinaryInvalidResultFailure());
 
     await Promise.resolve();
     expectKernelCode(() => guard.claimWasmPublication(), 'PUBLICATION_CONFLICT');
@@ -383,7 +540,7 @@ describe('TypeScript WASM slice contract', () => {
       'PUBLICATION_CONFLICT',
     );
     expectKernelCode(
-      () => guard.claimTypeScriptFallback(new SliceKernelError('LOAD_FAILED', 'sanitized')),
+      () => guard.claimTypeScriptFallback(ordinaryInvalidResultFailure()),
       'PUBLICATION_CONFLICT',
     );
   });
@@ -405,7 +562,7 @@ describe('TypeScript WASM slice contract', () => {
     expect(() => guard.publishCanonicalResult(token, () => { throw new Error('publisher failed'); }))
       .toThrow('publisher failed');
     expectKernelCode(
-      () => guard.claimTypeScriptFallback(new SliceKernelError('LOAD_FAILED', 'sanitized')),
+      () => guard.claimTypeScriptFallback(ordinaryInvalidResultFailure()),
       'PUBLICATION_CONFLICT',
     );
   });

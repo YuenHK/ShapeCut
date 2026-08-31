@@ -148,6 +148,7 @@ describe('production-compatible browser WASM loader', () => {
     expect(failure).toMatchObject({ name: 'SliceKernelError', code: 'LOAD_FAILED' });
     expect((failure as Error).message).toBe('WASM geometry kernel could not be loaded');
     expect((failure as Error).message).not.toContain('/Users/');
+    expect(new CanonicalFallbackGuard().claimTypeScriptFallback(failure)).toBeDefined();
 
     fetchFailure.mockRestore();
     await expect(loadSliceKernel()).resolves.toBeDefined();
@@ -270,4 +271,52 @@ describe('production-compatible browser WASM loader', () => {
       expectFallbackDenied(error);
     },
   );
+
+  it.each([
+    ['own-property mutation', (source: typeof request) => {
+      Object.defineProperty(source.positions, 'length', {
+        configurable: true,
+        get: () => { throw new Error('reentrant production property'); },
+      });
+    }],
+    ['detach', (source: typeof request) => {
+      structuredClone(source.positions.buffer, { transfer: [source.positions.buffer] });
+    }],
+  ] as const)(
+    'keeps production execution on an unexposed request snapshot across checkpoint %s',
+    async (_name, mutate) => {
+      const kernel = await loadSliceKernel();
+      const source = {
+        positions: request.positions.slice(),
+        indices: request.indices.slice(),
+        planes: request.planes.slice(),
+        deadlineCheckInterval: request.deadlineCheckInterval,
+      } as typeof request;
+      let mutated = false;
+      const result = await kernel.sliceLayerBatch(source, () => {
+        if (!mutated) {
+          mutated = true;
+          mutate(source);
+        }
+        return undefined;
+      });
+      expect(Array.from(result.planeOffsets)).toEqual([0, 3, 6]);
+    },
+  );
+
+  it('rejects a production resizable request buffer without permitting fallback', async () => {
+    const kernel = await loadSliceKernel();
+    const ResizableArrayBuffer = ArrayBuffer as unknown as {
+      new(byteLength: number, options: { maxByteLength: number }): ArrayBuffer;
+    };
+    const positions = new Float32Array(new ResizableArrayBuffer(
+      request.positions.byteLength,
+      { maxByteLength: request.positions.byteLength + Float32Array.BYTES_PER_ELEMENT },
+    ));
+    positions.set(request.positions);
+    const error = await kernel.sliceLayerBatch({ ...request, positions }, () => undefined)
+      .catch((failure: unknown) => failure);
+    expect(error).toMatchObject({ name: 'SliceKernelError', code: 'INVALID_REQUEST' });
+    expectFallbackDenied(error);
+  });
 });

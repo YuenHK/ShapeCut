@@ -21,7 +21,6 @@ const DIAGNOSTIC_CHECKPOINT_COUNT = 5;
 const DIAGNOSTIC_AMBIGUOUS_INTERSECTION_COUNT = 6;
 const DIAGNOSTIC_ON_PLANE_EDGE_COUNT = 7;
 const DIAGNOSTIC_ENDPOINT_ALLOCATION_GROWTH_COUNT = 8;
-const validatedRequests = new WeakSet<SliceBatchRequest>();
 
 export type SliceKernelErrorCode =
   | 'INVALID_REQUEST'
@@ -36,7 +35,8 @@ export type SliceKernelErrorCode =
   | 'FALLBACK_NOT_ALLOWED'
   | 'PUBLICATION_CONFLICT';
 
-const DEFAULT_FALLBACK_ELIGIBLE_CODES: ReadonlySet<SliceKernelErrorCode> = new Set([
+const FALLBACK_CAPABILITY = Object.freeze({});
+const FALLBACK_ELIGIBLE_CODES: ReadonlySet<SliceKernelErrorCode> = new Set([
   'LOAD_FAILED',
   'EXECUTION_FAILED',
   'INVALID_RESULT',
@@ -54,15 +54,17 @@ export class SliceKernelError extends Error {
     code: SliceKernelErrorCode,
     message: string,
     abort?: SliceKernelAbort,
-    fallbackEligible = DEFAULT_FALLBACK_ELIGIBLE_CODES.has(code),
+    capability?: unknown,
   ) {
     super(message);
     this.name = 'SliceKernelError';
     this.code = code;
     this.abortReason = abort?.reason;
     this.abortSource = abort?.source;
-    this.fallbackEligible = fallbackEligible;
-    if (fallbackEligible) fallbackEligibleErrors.add(this);
+    this.fallbackEligible = new.target === SliceKernelError
+      && capability === FALLBACK_CAPABILITY
+      && FALLBACK_ELIGIBLE_CODES.has(code);
+    if (this.fallbackEligible) fallbackEligibleErrors.add(this);
     Object.freeze(this);
   }
 }
@@ -104,8 +106,38 @@ export interface SliceKernel {
   dispose(): void;
 }
 
-function fail(code: SliceKernelErrorCode, message: string, fallbackEligible?: boolean): never {
-  throw new SliceKernelError(code, message, undefined, fallbackEligible);
+function fail(code: SliceKernelErrorCode, message: string): never {
+  throw new SliceKernelError(code, message);
+}
+
+function createFallbackEligibleError(
+  code: 'LOAD_FAILED' | 'EXECUTION_FAILED' | 'INVALID_RESULT' | 'RESOURCE_LIMIT',
+  message: string,
+): SliceKernelError {
+  return new SliceKernelError(code, message, undefined, FALLBACK_CAPABILITY);
+}
+
+function failOrdinaryResult(
+  code: 'INVALID_RESULT' | 'RESOURCE_LIMIT',
+  message: string,
+): never {
+  throw createFallbackEligibleError(code, message);
+}
+
+/** @internal Only the controlled production loader may map a completed boundary phase. */
+export function createSliceKernelRuntimeError(
+  code: SliceKernelErrorCode,
+  message: string,
+): SliceKernelError {
+  switch (code) {
+    case 'LOAD_FAILED':
+    case 'EXECUTION_FAILED':
+    case 'INVALID_RESULT':
+    case 'RESOURCE_LIMIT':
+      return createFallbackEligibleError(code, message);
+    default:
+      return new SliceKernelError(code, message);
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -116,7 +148,7 @@ function failInspection(
   code: 'INVALID_REQUEST' | 'INVALID_RESULT',
   name: string,
 ): never {
-  fail(code, `${name} failed strict boundary inspection`, false);
+  fail(code, `${name} failed strict boundary inspection`);
 }
 
 function requireStrictRecord<Key extends string>(
@@ -149,17 +181,28 @@ function requireStrictRecord<Key extends string>(
   }
 }
 
-const typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
+const reflectApply = Reflect.apply;
+const objectGetPrototypeOf = Object.getPrototypeOf;
+const objectHasOwn = Object.hasOwn;
+const typedArrayPrototype = objectGetPrototypeOf(Uint8Array.prototype);
 const typedArrayLengthGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'length')?.get;
 const typedArrayBufferGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'buffer')?.get;
 const typedArrayByteLengthGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'byteLength')?.get;
 const typedArrayByteOffsetGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'byteOffset')?.get;
 const typedArrayValues = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'values')?.value;
 const typedArrayAt = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'at')?.value;
+const typedArraySet = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'set')?.value;
 const arrayBufferByteLengthGetter = Object.getOwnPropertyDescriptor(
   ArrayBuffer.prototype,
   'byteLength',
 )?.get;
+const arrayBufferResizableGetter = Object.getOwnPropertyDescriptor(
+  ArrayBuffer.prototype,
+  'resizable',
+)?.get;
+const Float32ArrayIntrinsic = Float32Array;
+const Float64ArrayIntrinsic = Float64Array;
+const Uint32ArrayIntrinsic = Uint32Array;
 const forbiddenTypedArrayOwnKeys = [
   'constructor',
   'buffer',
@@ -172,16 +215,40 @@ const forbiddenTypedArrayOwnKeys = [
   Symbol.iterator,
 ] as const;
 
-function requireExactTypedArray<T extends Float32Array | Float64Array | Uint32Array>(
+interface ExactTypedArray<T extends Float32Array | Float64Array | Uint32Array> {
+  readonly value: T;
+  readonly length: number;
+  readonly byteLength: number;
+}
+
+interface ExactTypedArraySpec<T extends Float32Array | Float64Array | Uint32Array> {
+  readonly prototype: object;
+  readonly bytesPerElement: number;
+  create(length: number): T;
+}
+
+const float32ArraySpec: ExactTypedArraySpec<Float32Array> = Object.freeze({
+  prototype: Float32ArrayIntrinsic.prototype,
+  bytesPerElement: Float32ArrayIntrinsic.BYTES_PER_ELEMENT,
+  create: (length: number) => new Float32ArrayIntrinsic(length),
+});
+const float64ArraySpec: ExactTypedArraySpec<Float64Array> = Object.freeze({
+  prototype: Float64ArrayIntrinsic.prototype,
+  bytesPerElement: Float64ArrayIntrinsic.BYTES_PER_ELEMENT,
+  create: (length: number) => new Float64ArrayIntrinsic(length),
+});
+const uint32ArraySpec: ExactTypedArraySpec<Uint32Array> = Object.freeze({
+  prototype: Uint32ArrayIntrinsic.prototype,
+  bytesPerElement: Uint32ArrayIntrinsic.BYTES_PER_ELEMENT,
+  create: (length: number) => new Uint32ArrayIntrinsic(length),
+});
+
+function inspectExactTypedArray<T extends Float32Array | Float64Array | Uint32Array>(
   value: unknown,
-  constructor: {
-    new(length: number): T;
-    readonly prototype: T;
-    readonly BYTES_PER_ELEMENT: number;
-  },
+  spec: ExactTypedArraySpec<T>,
   name: string,
   code: 'INVALID_REQUEST' | 'INVALID_RESULT',
-): T {
+): ExactTypedArray<T> {
   try {
     if (!isRecord(value)
       || typeof typedArrayLengthGetter !== 'function'
@@ -190,18 +257,22 @@ function requireExactTypedArray<T extends Float32Array | Float64Array | Uint32Ar
       || typeof typedArrayByteOffsetGetter !== 'function'
       || typeof typedArrayValues !== 'function'
       || typeof typedArrayAt !== 'function'
+      || typeof typedArraySet !== 'function'
       || typeof arrayBufferByteLengthGetter !== 'function'
-      || Object.getPrototypeOf(value) !== constructor.prototype
-      || forbiddenTypedArrayOwnKeys.some((key) => Object.hasOwn(value, key))) {
+      || objectGetPrototypeOf(value) !== spec.prototype
+      || forbiddenTypedArrayOwnKeys.some((key) => objectHasOwn(value, key))) {
       throw new TypeError('invalid exact typed array');
     }
-    const length = Reflect.apply(typedArrayLengthGetter, value, []) as unknown;
-    const buffer = Reflect.apply(typedArrayBufferGetter, value, []) as unknown;
-    const byteLength = Reflect.apply(typedArrayByteLengthGetter, value, []) as unknown;
-    const byteOffset = Reflect.apply(typedArrayByteOffsetGetter, value, []) as unknown;
-    Reflect.apply(typedArrayValues, value, []);
-    const bufferByteLength = Reflect.apply(arrayBufferByteLengthGetter, buffer, []) as unknown;
-    const bytesPerElement = constructor.BYTES_PER_ELEMENT;
+    const length = reflectApply(typedArrayLengthGetter, value, []) as unknown;
+    const buffer = reflectApply(typedArrayBufferGetter, value, []) as unknown;
+    const byteLength = reflectApply(typedArrayByteLengthGetter, value, []) as unknown;
+    const byteOffset = reflectApply(typedArrayByteOffsetGetter, value, []) as unknown;
+    reflectApply(typedArrayAt, value, [0]);
+    const bufferByteLength = reflectApply(arrayBufferByteLengthGetter, buffer, []) as unknown;
+    const resizable = typeof arrayBufferResizableGetter === 'function'
+      ? reflectApply(arrayBufferResizableGetter, buffer, []) as unknown
+      : false;
+    const bytesPerElement = spec.bytesPerElement;
     if (!Number.isSafeInteger(length)
       || !Number.isSafeInteger(byteLength)
       || !Number.isSafeInteger(byteOffset)
@@ -211,21 +282,42 @@ function requireExactTypedArray<T extends Float32Array | Float64Array | Uint32Ar
       || (byteOffset as number) !== 0
       || (byteOffset as number) % bytesPerElement !== 0
       || (byteLength as number) !== (length as number) * bytesPerElement
-      || (byteLength as number) !== bufferByteLength) {
+      || (byteLength as number) !== bufferByteLength
+      || resizable !== false) {
       throw new TypeError('invalid owned typed array span');
     }
-    return value as T;
+    return Object.freeze({
+      value: value as T,
+      length: length as number,
+      byteLength: byteLength as number,
+    });
+  } catch {
+    failInspection(code, name);
+  }
+}
+
+function defensiveCopy<T extends Float32Array | Float64Array | Uint32Array>(
+  inspected: ExactTypedArray<T>,
+  spec: ExactTypedArraySpec<T>,
+  name: string,
+  code: 'INVALID_REQUEST' | 'INVALID_RESULT',
+): T {
+  try {
+    if (typeof typedArraySet !== 'function') throw new TypeError('missing typed array set');
+    const copy = spec.create(inspected.length);
+    reflectApply(typedArraySet, copy, [inspected.value, 0]);
+    return copy;
   } catch {
     failInspection(code, name);
   }
 }
 
 function checkOwnedArrayCap(
-  value: Float32Array | Float64Array | Uint32Array,
+  byteLength: number,
   name: string,
 ): void {
-  if (!Number.isSafeInteger(value.byteLength) || value.byteLength > MAX_OWNED_ARRAY_BYTES) {
-    fail('RESOURCE_LIMIT', `${name} exceeds the approved allocation limit`);
+  if (!Number.isSafeInteger(byteLength) || byteLength > MAX_OWNED_ARRAY_BYTES) {
+    failOrdinaryResult('RESOURCE_LIMIT', `${name} exceeds the approved allocation limit`);
   }
 }
 
@@ -238,17 +330,17 @@ class ImmutableSliceArray implements ReadonlySliceArray {
   constructor(values: Uint32Array | Float64Array, elementType: 'uint32' | 'float64') {
     this.#values = values;
     this.elementType = elementType;
-    this.length = values.length;
-    this.byteLength = values.byteLength;
+    this.length = reflectApply(typedArrayLengthGetter as Function, values, []) as number;
+    this.byteLength = reflectApply(typedArrayByteLengthGetter as Function, values, []) as number;
     Object.freeze(this);
   }
 
   at(index: number): number | undefined {
-    return Reflect.apply(typedArrayAt, this.#values, [index]) as number | undefined;
+    return reflectApply(typedArrayAt, this.#values, [index]) as number | undefined;
   }
 
   [Symbol.iterator](): IterableIterator<number> {
-    return Reflect.apply(typedArrayValues, this.#values, []) as IterableIterator<number>;
+    return reflectApply(typedArrayValues, this.#values, []) as IterableIterator<number>;
   }
 }
 
@@ -300,14 +392,17 @@ function checkCheckpoint(checkpoint: SliceKernelCheckpoint): void {
 
 function forEachChunked<T extends Float32Array | Float64Array | Uint32Array>(
   values: T,
+  length: number,
   interval: number,
   checkpoint: SliceKernelCheckpoint,
   visit: (value: number, index: number) => void,
 ): void {
-  for (let start = 0; start < values.length; start += interval) {
+  for (let start = 0; start < length; start += interval) {
     checkCheckpoint(checkpoint);
-    const end = Math.min(start + interval, values.length);
-    for (let index = start; index < end; index += 1) visit(values[index], index);
+    const end = Math.min(start + interval, length);
+    for (let index = start; index < end; index += 1) {
+      visit(reflectApply(typedArrayAt, values, [index]) as number, index);
+    }
   }
 }
 
@@ -322,21 +417,21 @@ export function validateSliceBatchRequest(
     'slice request',
   );
 
-  const positions = requireExactTypedArray(
+  const inspectedPositions = inspectExactTypedArray(
     snapshot.get('positions'),
-    Float32Array,
+    float32ArraySpec,
     'positions',
     'INVALID_REQUEST',
   );
-  const indices = requireExactTypedArray(
+  const inspectedIndices = inspectExactTypedArray(
     snapshot.get('indices'),
-    Uint32Array,
+    uint32ArraySpec,
     'indices',
     'INVALID_REQUEST',
   );
-  const planes = requireExactTypedArray(
+  const inspectedPlanes = inspectExactTypedArray(
     snapshot.get('planes'),
-    Float64Array,
+    float64ArraySpec,
     'planes',
     'INVALID_REQUEST',
   );
@@ -348,37 +443,56 @@ export function validateSliceBatchRequest(
     fail('INVALID_REQUEST', 'deadline check interval is invalid');
   }
   const interval = deadlineCheckInterval as number;
-  if (positions.length % 3 !== 0 || indices.length % 3 !== 0) {
+  if (inspectedPositions.length % 3 !== 0 || inspectedIndices.length % 3 !== 0) {
     fail('INVALID_REQUEST', 'slice request contains incomplete vertices or triangles');
   }
-  const vertexCount = positions.length / 3;
-  const triangleCount = indices.length / 3;
+  const vertexCount = inspectedPositions.length / 3;
+  const triangleCount = inspectedIndices.length / 3;
   if (vertexCount > MAX_VERTEX_COUNT
     || triangleCount > MAX_TRIANGLE_COUNT
-    || planes.length > MAX_PLANE_COUNT) {
+    || inspectedPlanes.length > MAX_PLANE_COUNT) {
     fail('RESOURCE_LIMIT', 'slice request exceeds a kernel count limit');
   }
-  const work = triangleCount * planes.length;
+  const work = triangleCount * inspectedPlanes.length;
   if (!Number.isSafeInteger(work) || work > MAX_PLANE_TRIANGLE_TESTS) {
     fail('RESOURCE_LIMIT', 'slice request exceeds the kernel work limit');
   }
 
+  const positions = defensiveCopy(
+    inspectedPositions,
+    float32ArraySpec,
+    'positions',
+    'INVALID_REQUEST',
+  );
+  const indices = defensiveCopy(
+    inspectedIndices,
+    uint32ArraySpec,
+    'indices',
+    'INVALID_REQUEST',
+  );
+  const planes = defensiveCopy(
+    inspectedPlanes,
+    float64ArraySpec,
+    'planes',
+    'INVALID_REQUEST',
+  );
+
   checkCheckpoint(checkpoint);
-  forEachChunked(positions, interval, checkpoint, (position) => {
+  forEachChunked(positions, inspectedPositions.length, interval, checkpoint, (position) => {
     if (!Number.isFinite(position)) fail('INVALID_REQUEST', 'positions must be finite');
   });
-  forEachChunked(indices, interval, checkpoint, (index) => {
+  forEachChunked(indices, inspectedIndices.length, interval, checkpoint, (index) => {
     if (index >= vertexCount) fail('INVALID_REQUEST', 'triangle index is out of range');
   });
-  forEachChunked(planes, interval, checkpoint, (plane, index) => {
-    if (!Number.isFinite(plane) || (index > 0 && plane <= planes[index - 1])) {
+  let previousPlane: number | undefined;
+  forEachChunked(planes, inspectedPlanes.length, interval, checkpoint, (plane) => {
+    if (!Number.isFinite(plane) || (previousPlane !== undefined && plane <= previousPlane)) {
       fail('INVALID_REQUEST', 'planes must be finite and strictly increasing');
     }
+    previousPlane = plane;
   });
 
-  const validated = Object.freeze({ positions, indices, planes, deadlineCheckInterval: interval });
-  validatedRequests.add(validated);
-  return validated;
+  return Object.freeze({ positions, indices, planes, deadlineCheckInterval: interval });
 }
 
 function requireSafeInteger(
@@ -387,7 +501,7 @@ function requireSafeInteger(
   allowed?: readonly number[],
 ): number {
   if (!Number.isSafeInteger(value) || (allowed && !allowed.includes(value as number))) {
-    fail('INVALID_RESULT', `${name} is invalid`);
+    failOrdinaryResult('INVALID_RESULT', `${name} is invalid`);
   }
   return value as number;
 }
@@ -397,9 +511,6 @@ export function parseSliceBatchResult(
   requestValue: SliceBatchRequest,
   checkpoint: SliceKernelCheckpoint,
 ): SliceBatchResult {
-  const request = validatedRequests.has(requestValue)
-    ? requestValue
-    : validateSliceBatchRequest(requestValue, checkpoint);
   const snapshot = requireStrictRecord(
     value,
     ['version', 'statusCode', 'planeOffsets', 'endpoints', 'diagnosticCounters'],
@@ -417,73 +528,129 @@ export function parseSliceBatchResult(
     'slice result status',
     [SLICE_STATUS_OK, SLICE_STATUS_GEOMETRY_EVIDENCE],
   );
-  const planeOffsets = requireExactTypedArray(
+  const inspectedPlaneOffsets = inspectExactTypedArray(
     snapshot.get('planeOffsets'),
-    Uint32Array,
+    uint32ArraySpec,
     'plane offsets',
     'INVALID_RESULT',
   );
-  const endpoints = requireExactTypedArray(
+  const inspectedEndpoints = inspectExactTypedArray(
     snapshot.get('endpoints'),
-    Float64Array,
+    float64ArraySpec,
     'endpoints',
     'INVALID_RESULT',
   );
-  const diagnosticCounters = requireExactTypedArray(
+  const inspectedDiagnosticCounters = inspectExactTypedArray(
     snapshot.get('diagnosticCounters'),
-    Uint32Array,
+    uint32ArraySpec,
     'diagnostic counters',
     'INVALID_RESULT',
   );
 
-  checkOwnedArrayCap(planeOffsets, 'plane offsets');
-  checkOwnedArrayCap(endpoints, 'endpoints');
-  checkOwnedArrayCap(diagnosticCounters, 'diagnostic counters');
-  if (planeOffsets.length !== request.planes.length + 1) {
-    fail('INVALID_RESULT', 'plane offset count does not match the request');
+  checkOwnedArrayCap(inspectedPlaneOffsets.byteLength, 'plane offsets');
+  checkOwnedArrayCap(inspectedEndpoints.byteLength, 'endpoints');
+  checkOwnedArrayCap(inspectedDiagnosticCounters.byteLength, 'diagnostic counters');
+  if (inspectedEndpoints.length > MAX_ENDPOINT_VALUE_COUNT
+    || inspectedEndpoints.length % 4 !== 0) {
+    failOrdinaryResult('INVALID_RESULT', 'endpoint length is invalid');
   }
-  if (endpoints.length > MAX_ENDPOINT_VALUE_COUNT || endpoints.length % 4 !== 0) {
-    fail('INVALID_RESULT', 'endpoint length is invalid');
-  }
-  if (diagnosticCounters.length !== DIAGNOSTIC_COUNTER_COUNT) {
-    fail('INVALID_RESULT', 'diagnostic counter count is invalid');
+  if (inspectedDiagnosticCounters.length !== DIAGNOSTIC_COUNTER_COUNT) {
+    failOrdinaryResult('INVALID_RESULT', 'diagnostic counter count is invalid');
   }
 
-  const segmentCount = endpoints.length / 4;
-  if (planeOffsets[0] !== 0) fail('INVALID_RESULT', 'plane offsets must start at zero');
-  forEachChunked(planeOffsets, request.deadlineCheckInterval, checkpoint, (offset, index) => {
-    if (index > 0 && (offset < planeOffsets[index - 1] || offset > segmentCount)) {
-      fail('INVALID_RESULT', 'plane offsets must be bounded and monotonic');
-    }
-  });
-  if (planeOffsets[planeOffsets.length - 1] !== segmentCount) {
-    fail('INVALID_RESULT', 'final plane offset does not match endpoint segments');
-  }
-  forEachChunked(endpoints, request.deadlineCheckInterval, checkpoint, (endpoint) => {
-    if (!Number.isFinite(endpoint)) fail('INVALID_RESULT', 'endpoints must be finite');
-  });
+  const planeOffsets = defensiveCopy(
+    inspectedPlaneOffsets,
+    uint32ArraySpec,
+    'plane offsets',
+    'INVALID_RESULT',
+  );
+  const endpoints = defensiveCopy(
+    inspectedEndpoints,
+    float64ArraySpec,
+    'endpoints',
+    'INVALID_RESULT',
+  );
+  const diagnosticCounters = defensiveCopy(
+    inspectedDiagnosticCounters,
+    uint32ArraySpec,
+    'diagnostic counters',
+    'INVALID_RESULT',
+  );
 
-  const triangleCount = request.indices.length / 3;
-  const work = triangleCount * request.planes.length;
-  const maxCheckpointCount = work + request.planes.length;
-  if (diagnosticCounters[DIAGNOSTIC_DEGENERATE_TRIANGLE_COUNT] > triangleCount
-    || diagnosticCounters[DIAGNOSTIC_COPLANAR_TRIANGLE_PLANE_COUNT] > work
-    || diagnosticCounters[DIAGNOSTIC_NON_FINITE_INPUT_COUNT] !== 0
-    || diagnosticCounters[DIAGNOSTIC_PLANE_TRIANGLE_TEST_COUNT] !== work
-    || diagnosticCounters[DIAGNOSTIC_SEGMENT_COUNT] !== segmentCount
-    || diagnosticCounters[DIAGNOSTIC_CHECKPOINT_COUNT] > maxCheckpointCount
-    || diagnosticCounters[DIAGNOSTIC_AMBIGUOUS_INTERSECTION_COUNT] > work
-    || diagnosticCounters[DIAGNOSTIC_ON_PLANE_EDGE_COUNT] > work
-    || diagnosticCounters[DIAGNOSTIC_ENDPOINT_ALLOCATION_GROWTH_COUNT]
+  const request = validateSliceBatchRequest(requestValue, checkpoint);
+  const requestPlaneCount = reflectApply(
+    typedArrayLengthGetter as Function,
+    request.planes,
+    [],
+  ) as number;
+  const requestIndexCount = reflectApply(
+    typedArrayLengthGetter as Function,
+    request.indices,
+    [],
+  ) as number;
+  if (inspectedPlaneOffsets.length !== requestPlaneCount + 1) {
+    failOrdinaryResult('INVALID_RESULT', 'plane offset count does not match the request');
+  }
+
+  const segmentCount = inspectedEndpoints.length / 4;
+  if (reflectApply(typedArrayAt, planeOffsets, [0]) !== 0) {
+    failOrdinaryResult('INVALID_RESULT', 'plane offsets must start at zero');
+  }
+  let previousOffset: number | undefined;
+  forEachChunked(
+    planeOffsets,
+    inspectedPlaneOffsets.length,
+    request.deadlineCheckInterval,
+    checkpoint,
+    (offset) => {
+      if (previousOffset !== undefined && (offset < previousOffset || offset > segmentCount)) {
+        failOrdinaryResult('INVALID_RESULT', 'plane offsets must be bounded and monotonic');
+      }
+      previousOffset = offset;
+    },
+  );
+  if (reflectApply(typedArrayAt, planeOffsets, [inspectedPlaneOffsets.length - 1])
+    !== segmentCount) {
+    failOrdinaryResult('INVALID_RESULT', 'final plane offset does not match endpoint segments');
+  }
+  forEachChunked(
+    endpoints,
+    inspectedEndpoints.length,
+    request.deadlineCheckInterval,
+    checkpoint,
+    (endpoint) => {
+      if (!Number.isFinite(endpoint)) {
+        failOrdinaryResult('INVALID_RESULT', 'endpoints must be finite');
+      }
+    },
+  );
+
+  const counter = (index: number): number => reflectApply(
+    typedArrayAt,
+    diagnosticCounters,
+    [index],
+  ) as number;
+  const triangleCount = requestIndexCount / 3;
+  const work = triangleCount * requestPlaneCount;
+  const maxCheckpointCount = work + requestPlaneCount;
+  if (counter(DIAGNOSTIC_DEGENERATE_TRIANGLE_COUNT) > triangleCount
+    || counter(DIAGNOSTIC_COPLANAR_TRIANGLE_PLANE_COUNT) > work
+    || counter(DIAGNOSTIC_NON_FINITE_INPUT_COUNT) !== 0
+    || counter(DIAGNOSTIC_PLANE_TRIANGLE_TEST_COUNT) !== work
+    || counter(DIAGNOSTIC_SEGMENT_COUNT) !== segmentCount
+    || counter(DIAGNOSTIC_CHECKPOINT_COUNT) > maxCheckpointCount
+    || counter(DIAGNOSTIC_AMBIGUOUS_INTERSECTION_COUNT) > work
+    || counter(DIAGNOSTIC_ON_PLANE_EDGE_COUNT) > work
+    || counter(DIAGNOSTIC_ENDPOINT_ALLOCATION_GROWTH_COUNT)
       > (segmentCount === 0 ? 0 : segmentCount)) {
-    fail('INVALID_RESULT', 'diagnostic counters are inconsistent or overflowed');
+    failOrdinaryResult('INVALID_RESULT', 'diagnostic counters are inconsistent or overflowed');
   }
-  const hasGeometryEvidence = diagnosticCounters[DIAGNOSTIC_DEGENERATE_TRIANGLE_COUNT] > 0
-    || diagnosticCounters[DIAGNOSTIC_COPLANAR_TRIANGLE_PLANE_COUNT] > 0
-    || diagnosticCounters[DIAGNOSTIC_AMBIGUOUS_INTERSECTION_COUNT] > 0
-    || diagnosticCounters[DIAGNOSTIC_ON_PLANE_EDGE_COUNT] > 0;
+  const hasGeometryEvidence = counter(DIAGNOSTIC_DEGENERATE_TRIANGLE_COUNT) > 0
+    || counter(DIAGNOSTIC_COPLANAR_TRIANGLE_PLANE_COUNT) > 0
+    || counter(DIAGNOSTIC_AMBIGUOUS_INTERSECTION_COUNT) > 0
+    || counter(DIAGNOSTIC_ON_PLANE_EDGE_COUNT) > 0;
   if ((statusCode === SLICE_STATUS_GEOMETRY_EVIDENCE) !== hasGeometryEvidence) {
-    fail('INVALID_RESULT', 'slice status does not match diagnostic evidence');
+    failOrdinaryResult('INVALID_RESULT', 'slice status does not match diagnostic evidence');
   }
 
   return Object.freeze({
