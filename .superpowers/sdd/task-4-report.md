@@ -496,3 +496,9 @@ is referenced exactly by the fixture entry. The implementation-worktree full
 matrix passed: Node 4 files / 134 tests, real Chromium 2 files / 43 tests, raw
 WASM 31 checks, Rust 1 unit / 21 integration tests, clippy `-D warnings`,
 typecheck, Vite build, pinned WASM regeneration, and `git diff --check`.
+
+Commit `017dd3c` was checked out detached into a new temporary worktree and
+installed with `npm ci`. The same closed-adapter full matrix passed again with
+the same counts, including official and crafted production worker artifacts;
+`git status --short` was empty after every gate. The temporary checkout was
+removed.
