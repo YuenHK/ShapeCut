@@ -488,3 +488,155 @@ not found`; the command above is the corrected fresh-checkout run and result.
   timeout change.
 - `npm ci` reports the repository's existing audit state of 1 moderate and 3
   high vulnerabilities; dependency changes were outside this task.
+
+## Re-review round 3: findings 10–12
+
+Date: 2026-08-31
+Implementation commit: `93bfe1b` (`fix(wasm): enforce checkpoint and deploy provenance`)
+
+### Finding 10: fail-closed checkpoint reflection
+
+- `readSliceKernelAbort()` now contains callback invocation and the complete
+  prototype, own-key, data-descriptor, reason and source validation inside one
+  fail-closed `try` boundary. Any callback, revoked proxy or reflection trap
+  failure is sanitized to `DEADLINE_CHECK_FAILED`.
+- Production Chromium tests cover immediate and delayed revoked proxies and
+  throwing `ownKeys`, `getPrototypeOf` and `getOwnPropertyDescriptor` traps.
+  Every resulting error is also passed to `CanonicalFallbackGuard`; all eight
+  cases remain fallback-ineligible with `FALLBACK_NOT_ALLOWED`.
+
+RED command:
+
+```text
+npm run test:browser -- --run src/wasm/load-slice-kernel.browser.test.ts
+```
+
+RED result: 15 passed and 4 failed. The four delayed traps already reached the
+controlled adapter's fail-closed wrapper, but every immediate trap escaped
+reflection validation and was incorrectly mapped to `EXECUTION_FAILED`.
+
+GREEN result: the same command passed 19/19 in Chromium. The final focused Node
+contract suite passed 31/31 across the slice contract and workflow/build
+contract files.
+
+### Finding 11: main deployment provenance gate
+
+- The main-push Pages workflow now has a separate `regenerate_wasm` job. It
+  installs Rust 1.98.0 with `wasm32-unknown-unknown`, installs wasm-pack 0.15.0
+  with `--locked`, and directly runs
+  `node scripts/verify-geometry-wasm-regeneration.mjs`.
+- The normal `build` job explicitly needs `regenerate_wasm`. The `deploy` job
+  explicitly needs both `regenerate_wasm` and `build`, so a main deployment
+  cannot publish if pinned source-to-tracked-artifact regeneration fails.
+- The byte comparison does not go through a rewriteable `package.json` npm
+  script. Both the Pages main gate and PR provenance workflow directly invoke
+  the verifier script.
+- The PR workflow path trigger covers `crates/geometry-wasm/**`, generated
+  artifacts, the build script, both verifier scripts, both workflow files,
+  `package.json`, `package-lock.json`, `Cargo.lock` and
+  `rust-toolchain.toml`.
+
+Workflow contract RED/GREEN:
+
+```text
+npx vitest run src/test/geometry-wasm-build-contract.test.ts
+```
+
+Initial RED result: 1 passed and 3 failed because regeneration used npm
+indirection, Pages lacked a provenance dependency, triggers were incomplete and
+all Actions used mutable tags. An added explicit deploy dependency produced a
+second RED of 3 passed and 1 failed while deploy still depended only
+transitively on the gate. Final result: 4/4 passed.
+
+YAML syntax gate:
+
+```text
+ruby -e 'require "yaml"; ARGV.each { |path| YAML.parse_file(path) }' \
+  .github/workflows/deploy-pages.yml \
+  .github/workflows/verify-geometry-wasm.yml
+```
+
+Result: both workflow files parsed successfully.
+
+### Finding 12: immutable official Action pins
+
+The exact current major-version refs were resolved from each official action
+Git repository, rather than a mirror or search result:
+
+```text
+git ls-remote https://github.com/actions/checkout.git refs/tags/v6 refs/tags/v6^{}
+git ls-remote https://github.com/actions/setup-node.git refs/tags/v6 refs/tags/v6^{}
+git ls-remote https://github.com/actions/configure-pages.git refs/tags/v5 refs/tags/v5^{}
+git ls-remote https://github.com/actions/upload-pages-artifact.git refs/tags/v4 refs/tags/v4^{}
+git ls-remote https://github.com/actions/deploy-pages.git refs/tags/v4 refs/tags/v4^{}
+```
+
+Resolved pins:
+
+- `actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6`
+- `actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6`
+- `actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5`
+- `actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4`
+- `actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4`
+
+The workflow contract dynamically enumerates every `.yml` and `.yaml` file in
+`.github/workflows`, rejects every non-40-character `uses:` ref, requires a
+major-version comment, and compares the action/revision/comment tuple with the
+officially resolved allowlist above.
+
+### Round 3 fresh-checkout verification
+
+Committed `93bfe1b` was cloned to a new path containing spaces and Chinese:
+
+```text
+git clone --local . "/tmp/ShapeCut Task 3 round 3 中文 fresh"
+cd "/tmp/ShapeCut Task 3 round 3 中文 fresh"
+npm ci --ignore-scripts --cache "/tmp/ShapeCut Task 3 round 3 中文 npm cache"
+env PATH=/usr/local/bin:/usr/bin:/bin \
+  CARGO_HOME="/tmp/ShapeCut Task 3 round 3 中文 empty cargo" \
+  npm_config_offline=true /bin/sh -c '
+    for tool in cargo rustc rustup wasm-pack; do
+      if command -v "$tool" >/dev/null 2>&1; then exit 1; fi
+    done
+    npm run build &&
+    npm test -- --run src/wasm/slice-kernel-contract.test.ts \
+      src/test/geometry-wasm-build-contract.test.ts &&
+    npm run test:browser -- --run src/wasm/load-slice-kernel.browser.test.ts &&
+    npm run test:geometry-wasm-boundary
+  '
+CARGO_ENCODED_RUSTFLAGS=$'-Cdebuginfo=0\x1f--remap-path-prefix=/tmp/Existing round 3 中文 path=/workspace/existing' \
+  node scripts/verify-geometry-wasm-regeneration.mjs
+git status --porcelain
+```
+
+Results: standard offline build after dependency installation passed with no
+Rust/Cargo/rustup/wasm-pack in PATH and an empty Cargo home; Node 31/31,
+Chromium 19/19 and raw boundary 31/31 passed. Direct pinned regeneration in the
+same fresh path produced the tracked 37,856-byte SHA-256
+`4aa7f77d0e50116c28ee06212408d72efede27e33d1e4723de65ab67d3c3795a`.
+The fresh checkout remained clean.
+
+### Round 3 complete verification and concerns
+
+- Focused Node contract/workflow tests — 31/31 passed.
+- Production Chromium adapter tests — 19/19 passed.
+- Controlled raw WASM boundary — 31/31 passed.
+- Pinned regeneration verifier — tracked and temporary output matched
+  byte-for-byte.
+- `npm run typecheck` — exit 0.
+- Standard build without Rust tools in PATH, with empty Cargo home and npm
+  offline — exit 0; one 37.86 kB WASM, zero maps and no forbidden path or
+  source-map material.
+- Rust fmt, native and wasm32 clippy with `-D warnings`, locked tests and wasm32
+  release check — all passed; 1 unit and 20 integration tests passed.
+- `git diff --check` — exit 0.
+- Full `npm test` passed 69/71 files and 1723 tests (4 skipped). The same two
+  pre-existing heavy conversion tests from round 2 exceeded their 5-second
+  limit under full-suite load; each exact test again passed when run alone
+  (1/1 each). No unrelated timeout or conversion implementation was changed.
+- The main deployment now performs online Rust/wasm-pack installation and will
+  take longer; failure is intentional and blocks publication when provenance
+  cannot be verified. Offline capability remains limited to normal build/test
+  after Node dependencies are installed.
+- No round 3 change touches UI/CSS, fonts, colours, production deadline,
+  canonical merge, materials, launcher code or official release artifacts.
