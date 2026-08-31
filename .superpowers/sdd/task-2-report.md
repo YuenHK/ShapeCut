@@ -319,3 +319,113 @@ call that forces WASM memory growth.
   disposal; it does not return a raw view.
 - The previously documented `wasm-opt` compatibility concern remains. Cargo
   release LTO/size optimisation is active, and the artifact is deterministic.
+
+## Re-review round 3 fixes
+
+Date: 2026-08-31
+Review source: `.superpowers/sdd/task-2-review-findings.md`, findings 10–12
+Implementation commit: `f1706103c5de08825cef623a0b05f99e5f69d245`
+
+### Changes
+
+- Rust input copies now reserve capacity without changing `Vec::len`. Before
+  each chunk, the same strict checkpoint runs; only then does Rust resize and
+  initialize at most the requested interval and copy that typed-array chunk.
+  The full maximum input buffer is never resized or zeroed before checkpoints.
+- Plane iteration has an independent checked counter and deadline checkpoint,
+  so 16,384 planes with no triangles still checkpoint at most every 4,096
+  planes. These checks are included in the diagnostic checkpoint count.
+- The wrapper now has one documented contiguous owned-output allocator
+  primitive. Every typed-array allocation, including zero-length and diagnostic
+  arrays, is hard-capped at 8 MiB and surrounded immediately by strict
+  fail-closed checkpoints. Copy and semantic validation remain chunked.
+- The approved design spec, implementation-plan boundary contract, Task 2 brief
+  and wrapper documentation explicitly record the sole bounded JavaScript
+  allocation exception. The 8 MiB cap was not increased.
+- No UI, CSS, typography, colour, layout, launcher geometry or production
+  deadline was changed.
+
+### Round 3 TDD evidence
+
+1. Empty-triangle plane traversal RED:
+
+```text
+cargo test --manifest-path crates/geometry-wasm/Cargo.toml \
+  empty_triangle_plane_traversal_has_an_independent_bounded_checkpoint \
+  -- --exact --nocapture
+```
+
+Result: the test failed as intended because the request returned a complete
+16,385-offset result instead of observing cancellation at checkpoint 6. Only
+plane validation and offset allocation had checkpointed; traversal had not.
+
+2. Per-chunk resize/copy RED:
+
+```text
+cargo test --manifest-path crates/geometry-wasm/Cargo.toml \
+  reserved_input_is_initialized_and_copied_only_after_each_chunk_checkpoint \
+  -- --exact --nocapture
+```
+
+Result: compile failed as intended with `E0432`, unresolved import
+`reserve_and_copy_in_chunks`, before the reserve-only chunk primitive existed.
+
+3. Sole JavaScript allocator RED:
+
+```text
+npm run test:geometry-wasm-boundary
+```
+
+Result after correcting the later-memory-growth fixture to remain independent
+of the preceding 8 MiB cap test: 27 tests passed and the allocator test alone
+failed as intended, observing 4 strict checkpoints instead of the required 10.
+
+GREEN commands:
+
+```text
+cargo test --manifest-path crates/geometry-wasm/Cargo.toml --locked
+npm run build:geometry-wasm
+npm run test:geometry-wasm-boundary
+```
+
+Result: 1 Rust unit test and 20 Rust integration tests passed with 0 failures;
+29 real Node/WASM boundary tests passed with 0 failures. New boundary coverage
+proves strict pre/post allocation checkpoints, accepts exactly 8 MiB, rejects a
+tampered raw output above 8 MiB before allocation, and retains chunked
+copy/validation and later-memory-growth guarantees.
+
+### Fresh verification
+
+- `cargo fmt --manifest-path crates/geometry-wasm/Cargo.toml -- --check` — exit 0.
+- `cargo clippy --manifest-path crates/geometry-wasm/Cargo.toml --all-targets --all-features --locked -- -D warnings`
+  — exit 0.
+- `cargo clippy --manifest-path crates/geometry-wasm/Cargo.toml --target wasm32-unknown-unknown --release --locked -- -D warnings`
+  — exit 0.
+- `cargo test --manifest-path crates/geometry-wasm/Cargo.toml --locked` — 1 unit
+  and 20 integration tests passed, 0 failed; doc tests 0 failed.
+- `cargo check --manifest-path crates/geometry-wasm/Cargo.toml --target wasm32-unknown-unknown --release --locked`
+  — exit 0.
+- `npm run build:geometry-wasm` — release build passed; WASM 37,325 bytes;
+  source maps 0.
+- `npm run test:geometry-wasm-boundary` — 29/29 passed.
+- Both Node scripts passed `node --check`.
+- Two consecutive builds produced identical SHA-256
+  `d6d1fabdd6d7d55044ba0191c8b4ef9210b554be962ec9a02e3a35f2b492c7c5`.
+- Generated artifact gate found no `.map`, `sourceMappingURL`, `/private/`, or
+  `/Users/` material. `git diff --check` exited 0.
+- Tool versions remain rustc/cargo 1.98.0, wasm-pack 0.15.0, Node.js 24.18.0
+  and npm 11.16.0. No new installation was required for round 3.
+
+### Self-review and remaining concerns
+
+- Verified there is no full-length input `resize`; the generic helper observes
+  initialized lengths `[0, 0, 4, 8]` around a three-chunk test and production
+  typed-array copies all use that helper.
+- Verified the only owned contiguous allocator is `allocateOwnedArray`; raw
+  typed-array construction is a non-owning WASM view. All three owned result
+  arrays route through the 8 MiB allocator, then use chunked copy/validation.
+- The synchronous `TypedArray(length)` initialization is the explicitly
+  approved bounded exception. It cannot itself yield mid-primitive, but the
+  hard cap and immediate strict checkpoints bound and guard it.
+- The previously documented `wasm-opt` compatibility concern remains. Cargo
+  release LTO/size optimisation is active, and the artifact is deterministic.
