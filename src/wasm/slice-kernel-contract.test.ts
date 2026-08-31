@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import * as contractModule from './slice-kernel-contract';
+import * as loaderModule from './load-slice-kernel';
 import {
   CanonicalFallbackGuard,
   SliceKernelError,
@@ -187,13 +189,20 @@ describe('TypeScript WASM slice contract', () => {
 
   it('rejects typed-array allocation lengths above the approved hard caps', () => {
     const oversizedEndpoints = new Float64Array((8 * 1024 * 1024 / 8) + 1);
-    expectKernelCode(
-      () => parseSliceBatchResult(
+    let checkpointCount = 0;
+    const error = captureFailure(
+      () => parseResult(
         encodedResult({ endpoints: oversizedEndpoints }),
         request(),
+        () => {
+          checkpointCount += 1;
+          return undefined;
+        },
       ),
-      'RESOURCE_LIMIT',
     );
+    expect(error).toMatchObject({ name: 'SliceKernelError', code: 'RESOURCE_LIMIT' });
+    expect(checkpointCount).toBe(0);
+    expect(new CanonicalFallbackGuard().claimTypeScriptFallback(error)).toBeDefined();
   });
 
   it.each([
@@ -409,22 +418,20 @@ describe('TypeScript WASM slice contract', () => {
       structuredClone(source.positions.buffer, { transfer: [source.positions.buffer] });
     }],
   ] as const)(
-    'uses an unexposed fixed request snapshot across checkpoint %s',
+    'fails closed when a checkpoint mutates request lifecycle via %s',
     (_name, mutate) => {
       const source = request();
       let mutated = false;
-      const validated = validateRequest(source, () => {
-        if (!mutated) {
-          mutated = true;
-          mutate(source);
-        }
-        return undefined;
-      });
-      expect(Array.from(validated.positions)).toEqual([
-        0, 0, -1,
-        2, 0, 1,
-        0, 2, 1,
-      ]);
+      expectValidationAndFallbackDenied(
+        () => validateRequest(source, () => {
+          if (!mutated) {
+            mutated = true;
+            mutate(source);
+          }
+          return undefined;
+        }),
+        'INVALID_REQUEST',
+      );
     },
   );
 
@@ -489,20 +496,142 @@ describe('TypeScript WASM slice contract', () => {
       structuredClone(endpoints.buffer, { transfer: [endpoints.buffer] });
     }],
   ] as const)(
-    'uses an unexposed fixed result snapshot across checkpoint %s',
+    'fails closed when a checkpoint mutates result lifecycle via %s',
     (_name, mutate) => {
       const encoded = encodedResult() as Record<string, unknown>;
       let mutated = false;
-      const parsed = parseResult(encoded, request(), () => {
-        if (!mutated) {
-          mutated = true;
-          mutate(encoded);
-        }
-        return undefined;
-      });
-      expect(Array.from(parsed.endpoints)).toEqual([0, 0, 1, 1]);
+      expectValidationAndFallbackDenied(
+        () => parseResult(encoded, request(), () => {
+          if (!mutated) {
+            mutated = true;
+            mutate(encoded);
+          }
+          return undefined;
+        }),
+        'INVALID_RESULT',
+      );
     },
   );
+
+  it('does not export an arbitrary eligible-error issuer or permit legacy mapper misuse', () => {
+    const moduleRecord = contractModule as unknown as Record<string, unknown>;
+    const legacyIssuer = moduleRecord.createSliceKernelRuntimeError;
+    if (typeof legacyIssuer === 'function') {
+      const forged = legacyIssuer('LOAD_FAILED', 'external misuse');
+      expect(() => new CanonicalFallbackGuard().claimTypeScriptFallback(forged)).toThrowError(
+        expect.objectContaining({ name: 'SliceKernelError', code: 'FALLBACK_NOT_ALLOWED' }),
+      );
+    }
+    expect(Object.hasOwn(moduleRecord, 'createSliceKernelRuntimeError')).toBe(false);
+    expect(Reflect.ownKeys(loaderModule).filter((key) => typeof key === 'string').sort()).toEqual([
+      'disposeSliceKernel',
+      'loadSliceKernel',
+    ]);
+  });
+
+  it('does not grant ordinary-result fallback before complete typed-array inspection', () => {
+    expectValidationAndFallbackDenied(
+      () => parseSliceBatchResult(encodedResult({
+        version: 2,
+        planeOffsets: new Proxy(new Uint32Array([0, 1]), {}),
+      }), request()),
+      'INVALID_RESULT',
+    );
+  });
+
+  it.each([
+    [{ reason: 'cancelled', source: 'user' }, 'CANCELLED'],
+    [{ reason: 'deadline', source: 'runtime-deadline' }, 'DEADLINE_EXCEEDED'],
+  ] as const)(
+    'preserves immediate and delayed snapshot abort $0.reason as $1',
+    (abort, code) => {
+      for (const trigger of [1, 5]) {
+        let checkpointCount = 0;
+        const error = captureFailure(() => validateRequest(request(), () => {
+          checkpointCount += 1;
+          return checkpointCount === trigger ? abort : undefined;
+        }));
+        expect(error).toMatchObject({
+          name: 'SliceKernelError',
+          code,
+          abortSource: abort.source,
+        });
+        expect(checkpointCount).toBe(trigger);
+        expect(() => new CanonicalFallbackGuard().claimTypeScriptFallback(error)).toThrowError(
+          expect.objectContaining({ name: 'SliceKernelError', code: 'FALLBACK_NOT_ALLOWED' }),
+        );
+      }
+    },
+  );
+
+  it('revalidates all caller views after a delayed checkpoint mutation', () => {
+    const source = request();
+    let requestCheckpointCount = 0;
+    expectValidationAndFallbackDenied(() => validateRequest(source, () => {
+      requestCheckpointCount += 1;
+      if (requestCheckpointCount === 5) {
+        Object.defineProperty(source.positions, 'length', { value: 0 });
+      }
+      return undefined;
+    }), 'INVALID_REQUEST');
+
+    const encoded = encodedResult() as Record<string, unknown>;
+    let resultCheckpointCount = 0;
+    expectValidationAndFallbackDenied(() => parseResult(encoded, request(), () => {
+      resultCheckpointCount += 1;
+      if (resultCheckpointCount === 5) {
+        const endpoints = encoded.endpoints as Float64Array;
+        structuredClone(endpoints.buffer, { transfer: [endpoints.buffer] });
+      }
+      return undefined;
+    }), 'INVALID_RESULT');
+  });
+
+  it('checkpoints intrinsic defensive copies in bounded chunks near the approved interval', () => {
+    const positions = new Float32Array((4_096 * 2) + 1);
+    let checkpointCount = 0;
+    validateRequest(request({ positions }), () => {
+      checkpointCount += 1;
+      return undefined;
+    });
+    expect(checkpointCount).toBeGreaterThanOrEqual(17);
+  });
+
+  it('checkpoints near-limit result copies in bounded intrinsic chunks', () => {
+    const endpointLength = (4_096 * 2) + 4;
+    const segmentCount = endpointLength / 4;
+    const diagnosticCounters = new Uint32Array(DIAGNOSTIC_COUNTER_COUNT);
+    diagnosticCounters[3] = 1;
+    diagnosticCounters[4] = segmentCount;
+    let checkpointCount = 0;
+    const parsed = parseResult(encodedResult({
+      planeOffsets: new Uint32Array([0, segmentCount]),
+      endpoints: new Float64Array(endpointLength),
+      diagnosticCounters,
+    }), request(), () => {
+      checkpointCount += 1;
+      return undefined;
+    });
+    expect(parsed.endpoints).toHaveLength(endpointLength);
+    expect(checkpointCount).toBeGreaterThanOrEqual(28);
+  });
+
+  it('rejects a request allocation above its explicit cap before any checkpoint or fallback', () => {
+    const oversizedPlanes = new Float64Array(16_385);
+    let checkpointCount = 0;
+    const error = captureFailure(() => validateRequest(
+      request({ planes: oversizedPlanes }),
+      () => {
+        checkpointCount += 1;
+        return undefined;
+      },
+    ));
+    expect(error).toMatchObject({ name: 'SliceKernelError', code: 'RESOURCE_LIMIT' });
+    expect(checkpointCount).toBe(0);
+    expect(() => new CanonicalFallbackGuard().claimTypeScriptFallback(error)).toThrowError(
+      expect.objectContaining({ name: 'SliceKernelError', code: 'FALLBACK_NOT_ALLOWED' }),
+    );
+  });
 
   it('atomically claims fallback publication and rejects an interleaved late WASM claim', async () => {
     const guard = new CanonicalFallbackGuard();

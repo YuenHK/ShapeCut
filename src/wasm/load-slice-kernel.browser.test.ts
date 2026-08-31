@@ -283,7 +283,7 @@ describe('production-compatible browser WASM loader', () => {
       structuredClone(source.positions.buffer, { transfer: [source.positions.buffer] });
     }],
   ] as const)(
-    'keeps production execution on an unexposed request snapshot across checkpoint %s',
+    'fails production request closed when checkpoint mutates lifecycle via %s',
     async (_name, mutate) => {
       const kernel = await loadSliceKernel();
       const source = {
@@ -293,14 +293,15 @@ describe('production-compatible browser WASM loader', () => {
         deadlineCheckInterval: request.deadlineCheckInterval,
       } as typeof request;
       let mutated = false;
-      const result = await kernel.sliceLayerBatch(source, () => {
+      const error = await kernel.sliceLayerBatch(source, () => {
         if (!mutated) {
           mutated = true;
           mutate(source);
         }
         return undefined;
-      });
-      expect(Array.from(result.planeOffsets)).toEqual([0, 3, 6]);
+      }).catch((failure: unknown) => failure);
+      expect(error).toMatchObject({ name: 'SliceKernelError', code: 'INVALID_REQUEST' });
+      expectFallbackDenied(error);
     },
   );
 
@@ -316,6 +317,27 @@ describe('production-compatible browser WASM loader', () => {
     positions.set(request.positions);
     const error = await kernel.sliceLayerBatch({ ...request, positions }, () => undefined)
       .catch((failure: unknown) => failure);
+    expect(error).toMatchObject({ name: 'SliceKernelError', code: 'INVALID_REQUEST' });
+    expectFallbackDenied(error);
+  });
+
+  it('revalidates caller request lifecycle at a delayed controlled checkpoint', async () => {
+    const kernel = await loadSliceKernel();
+    const source = {
+      positions: request.positions.slice(),
+      indices: request.indices.slice(),
+      planes: request.planes.slice(),
+      deadlineCheckInterval: request.deadlineCheckInterval,
+    } as typeof request;
+    let checkpointCount = 0;
+    const error = await kernel.sliceLayerBatch(source, () => {
+      checkpointCount += 1;
+      if (checkpointCount === 14) {
+        Object.defineProperty(source.positions, 'length', { value: 0 });
+      }
+      return undefined;
+    }).catch((failure: unknown) => failure);
+    expect(checkpointCount).toBe(14);
     expect(error).toMatchObject({ name: 'SliceKernelError', code: 'INVALID_REQUEST' });
     expectFallbackDenied(error);
   });
