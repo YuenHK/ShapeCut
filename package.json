@@ -5,11 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "prebuild": "npm run build:geometry-wasm",
     "build": "tsc -b && vite build",
     "build:geometry-wasm": "node scripts/build-geometry-wasm.mjs",
     "test:geometry-wasm-boundary": "node scripts/test-geometry-wasm-boundary.mjs",
     "typecheck": "tsc -b --pretty false",
     "test": "vitest run",
+    "pretest:browser": "npm run build:geometry-wasm",
     "test:browser": "vitest --config vitest.browser.config.ts",
     "test:e2e": "playwright test",
     "test:performance": "playwright test e2e/performance.spec.ts --workers=1",

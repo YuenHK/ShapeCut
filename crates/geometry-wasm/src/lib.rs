@@ -69,6 +69,42 @@ impl SliceKernelErrorCode {
             Self::IntegerOverflow => "kernel integer calculation overflowed",
         }
     }
+
+    #[cfg(target_arch = "wasm32")]
+    fn boundary_code(self) -> &'static str {
+        match self {
+            Self::DeadlineCheckFailed => "DEADLINE_CHECK_FAILED",
+            Self::DeadlineExceeded => "DEADLINE_EXCEEDED",
+            Self::VertexCountLimit
+            | Self::TriangleCountLimit
+            | Self::PlaneCountLimit
+            | Self::DeadlineCheckIntervalLimit
+            | Self::WorkLimit
+            | Self::OutputLimit
+            | Self::AllocationFailed
+            | Self::IntegerOverflow => "RESOURCE_LIMIT",
+            _ => "INVALID_REQUEST",
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn boundary_phase(self) -> &'static str {
+        match self {
+            Self::IncompletePositions
+            | Self::NonFinitePosition
+            | Self::VertexCountLimit
+            | Self::IncompleteTriangleIndices
+            | Self::TriangleCountLimit
+            | Self::IndexOutOfRange
+            | Self::NonFinitePlane
+            | Self::UnsortedPlanes
+            | Self::PlaneCountLimit
+            | Self::InvalidCheckpointInterval
+            | Self::DeadlineCheckIntervalLimit
+            | Self::WorkLimit => "request",
+            _ => "execution",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -659,7 +695,7 @@ mod wasm {
         check_deadline, reserve_and_copy_in_chunks, slice_layer_batch_with_abort_check,
         validate_request_lengths,
     };
-    use js_sys::{Float32Array, Float64Array, Uint32Array};
+    use js_sys::{Error as JsError, Float32Array, Float64Array, Reflect, Uint32Array};
     use wasm_bindgen::prelude::*;
 
     #[wasm_bindgen]
@@ -674,7 +710,12 @@ mod wasm {
 
     impl From<SliceKernelError> for JsValue {
         fn from(error: SliceKernelError) -> Self {
-            JsValue::from_str(&error.to_string())
+            let js_error = JsError::new(&error.to_string());
+            let code = JsValue::from_str(error.code.boundary_code());
+            let phase = JsValue::from_str(error.code.boundary_phase());
+            let _ = Reflect::set(js_error.as_ref(), &JsValue::from_str("code"), &code);
+            let _ = Reflect::set(js_error.as_ref(), &JsValue::from_str("phase"), &phase);
+            js_error.into()
         }
     }
 
@@ -858,7 +899,7 @@ mod wasm {
             deadline_check_interval,
             abort_check,
         )
-        .map_err(|error| JsValue::from_str(&error.to_string()))
+        .map_err(JsValue::from)
     }
 }
 

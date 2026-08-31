@@ -29,8 +29,13 @@ describe('production-compatible browser WASM loader', () => {
 
     expect(Array.from(result.planeOffsets)).toEqual([0, 3, 6]);
     expect(result.endpoints).toHaveLength(24);
-    expect(result.diagnosticCounters[4]).toBe(6);
+    expect(result.diagnosticCounters.at(4)).toBe(6);
     expect(Object.isFrozen(result)).toBe(true);
+    const publicOffsets = result.planeOffsets as unknown as Uint32Array;
+    expect(() => { publicOffsets[0] = 99; }).toThrow(TypeError);
+    expect(() => publicOffsets.set(new Uint32Array([99]))).toThrow(TypeError);
+    expect(() => publicOffsets.fill(99)).toThrow(TypeError);
+    expect(Array.from(result.planeOffsets)).toEqual([0, 3, 6]);
   });
 
   it('single-flights concurrent loads and explicitly disposes the published adapter', async () => {
@@ -48,6 +53,36 @@ describe('production-compatible browser WASM loader', () => {
     await expect(replacement.sliceLayerBatch(request, () => false)).resolves.toMatchObject({
       version: 1,
     });
+  });
+
+  it('instance disposal clears the matching loader cache', async () => {
+    const first = await loadSliceKernel();
+    first.dispose();
+
+    const replacement = await loadSliceKernel();
+    expect(replacement).not.toBe(first);
+    await expect(first.sliceLayerBatch(request, () => false)).rejects.toMatchObject({
+      name: 'SliceKernelError',
+      code: 'DISPOSED',
+    });
+    await expect(replacement.sliceLayerBatch(request, () => false)).resolves.toMatchObject({
+      version: 1,
+    });
+  });
+
+  it('rejects a late result when dispose is reentered from the controlled checkpoint', async () => {
+    const kernel = await loadSliceKernel();
+    let checkpointCount = 0;
+
+    await expect(kernel.sliceLayerBatch(request, () => {
+      checkpointCount += 1;
+      if (checkpointCount === 5) kernel.dispose();
+      return false;
+    })).rejects.toMatchObject({ name: 'SliceKernelError', code: 'DISPOSED' });
+    expect(checkpointCount).toBeGreaterThanOrEqual(5);
+
+    const replacement = await loadSliceKernel();
+    expect(replacement).not.toBe(kernel);
   });
 
   it('sanitizes asset load failures and permits a clean retry', async () => {

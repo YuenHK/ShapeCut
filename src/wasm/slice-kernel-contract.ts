@@ -32,7 +32,9 @@ export type SliceKernelErrorCode =
   | 'DEADLINE_CHECK_FAILED'
   | 'DEADLINE_EXCEEDED'
   | 'CANCELLED'
-  | 'DISPOSED';
+  | 'DISPOSED'
+  | 'FALLBACK_NOT_ALLOWED'
+  | 'PUBLICATION_CONFLICT';
 
 export class SliceKernelError extends Error {
   readonly code: SliceKernelErrorCode;
@@ -53,12 +55,19 @@ export interface SliceBatchRequest {
 
 export type SliceKernelCheckpoint = () => boolean;
 
+export interface ReadonlySliceArray extends Iterable<number> {
+  readonly elementType: 'uint32' | 'float64';
+  readonly length: number;
+  readonly byteLength: number;
+  at(index: number): number | undefined;
+}
+
 export interface SliceBatchResult {
   readonly version: typeof SLICE_RESULT_VERSION;
   readonly statusCode: typeof SLICE_STATUS_OK | typeof SLICE_STATUS_GEOMETRY_EVIDENCE;
-  readonly planeOffsets: Readonly<Uint32Array>;
-  readonly endpoints: Readonly<Float64Array>;
-  readonly diagnosticCounters: Readonly<Uint32Array>;
+  readonly planeOffsets: ReadonlySliceArray;
+  readonly endpoints: ReadonlySliceArray;
+  readonly diagnosticCounters: ReadonlySliceArray;
 }
 
 export interface SliceKernel {
@@ -85,9 +94,10 @@ function requireStrictRecord(
 ): asserts value is Record<string, unknown> {
   if (!isRecord(value)) fail(code, `${name} must be an object`);
   const prototype = Object.getPrototypeOf(value);
-  const keys = Object.keys(value);
+  const keys = Reflect.ownKeys(value);
   if ((prototype !== Object.prototype && prototype !== null)
     || keys.length !== expectedKeys.length
+    || keys.some((key) => typeof key !== 'string' || !expectedKeys.includes(key))
     || expectedKeys.some((key) => !Object.hasOwn(value, key))) {
     fail(code, `${name} does not match the strict schema`);
   }
@@ -120,6 +130,29 @@ function checkOwnedArrayCap(
 ): void {
   if (!Number.isSafeInteger(value.byteLength) || value.byteLength > MAX_OWNED_ARRAY_BYTES) {
     fail('RESOURCE_LIMIT', `${name} exceeds the approved allocation limit`);
+  }
+}
+
+class ImmutableSliceArray implements ReadonlySliceArray {
+  readonly elementType: 'uint32' | 'float64';
+  readonly length: number;
+  readonly byteLength: number;
+  readonly #values: Uint32Array | Float64Array;
+
+  constructor(values: Uint32Array | Float64Array, elementType: 'uint32' | 'float64') {
+    this.#values = values;
+    this.elementType = elementType;
+    this.length = values.length;
+    this.byteLength = values.byteLength;
+    Object.freeze(this);
+  }
+
+  at(index: number): number | undefined {
+    return this.#values.at(index);
+  }
+
+  [Symbol.iterator](): IterableIterator<number> {
+    return this.#values.values();
   }
 }
 
@@ -326,9 +359,9 @@ export function parseSliceBatchResult(
   return Object.freeze({
     version: version as typeof SLICE_RESULT_VERSION,
     statusCode: statusCode as SliceBatchResult['statusCode'],
-    planeOffsets,
-    endpoints,
-    diagnosticCounters,
+    planeOffsets: new ImmutableSliceArray(planeOffsets, 'uint32'),
+    endpoints: new ImmutableSliceArray(endpoints, 'float64'),
+    diagnosticCounters: new ImmutableSliceArray(diagnosticCounters, 'uint32'),
   });
 }
 
@@ -339,20 +372,48 @@ const FALLBACK_ELIGIBLE_CODES: ReadonlySet<SliceKernelErrorCode> = new Set([
   'RESOURCE_LIMIT',
 ]);
 
-export class CanonicalFallbackGuard {
-  #canonicalResultPublished = false;
+declare const canonicalPublicationTokenBrand: unique symbol;
+export interface CanonicalPublicationToken {
+  readonly [canonicalPublicationTokenBrand]: never;
+}
 
-  shouldUseTypeScriptFallback(error: unknown): boolean {
-    return !this.#canonicalResultPublished
-      && error instanceof SliceKernelError
-      && FALLBACK_ELIGIBLE_CODES.has(error.code);
+type PublicationState = 'idle' | 'wasm_claimed' | 'fallback_claimed' | 'published';
+
+export class CanonicalFallbackGuard {
+  #state: PublicationState = 'idle';
+  #activeToken: CanonicalPublicationToken | undefined;
+
+  claimWasmPublication(): CanonicalPublicationToken {
+    return this.#claim('wasm_claimed');
   }
 
-  publishCanonicalResult<T>(publisher: () => T): T {
+  claimTypeScriptFallback(error: unknown): CanonicalPublicationToken {
+    if (!(error instanceof SliceKernelError) || !FALLBACK_ELIGIBLE_CODES.has(error.code)) {
+      fail('FALLBACK_NOT_ALLOWED', 'TypeScript compatibility fallback is not allowed');
+    }
+    return this.#claim('fallback_claimed');
+  }
+
+  publishCanonicalResult<T>(token: CanonicalPublicationToken, publisher: () => T): T {
     if (typeof publisher !== 'function') {
       fail('INVALID_REQUEST', 'canonical result publisher must be a function');
     }
-    this.#canonicalResultPublished = true;
+    if ((this.#state !== 'wasm_claimed' && this.#state !== 'fallback_claimed')
+      || token !== this.#activeToken) {
+      fail('PUBLICATION_CONFLICT', 'canonical publication token is late, forged, or duplicate');
+    }
+    this.#state = 'published';
+    this.#activeToken = undefined;
     return publisher();
+  }
+
+  #claim(nextState: 'wasm_claimed' | 'fallback_claimed'): CanonicalPublicationToken {
+    if (this.#state !== 'idle') {
+      fail('PUBLICATION_CONFLICT', 'canonical publication has already been claimed');
+    }
+    const token = Object.freeze({}) as CanonicalPublicationToken;
+    this.#state = nextState;
+    this.#activeToken = token;
+    return token;
   }
 }

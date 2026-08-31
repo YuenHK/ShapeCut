@@ -8,7 +8,10 @@ import {
   type SliceKernelCheckpoint,
   type SliceKernelErrorCode,
 } from './slice-kernel-contract';
-import { initializeSliceKernel } from './slice-kernel-wrapper.mjs';
+import {
+  SliceKernelBoundaryError,
+  initializeSliceKernel,
+} from './slice-kernel-wrapper.mjs';
 
 const WASM_ASSET_URL = new URL('./generated/geometry_wasm_bg.wasm', import.meta.url);
 
@@ -18,27 +21,48 @@ function mappedError(code: SliceKernelErrorCode, message: string): SliceKernelEr
 
 function mapExecutionError(error: unknown): SliceKernelError {
   if (error instanceof SliceKernelError) return error;
-  const message = error instanceof Error ? error.message : String(error);
-  if (/cancelled at a deadline checkpoint/i.test(message)) {
-    return mappedError('DEADLINE_EXCEEDED', 'WASM geometry deadline was exceeded');
+  if (!(error instanceof SliceKernelBoundaryError)) {
+    return mappedError('EXECUTION_FAILED', 'WASM geometry execution failed');
   }
-  if (/deadline check failed closed/i.test(message)) {
-    return mappedError('DEADLINE_CHECK_FAILED', 'WASM geometry checkpoint failed closed');
+  switch (error.code) {
+    case 'INVALID_REQUEST':
+      return error.phase === 'request'
+        ? mappedError('INVALID_REQUEST', 'WASM geometry request was rejected')
+        : mappedError('EXECUTION_FAILED', 'WASM geometry execution failed');
+    case 'INVALID_RESULT':
+      return error.phase === 'result'
+        ? mappedError('INVALID_RESULT', 'WASM geometry result was rejected')
+        : mappedError('EXECUTION_FAILED', 'WASM geometry execution failed');
+    case 'RESOURCE_LIMIT':
+      return mappedError('RESOURCE_LIMIT', 'WASM geometry resource limit was exceeded');
+    case 'DEADLINE_CHECK_FAILED':
+      return error.phase === 'execution'
+        ? mappedError('DEADLINE_CHECK_FAILED', 'WASM geometry checkpoint failed closed')
+        : mappedError('EXECUTION_FAILED', 'WASM geometry execution failed');
+    case 'DEADLINE_EXCEEDED':
+      return error.phase === 'execution'
+        ? mappedError('DEADLINE_EXCEEDED', 'WASM geometry deadline was exceeded')
+        : mappedError('EXECUTION_FAILED', 'WASM geometry execution failed');
+    case 'EXECUTION_FAILED':
+      return mappedError('EXECUTION_FAILED', 'WASM geometry execution failed');
   }
-  if (/limit|allocation|overflow/i.test(message)) {
-    return mappedError('RESOURCE_LIMIT', 'WASM geometry resource limit was exceeded');
-  }
-  if (/positions|indices|triangle|vertex|planes|checkpoint interval/i.test(message)) {
-    return mappedError('INVALID_REQUEST', 'WASM geometry request was rejected');
-  }
-  return mappedError('EXECUTION_FAILED', 'WASM geometry execution failed');
+}
+
+interface KernelOperationToken {
+  readonly kernel: BrowserSliceKernel;
+  readonly generation: number;
 }
 
 class BrowserSliceKernel implements SliceKernel {
   #disposed = false;
   #controlled: ReturnType<typeof initializeSliceKernel> | undefined;
 
-  constructor(controlled: ReturnType<typeof initializeSliceKernel>) {
+  constructor(
+    controlled: ReturnType<typeof initializeSliceKernel>,
+    private readonly generation: number,
+    private readonly isCurrent: (kernel: BrowserSliceKernel, generation: number) => boolean,
+    private readonly release: (kernel: BrowserSliceKernel, generation: number) => void,
+  ) {
     this.#controlled = controlled;
   }
 
@@ -46,25 +70,39 @@ class BrowserSliceKernel implements SliceKernel {
     requestValue: SliceBatchRequest,
     checkpoint: SliceKernelCheckpoint,
   ): Promise<SliceBatchResult> {
-    if (this.#disposed) {
-      throw mappedError('DISPOSED', 'WASM geometry kernel has been disposed');
-    }
+    const operationToken = Object.freeze({ kernel: this, generation: this.generation });
+    this.#assertCurrent(operationToken);
 
     let request: SliceBatchRequest;
     try {
       request = validateSliceBatchRequest(requestValue, checkpoint);
+      this.#assertCurrent(operationToken);
       const controlled = this.#controlled;
       if (!controlled) throw mappedError('DISPOSED', 'WASM geometry kernel has been disposed');
       const encoded = controlled.sliceLayerBatch(request, { deadlineHook: checkpoint });
-      return parseSliceBatchResult(encoded, request, checkpoint);
+      this.#assertCurrent(operationToken);
+      const result = parseSliceBatchResult(encoded, request, checkpoint);
+      this.#assertCurrent(operationToken);
+      return result;
     } catch (error) {
       throw mapExecutionError(error);
     }
   }
 
   dispose(): void {
+    if (this.#disposed) return;
     this.#disposed = true;
     this.#controlled = undefined;
+    this.release(this, this.generation);
+  }
+
+  #assertCurrent(token: KernelOperationToken): void {
+    if (token.kernel !== this
+      || token.generation !== this.generation
+      || this.#disposed
+      || !this.isCurrent(this, token.generation)) {
+      throw mappedError('DISPOSED', 'WASM geometry kernel has been disposed');
+    }
   }
 }
 
@@ -72,12 +110,28 @@ let activeKernel: SliceKernel | undefined;
 let activeLoad: Promise<SliceKernel> | undefined;
 let generation = 0;
 
+function isCurrentKernel(kernel: BrowserSliceKernel, kernelGeneration: number): boolean {
+  return generation === kernelGeneration && activeKernel === kernel;
+}
+
+function releaseKernel(kernel: BrowserSliceKernel, kernelGeneration: number): void {
+  if (generation !== kernelGeneration || activeKernel !== kernel) return;
+  generation += 1;
+  activeKernel = undefined;
+  activeLoad = undefined;
+}
+
 async function createBrowserSliceKernel(expectedGeneration: number): Promise<SliceKernel> {
   try {
     const response = await fetch(WASM_ASSET_URL);
     if (!response.ok) throw new Error('WASM asset request failed');
     const bytes = await response.arrayBuffer();
-    const kernel: SliceKernel = new BrowserSliceKernel(initializeSliceKernel(bytes));
+    const kernel = new BrowserSliceKernel(
+      initializeSliceKernel(bytes),
+      expectedGeneration,
+      isCurrentKernel,
+      releaseKernel,
+    );
     if (generation !== expectedGeneration) {
       kernel.dispose();
       throw mappedError('DISPOSED', 'WASM geometry kernel load was disposed');
@@ -104,8 +158,9 @@ export function loadSliceKernel(): Promise<SliceKernel> {
 }
 
 export function disposeSliceKernel(): void {
+  const kernel = activeKernel;
   generation += 1;
-  activeKernel?.dispose();
   activeKernel = undefined;
   activeLoad = undefined;
+  kernel?.dispose();
 }

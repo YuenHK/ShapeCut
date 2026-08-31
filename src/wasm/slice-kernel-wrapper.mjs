@@ -9,45 +9,81 @@ const MAX_OWNED_ARRAY_BYTES = 8 * 1024 * 1024;
 const DEADLINE_HOOK_NAME = '__shapecut_geometry_should_abort';
 let activeKernelCall = false;
 
+const BOUNDARY_CODES = new Set([
+  'INVALID_REQUEST',
+  'INVALID_RESULT',
+  'RESOURCE_LIMIT',
+  'DEADLINE_CHECK_FAILED',
+  'DEADLINE_EXCEEDED',
+  'EXECUTION_FAILED',
+]);
+const BOUNDARY_PHASES = new Set(['request', 'execution', 'result']);
+
+export class SliceKernelBoundaryError extends Error {
+  constructor(code, phase, message) {
+    super(message);
+    this.name = 'SliceKernelBoundaryError';
+    this.code = code;
+    this.phase = phase;
+  }
+}
+
+function boundaryError(code, phase, message) {
+  return new SliceKernelBoundaryError(code, phase, message);
+}
+
+function normalizeGeneratedError(error) {
+  const code = error?.code;
+  const phase = error?.phase;
+  if (BOUNDARY_CODES.has(code) && BOUNDARY_PHASES.has(phase)) {
+    return boundaryError(code, phase, 'WASM geometry kernel rejected the operation');
+  }
+  return boundaryError('EXECUTION_FAILED', 'execution', 'WASM geometry kernel execution failed');
+}
+
 function requireTypedArray(value, constructor, name) {
   if (!(value instanceof constructor)) {
-    throw new TypeError(`${name} must be a ${constructor.name}`);
+    throw boundaryError('INVALID_REQUEST', 'request', `${name} must be a ${constructor.name}`);
   }
 }
 
 function checkedView(memoryBuffer, pointer, length, constructor, name, maximumLength) {
   if (!Number.isSafeInteger(pointer) || pointer < 0) {
-    throw new Error(`${name} pointer is invalid`);
+    throw boundaryError('INVALID_RESULT', 'result', `${name} pointer is invalid`);
   }
   if (!Number.isSafeInteger(length) || length < 0 || length > maximumLength) {
-    throw new Error(`${name} length is invalid`);
+    throw boundaryError('INVALID_RESULT', 'result', `${name} length is invalid`);
   }
   if (pointer % constructor.BYTES_PER_ELEMENT !== 0) {
-    throw new Error(`${name} pointer is misaligned`);
+    throw boundaryError('INVALID_RESULT', 'result', `${name} pointer is misaligned`);
   }
   const byteLength = length * constructor.BYTES_PER_ELEMENT;
   const end = pointer + byteLength;
   if (!Number.isSafeInteger(end) || end > memoryBuffer.byteLength) {
-    throw new Error(`${name} view exceeds WASM memory`);
+    throw boundaryError('INVALID_RESULT', 'result', `${name} view exceeds WASM memory`);
   }
   return new constructor(memoryBuffer, pointer, length);
 }
 
 function checkDeadline(deadlineHook) {
   if (typeof deadlineHook !== 'function') {
-    throw new Error('deadline check failed closed');
+    throw boundaryError('DEADLINE_CHECK_FAILED', 'execution', 'deadline check failed closed');
   }
   let shouldAbort;
   try {
     shouldAbort = deadlineHook();
   } catch {
-    throw new Error('deadline check failed closed');
+    throw boundaryError('DEADLINE_CHECK_FAILED', 'execution', 'deadline check failed closed');
   }
   if (typeof shouldAbort !== 'boolean') {
-    throw new Error('deadline check failed closed');
+    throw boundaryError('DEADLINE_CHECK_FAILED', 'execution', 'deadline check failed closed');
   }
   if (shouldAbort) {
-    throw new Error('slice batch was cancelled at a deadline checkpoint');
+    throw boundaryError(
+      'DEADLINE_EXCEEDED',
+      'execution',
+      'slice batch was cancelled at a deadline checkpoint',
+    );
   }
 }
 
@@ -60,11 +96,15 @@ function checkDeadline(deadlineHook) {
  */
 function allocateOwnedArray(constructor, length, deadlineHook) {
   if (!Number.isSafeInteger(length) || length < 0) {
-    throw new Error('owned output allocation length is invalid');
+    throw boundaryError('INVALID_RESULT', 'result', 'owned output allocation length is invalid');
   }
   const byteLength = length * constructor.BYTES_PER_ELEMENT;
   if (!Number.isSafeInteger(byteLength) || byteLength > MAX_OWNED_ARRAY_BYTES) {
-    throw new Error('owned output allocation exceeds the 8 MiB hard cap');
+    throw boundaryError(
+      'RESOURCE_LIMIT',
+      'result',
+      'owned output allocation exceeds the 8 MiB hard cap',
+    );
   }
 
   checkDeadline(deadlineHook);
@@ -72,7 +112,7 @@ function allocateOwnedArray(constructor, length, deadlineHook) {
   try {
     owned = new constructor(length);
   } catch {
-    throw new Error('owned output allocation failed closed');
+    throw boundaryError('RESOURCE_LIMIT', 'result', 'owned output allocation failed closed');
   }
   checkDeadline(deadlineHook);
   return owned;
@@ -96,10 +136,18 @@ function copyAndValidateResult(
   deadlineHook,
 ) {
   if (rawResult.version !== RESULT_VERSION) {
-    throw new Error(`unsupported slice result version ${String(rawResult.version)}`);
+    throw boundaryError(
+      'INVALID_RESULT',
+      'result',
+      `unsupported slice result version ${String(rawResult.version)}`,
+    );
   }
   if (rawResult.statusCode !== STATUS_OK && rawResult.statusCode !== STATUS_GEOMETRY_EVIDENCE) {
-    throw new Error(`unsupported slice result status ${String(rawResult.statusCode)}`);
+    throw boundaryError(
+      'INVALID_RESULT',
+      'result',
+      `unsupported slice result status ${String(rawResult.statusCode)}`,
+    );
   }
 
   const expectedOffsetLength = planeCount + 1;
@@ -112,7 +160,11 @@ function copyAndValidateResult(
     expectedOffsetLength,
   );
   if (rawPlaneOffsets.length !== expectedOffsetLength) {
-    throw new Error('plane offset count does not match requested planes');
+    throw boundaryError(
+      'INVALID_RESULT',
+      'result',
+      'plane offset count does not match requested planes',
+    );
   }
   const rawEndpoints = checkedView(
     memoryBuffer,
@@ -131,7 +183,11 @@ function copyAndValidateResult(
     DIAGNOSTIC_COUNTER_COUNT,
   );
   if (rawDiagnostics.length !== DIAGNOSTIC_COUNTER_COUNT) {
-    throw new Error('diagnostic counter count does not match the result contract');
+    throw boundaryError(
+      'INVALID_RESULT',
+      'result',
+      'diagnostic counter count does not match the result contract',
+    );
   }
 
   const planeOffsets = copyView(rawPlaneOffsets, Uint32Array, interval, deadlineHook);
@@ -139,30 +195,38 @@ function copyAndValidateResult(
   const diagnosticCounters = copyView(rawDiagnostics, Uint32Array, interval, deadlineHook);
 
   if (planeOffsets[0] !== 0) {
-    throw new Error('plane offsets must start at zero');
+    throw boundaryError('INVALID_RESULT', 'result', 'plane offsets must start at zero');
   }
   for (let start = 0; start < planeOffsets.length; start += interval) {
     checkDeadline(deadlineHook);
     const end = Math.min(start + interval, planeOffsets.length);
     for (let index = Math.max(1, start); index < end; index += 1) {
       if (planeOffsets[index] < planeOffsets[index - 1]) {
-        throw new Error('plane offsets must be monotonic');
+        throw boundaryError('INVALID_RESULT', 'result', 'plane offsets must be monotonic');
       }
     }
   }
   if (endpoints.length % 4 !== 0) {
-    throw new Error('endpoint values must contain complete segments');
+    throw boundaryError(
+      'INVALID_RESULT',
+      'result',
+      'endpoint values must contain complete segments',
+    );
   }
   const segmentCount = endpoints.length / 4;
   if (planeOffsets.at(-1) !== segmentCount || diagnosticCounters[4] !== segmentCount) {
-    throw new Error('slice result segment counts are inconsistent');
+    throw boundaryError(
+      'INVALID_RESULT',
+      'result',
+      'slice result segment counts are inconsistent',
+    );
   }
   for (let start = 0; start < endpoints.length; start += interval) {
     checkDeadline(deadlineHook);
     const end = Math.min(start + interval, endpoints.length);
     for (let index = start; index < end; index += 1) {
       if (!Number.isFinite(endpoints[index])) {
-        throw new Error('slice result endpoints must be finite');
+        throw boundaryError('INVALID_RESULT', 'result', 'slice result endpoints must be finite');
       }
     }
   }
@@ -182,18 +246,22 @@ export function initializeSliceKernel(wasmBytes) {
   return Object.freeze({
     sliceLayerBatch(request, options = {}) {
       if (request === null || typeof request !== 'object') {
-        throw new TypeError('slice request must be an object');
+        throw boundaryError('INVALID_REQUEST', 'request', 'slice request must be an object');
       }
       const { positions, indices, planes, deadlineCheckInterval } = request;
       requireTypedArray(positions, Float32Array, 'positions');
       requireTypedArray(indices, Uint32Array, 'indices');
       requireTypedArray(planes, Float64Array, 'planes');
       if (options === null || typeof options !== 'object') {
-        throw new TypeError('slice options must be an object');
+        throw boundaryError('INVALID_REQUEST', 'request', 'slice options must be an object');
       }
       const { deadlineHook } = options;
       if (activeKernelCall) {
-        throw new Error('slice kernel calls must not be reentrant');
+        throw boundaryError(
+          'EXECUTION_FAILED',
+          'execution',
+          'slice kernel calls must not be reentrant',
+        );
       }
       activeKernelCall = true;
 
@@ -208,12 +276,16 @@ export function initializeSliceKernel(wasmBytes) {
         } else {
           globalThis[DEADLINE_HOOK_NAME] = deadlineHook;
         }
-        rawResult = generated.slice_layer_batch(
-          positions,
-          indices,
-          planes,
-          deadlineCheckInterval,
-        );
+        try {
+          rawResult = generated.slice_layer_batch(
+            positions,
+            indices,
+            planes,
+            deadlineCheckInterval,
+          );
+        } catch (error) {
+          throw normalizeGeneratedError(error);
+        }
         return copyAndValidateResult(
           rawResult,
           runtime.memory.buffer,

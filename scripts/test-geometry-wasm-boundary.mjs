@@ -23,6 +23,15 @@ function test(name, action) {
   }
 }
 
+function expectStructuredError(action, code, phase) {
+  assert.throws(action, (error) => {
+    assert.equal(error?.name, 'SliceKernelBoundaryError');
+    assert.equal(error?.code, code);
+    assert.equal(error?.phase, phase);
+    return true;
+  });
+}
+
 const positions = new Float32Array([
   0, 0, 0,
   2, 0, 0,
@@ -35,6 +44,42 @@ const planes = new Float64Array([0.5, 1]);
 function request(deadlineCheckInterval = 2) {
   return { positions, indices, planes, deadlineCheckInterval };
 }
+
+test('controlled wrapper publishes stable structured request and deadline codes', () => {
+  expectStructuredError(
+    () => kernel.sliceLayerBatch({ ...request(), indices: new Int32Array(3) }, {
+      deadlineHook: () => false,
+    }),
+    'INVALID_REQUEST',
+    'request',
+  );
+  expectStructuredError(
+    () => kernel.sliceLayerBatch(request(1), {
+      deadlineHook: () => { throw new Error('private hook detail'); },
+    }),
+    'DEADLINE_CHECK_FAILED',
+    'execution',
+  );
+  expectStructuredError(
+    () => kernel.sliceLayerBatch(request(1), { deadlineHook: () => true }),
+    'DEADLINE_EXCEEDED',
+    'execution',
+  );
+});
+
+test('generated Rust failures cross the controlled boundary with stable resource codes', () => {
+  const oversized = new Uint32Array((1_048_576 + 1) * 3);
+  expectStructuredError(
+    () => kernel.sliceLayerBatch({
+      positions: new Float32Array(),
+      indices: oversized,
+      planes: new Float64Array(),
+      deadlineCheckInterval: 1,
+    }, { deadlineHook: () => false }),
+    'RESOURCE_LIMIT',
+    'request',
+  );
+});
 
 test('controlled wrapper returns owned copies and disposes the raw result exactly once', () => {
   const originalFree = generated.SliceBatchResult.prototype.free;
@@ -70,9 +115,10 @@ for (const [name, hook] of [
   ['Promise', () => Promise.resolve(false)],
 ]) {
   test(`deadline hook fails closed for ${name}`, () => {
-    assert.throws(
+    expectStructuredError(
       () => kernel.sliceLayerBatch(request(1), { deadlineHook: hook }),
-      /deadline check failed closed/i,
+      'DEADLINE_CHECK_FAILED',
+      'execution',
     );
   });
 }
@@ -83,14 +129,15 @@ test('deadline hook accepts strict false and returns a result', () => {
 });
 
 test('deadline hook accepts strict true and cancels', () => {
-  assert.throws(
+  expectStructuredError(
     () => kernel.sliceLayerBatch(request(1), { deadlineHook: () => true }),
-    /deadline|cancel/i,
+    'DEADLINE_EXCEEDED',
+    'execution',
   );
 });
 
 test('deadline hook is required even for an empty request', () => {
-  assert.throws(
+  expectStructuredError(
     () => kernel.sliceLayerBatch(
       {
         positions: new Float32Array(),
@@ -100,23 +147,25 @@ test('deadline hook is required even for an empty request', () => {
       },
       { deadlineHook: undefined },
     ),
-    /deadline check failed closed/i,
+    'DEADLINE_CHECK_FAILED',
+    'execution',
   );
 });
 
-for (const interval of [
-  0.5,
-  Number.NaN,
-  Number.POSITIVE_INFINITY,
-  -1,
-  0,
-  Number.MAX_SAFE_INTEGER + 1,
-  (2 ** 32) + 1,
+for (const [interval, code] of [
+  [0.5, 'INVALID_REQUEST'],
+  [Number.NaN, 'INVALID_REQUEST'],
+  [Number.POSITIVE_INFINITY, 'INVALID_REQUEST'],
+  [-1, 'INVALID_REQUEST'],
+  [0, 'INVALID_REQUEST'],
+  [Number.MAX_SAFE_INTEGER + 1, 'INVALID_REQUEST'],
+  [(2 ** 32) + 1, 'RESOURCE_LIMIT'],
 ]) {
   test(`rejects uncoerced invalid deadline interval ${String(interval)}`, () => {
-    assert.throws(
+    expectStructuredError(
       () => kernel.sliceLayerBatch(request(interval), { deadlineHook: () => false }),
-      /deadline check interval/i,
+      code,
+      'request',
     );
   });
 }
@@ -255,9 +304,10 @@ test('rejects a raw output above the 8 MiB owned cap before allocation', () => {
     },
   });
   try {
-    assert.throws(
+    expectStructuredError(
       () => kernel.sliceLayerBatch(request(), { deadlineHook: () => false }),
-      /endpoints length is invalid|8 MiB hard cap/i,
+      'INVALID_RESULT',
+      'result',
     );
   } finally {
     Object.defineProperty(generated.SliceBatchResult.prototype, 'endpointsLen', descriptor);
@@ -289,7 +339,7 @@ test('retained copied views survive raw free and later WASM memory growth', () =
 test('rejects oversized input before growing WASM memory', () => {
   const oversized = new Uint32Array((1_048_576 + 1) * 3);
   const before = runtime.memory.buffer.byteLength;
-  assert.throws(
+  expectStructuredError(
     () => kernel.sliceLayerBatch(
       {
         positions: new Float32Array(),
@@ -299,7 +349,8 @@ test('rejects oversized input before growing WASM memory', () => {
       },
       { deadlineHook: () => false },
     ),
-    /triangle count/i,
+    'RESOURCE_LIMIT',
+    'request',
   );
   assert.equal(runtime.memory.buffer.byteLength, before);
 });
@@ -310,7 +361,7 @@ test('fails closed when bounded output would be exceeded', () => {
   for (let offset = 0; offset < repeatedIndices.length; offset += 3) {
     repeatedIndices.set([0, 1, 2], offset);
   }
-  assert.throws(
+  expectStructuredError(
     () => kernel.sliceLayerBatch(
       {
         positions: new Float32Array([0, 0, -1, 2, 0, 1, 0, 2, 1]),
@@ -320,7 +371,8 @@ test('fails closed when bounded output would be exceeded', () => {
       },
       { deadlineHook: () => false },
     ),
-    /output.*limit/i,
+    'RESOURCE_LIMIT',
+    'execution',
   );
 });
 

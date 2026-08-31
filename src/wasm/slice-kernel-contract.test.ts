@@ -162,6 +162,23 @@ describe('TypeScript WASM slice contract', () => {
     );
   });
 
+  it('rejects hidden strings, symbols, and unexpected accessors via Reflect.ownKeys', () => {
+    const hiddenRequest = request() as SliceBatchRequest & Record<PropertyKey, unknown>;
+    Object.defineProperty(hiddenRequest, 'hidden', { value: true, enumerable: false });
+    expectKernelCode(() => validateSliceBatchRequest(hiddenRequest), 'INVALID_REQUEST');
+
+    const symbolResult = encodedResult() as Record<PropertyKey, unknown>;
+    symbolResult[Symbol('extra')] = true;
+    expectKernelCode(() => parseSliceBatchResult(symbolResult, request()), 'INVALID_RESULT');
+
+    const accessorResult = encodedResult() as Record<PropertyKey, unknown>;
+    Object.defineProperty(accessorResult, 'unexpectedAccessor', {
+      configurable: true,
+      get: () => true,
+    });
+    expectKernelCode(() => parseSliceBatchResult(accessorResult, request()), 'INVALID_RESULT');
+  });
+
   it('rejects unsafe request counts and malformed finite/index data before WASM', () => {
     expectKernelCode(
       () => validateSliceBatchRequest(request({ deadlineCheckInterval: Number.MAX_SAFE_INTEGER + 1 })),
@@ -182,31 +199,68 @@ describe('TypeScript WASM slice contract', () => {
     expect(Object.isFrozen(parsed)).toBe(true);
     expect(Array.from(parsed.planeOffsets)).toEqual([0, 1]);
     expect(Array.from(parsed.endpoints)).toEqual([0, 0, 1, 1]);
-    expect(parsed.diagnosticCounters[4]).toBe(1);
+    expect(parsed.diagnosticCounters.at(4)).toBe(1);
   });
 
-  it('permits compatibility fallback only before canonical publication', () => {
+  it('prevents index, set, and fill mutation of validated public values', () => {
+    const parsed = parseSliceBatchResult(encodedResult(), request());
+    const publicOffsets = parsed.planeOffsets as unknown as Uint32Array;
+
+    expect(() => { publicOffsets[0] = 99; }).toThrow(TypeError);
+    expect(() => publicOffsets.set(new Uint32Array([99]), 0)).toThrow(TypeError);
+    expect(() => publicOffsets.fill(99)).toThrow(TypeError);
+    expect(Array.from(parsed.planeOffsets)).toEqual([0, 1]);
+  });
+
+  it('atomically claims fallback publication and rejects an interleaved late WASM claim', async () => {
     const guard = new CanonicalFallbackGuard();
     const loadFailure = new SliceKernelError('LOAD_FAILED', 'sanitized');
+    const fallbackToken = guard.claimTypeScriptFallback(loadFailure);
 
-    expect(guard.shouldUseTypeScriptFallback(loadFailure)).toBe(true);
-    guard.publishCanonicalResult(() => undefined);
-    expect(guard.shouldUseTypeScriptFallback(loadFailure)).toBe(false);
+    await Promise.resolve();
+    expectKernelCode(() => guard.claimWasmPublication(), 'PUBLICATION_CONFLICT');
+    await expect(guard.publishCanonicalResult(fallbackToken, async () => 'fallback'))
+      .resolves.toBe('fallback');
+  });
+
+  it('rejects forged, late, and duplicate publication tokens', () => {
+    const guard = new CanonicalFallbackGuard();
+    const wasmToken = guard.claimWasmPublication();
+
+    expectKernelCode(
+      () => guard.publishCanonicalResult({} as never, () => undefined),
+      'PUBLICATION_CONFLICT',
+    );
+    expect(guard.publishCanonicalResult(wasmToken, () => 'wasm')).toBe('wasm');
+    expectKernelCode(
+      () => guard.publishCanonicalResult(wasmToken, () => undefined),
+      'PUBLICATION_CONFLICT',
+    );
+    expectKernelCode(
+      () => guard.claimTypeScriptFallback(new SliceKernelError('LOAD_FAILED', 'sanitized')),
+      'PUBLICATION_CONFLICT',
+    );
   });
 
   it.each(['CANCELLED', 'DEADLINE_EXCEEDED', 'DEADLINE_CHECK_FAILED'] as const)(
     'never downgrades %s to compatibility fallback',
     (code) => {
       const guard = new CanonicalFallbackGuard();
-      expect(guard.shouldUseTypeScriptFallback(new SliceKernelError(code, 'sanitized'))).toBe(false);
+      expectKernelCode(
+        () => guard.claimTypeScriptFallback(new SliceKernelError(code, 'sanitized')),
+        'FALLBACK_NOT_ALLOWED',
+      );
     },
   );
 
   it('marks publication before invoking the publisher so thrown publication cannot reopen fallback', () => {
     const guard = new CanonicalFallbackGuard();
-    expect(() => guard.publishCanonicalResult(() => { throw new Error('publisher failed'); }))
+    const token = guard.claimWasmPublication();
+    expect(() => guard.publishCanonicalResult(token, () => { throw new Error('publisher failed'); }))
       .toThrow('publisher failed');
-    expect(guard.shouldUseTypeScriptFallback(new SliceKernelError('LOAD_FAILED', 'sanitized')))
-      .toBe(false);
+    expectKernelCode(
+      () => guard.claimTypeScriptFallback(new SliceKernelError('LOAD_FAILED', 'sanitized')),
+      'PUBLICATION_CONFLICT',
+    );
   });
 });
