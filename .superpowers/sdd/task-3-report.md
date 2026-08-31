@@ -1188,3 +1188,144 @@ again passed 1/1 when isolated. The existing `npm ci` audit state remains 1
 moderate and 3 high vulnerabilities. No follow-up change touches UI/CSS,
 fonts, colours, production deadline, canonical merge, materials, launcher code
 or official release artifacts.
+
+## Re-review round 7: findings 19–21
+
+Date: 2026-08-31
+Implementation commit: `8182c01` (`fix(wasm): transfer slice boundary ownership`)
+
+### Finding 19: atomic request ownership transfer
+
+- After strict record, exact typed-array, full-span/fixed-buffer and count/work
+  preflight, the adapter transfers the three distinct request `ArrayBuffer`s in
+  one captured `structuredClone(..., { transfer })` operation before the first
+  caller checkpoint. Original caller views are detached atomically.
+- SharedArrayBuffer, resizable buffers, partial/non-zero-offset views and any
+  repeated backing-buffer identity are rejected before transfer. Three arrays
+  sharing one buffer therefore fail with `INVALID_REQUEST`, zero checkpoints,
+  no detach and no fallback authority.
+- Private exact views are reconstructed only from the transferred buffers.
+  They are passed to the controlled wrapper but never returned by the public
+  validator or exposed to the checkpoint. Immediate/delayed writes of `NaN`,
+  out-of-range indices or plane values through detached caller views cannot
+  change validation or the controlled result.
+- Missing/throwing ownership transfer maps to typed `INVALID_REQUEST`, remains
+  fallback-ineligible and leaves the caller buffers attached. Near-limit input
+  validation performs only its five semantic cadence checkpoints, rather than
+  allocating and chunk-copying another full request.
+
+### Finding 20: direct private result facade
+
+- Production directly wraps the controlled wrapper's fixed owned result arrays
+  in frozen `ReadonlySliceArray` facades. There is no adapter result copy,
+  interval-sized chunk array or public typed-array/buffer escape.
+- Direct contract parsing first transfers caller-owned result buffers, so its
+  test-only/non-controlled path has the same private-ownership invariant.
+- The interval-1 maximum 8 MiB endpoint test completes with a constant facade
+  shape of three public data properties regardless of length. Raw-wrapper
+  allocation cap/failure tests remain the sole contiguous allocation gate and
+  retain structured typed errors.
+
+### Finding 21: standard `at()` semantics
+
+`ReadonlySliceArray.at()` now dispatches through the captured typed-array
+intrinsic and therefore implements ToIntegerOrInfinity for positive/negative
+fractions, negative zero, `NaN`, positive/negative `Infinity` and both bounds.
+The facade remains non-mutable through index assignment, `set()` or `fill()`.
+
+The consume-ownership API is documented both in JSDoc and the approved
+`docs/superpowers/specs/2026-08-31-wasm-geometry-acceleration-design.md` spec,
+including distinct-buffer rejection, caller detachment, private result facade
+and `at()` semantics.
+
+### Round 7 TDD and verification
+
+Initial RED:
+
+```text
+npx vitest run src/wasm/slice-kernel-contract.test.ts
+```
+
+Result: 61 passed and 9 failed. Failures directly covered non-standard
+fractional `at()`, absent request/result transfer, accepted shared buffers,
+untyped transfer failure, caller mutation TOCTOU, 17 request copy checkpoints,
+32 result copy checkpoints and interval-1 chunk-table timeout. The final direct
+contract result is 70/70.
+
+Focused gates:
+
+```text
+npm run typecheck
+npx vitest run src/wasm/slice-kernel-contract.test.ts \
+  src/test/geometry-wasm-build-contract.test.ts
+npm run test:browser -- --run src/wasm/load-slice-kernel.browser.test.ts
+npm run test:geometry-wasm-boundary
+npm run build
+git diff --check
+```
+
+Results: Node contract/workflow 74/74, Chromium 34/34 and controlled raw WASM
+31/31 passed. Typecheck, tracked-artifact verification, production build and
+diff check exited 0. Production tests confirm caller detachment before the
+first checkpoint, stable immediate/delayed mutation attempts, private constant
+facade shape and intrinsic `at()` behavior.
+
+Rust, regeneration and workflow gates:
+
+```text
+cargo fmt --manifest-path crates/geometry-wasm/Cargo.toml -- --check
+cargo test --manifest-path crates/geometry-wasm/Cargo.toml --locked
+cargo clippy --manifest-path crates/geometry-wasm/Cargo.toml --locked \
+  --all-targets -- -D warnings
+cargo clippy --manifest-path crates/geometry-wasm/Cargo.toml --locked \
+  --target wasm32-unknown-unknown -- -D warnings
+cargo check --manifest-path crates/geometry-wasm/Cargo.toml --locked \
+  --target wasm32-unknown-unknown --release
+node scripts/verify-geometry-wasm-regeneration.mjs
+ruby -e 'require "yaml"; ARGV.each { |path| YAML.parse_file(path) }' \
+  .github/workflows/deploy-pages.yml \
+  .github/workflows/verify-geometry-wasm.yml
+```
+
+Results: Rust fmt, 1 unit test, 20 integration tests, native/wasm32 clippy with
+`-D warnings`, wasm32 release check, pinned byte comparison and both workflow
+YAML parses passed.
+
+Fresh checkout at committed `8182c01`:
+
+```text
+git clone --local . "/tmp/ShapeCut Task 3 round 7 中文 fresh"
+cd "/tmp/ShapeCut Task 3 round 7 中文 fresh"
+npm ci --ignore-scripts --cache "/tmp/ShapeCut Task 3 round 7 中文 npm cache"
+env PATH=/usr/local/bin:/usr/bin:/bin \
+  CARGO_HOME="/tmp/ShapeCut Task 3 round 7 中文 empty cargo" \
+  npm_config_offline=true /bin/sh -c '
+    for tool in cargo rustc rustup wasm-pack; do
+      if command -v "$tool" >/dev/null 2>&1; then exit 1; fi
+    done
+    npm run build &&
+    npm test -- --run src/wasm/slice-kernel-contract.test.ts \
+      src/test/geometry-wasm-build-contract.test.ts &&
+    npm run test:browser -- --run src/wasm/load-slice-kernel.browser.test.ts &&
+    npm run test:geometry-wasm-boundary
+  '
+CARGO_ENCODED_RUSTFLAGS=$'-Cdebuginfo=0\x1f--remap-path-prefix=/tmp/Existing round 7 中文 path=/workspace/existing' \
+  node scripts/verify-geometry-wasm-regeneration.mjs
+git status --porcelain
+```
+
+The standard build/test path passed offline after an empty dependency install,
+with no Rust-family executable in `PATH` and an empty Cargo home: build, Node
+74/74, Chromium 34/34 and raw boundary 31/31. The separate pinned regeneration
+preserved the existing unit-separator flags and reproduced the tracked
+37,856-byte WASM byte-for-byte. The fresh checkout remained clean. This is an
+offline standard-build claim only; regeneration used the separate pinned
+toolchain.
+
+Full `npm test` passed 65/71 files, 1759 tests and skipped 4. Nine existing
+UI/geometry tests exceeded their 5/10-second timeout or did not settle under
+full parallel load. All nine exact cases passed when rerun in six isolated
+commands (1 + 1 + 1 + 1 + 2 + 3). No unrelated timeout, UI or geometry logic
+was changed. `npm ci` continues to report 1 moderate and 3 high vulnerabilities.
+No round 7 change touches UI/CSS, fonts, colours, production deadline,
+canonical merge, materials, launcher code or official release artifacts.
