@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "rustToolchain": "1.98.0",
+  "wasmPack": "0.15.0",
+  "artifacts": {
+    "geometry_wasm.d.ts": {
+      "bytes": 2474,
+      "sha256": "1fe3d2e78e2996eca7a0a030ddeec39cb0411a74d59030740197c7ce97793e6c"
+    },
+    "geometry_wasm.js": {
+      "bytes": 13724,
+      "sha256": "0667ff288fb74c4adc7e56ec107a19e4fd2a3a4e1e91619e3ac5ad51232af4d0"
+    },
+    "geometry_wasm_bg.wasm": {
+      "bytes": 37856,
+      "sha256": "4aa7f77d0e50116c28ee06212408d72efede27e33d1e4723de65ab67d3c3795a"
+    },
+    "geometry_wasm_bg.wasm.d.ts": {
+      "bytes": 929,
+      "sha256": "57701151bdf017fef838ab8f978179f2d693a559ece21f85b19441239a074fd5"
+    }
+  }
+}

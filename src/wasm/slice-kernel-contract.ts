@@ -38,11 +38,15 @@ export type SliceKernelErrorCode =
 
 export class SliceKernelError extends Error {
   readonly code: SliceKernelErrorCode;
+  readonly abortReason: SliceKernelAbortReason | undefined;
+  readonly abortSource: SliceKernelAbortSource | undefined;
 
-  constructor(code: SliceKernelErrorCode, message: string) {
+  constructor(code: SliceKernelErrorCode, message: string, abort?: SliceKernelAbort) {
     super(message);
     this.name = 'SliceKernelError';
     this.code = code;
+    this.abortReason = abort?.reason;
+    this.abortSource = abort?.source;
   }
 }
 
@@ -53,7 +57,12 @@ export interface SliceBatchRequest {
   readonly deadlineCheckInterval: number;
 }
 
-export type SliceKernelCheckpoint = () => boolean;
+export type SliceKernelAbortReason = 'cancelled' | 'deadline';
+export type SliceKernelAbortSource = 'user' | 'superseded' | 'runtime-deadline';
+export type SliceKernelAbort =
+  | Readonly<{ reason: 'cancelled'; source: 'user' | 'superseded' }>
+  | Readonly<{ reason: 'deadline'; source: 'runtime-deadline' }>;
+export type SliceKernelCheckpoint = () => SliceKernelAbort | undefined;
 
 export interface ReadonlySliceArray extends Iterable<number> {
   readonly elementType: 'uint32' | 'float64';
@@ -156,20 +165,51 @@ class ImmutableSliceArray implements ReadonlySliceArray {
   }
 }
 
-function checkCheckpoint(checkpoint: SliceKernelCheckpoint): void {
+export function readSliceKernelAbort(checkpoint: SliceKernelCheckpoint): SliceKernelAbort | undefined {
   if (typeof checkpoint !== 'function') {
     fail('DEADLINE_CHECK_FAILED', 'WASM geometry checkpoint failed closed');
   }
-  let cancelled: unknown;
+  let abort: unknown;
   try {
-    cancelled = checkpoint();
+    abort = checkpoint();
   } catch {
     fail('DEADLINE_CHECK_FAILED', 'WASM geometry checkpoint failed closed');
   }
-  if (typeof cancelled !== 'boolean') {
+  if (abort === undefined) return undefined;
+  if (!isRecord(abort)) {
     fail('DEADLINE_CHECK_FAILED', 'WASM geometry checkpoint failed closed');
   }
-  if (cancelled) fail('CANCELLED', 'WASM geometry operation was cancelled');
+  const keys = Reflect.ownKeys(abort);
+  const reasonDescriptor = Object.getOwnPropertyDescriptor(abort, 'reason');
+  const sourceDescriptor = Object.getOwnPropertyDescriptor(abort, 'source');
+  if ((Object.getPrototypeOf(abort) !== Object.prototype && Object.getPrototypeOf(abort) !== null)
+    || keys.length !== 2
+    || !keys.includes('reason')
+    || !keys.includes('source')
+    || !reasonDescriptor
+    || !('value' in reasonDescriptor)
+    || !sourceDescriptor
+    || !('value' in sourceDescriptor)) {
+    fail('DEADLINE_CHECK_FAILED', 'WASM geometry checkpoint failed closed');
+  }
+  const reason = reasonDescriptor.value;
+  const source = sourceDescriptor.value;
+  if ((reason === 'cancelled' && (source === 'user' || source === 'superseded'))
+    || (reason === 'deadline' && source === 'runtime-deadline')) {
+    return Object.freeze({ reason, source }) as SliceKernelAbort;
+  }
+  fail('DEADLINE_CHECK_FAILED', 'WASM geometry checkpoint failed closed');
+}
+
+export function sliceKernelAbortError(abort: SliceKernelAbort): SliceKernelError {
+  return abort.reason === 'cancelled'
+    ? new SliceKernelError('CANCELLED', 'WASM geometry operation was cancelled', abort)
+    : new SliceKernelError('DEADLINE_EXCEEDED', 'WASM geometry deadline was exceeded', abort);
+}
+
+function checkCheckpoint(checkpoint: SliceKernelCheckpoint): void {
+  const abort = readSliceKernelAbort(checkpoint);
+  if (abort) throw sliceKernelAbortError(abort);
 }
 
 function forEachChunked<T extends Float32Array | Float64Array | Uint32Array>(

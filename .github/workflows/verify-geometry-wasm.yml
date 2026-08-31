@@ -1,0 +1,35 @@
+name: Verify deterministic geometry WASM regeneration
+
+on:
+  pull_request:
+    paths:
+      - "crates/geometry-wasm/**"
+      - "scripts/build-geometry-wasm.mjs"
+      - "scripts/verify-geometry-wasm-*.mjs"
+      - "src/wasm/generated/**"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regenerate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal --target wasm32-unknown-unknown
+          rustup override set 1.98.0
+          rustc --version
+      - name: Install pinned wasm-pack
+        run: cargo install wasm-pack --version 0.15.0 --locked
+      - name: Verify clean deterministic regeneration
+        run: npm run verify:geometry-wasm-regeneration

@@ -1,7 +1,10 @@
 import {
   SliceKernelError,
   parseSliceBatchResult,
+  readSliceKernelAbort,
+  sliceKernelAbortError,
   validateSliceBatchRequest,
+  type SliceKernelAbort,
   type SliceBatchRequest,
   type SliceBatchResult,
   type SliceKernel,
@@ -19,7 +22,13 @@ function mappedError(code: SliceKernelErrorCode, message: string): SliceKernelEr
   return new SliceKernelError(code, message);
 }
 
-function mapExecutionError(error: unknown): SliceKernelError {
+function mapExecutionError(
+  error: unknown,
+  observedAbort?: SliceKernelAbort,
+  checkpointFailure?: SliceKernelError,
+): SliceKernelError {
+  if (checkpointFailure) return checkpointFailure;
+  if (observedAbort) return sliceKernelAbortError(observedAbort);
   if (error instanceof SliceKernelError) return error;
   if (!(error instanceof SliceKernelBoundaryError)) {
     return mappedError('EXECUTION_FAILED', 'WASM geometry execution failed');
@@ -74,18 +83,33 @@ class BrowserSliceKernel implements SliceKernel {
     this.#assertCurrent(operationToken);
 
     let request: SliceBatchRequest;
+    let observedAbort: SliceKernelAbort | undefined;
+    let checkpointFailure: SliceKernelError | undefined;
     try {
       request = validateSliceBatchRequest(requestValue, checkpoint);
       this.#assertCurrent(operationToken);
       const controlled = this.#controlled;
       if (!controlled) throw mappedError('DISPOSED', 'WASM geometry kernel has been disposed');
-      const encoded = controlled.sliceLayerBatch(request, { deadlineHook: checkpoint });
+      const controlledCheckpoint = (): boolean => {
+        try {
+          const abort = readSliceKernelAbort(checkpoint);
+          if (!abort) return false;
+          observedAbort = abort;
+          return true;
+        } catch (error) {
+          checkpointFailure = error instanceof SliceKernelError
+            ? error
+            : mappedError('DEADLINE_CHECK_FAILED', 'WASM geometry checkpoint failed closed');
+          throw checkpointFailure;
+        }
+      };
+      const encoded = controlled.sliceLayerBatch(request, { deadlineHook: controlledCheckpoint });
       this.#assertCurrent(operationToken);
       const result = parseSliceBatchResult(encoded, request, checkpoint);
       this.#assertCurrent(operationToken);
       return result;
     } catch (error) {
-      throw mapExecutionError(error);
+      throw mapExecutionError(error, observedAbort, checkpointFailure);
     }
   }
 

@@ -6,6 +6,11 @@ coverage/
 test-results/
 playwright-report/
 crates/geometry-wasm/target/
-src/wasm/generated/
+src/wasm/generated/*
+!src/wasm/generated/geometry_wasm.d.ts
+!src/wasm/generated/geometry_wasm.js
+!src/wasm/generated/geometry_wasm_bg.wasm
+!src/wasm/generated/geometry_wasm_bg.wasm.d.ts
+!src/wasm/generated/geometry_wasm.manifest.json
 .DS_Store
 *.tsbuildinfo

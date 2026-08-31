@@ -1,18 +1,24 @@
 import { spawnSync } from 'node:child_process';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { dirname, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const crateDirectory = resolve(repositoryRoot, 'crates/geometry-wasm');
-const outputDirectory = resolve(repositoryRoot, 'src/wasm/generated');
+const outputDirectory = process.env.GEOMETRY_WASM_OUTPUT_DIR
+  ? resolve(repositoryRoot, process.env.GEOMETRY_WASM_OUTPUT_DIR)
+  : resolve(repositoryRoot, 'src/wasm/generated');
 const wasmPack = process.env.WASM_PACK ?? 'wasm-pack';
 const expectedWasmPackVersion = 'wasm-pack 0.15.0';
 const rustPathRemapping = [
   `--remap-path-prefix=${repositoryRoot}=/workspace/repository`,
   `--remap-path-prefix=${homedir()}=/workspace/home`,
-].join(' ');
+];
+const cargoEncodedRustFlags = [
+  process.env.CARGO_ENCODED_RUSTFLAGS,
+  ...rustPathRemapping,
+].filter(Boolean).join('\u001f');
 
 const version = spawnSync(wasmPack, ['--version'], { encoding: 'utf8' });
 if (version.error) throw version.error;
@@ -20,6 +26,8 @@ if (version.status !== 0 || version.stdout.trim() !== expectedWasmPackVersion) {
   throw new Error(`Expected ${expectedWasmPackVersion}; received ${version.stdout.trim() || 'no version'}`);
 }
 
+const { RUSTFLAGS: ignoredRustFlags, ...buildEnvironment } = process.env;
+void ignoredRustFlags;
 const build = spawnSync(wasmPack, [
   'build',
   crateDirectory,
@@ -37,9 +45,9 @@ const build = spawnSync(wasmPack, [
 ], {
   cwd: repositoryRoot,
   env: {
-    ...process.env,
+    ...buildEnvironment,
+    CARGO_ENCODED_RUSTFLAGS: cargoEncodedRustFlags,
     CARGO_PROFILE_RELEASE_DEBUG: 'false',
-    RUSTFLAGS: [process.env.RUSTFLAGS, rustPathRemapping].filter(Boolean).join(' '),
   },
   encoding: 'utf8',
   stdio: ['ignore', 'pipe', 'pipe'],
@@ -49,6 +57,8 @@ if (build.stdout) process.stdout.write(build.stdout);
 if (build.stderr) process.stderr.write(build.stderr);
 if (build.error) throw build.error;
 if (build.status !== 0) process.exit(build.status ?? 1);
+
+rmSync(resolve(outputDirectory, '.gitignore'), { force: true });
 
 const generatedFiles = readdirSync(outputDirectory, { recursive: true })
   .map((entry) => resolve(outputDirectory, entry.toString()))

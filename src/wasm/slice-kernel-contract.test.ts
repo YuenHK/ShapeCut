@@ -4,6 +4,7 @@ import {
   CanonicalFallbackGuard,
   SliceKernelError,
   parseSliceBatchResult as parseResult,
+  readSliceKernelAbort,
   validateSliceBatchRequest as validateRequest,
   type SliceBatchRequest,
 } from './slice-kernel-contract';
@@ -11,7 +12,7 @@ import {
 const RESULT_VERSION = 1;
 const STATUS_OK = 0;
 const DIAGNOSTIC_COUNTER_COUNT = 9;
-const continueCheckpoint = (): boolean => false;
+const continueCheckpoint = (): undefined => undefined;
 
 function parseSliceBatchResult(value: unknown, activeRequest: SliceBatchRequest) {
   return parseResult(value, activeRequest, continueCheckpoint);
@@ -191,6 +192,20 @@ describe('TypeScript WASM slice contract', () => {
     expectKernelCode(
       () => validateSliceBatchRequest(request({ indices: new Uint32Array([0, 1, 3]) })),
       'INVALID_REQUEST',
+    );
+  });
+
+  it('accepts only exact reason/source abort records at the public adapter boundary', () => {
+    expect(readSliceKernelAbort(() => ({ reason: 'cancelled', source: 'user' })))
+      .toEqual({ reason: 'cancelled', source: 'user' });
+    expect(readSliceKernelAbort(() => ({ reason: 'deadline', source: 'runtime-deadline' })))
+      .toEqual({ reason: 'deadline', source: 'runtime-deadline' });
+    expectKernelCode(() => readSliceKernelAbort(() => false as never), 'DEADLINE_CHECK_FAILED');
+    expectKernelCode(
+      () => readSliceKernelAbort(
+        () => ({ reason: 'cancelled', source: 'runtime-deadline' } as never),
+      ),
+      'DEADLINE_CHECK_FAILED',
     );
   });
 

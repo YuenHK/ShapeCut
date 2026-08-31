@@ -25,7 +25,7 @@ afterEach(() => {
 describe('production-compatible browser WASM loader', () => {
   it('loads the Vite WASM asset and returns validated owned segments in Chromium', async () => {
     const kernel = await loadSliceKernel();
-    const result = await kernel.sliceLayerBatch(request, () => false);
+    const result = await kernel.sliceLayerBatch(request, () => undefined);
 
     expect(Array.from(result.planeOffsets)).toEqual([0, 3, 6]);
     expect(result.endpoints).toHaveLength(24);
@@ -43,14 +43,14 @@ describe('production-compatible browser WASM loader', () => {
     expect(first).toBe(second);
 
     disposeSliceKernel();
-    await expect(first.sliceLayerBatch(request, () => false)).rejects.toMatchObject({
+    await expect(first.sliceLayerBatch(request, () => undefined)).rejects.toMatchObject({
       name: 'SliceKernelError',
       code: 'DISPOSED',
     });
 
     const replacement = await loadSliceKernel();
     expect(replacement).not.toBe(first);
-    await expect(replacement.sliceLayerBatch(request, () => false)).resolves.toMatchObject({
+    await expect(replacement.sliceLayerBatch(request, () => undefined)).resolves.toMatchObject({
       version: 1,
     });
   });
@@ -61,11 +61,11 @@ describe('production-compatible browser WASM loader', () => {
 
     const replacement = await loadSliceKernel();
     expect(replacement).not.toBe(first);
-    await expect(first.sliceLayerBatch(request, () => false)).rejects.toMatchObject({
+    await expect(first.sliceLayerBatch(request, () => undefined)).rejects.toMatchObject({
       name: 'SliceKernelError',
       code: 'DISPOSED',
     });
-    await expect(replacement.sliceLayerBatch(request, () => false)).resolves.toMatchObject({
+    await expect(replacement.sliceLayerBatch(request, () => undefined)).resolves.toMatchObject({
       version: 1,
     });
   });
@@ -77,7 +77,7 @@ describe('production-compatible browser WASM loader', () => {
     await expect(kernel.sliceLayerBatch(request, () => {
       checkpointCount += 1;
       if (checkpointCount === 5) kernel.dispose();
-      return false;
+      return undefined;
     })).rejects.toMatchObject({ name: 'SliceKernelError', code: 'DISPOSED' });
     expect(checkpointCount).toBeGreaterThanOrEqual(5);
 
@@ -99,8 +99,8 @@ describe('production-compatible browser WASM loader', () => {
   });
 
   it.each([
-    ['CANCELLED', (): boolean => true],
-    ['DEADLINE_CHECK_FAILED', (): boolean => { throw new Error('private checkpoint detail'); }],
+    ['CANCELLED', () => ({ reason: 'cancelled', source: 'user' } as const)],
+    ['DEADLINE_CHECK_FAILED', (): undefined => { throw new Error('private checkpoint detail'); }],
   ] as const)('maps checkpoint failure to typed non-fallback error %s', async (code, checkpoint) => {
     const kernel = await loadSliceKernel();
     await expect(kernel.sliceLayerBatch(request, checkpoint)).rejects.toMatchObject({
@@ -108,4 +108,39 @@ describe('production-compatible browser WASM loader', () => {
       code,
     });
   });
+
+  it.each([
+    [{ reason: 'cancelled', source: 'user' }, 'CANCELLED'],
+    [{ reason: 'deadline', source: 'runtime-deadline' }, 'DEADLINE_EXCEEDED'],
+  ] as const)(
+    'preserves immediate $0.reason from $0.source as typed error $1',
+    async (abort, code) => {
+      const kernel = await loadSliceKernel();
+      await expect(kernel.sliceLayerBatch(request, () => abort)).rejects.toMatchObject({
+        name: 'SliceKernelError',
+        code,
+        abortSource: abort.source,
+      });
+    },
+  );
+
+  it.each([
+    [{ reason: 'cancelled', source: 'user' }, 'CANCELLED'],
+    [{ reason: 'deadline', source: 'runtime-deadline' }, 'DEADLINE_EXCEEDED'],
+  ] as const)(
+    'preserves delayed $0.reason from $0.source across the controlled boundary as typed error $1',
+    async (abort, code) => {
+      const kernel = await loadSliceKernel();
+      let checkpointCount = 0;
+      await expect(kernel.sliceLayerBatch(request, () => {
+        checkpointCount += 1;
+        return checkpointCount === 5 ? abort : undefined;
+      })).rejects.toMatchObject({
+        name: 'SliceKernelError',
+        code,
+        abortSource: abort.source,
+      });
+      expect(checkpointCount).toBe(5);
+    },
+  );
 });
