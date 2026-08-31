@@ -306,3 +306,23 @@ npm run test:browser -- --run src/workers/slice-worker-pool.browser.test.ts -t "
 No UI, CSS, typography, colour, material, launcher, canonical artifact or
 production deadline code was changed. Full and clean-checkout round-2 evidence
 is appended after the final matrices below.
+
+### Round 2 full and clean-checkout evidence
+
+The complete matrix passed in the implementation worktree and again from a
+detached clean checkout of commit `b6c726e` after `npm ci`:
+
+- Node contract/partition/pool: 3 files / 133 tests.
+- Real Chromium Browser Mode loader/pool: 2 files / 42 tests.
+- Controlled raw WASM ABI: 31 checks.
+- Rust: 1 unit / 21 integration tests; clippy `-D warnings` passed.
+- TypeScript project typecheck and Vite production build: passed.
+- Pinned WASM regeneration: four files matched byte-for-byte; 38,157 WASM
+  bytes, zero source maps.
+- `git diff --check` passed, and the clean checkout had no tracked changes
+  after the matrix.
+
+The temporary round-2 worktree and its task-owned dependency/build outputs were
+removed. The primary worktree still contains only the parent-owned unstaged
+`.superpowers/sdd/progress.md` outside these committed Task 4 changes. Task 5
+still owns production graph/bundle proof, so no full A3 completion is claimed.
