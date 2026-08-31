@@ -1,9 +1,10 @@
 use shapecut_geometry_wasm::{
     DIAGNOSTIC_CHECKPOINT_COUNT, DIAGNOSTIC_COPLANAR_TRIANGLE_PLANE_COUNT,
-    DIAGNOSTIC_DEGENERATE_TRIANGLE_COUNT, DIAGNOSTIC_NON_FINITE_INPUT_COUNT,
-    DIAGNOSTIC_PLANE_TRIANGLE_TEST_COUNT, DIAGNOSTIC_SEGMENT_COUNT, MAX_PLANE_COUNT,
-    MAX_PLANE_TRIANGLE_TESTS, RESULT_VERSION, STATUS_GEOMETRY_EVIDENCE, STATUS_OK,
-    SliceKernelErrorCode, slice_layer_batch,
+    DIAGNOSTIC_DEGENERATE_TRIANGLE_COUNT, DIAGNOSTIC_ENDPOINT_ALLOCATION_GROWTH_COUNT,
+    DIAGNOSTIC_NON_FINITE_INPUT_COUNT, DIAGNOSTIC_ON_PLANE_EDGE_COUNT,
+    DIAGNOSTIC_PLANE_TRIANGLE_TEST_COUNT, DIAGNOSTIC_SEGMENT_COUNT, MAX_DEADLINE_CHECK_INTERVAL,
+    MAX_PLANE_COUNT, MAX_PLANE_TRIANGLE_TESTS, RESULT_VERSION, STATUS_GEOMETRY_EVIDENCE, STATUS_OK,
+    SliceKernelErrorCode, slice_layer_batch, slice_layer_batch_with_abort_check,
 };
 
 fn tetrahedron() -> (Vec<f32>, Vec<u32>) {
@@ -145,6 +146,28 @@ fn rejects_zero_checkpoint_interval() {
 }
 
 #[test]
+fn rejects_checkpoint_interval_above_the_bounded_maximum() {
+    assert_eq!(
+        error_code(&[0.0, 0.0, 0.0], &[], &[], MAX_DEADLINE_CHECK_INTERVAL + 1,),
+        SliceKernelErrorCode::DeadlineCheckIntervalLimit
+    );
+}
+
+#[test]
+fn bounded_abort_hook_stops_work_at_a_checkpoint() {
+    let (positions, indices) = tetrahedron();
+    let mut checks = 0;
+    let error = slice_layer_batch_with_abort_check(&positions, &indices, &[0.5, 1.0], 2, || {
+        checks += 1;
+        Ok(checks >= 2)
+    })
+    .expect_err("second checkpoint must stop the batch");
+
+    assert_eq!(error.code(), SliceKernelErrorCode::DeadlineExceeded);
+    assert_eq!(checks, 2);
+}
+
+#[test]
 fn rejects_plane_count_and_work_that_exceed_bounded_allocation_contracts() {
     let too_many_planes = vec![0.0; MAX_PLANE_COUNT + 1];
     assert_eq!(
@@ -192,4 +215,89 @@ fn repeated_calls_are_bitwise_deterministic() {
             .collect::<Vec<_>>()
     );
     assert_eq!(first.diagnostic_counters(), second.diagnostic_counters());
+}
+
+#[test]
+fn huge_xy_extent_does_not_turn_tiny_axial_crossing_into_coplanar_evidence() {
+    let positions = [0.0, 0.0, -0.0001, 1.0e12, 0.0, 0.0001, 0.0, 1.0e12, 0.0001];
+    let result = slice_layer_batch(&positions, &[0, 1, 2], &[0.0], 1).unwrap();
+
+    assert_eq!(result.status_code(), STATUS_OK);
+    assert_eq!(result.plane_offsets(), &[0, 1]);
+}
+
+#[test]
+fn mixed_scale_triangles_use_local_degeneracy_tolerance() {
+    let positions = [
+        0.0, 0.0, -1.0, 1.0e12, 0.0, 1.0, 0.0, 1.0e12, 1.0, // huge
+        0.0, 0.0, -0.0001, 0.001, 0.0, 0.0001, 0.0, 0.001, 0.0001, // tiny
+    ];
+    let result = slice_layer_batch(&positions, &[0, 1, 2, 3, 4, 5], &[0.0], 1).unwrap();
+
+    assert_eq!(
+        result.diagnostic_counters()[DIAGNOSTIC_DEGENERATE_TRIANGLE_COUNT],
+        0
+    );
+    assert_eq!(result.plane_offsets(), &[0, 2]);
+}
+
+#[test]
+fn unreferenced_far_vertex_does_not_change_slice_or_evidence() {
+    let base = [0.0, 0.0, -1.0, 2.0, 0.0, 1.0, 0.0, 2.0, 1.0];
+    let mut with_far_vertex = base.to_vec();
+    with_far_vertex.extend_from_slice(&[1.0e20, -1.0e20, 1.0e20]);
+
+    let expected = slice_layer_batch(&base, &[0, 1, 2], &[0.0], 1).unwrap();
+    let actual = slice_layer_batch(&with_far_vertex, &[0, 1, 2], &[0.0], 1).unwrap();
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn local_triangle_classification_is_axis_permutation_invariant() {
+    let positions = [-2.0, -3.0, -4.0, 3.0, 2.0, -1.0, 1.0, -2.0, 5.0];
+    for permutation in [[0, 1, 2], [1, 2, 0], [2, 0, 1]] {
+        let mut permuted = Vec::new();
+        for vertex in positions.as_chunks::<3>().0 {
+            permuted.extend_from_slice(&[
+                vertex[permutation[0]],
+                vertex[permutation[1]],
+                vertex[permutation[2]],
+            ]);
+        }
+        let result = slice_layer_batch(&permuted, &[0, 1, 2], &[0.0], 1).unwrap();
+        assert_eq!(result.status_code(), STATUS_OK);
+        assert_eq!(result.plane_offsets(), &[0, 1]);
+    }
+}
+
+#[test]
+fn paired_shared_on_plane_edge_sets_geometry_evidence_status() {
+    let positions = [0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, -1.0, -1.0];
+    let result = slice_layer_batch(&positions, &[0, 1, 2, 1, 0, 3], &[0.0], 1).unwrap();
+
+    assert_eq!(result.status_code(), STATUS_GEOMETRY_EVIDENCE);
+    assert_eq!(result.plane_offsets(), &[0, 2]);
+    assert_eq!(
+        result.diagnostic_counters()[DIAGNOSTIC_ON_PLANE_EDGE_COUNT],
+        2
+    );
+}
+
+#[test]
+fn large_batch_uses_bounded_geometric_endpoint_growth() {
+    const TRIANGLE_COUNT: usize = 50_000;
+    let positions = [0.0, 0.0, -1.0, 2.0, 0.0, 1.0, 0.0, 2.0, 1.0];
+    let mut indices = Vec::with_capacity(TRIANGLE_COUNT * 3);
+    for _ in 0..TRIANGLE_COUNT {
+        indices.extend_from_slice(&[0, 1, 2]);
+    }
+    let result = slice_layer_batch(&positions, &indices, &[0.0], 256).unwrap();
+
+    assert_eq!(result.plane_offsets(), &[0, TRIANGLE_COUNT as u32]);
+    let growths = result.diagnostic_counters()[DIAGNOSTIC_ENDPOINT_ALLOCATION_GROWTH_COUNT];
+    assert!(growths > 0);
+    assert!(
+        growths <= 8,
+        "expected geometric growth, observed {growths} allocations"
+    );
 }

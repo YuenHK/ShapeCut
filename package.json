@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "build:geometry-wasm": "node scripts/build-geometry-wasm.mjs",
+    "test:geometry-wasm-boundary": "node scripts/test-geometry-wasm-boundary.mjs",
     "typecheck": "tsc -b --pretty false",
     "test": "vitest run",
     "test:browser": "vitest --config vitest.browser.config.ts",

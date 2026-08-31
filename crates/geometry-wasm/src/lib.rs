@@ -12,13 +12,17 @@ pub const DIAGNOSTIC_SEGMENT_COUNT: usize = 4;
 pub const DIAGNOSTIC_CHECKPOINT_COUNT: usize = 5;
 pub const DIAGNOSTIC_AMBIGUOUS_INTERSECTION_COUNT: usize = 6;
 pub const DIAGNOSTIC_ON_PLANE_EDGE_COUNT: usize = 7;
-pub const DIAGNOSTIC_COUNTER_COUNT: usize = 8;
+pub const DIAGNOSTIC_ENDPOINT_ALLOCATION_GROWTH_COUNT: usize = 8;
+pub const DIAGNOSTIC_COUNTER_COUNT: usize = 9;
 
 pub const MAX_VERTEX_COUNT: usize = 3_145_728;
 pub const MAX_TRIANGLE_COUNT: usize = 1_048_576;
 pub const MAX_PLANE_COUNT: usize = 16_384;
 pub const MAX_PLANE_TRIANGLE_TESTS: usize = 250_000_000;
-pub const MAX_SEGMENT_COUNT: usize = 8_388_608;
+pub const MAX_SEGMENT_COUNT: usize = 262_144;
+pub const MAX_DEADLINE_CHECK_INTERVAL: u32 = 4_096;
+const MAX_ENDPOINT_VALUE_COUNT: usize = MAX_SEGMENT_COUNT * 4;
+const MIN_ENDPOINT_ALLOCATION_VALUES: usize = 4_096;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SliceKernelErrorCode {
@@ -32,6 +36,9 @@ pub enum SliceKernelErrorCode {
     UnsortedPlanes,
     PlaneCountLimit,
     InvalidCheckpointInterval,
+    DeadlineCheckIntervalLimit,
+    DeadlineCheckFailed,
+    DeadlineExceeded,
     WorkLimit,
     OutputLimit,
     AllocationFailed,
@@ -51,6 +58,9 @@ impl SliceKernelErrorCode {
             Self::UnsortedPlanes => "planes must be strictly increasing",
             Self::PlaneCountLimit => "plane count exceeds the kernel limit",
             Self::InvalidCheckpointInterval => "deadline check interval must be positive",
+            Self::DeadlineCheckIntervalLimit => "deadline check interval exceeds the kernel limit",
+            Self::DeadlineCheckFailed => "deadline check failed closed",
+            Self::DeadlineExceeded => "slice batch was cancelled at a deadline checkpoint",
             Self::WorkLimit => "plane-triangle work exceeds the kernel limit",
             Self::OutputLimit => "segment output exceeds the kernel limit",
             Self::AllocationFailed => "kernel allocation failed",
@@ -168,6 +178,7 @@ fn canonical_zero(value: f64) -> f64 {
 
 fn push_segment(
     endpoints: &mut Vec<f64>,
+    diagnostics: &mut [u32],
     first: (f64, f64),
     second: (f64, f64),
 ) -> Result<(), SliceKernelError> {
@@ -175,7 +186,27 @@ fn push_segment(
     if segment_count >= MAX_SEGMENT_COUNT {
         return Err(SliceKernelError::new(SliceKernelErrorCode::OutputLimit));
     }
-    endpoints.try_reserve_exact(4).or_else(allocation_error)?;
+    let required = endpoints
+        .len()
+        .checked_add(4)
+        .ok_or_else(|| SliceKernelError::new(SliceKernelErrorCode::IntegerOverflow))?;
+    if required > endpoints.capacity() {
+        let doubled = endpoints
+            .capacity()
+            .checked_mul(2)
+            .ok_or_else(|| SliceKernelError::new(SliceKernelErrorCode::IntegerOverflow))?;
+        let target = required
+            .max(MIN_ENDPOINT_ALLOCATION_VALUES)
+            .max(doubled)
+            .min(MAX_ENDPOINT_VALUE_COUNT);
+        let additional = target
+            .checked_sub(endpoints.len())
+            .ok_or_else(|| SliceKernelError::new(SliceKernelErrorCode::IntegerOverflow))?;
+        endpoints
+            .try_reserve_exact(additional)
+            .or_else(allocation_error)?;
+        checked_increment(&mut diagnostics[DIAGNOSTIC_ENDPOINT_ALLOCATION_GROWTH_COUNT])?;
+    }
     endpoints.extend_from_slice(&[
         canonical_zero(first.0),
         canonical_zero(first.1),
@@ -185,71 +216,76 @@ fn push_segment(
     Ok(())
 }
 
-fn validate_request(
-    positions: &[f32],
-    indices: &[u32],
-    planes: &[f64],
+fn validate_request_lengths(
+    position_length: usize,
+    index_length: usize,
+    plane_length: usize,
     deadline_check_interval: u32,
-) -> Result<(usize, usize, f64, f64), SliceKernelError> {
+) -> Result<(usize, usize), SliceKernelError> {
     if deadline_check_interval == 0 {
         return Err(SliceKernelError::new(
             SliceKernelErrorCode::InvalidCheckpointInterval,
         ));
     }
-    if !positions.len().is_multiple_of(3) {
+    if deadline_check_interval > MAX_DEADLINE_CHECK_INTERVAL {
+        return Err(SliceKernelError::new(
+            SliceKernelErrorCode::DeadlineCheckIntervalLimit,
+        ));
+    }
+    if !position_length.is_multiple_of(3) {
         return Err(SliceKernelError::new(
             SliceKernelErrorCode::IncompletePositions,
         ));
     }
-    if !indices.len().is_multiple_of(3) {
+    if !index_length.is_multiple_of(3) {
         return Err(SliceKernelError::new(
             SliceKernelErrorCode::IncompleteTriangleIndices,
         ));
     }
 
-    let vertex_count = positions.len() / 3;
+    let vertex_count = position_length / 3;
     if vertex_count > MAX_VERTEX_COUNT {
         return Err(SliceKernelError::new(
             SliceKernelErrorCode::VertexCountLimit,
         ));
     }
-    let triangle_count = indices.len() / 3;
+    let triangle_count = index_length / 3;
     if triangle_count > MAX_TRIANGLE_COUNT {
         return Err(SliceKernelError::new(
             SliceKernelErrorCode::TriangleCountLimit,
         ));
     }
-    if planes.len() > MAX_PLANE_COUNT {
+    if plane_length > MAX_PLANE_COUNT {
         return Err(SliceKernelError::new(SliceKernelErrorCode::PlaneCountLimit));
     }
     let work = triangle_count
-        .checked_mul(planes.len())
+        .checked_mul(plane_length)
         .ok_or_else(|| SliceKernelError::new(SliceKernelErrorCode::IntegerOverflow))?;
     if work > MAX_PLANE_TRIANGLE_TESTS {
         return Err(SliceKernelError::new(SliceKernelErrorCode::WorkLimit));
     }
 
-    let mut min_x = f64::INFINITY;
-    let mut min_y = f64::INFINITY;
-    let mut min_z = f64::INFINITY;
-    let mut max_x = f64::NEG_INFINITY;
-    let mut max_y = f64::NEG_INFINITY;
-    let mut max_z = f64::NEG_INFINITY;
+    Ok((vertex_count, triangle_count))
+}
+
+fn validate_request(
+    positions: &[f32],
+    indices: &[u32],
+    planes: &[f64],
+    deadline_check_interval: u32,
+) -> Result<usize, SliceKernelError> {
+    let (vertex_count, triangle_count) = validate_request_lengths(
+        positions.len(),
+        indices.len(),
+        planes.len(),
+        deadline_check_interval,
+    )?;
     for chunk in positions.as_chunks::<3>().0 {
         if chunk.iter().any(|value| !value.is_finite()) {
             return Err(SliceKernelError::new(
                 SliceKernelErrorCode::NonFinitePosition,
             ));
         }
-        let x = f64::from(chunk[0]);
-        let y = f64::from(chunk[1]);
-        let z = f64::from(chunk[2]);
-        min_x = min_x.min(x);
-        min_y = min_y.min(y);
-        min_z = min_z.min(z);
-        max_x = max_x.max(x);
-        max_y = max_y.max(y);
-        max_z = max_z.max(z);
     }
     for (plane_index, plane) in planes.iter().copied().enumerate() {
         if !plane.is_finite() {
@@ -267,25 +303,16 @@ fn validate_request(
         }
     }
 
-    let planar_diameter = if vertex_count == 0 {
-        0.0
-    } else {
-        (max_x - min_x).hypot(max_y - min_y)
-    };
-    let spatial_diameter = if vertex_count == 0 {
-        0.0
-    } else {
-        (max_x - min_x).hypot(max_y - min_y).hypot(max_z - min_z)
-    };
-    Ok((
-        vertex_count,
-        triangle_count,
-        1e-9_f64.max(planar_diameter * 1e-10),
-        1e-18_f64.max(spatial_diameter * spatial_diameter * 1e-12),
-    ))
+    Ok(triangle_count)
 }
 
-fn is_degenerate(vertices: [Vertex; 3], area_tolerance: f64) -> bool {
+fn edge_length(first: Vertex, second: Vertex) -> f64 {
+    (second.x - first.x)
+        .hypot(second.y - first.y)
+        .hypot(second.z - first.z)
+}
+
+fn is_degenerate(vertices: [Vertex; 3]) -> bool {
     let ab = (
         vertices[1].x - vertices[0].x,
         vertices[1].y - vertices[0].y,
@@ -302,7 +329,27 @@ fn is_degenerate(vertices: [Vertex; 3], area_tolerance: f64) -> bool {
         ab.0 * ac.1 - ab.1 * ac.0,
     );
     let area_measure = cross.0.hypot(cross.1).hypot(cross.2);
+    let local_edge_scale = edge_length(vertices[0], vertices[1])
+        .max(edge_length(vertices[1], vertices[2]))
+        .max(edge_length(vertices[2], vertices[0]));
+    let area_tolerance =
+        f64::MIN_POSITIVE.max(local_edge_scale * local_edge_scale * 64.0 * f64::EPSILON);
     area_measure <= area_tolerance
+}
+
+fn plane_tolerance(vertices: [Vertex; 3], plane: f64) -> f64 {
+    let axial_magnitude = vertices.iter().fold(plane.abs().max(1.0), |scale, vertex| {
+        scale.max(vertex.z.abs())
+    });
+    1e-9_f64.max(axial_magnitude * 64.0 * f64::EPSILON)
+}
+
+fn planar_tolerance(vertices: [Vertex; 3]) -> f64 {
+    let planar_edge_scale = (vertices[1].x - vertices[0].x)
+        .hypot(vertices[1].y - vertices[0].y)
+        .max((vertices[2].x - vertices[1].x).hypot(vertices[2].y - vertices[1].y))
+        .max((vertices[0].x - vertices[2].x).hypot(vertices[0].y - vertices[2].y));
+    1e-9_f64.max(planar_edge_scale * 64.0 * f64::EPSILON)
 }
 
 fn interpolate(
@@ -324,8 +371,22 @@ pub fn slice_layer_batch(
     planes: &[f64],
     deadline_check_interval: u32,
 ) -> Result<SliceBatchResult, SliceKernelError> {
-    let (_, triangle_count, epsilon, area_tolerance) =
-        validate_request(positions, indices, planes, deadline_check_interval)?;
+    slice_layer_batch_with_abort_check(positions, indices, planes, deadline_check_interval, || {
+        Ok(false)
+    })
+}
+
+pub fn slice_layer_batch_with_abort_check<F>(
+    positions: &[f32],
+    indices: &[u32],
+    planes: &[f64],
+    deadline_check_interval: u32,
+    mut abort_check: F,
+) -> Result<SliceBatchResult, SliceKernelError>
+where
+    F: FnMut() -> Result<bool, SliceKernelErrorCode>,
+{
+    let triangle_count = validate_request(positions, indices, planes, deadline_check_interval)?;
 
     let mut degenerate = Vec::new();
     degenerate
@@ -339,7 +400,7 @@ pub fn slice_layer_batch(
     let triangles = indices.as_chunks::<3>().0;
     for triangle in triangles {
         let vertices = triangle_vertices(positions, triangle)?;
-        let triangle_is_degenerate = is_degenerate(vertices, area_tolerance);
+        let triangle_is_degenerate = is_degenerate(vertices);
         degenerate.push(triangle_is_degenerate);
         if triangle_is_degenerate {
             checked_increment(&mut diagnostics[DIAGNOSTIC_DEGENERATE_TRIANGLE_COUNT])?;
@@ -364,6 +425,11 @@ pub fn slice_layer_batch(
         for (triangle_index, triangle) in triangles.iter().enumerate() {
             if work_index.is_multiple_of(interval) {
                 checked_increment(&mut diagnostics[DIAGNOSTIC_CHECKPOINT_COUNT])?;
+                if abort_check().map_err(SliceKernelError::new)? {
+                    return Err(SliceKernelError::new(
+                        SliceKernelErrorCode::DeadlineExceeded,
+                    ));
+                }
                 if endpoints.len() / 4 > MAX_SEGMENT_COUNT {
                     return Err(SliceKernelError::new(SliceKernelErrorCode::OutputLimit));
                 }
@@ -376,6 +442,7 @@ pub fn slice_layer_batch(
             }
 
             let vertices = triangle_vertices(positions, triangle)?;
+            let epsilon = plane_tolerance(vertices, plane);
             let distances = [
                 vertices[0].z - plane,
                 vertices[1].z - plane,
@@ -402,6 +469,7 @@ pub fn slice_layer_batch(
                     if on_plane[edge] && on_plane[next] {
                         push_segment(
                             &mut endpoints,
+                            &mut diagnostics,
                             (vertices[edge].x, vertices[edge].y),
                             (vertices[next].x, vertices[next].y),
                         )?;
@@ -426,6 +494,7 @@ pub fn slice_layer_batch(
                 }
                 push_segment(
                     &mut endpoints,
+                    &mut diagnostics,
                     (vertices[vertex_index].x, vertices[vertex_index].y),
                     interpolate(
                         vertices[others[0]],
@@ -458,12 +527,17 @@ pub fn slice_layer_batch(
             if intersection_count != 2
                 || (intersections[0].0 - intersections[1].0)
                     .hypot(intersections[0].1 - intersections[1].1)
-                    <= epsilon
+                    <= planar_tolerance(vertices)
             {
                 checked_increment(&mut diagnostics[DIAGNOSTIC_AMBIGUOUS_INTERSECTION_COUNT])?;
                 continue;
             }
-            push_segment(&mut endpoints, intersections[0], intersections[1])?;
+            push_segment(
+                &mut endpoints,
+                &mut diagnostics,
+                intersections[0],
+                intersections[1],
+            )?;
         }
         let segment_count = endpoints.len() / 4;
         plane_offsets.push(
@@ -478,7 +552,8 @@ pub fn slice_layer_batch(
         .map_err(|_| SliceKernelError::new(SliceKernelErrorCode::IntegerOverflow))?;
     let has_geometry_evidence = diagnostics[DIAGNOSTIC_DEGENERATE_TRIANGLE_COUNT] > 0
         || diagnostics[DIAGNOSTIC_COPLANAR_TRIANGLE_PLANE_COUNT] > 0
-        || diagnostics[DIAGNOSTIC_AMBIGUOUS_INTERSECTION_COUNT] > 0;
+        || diagnostics[DIAGNOSTIC_AMBIGUOUS_INTERSECTION_COUNT] > 0
+        || diagnostics[DIAGNOSTIC_ON_PLANE_EDGE_COUNT] > 0;
 
     Ok(SliceBatchResult {
         version: RESULT_VERSION,
@@ -495,8 +570,57 @@ pub fn slice_layer_batch(
 
 #[cfg(target_arch = "wasm32")]
 mod wasm {
-    use super::{SliceBatchResult, slice_layer_batch};
+    use super::{
+        SliceBatchResult, SliceKernelError, SliceKernelErrorCode, allocation_error,
+        slice_layer_batch_with_abort_check, validate_request_lengths,
+    };
+    use js_sys::{Float32Array, Float64Array, Uint32Array};
     use wasm_bindgen::prelude::*;
+
+    #[wasm_bindgen]
+    extern "C" {
+        #[wasm_bindgen(
+            js_namespace = globalThis,
+            js_name = __shapecut_geometry_should_abort,
+            catch
+        )]
+        fn deadline_should_abort() -> Result<bool, JsValue>;
+    }
+
+    impl From<SliceKernelError> for JsValue {
+        fn from(error: SliceKernelError) -> Self {
+            JsValue::from_str(&error.to_string())
+        }
+    }
+
+    fn array_length(length: u32) -> Result<usize, SliceKernelError> {
+        usize::try_from(length)
+            .map_err(|_| SliceKernelError::new(SliceKernelErrorCode::IntegerOverflow))
+    }
+
+    fn copy_float32(array: &Float32Array, length: usize) -> Result<Vec<f32>, SliceKernelError> {
+        let mut values = Vec::new();
+        values.try_reserve_exact(length).or_else(allocation_error)?;
+        values.resize(length, 0.0);
+        array.copy_to(&mut values);
+        Ok(values)
+    }
+
+    fn copy_uint32(array: &Uint32Array, length: usize) -> Result<Vec<u32>, SliceKernelError> {
+        let mut values = Vec::new();
+        values.try_reserve_exact(length).or_else(allocation_error)?;
+        values.resize(length, 0);
+        array.copy_to(&mut values);
+        Ok(values)
+    }
+
+    fn copy_float64(array: &Float64Array, length: usize) -> Result<Vec<f64>, SliceKernelError> {
+        let mut values = Vec::new();
+        values.try_reserve_exact(length).or_else(allocation_error)?;
+        values.resize(length, 0.0);
+        array.copy_to(&mut values);
+        Ok(values)
+    }
 
     #[wasm_bindgen]
     impl SliceBatchResult {
@@ -510,30 +634,64 @@ mod wasm {
             self.status_code()
         }
 
-        #[wasm_bindgen(getter, js_name = planeOffsets)]
-        pub fn wasm_plane_offsets(&self) -> Box<[u32]> {
-            self.plane_offsets().into()
+        #[wasm_bindgen(getter, js_name = planeOffsetsPtr)]
+        pub fn wasm_plane_offsets_ptr(&self) -> usize {
+            self.plane_offsets.as_ptr().addr()
         }
 
-        #[wasm_bindgen(getter, js_name = endpoints)]
-        pub fn wasm_endpoints(&self) -> Box<[f64]> {
-            self.endpoints().into()
+        #[wasm_bindgen(getter, js_name = planeOffsetsLen)]
+        pub fn wasm_plane_offsets_len(&self) -> usize {
+            self.plane_offsets.len()
         }
 
-        #[wasm_bindgen(getter, js_name = diagnosticCounters)]
-        pub fn wasm_diagnostic_counters(&self) -> Box<[u32]> {
-            self.diagnostic_counters().into()
+        #[wasm_bindgen(getter, js_name = endpointsPtr)]
+        pub fn wasm_endpoints_ptr(&self) -> usize {
+            self.endpoints.as_ptr().addr()
+        }
+
+        #[wasm_bindgen(getter, js_name = endpointsLen)]
+        pub fn wasm_endpoints_len(&self) -> usize {
+            self.endpoints.len()
+        }
+
+        #[wasm_bindgen(getter, js_name = diagnosticCountersPtr)]
+        pub fn wasm_diagnostic_counters_ptr(&self) -> usize {
+            self.diagnostic_counters.as_ptr().addr()
+        }
+
+        #[wasm_bindgen(getter, js_name = diagnosticCountersLen)]
+        pub fn wasm_diagnostic_counters_len(&self) -> usize {
+            self.diagnostic_counters.len()
         }
     }
 
     #[wasm_bindgen(js_name = slice_layer_batch)]
     pub fn slice_layer_batch_wasm(
-        positions: &[f32],
-        indices: &[u32],
-        planes: &[f64],
+        positions: &Float32Array,
+        indices: &Uint32Array,
+        planes: &Float64Array,
         deadline_check_interval: u32,
     ) -> Result<SliceBatchResult, JsValue> {
-        slice_layer_batch(positions, indices, planes, deadline_check_interval)
-            .map_err(|error| JsValue::from_str(&error.to_string()))
+        let position_length = array_length(positions.length())?;
+        let index_length = array_length(indices.length())?;
+        let plane_length = array_length(planes.length())?;
+        validate_request_lengths(
+            position_length,
+            index_length,
+            plane_length,
+            deadline_check_interval,
+        )?;
+
+        let positions = copy_float32(positions, position_length)?;
+        let indices = copy_uint32(indices, index_length)?;
+        let planes = copy_float64(planes, plane_length)?;
+        slice_layer_batch_with_abort_check(
+            &positions,
+            &indices,
+            &planes,
+            deadline_check_interval,
+            || deadline_should_abort().map_err(|_| SliceKernelErrorCode::DeadlineCheckFailed),
+        )
+        .map_err(|error| JsValue::from_str(&error.to_string()))
     }
 }
