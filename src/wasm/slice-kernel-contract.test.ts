@@ -613,7 +613,7 @@ describe('TypeScript WASM slice contract', () => {
       return undefined;
     });
     expect(parsed.endpoints).toHaveLength(endpointLength);
-    expect(checkpointCount).toBeGreaterThanOrEqual(28);
+    expect(checkpointCount).toBeGreaterThanOrEqual(32);
   });
 
   it('rejects a request allocation above its explicit cap before any checkpoint or fallback', () => {

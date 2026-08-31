@@ -194,6 +194,7 @@ const objectGetPrototypeOf = Object.getPrototypeOf;
 const objectHasOwn = Object.hasOwn;
 const numberIsFinite = Number.isFinite;
 const numberIsSafeInteger = Number.isSafeInteger;
+const mathFloor = Math.floor;
 const mathMin = Math.min;
 const typedArrayPrototype = objectGetPrototypeOf(Uint8Array.prototype);
 const typedArrayLengthGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'length')?.get;
@@ -333,6 +334,13 @@ function inspectExactTypedArray<T extends Float32Array | Float64Array | Uint32Ar
 
 type AnyExactTypedArray = ExactTypedArray<Float32Array | Float64Array | Uint32Array>;
 
+interface ChunkedTypedArray<T extends Float64Array | Uint32Array> {
+  readonly chunks: readonly T[];
+  readonly length: number;
+  readonly byteLength: number;
+  readonly chunkLength: number;
+}
+
 function revalidateExactTypedArray(inspected: AnyExactTypedArray): void {
   const current = inspectExactTypedArray(
     inspected.value,
@@ -370,22 +378,27 @@ class ImmutableSliceArray implements ReadonlySliceArray {
   readonly elementType: 'uint32' | 'float64';
   readonly length: number;
   readonly byteLength: number;
-  readonly #values: Uint32Array | Float64Array;
+  readonly #values: ChunkedTypedArray<Uint32Array | Float64Array>;
 
-  constructor(values: Uint32Array | Float64Array, elementType: 'uint32' | 'float64') {
+  constructor(
+    values: ChunkedTypedArray<Uint32Array | Float64Array>,
+    elementType: 'uint32' | 'float64',
+  ) {
     this.#values = values;
     this.elementType = elementType;
-    this.length = reflectApply(typedArrayLengthGetter as Function, values, []) as number;
-    this.byteLength = reflectApply(typedArrayByteLengthGetter as Function, values, []) as number;
+    this.length = values.length;
+    this.byteLength = values.byteLength;
     objectFreeze(this);
   }
 
   at(index: number): number | undefined {
-    return reflectApply(typedArrayAt, this.#values, [index]) as number | undefined;
+    return chunkedAt(this.#values, index);
   }
 
-  [Symbol.iterator](): IterableIterator<number> {
-    return reflectApply(typedArrayValues, this.#values, []) as IterableIterator<number>;
+  *[Symbol.iterator](): IterableIterator<number> {
+    for (let index = 0; index < this.length; index += 1) {
+      yield chunkedAt(this.#values, index) as number;
+    }
   }
 }
 
@@ -483,6 +496,84 @@ function defensiveCopy<T extends Float32Array | Float64Array | Uint32Array>(
   } catch (error) {
     if (error instanceof SliceKernelError) throw error;
     failInspection(inspected.code, inspected.name);
+  }
+}
+
+function defensiveChunkedCopy<T extends Float64Array | Uint32Array>(
+  inspected: ExactTypedArray<T>,
+  interval: number,
+  checkpoint: SliceKernelCheckpoint,
+  surroundingInspections: readonly AnyExactTypedArray[],
+): ChunkedTypedArray<T> {
+  const chunks: T[] = [];
+  if (inspected.length === 0) checkCheckpoint(checkpoint, surroundingInspections);
+  for (let start = 0; start < inspected.length; start += interval) {
+    const end = mathMin(start + interval, inspected.length);
+    checkCheckpoint(checkpoint, surroundingInspections);
+    let chunk: T;
+    try {
+      chunk = inspected.spec.create(end - start);
+    } catch {
+      failOrdinaryResult('RESOURCE_LIMIT', `${inspected.name} chunk allocation failed closed`);
+    }
+    const chunkInspection = inspectExactTypedArray(
+      chunk,
+      inspected.spec,
+      `${inspected.name} defensive chunk`,
+      inspected.code,
+    );
+    const activeInspections = [...surroundingInspections, chunkInspection];
+    checkCheckpoint(checkpoint, activeInspections);
+    try {
+      if (typeof typedArraySet !== 'function') {
+        throw new TypeError('missing typed array copy intrinsic');
+      }
+      const sourceChunk = inspected.spec.createView(
+        inspected.buffer,
+        start * inspected.spec.bytesPerElement,
+        end - start,
+      );
+      reflectApply(typedArraySet, chunk, [sourceChunk, 0]);
+    } catch {
+      failInspection(inspected.code, inspected.name);
+    }
+    checkCheckpoint(checkpoint, activeInspections);
+    chunks.push(chunk);
+  }
+  return objectFreeze({
+    chunks: objectFreeze(chunks),
+    length: inspected.length,
+    byteLength: inspected.byteLength,
+    chunkLength: interval,
+  });
+}
+
+function chunkedAt(
+  values: ChunkedTypedArray<Float64Array | Uint32Array>,
+  index: number,
+): number | undefined {
+  const resolved = index < 0 ? values.length + index : index;
+  if (!numberIsSafeInteger(resolved) || resolved < 0 || resolved >= values.length) {
+    return undefined;
+  }
+  const chunkIndex = mathFloor(resolved / values.chunkLength);
+  const chunkOffset = resolved - (chunkIndex * values.chunkLength);
+  return reflectApply(typedArrayAt, values.chunks[chunkIndex], [chunkOffset]) as number | undefined;
+}
+
+function forEachChunkedSnapshot<T extends Float64Array | Uint32Array>(
+  values: ChunkedTypedArray<T>,
+  interval: number,
+  checkpoint: SliceKernelCheckpoint,
+  visit: (value: number, index: number) => void,
+  inspections: readonly AnyExactTypedArray[],
+): void {
+  for (let start = 0; start < values.length; start += interval) {
+    checkCheckpoint(checkpoint, inspections);
+    const end = mathMin(start + interval, values.length);
+    for (let index = start; index < end; index += 1) {
+      visit(chunkedAt(values, index) as number, index);
+    }
   }
 }
 
@@ -738,19 +829,19 @@ function parseSliceBatchResultWithTrustedRequest(
     inspected.diagnosticCounters,
   ];
   const { request, planeCount: requestPlaneCount, indexCount: requestIndexCount } = trustedRequest;
-  const planeOffsets = defensiveCopy(
+  const planeOffsets = defensiveChunkedCopy(
     inspected.planeOffsets,
     request.deadlineCheckInterval,
     checkpoint,
     sourceInspections,
   );
-  const endpoints = defensiveCopy(
+  const endpoints = defensiveChunkedCopy(
     inspected.endpoints,
     request.deadlineCheckInterval,
     checkpoint,
     sourceInspections,
   );
-  const diagnosticCounters = defensiveCopy(
+  const diagnosticCounters = defensiveChunkedCopy(
     inspected.diagnosticCounters,
     request.deadlineCheckInterval,
     checkpoint,
@@ -762,13 +853,12 @@ function parseSliceBatchResultWithTrustedRequest(
   }
 
   const segmentCount = inspected.endpoints.length / 4;
-  if (reflectApply(typedArrayAt, planeOffsets, [0]) !== 0) {
+  if (chunkedAt(planeOffsets, 0) !== 0) {
     failOrdinaryResult('INVALID_RESULT', 'plane offsets must start at zero');
   }
   let previousOffset: number | undefined;
-  forEachChunked(
+  forEachChunkedSnapshot(
     planeOffsets,
-    inspected.planeOffsets.length,
     request.deadlineCheckInterval,
     checkpoint,
     (offset) => {
@@ -779,13 +869,12 @@ function parseSliceBatchResultWithTrustedRequest(
     },
     sourceInspections,
   );
-  if (reflectApply(typedArrayAt, planeOffsets, [inspected.planeOffsets.length - 1])
+  if (chunkedAt(planeOffsets, inspected.planeOffsets.length - 1)
     !== segmentCount) {
     failOrdinaryResult('INVALID_RESULT', 'final plane offset does not match endpoint segments');
   }
-  forEachChunked(
+  forEachChunkedSnapshot(
     endpoints,
-    inspected.endpoints.length,
     request.deadlineCheckInterval,
     checkpoint,
     (endpoint) => {
@@ -796,11 +885,7 @@ function parseSliceBatchResultWithTrustedRequest(
     sourceInspections,
   );
 
-  const counter = (index: number): number => reflectApply(
-    typedArrayAt,
-    diagnosticCounters,
-    [index],
-  ) as number;
+  const counter = (index: number): number => chunkedAt(diagnosticCounters, index) as number;
   const triangleCount = requestIndexCount / 3;
   const work = triangleCount * requestPlaneCount;
   const maxCheckpointCount = work + requestPlaneCount;
