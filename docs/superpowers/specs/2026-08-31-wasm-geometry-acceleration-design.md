@@ -67,6 +67,20 @@ distinct buffers；caller views 隨即 detached，不可再重用。Adapter 只�
 buffer 均以 typed `INVALID_REQUEST` fail closed，且不得取得 compatibility
 fallback 權限。
 
+Module evaluation 時捕獲的 native `structuredClone` 是明確 trusted bootstrap
+boundary；host 必須在載入 adapter 前保持該 intrinsic 原生且未被替換。每次
+transfer 後仍須用捕獲的 `ArrayBuffer` getters 驗證：全部 source buffers 已
+detached、每個 private buffer 都是新的、彼此 distinct、fixed、完整 span，且
+byte length 與 preflight 完全相符。偽成功、未 detach、alias、resizable 或長度
+錯誤一律 fail closed。不可信 replacement 若在 module load 前已植入並造成
+partial detach，adapter 只能偵測並拒絕；JavaScript 無法 rollback ownership，
+因此本設計不聲稱可恢復該惡意 bootstrap 狀態。
+
+公開 direct verifier 必須先 preflight request/result 共六個 distinct buffers，
+再用同一次 transfer call 原子移交全部六個，之後才重建六個 private views；
+不得先 detach request 再嘗試 result transfer。若 operation 在 native transfer
+前失敗，六個 caller buffers 全部保持 attached。
+
 輸出為規範化typed arrays：每個plane的segment offset、segment endpoints、退化／共面／非有限統計及狀態碼。Rust不得決定材料、三爪孔、裝飾省略、輪廓角色、警告文字或artifact內容。
 
 結果順序固定為plane index、triangle index、edge index；canonical reducer在形成輪廓前再排序及驗證，確保worker完成順序不影響輸出。
@@ -82,6 +96,9 @@ adapter 必須直接以 immutable `ReadonlySliceArray` facade 包裝，不得按
 typed array、buffer、`set()` 或 `fill()`。`at()` 完整遵從
 `Array.prototype.at` 的 ToIntegerOrInfinity 語義，包括 fraction、negative
 fraction、`NaN` 及正負 `Infinity`。
+所有 `ReadonlySliceArray` instances 共用的 prototype 在 class definition 後
+立即 freeze；caller 不可 overwrite/delete `at` 或 iterator，亦不可替換其
+prototype chain，既有及後續 result 都保持相同只讀行為。
 
 ## Worker與裝置策略
 

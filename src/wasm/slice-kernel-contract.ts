@@ -96,6 +96,7 @@ export type SliceKernelAbort =
   | Readonly<{ reason: 'deadline'; source: 'runtime-deadline' }>;
 export type SliceKernelCheckpoint = () => SliceKernelAbort | undefined;
 
+/** Immutable facade with a frozen shared prototype and no typed-array escape. */
 export interface ReadonlySliceArray extends Iterable<number> {
   readonly elementType: 'uint32' | 'float64';
   readonly length: number;
@@ -200,8 +201,16 @@ const objectHasOwn = Object.hasOwn;
 const numberIsFinite = Number.isFinite;
 const numberIsSafeInteger = Number.isSafeInteger;
 const mathMin = Math.min;
+/**
+ * Trusted bootstrap boundary: this binding must still be the native operation
+ * when the module evaluates. Postcondition checks fail closed but cannot undo
+ * partial detachment performed by a malicious preloaded replacement.
+ */
 const structuredCloneIntrinsic = globalThis.structuredClone;
 const ArrayIntrinsic = Array;
+const arrayIsArray = Array.isArray;
+const ArrayBufferIntrinsic = ArrayBuffer;
+const arrayBufferPrototype = ArrayBufferIntrinsic.prototype;
 const typedArrayPrototype = objectGetPrototypeOf(Uint8Array.prototype);
 const typedArrayLengthGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'length')?.get;
 const typedArrayBufferGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'buffer')?.get;
@@ -210,11 +219,11 @@ const typedArrayByteOffsetGetter = Object.getOwnPropertyDescriptor(typedArrayPro
 const typedArrayValues = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'values')?.value;
 const typedArrayAt = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'at')?.value;
 const arrayBufferByteLengthGetter = Object.getOwnPropertyDescriptor(
-  ArrayBuffer.prototype,
+  arrayBufferPrototype,
   'byteLength',
 )?.get;
 const arrayBufferResizableGetter = Object.getOwnPropertyDescriptor(
-  ArrayBuffer.prototype,
+  arrayBufferPrototype,
   'resizable',
 )?.get;
 const Float32ArrayIntrinsic = Float32Array;
@@ -363,8 +372,41 @@ function transferOwnedTypedArrays<T extends readonly AnyExactTypedArray[]>(
     const privateBuffers = structuredCloneIntrinsic(sourceBuffers, {
       transfer: sourceBuffers,
     }) as ArrayBuffer[];
-    if (privateBuffers.length !== inspections.length) {
+    if (!arrayIsArray(privateBuffers) || privateBuffers.length !== inspections.length) {
       throw new TypeError('ownership transfer returned the wrong buffer count');
+    }
+    for (let index = 0; index < inspections.length; index += 1) {
+      const sourceByteLength = reflectApply(
+        arrayBufferByteLengthGetter as Function,
+        sourceBuffers[index],
+        [],
+      ) as unknown;
+      if (sourceByteLength !== 0) throw new TypeError('ownership source was not detached');
+
+      const privateBuffer = privateBuffers[index] as unknown;
+      const privateByteLength = reflectApply(
+        arrayBufferByteLengthGetter as Function,
+        privateBuffer,
+        [],
+      ) as unknown;
+      const privateResizable = typeof arrayBufferResizableGetter === 'function'
+        ? reflectApply(arrayBufferResizableGetter, privateBuffer, []) as unknown
+        : false;
+      if (!isRecord(privateBuffer)
+        || privateByteLength !== inspections[index].byteLength
+        || privateResizable !== false) {
+        throw new TypeError('ownership transfer returned an invalid private buffer');
+      }
+      for (let sourceIndex = 0; sourceIndex < sourceBuffers.length; sourceIndex += 1) {
+        if (privateBuffer === (sourceBuffers[sourceIndex] as unknown)) {
+          throw new TypeError('ownership transfer returned a source buffer');
+        }
+      }
+      for (let privateIndex = 0; privateIndex < index; privateIndex += 1) {
+        if (privateBuffer === (privateBuffers[privateIndex] as unknown)) {
+          throw new TypeError('ownership transfer aliased private buffers');
+        }
+      }
     }
     const privateInspections = new ArrayIntrinsic<AnyExactTypedArray>(inspections.length);
     for (let index = 0; index < inspections.length; index += 1) {
@@ -422,6 +464,7 @@ class ImmutableSliceArray implements ReadonlySliceArray {
     }
   }
 }
+objectFreeze(ImmutableSliceArray.prototype);
 
 export function readSliceKernelAbort(checkpoint: SliceKernelCheckpoint): SliceKernelAbort | undefined {
   try {
@@ -575,10 +618,24 @@ function takeSliceBatchRequestOwnership(
     inspected.indices,
     inspected.planes,
   ] as const, 'INVALID_REQUEST', 'slice request ownership transfer');
+  return rebuildSliceBatchRequest(
+    inspected,
+    privatePositions,
+    privateIndices,
+    privatePlanes,
+  );
+}
+
+function rebuildSliceBatchRequest(
+  inspected: InspectedSliceBatchRequest,
+  positions: AnyExactTypedArray,
+  indices: AnyExactTypedArray,
+  planes: AnyExactTypedArray,
+): InspectedSliceBatchRequest {
   return objectFreeze({
-    positions: privatePositions as ExactTypedArray<Float32Array>,
-    indices: privateIndices as ExactTypedArray<Uint32Array>,
-    planes: privatePlanes as ExactTypedArray<Float64Array>,
+    positions: positions as ExactTypedArray<Float32Array>,
+    indices: indices as ExactTypedArray<Uint32Array>,
+    planes: planes as ExactTypedArray<Float64Array>,
     interval: inspected.interval,
     vertexCount: inspected.vertexCount,
     triangleCount: inspected.triangleCount,
@@ -706,14 +763,12 @@ function inspectSliceBatchResult(value: unknown): InspectedSliceBatchResult {
   return objectFreeze({ version, statusCode, planeOffsets, endpoints, diagnosticCounters });
 }
 
-function takeSliceBatchResultOwnership(
+function rebuildSliceBatchResult(
   inspected: InspectedSliceBatchResult,
+  planeOffsets: AnyExactTypedArray,
+  endpoints: AnyExactTypedArray,
+  diagnosticCounters: AnyExactTypedArray,
 ): InspectedSliceBatchResult {
-  const [planeOffsets, endpoints, diagnosticCounters] = transferOwnedTypedArrays([
-    inspected.planeOffsets,
-    inspected.endpoints,
-    inspected.diagnosticCounters,
-  ] as const, 'INVALID_RESULT', 'slice result ownership transfer');
   return objectFreeze({
     version: inspected.version,
     statusCode: inspected.statusCode,
@@ -809,7 +864,8 @@ function parseSliceBatchResultWithTrustedRequest(
 
 /**
  * Direct boundary verifier used by contract tests and non-controlled callers.
- * It consumes both the request and encoded result buffers before any checkpoint.
+ * It preflights six distinct buffers, then consumes all six in one transfer call
+ * before any checkpoint.
  * Production controlled-wrapper results are already private and are wrapped directly.
  */
 export function parseSliceBatchResult(
@@ -819,7 +875,14 @@ export function parseSliceBatchResult(
 ): SliceBatchResult {
   const inspectedResult = inspectSliceBatchResult(value);
   const inspectedRequest = inspectSliceBatchRequest(requestValue);
-  rejectSharedBackingBuffers([
+  const [
+    privatePositions,
+    privateIndices,
+    privatePlanes,
+    privatePlaneOffsets,
+    privateEndpoints,
+    privateDiagnosticCounters,
+  ] = transferOwnedTypedArrays([
     inspectedRequest.positions,
     inspectedRequest.indices,
     inspectedRequest.planes,
@@ -827,8 +890,18 @@ export function parseSliceBatchResult(
     inspectedResult.endpoints,
     inspectedResult.diagnosticCounters,
   ], 'INVALID_REQUEST', 'slice request/result ownership transfer');
-  const privateRequest = takeSliceBatchRequestOwnership(inspectedRequest);
-  const privateResult = takeSliceBatchResultOwnership(inspectedResult);
+  const privateRequest = rebuildSliceBatchRequest(
+    inspectedRequest,
+    privatePositions,
+    privateIndices,
+    privatePlanes,
+  );
+  const privateResult = rebuildSliceBatchResult(
+    inspectedResult,
+    privatePlaneOffsets,
+    privateEndpoints,
+    privateDiagnosticCounters,
+  );
   const trustedRequest = materializeSliceBatchRequest(privateRequest, checkpoint);
   return parseSliceBatchResultWithTrustedRequest(
     privateResult,

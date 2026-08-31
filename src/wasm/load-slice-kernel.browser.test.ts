@@ -113,6 +113,7 @@ describe('production-compatible browser WASM loader', () => {
     expect(result.endpoints.at(1.9)).toBe(result.endpoints.at(1));
     expect(result.endpoints.at(Number.NaN)).toBe(result.endpoints.at(0));
     expect(result.endpoints.at(Number.POSITIVE_INFINITY)).toBeUndefined();
+    expect(Object.isFrozen(Object.getPrototypeOf(result.endpoints))).toBe(true);
   });
 
   it('single-flights concurrent loads and explicitly disposes the published adapter', async () => {
