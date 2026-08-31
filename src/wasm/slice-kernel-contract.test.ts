@@ -60,6 +60,56 @@ function expectKernelCode(action: () => unknown, code: SliceKernelError['code'])
   expect(action).toThrowError(expect.objectContaining({ name: 'SliceKernelError', code }));
 }
 
+function captureFailure(action: () => unknown): unknown {
+  try {
+    action();
+  } catch (error) {
+    return error;
+  }
+  throw new Error('expected action to fail');
+}
+
+function expectValidationAndFallbackDenied(
+  action: () => unknown,
+  code: 'INVALID_REQUEST' | 'INVALID_RESULT',
+): void {
+  const error = captureFailure(action);
+  expect(error).toMatchObject({ name: 'SliceKernelError', code });
+  expect(() => new CanonicalFallbackGuard().claimTypeScriptFallback(error)).toThrowError(
+    expect.objectContaining({ name: 'SliceKernelError', code: 'FALLBACK_NOT_ALLOWED' }),
+  );
+}
+
+const hostileRecordCases = [
+  ['revoked', <T extends object>(target: T): T => {
+    const pair = Proxy.revocable(target, {});
+    pair.revoke();
+    return pair.proxy;
+  }],
+  ['prototype trap', <T extends object>(target: T): T => new Proxy(target, {
+    getPrototypeOf: () => { throw new Error('private prototype detail'); },
+  })],
+  ['ownKeys trap', <T extends object>(target: T): T => new Proxy(target, {
+    ownKeys: () => { throw new Error('private ownKeys detail'); },
+  })],
+  ['descriptor trap', <T extends object>(target: T): T => new Proxy(target, {
+    getOwnPropertyDescriptor: () => { throw new Error('private descriptor detail'); },
+  })],
+] as const;
+
+function withThrowingOwnProperty<T extends object>(target: T, key: PropertyKey): T {
+  Object.defineProperty(target, key, {
+    configurable: true,
+    get: () => { throw new Error(`private ${String(key)} detail`); },
+  });
+  return target;
+}
+
+function detachedView<T extends Float32Array | Uint32Array>(view: T): T {
+  structuredClone(view.buffer, { transfer: [view.buffer] });
+  return view;
+}
+
 describe('TypeScript WASM slice contract', () => {
   it('rejects malformed result versions and statuses', () => {
     expectKernelCode(
@@ -180,6 +230,75 @@ describe('TypeScript WASM slice contract', () => {
     expectKernelCode(() => parseSliceBatchResult(accessorResult, request()), 'INVALID_RESULT');
   });
 
+  it.each(hostileRecordCases)(
+    'fails closed for direct request/result strict-record %s and denies fallback',
+    (_name, wrap) => {
+      expectValidationAndFallbackDenied(
+        () => validateSliceBatchRequest(wrap(request())),
+        'INVALID_REQUEST',
+      );
+      expectValidationAndFallbackDenied(
+        () => parseSliceBatchResult(wrap(encodedResult() as object), request()),
+        'INVALID_RESULT',
+      );
+    },
+  );
+
+  it('uses verified record descriptor values without invoking hostile get traps', () => {
+    const requestProxy = new Proxy(request(), {
+      get: () => { throw new Error('ordinary request get must not run'); },
+    });
+    expect(validateSliceBatchRequest(requestProxy)).toMatchObject({ deadlineCheckInterval: 4_096 });
+
+    const resultProxy = new Proxy(encodedResult() as object, {
+      get: () => { throw new Error('ordinary result get must not run'); },
+    });
+    expect(parseSliceBatchResult(resultProxy, request())).toMatchObject({ version: RESULT_VERSION });
+  });
+
+  it.each([
+    ['Proxy-wrapped', () => new Proxy(new Float32Array([0, 0, 0]), {})],
+    ['own constructor', () => withThrowingOwnProperty(new Float32Array([0, 0, 0]), 'constructor')],
+    ['own buffer', () => withThrowingOwnProperty(new Float32Array([0, 0, 0]), 'buffer')],
+    ['own length', () => withThrowingOwnProperty(new Float32Array([0, 0, 0]), 'length')],
+    ['detached', () => detachedView(new Float32Array([0, 0, 0]))],
+    ['shared backing buffer', () => new Float32Array(new SharedArrayBuffer(12))],
+    ['non-zero offset', () => new Float32Array(new ArrayBuffer(16), 4, 3)],
+    ['partial backing buffer', () => new Float32Array(new ArrayBuffer(16), 0, 3)],
+  ] as const)('rejects %s request typed arrays with INVALID_REQUEST and no fallback', (_name, value) => {
+    expectValidationAndFallbackDenied(
+      () => validateSliceBatchRequest(request({ positions: value() as Float32Array })),
+      'INVALID_REQUEST',
+    );
+  });
+
+  it.each([
+    ['Proxy-wrapped', () => new Proxy(new Uint32Array([0, 1]), {})],
+    ['own constructor', () => withThrowingOwnProperty(new Uint32Array([0, 1]), 'constructor')],
+    ['own buffer', () => withThrowingOwnProperty(new Uint32Array([0, 1]), 'buffer')],
+    ['own length', () => withThrowingOwnProperty(new Uint32Array([0, 1]), 'length')],
+    ['detached', () => detachedView(new Uint32Array([0, 1]))],
+    ['shared backing buffer', () => new Uint32Array(new SharedArrayBuffer(8))],
+    ['non-zero offset', () => new Uint32Array(new ArrayBuffer(12), 4, 2)],
+    ['partial backing buffer', () => new Uint32Array(new ArrayBuffer(12), 0, 2)],
+    ['misaligned spoof', () => {
+      const fake = Object.create(Uint32Array.prototype);
+      Object.defineProperties(fake, {
+        buffer: { value: new ArrayBuffer(8) },
+        byteOffset: { value: 2 },
+        byteLength: { value: 8 },
+        length: { value: 2 },
+        constructor: { value: Uint32Array },
+      });
+      return fake;
+    }],
+  ] as const)('rejects %s result typed arrays with INVALID_RESULT and no fallback', (_name, value) => {
+    expectValidationAndFallbackDenied(
+      () => parseSliceBatchResult(encodedResult({ planeOffsets: value() }), request()),
+      'INVALID_RESULT',
+    );
+  });
+
   it('rejects unsafe request counts and malformed finite/index data before WASM', () => {
     expectKernelCode(
       () => validateSliceBatchRequest(request({ deadlineCheckInterval: Number.MAX_SAFE_INTEGER + 1 })),
@@ -236,6 +355,18 @@ describe('TypeScript WASM slice contract', () => {
     expectKernelCode(() => guard.claimWasmPublication(), 'PUBLICATION_CONFLICT');
     await expect(guard.publishCanonicalResult(fallbackToken, async () => 'fallback'))
       .resolves.toBe('fallback');
+  });
+
+  it('keeps a non-hostile validated INVALID_RESULT eligible before publication', () => {
+    const error = captureFailure(
+      () => parseSliceBatchResult(encodedResult({ version: 2 }), request()),
+    );
+    expect(error).toMatchObject({
+      name: 'SliceKernelError',
+      code: 'INVALID_RESULT',
+      fallbackEligible: true,
+    });
+    expect(new CanonicalFallbackGuard().claimTypeScriptFallback(error)).toBeDefined();
   });
 
   it('rejects forged, late, and duplicate publication tokens', () => {

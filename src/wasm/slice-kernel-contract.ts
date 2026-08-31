@@ -36,17 +36,34 @@ export type SliceKernelErrorCode =
   | 'FALLBACK_NOT_ALLOWED'
   | 'PUBLICATION_CONFLICT';
 
+const DEFAULT_FALLBACK_ELIGIBLE_CODES: ReadonlySet<SliceKernelErrorCode> = new Set([
+  'LOAD_FAILED',
+  'EXECUTION_FAILED',
+  'INVALID_RESULT',
+  'RESOURCE_LIMIT',
+]);
+const fallbackEligibleErrors = new WeakSet<object>();
+
 export class SliceKernelError extends Error {
   readonly code: SliceKernelErrorCode;
   readonly abortReason: SliceKernelAbortReason | undefined;
   readonly abortSource: SliceKernelAbortSource | undefined;
+  readonly fallbackEligible: boolean;
 
-  constructor(code: SliceKernelErrorCode, message: string, abort?: SliceKernelAbort) {
+  constructor(
+    code: SliceKernelErrorCode,
+    message: string,
+    abort?: SliceKernelAbort,
+    fallbackEligible = DEFAULT_FALLBACK_ELIGIBLE_CODES.has(code),
+  ) {
     super(message);
     this.name = 'SliceKernelError';
     this.code = code;
     this.abortReason = abort?.reason;
     this.abortSource = abort?.source;
+    this.fallbackEligible = fallbackEligible;
+    if (fallbackEligible) fallbackEligibleErrors.add(this);
+    Object.freeze(this);
   }
 }
 
@@ -87,50 +104,120 @@ export interface SliceKernel {
   dispose(): void;
 }
 
-function fail(code: SliceKernelErrorCode, message: string): never {
-  throw new SliceKernelError(code, message);
+function fail(code: SliceKernelErrorCode, message: string, fallbackEligible?: boolean): never {
+  throw new SliceKernelError(code, message, undefined, fallbackEligible);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object';
 }
 
-function requireStrictRecord(
-  value: unknown,
-  expectedKeys: readonly string[],
+function failInspection(
   code: 'INVALID_REQUEST' | 'INVALID_RESULT',
   name: string,
-): asserts value is Record<string, unknown> {
-  if (!isRecord(value)) fail(code, `${name} must be an object`);
-  const prototype = Object.getPrototypeOf(value);
-  const keys = Reflect.ownKeys(value);
-  if ((prototype !== Object.prototype && prototype !== null)
-    || keys.length !== expectedKeys.length
-    || keys.some((key) => typeof key !== 'string' || !expectedKeys.includes(key))
-    || expectedKeys.some((key) => !Object.hasOwn(value, key))) {
-    fail(code, `${name} does not match the strict schema`);
-  }
-  for (const key of expectedKeys) {
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (!descriptor || !('value' in descriptor)) {
-      fail(code, `${name} must contain data properties only`);
+): never {
+  fail(code, `${name} failed strict boundary inspection`, false);
+}
+
+function requireStrictRecord<Key extends string>(
+  value: unknown,
+  expectedKeys: readonly Key[],
+  code: 'INVALID_REQUEST' | 'INVALID_RESULT',
+  name: string,
+): ReadonlyMap<Key, unknown> {
+  try {
+    if (!isRecord(value)) throw new TypeError('not a record');
+    const prototype = Object.getPrototypeOf(value);
+    const keys = Reflect.ownKeys(value);
+    if ((prototype !== Object.prototype && prototype !== null)
+      || keys.length !== expectedKeys.length
+      || keys.some((key) => typeof key !== 'string' || !expectedKeys.includes(key as Key))) {
+      throw new TypeError('invalid strict record shape');
     }
+    const snapshot = new Map<Key, unknown>();
+    for (const key of expectedKeys) {
+      if (!Object.hasOwn(value, key)) throw new TypeError('missing strict record key');
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !('value' in descriptor)) {
+        throw new TypeError('strict record accessor');
+      }
+      snapshot.set(key, descriptor.value);
+    }
+    return snapshot;
+  } catch {
+    failInspection(code, name);
   }
 }
 
+const typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
+const typedArrayLengthGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'length')?.get;
+const typedArrayBufferGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'buffer')?.get;
+const typedArrayByteLengthGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'byteLength')?.get;
+const typedArrayByteOffsetGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'byteOffset')?.get;
+const typedArrayValues = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'values')?.value;
+const typedArrayAt = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'at')?.value;
+const arrayBufferByteLengthGetter = Object.getOwnPropertyDescriptor(
+  ArrayBuffer.prototype,
+  'byteLength',
+)?.get;
+const forbiddenTypedArrayOwnKeys = [
+  'constructor',
+  'buffer',
+  'length',
+  'byteLength',
+  'byteOffset',
+  'subarray',
+  'values',
+  'at',
+  Symbol.iterator,
+] as const;
+
 function requireExactTypedArray<T extends Float32Array | Float64Array | Uint32Array>(
   value: unknown,
-  constructor: { new(length: number): T; readonly BYTES_PER_ELEMENT: number },
+  constructor: {
+    new(length: number): T;
+    readonly prototype: T;
+    readonly BYTES_PER_ELEMENT: number;
+  },
   name: string,
   code: 'INVALID_REQUEST' | 'INVALID_RESULT',
 ): T {
-  if (!(value instanceof constructor) || value.constructor !== constructor) {
-    fail(code, `${name} has an invalid typed-array representation`);
+  try {
+    if (!isRecord(value)
+      || typeof typedArrayLengthGetter !== 'function'
+      || typeof typedArrayBufferGetter !== 'function'
+      || typeof typedArrayByteLengthGetter !== 'function'
+      || typeof typedArrayByteOffsetGetter !== 'function'
+      || typeof typedArrayValues !== 'function'
+      || typeof typedArrayAt !== 'function'
+      || typeof arrayBufferByteLengthGetter !== 'function'
+      || Object.getPrototypeOf(value) !== constructor.prototype
+      || forbiddenTypedArrayOwnKeys.some((key) => Object.hasOwn(value, key))) {
+      throw new TypeError('invalid exact typed array');
+    }
+    const length = Reflect.apply(typedArrayLengthGetter, value, []) as unknown;
+    const buffer = Reflect.apply(typedArrayBufferGetter, value, []) as unknown;
+    const byteLength = Reflect.apply(typedArrayByteLengthGetter, value, []) as unknown;
+    const byteOffset = Reflect.apply(typedArrayByteOffsetGetter, value, []) as unknown;
+    Reflect.apply(typedArrayValues, value, []);
+    const bufferByteLength = Reflect.apply(arrayBufferByteLengthGetter, buffer, []) as unknown;
+    const bytesPerElement = constructor.BYTES_PER_ELEMENT;
+    if (!Number.isSafeInteger(length)
+      || !Number.isSafeInteger(byteLength)
+      || !Number.isSafeInteger(byteOffset)
+      || !Number.isSafeInteger(bufferByteLength)
+      || (length as number) < 0
+      || (byteLength as number) < 0
+      || (byteOffset as number) !== 0
+      || (byteOffset as number) % bytesPerElement !== 0
+      || (byteLength as number) !== (length as number) * bytesPerElement
+      || (byteLength as number) !== bufferByteLength) {
+      throw new TypeError('invalid owned typed array span');
+    }
+    return value as T;
+  } catch {
+    failInspection(code, name);
   }
-  if (!(value.buffer instanceof ArrayBuffer)) {
-    fail(code, `${name} must use an owned non-shared ArrayBuffer`);
-  }
-  return value;
 }
 
 function checkOwnedArrayCap(
@@ -157,11 +244,11 @@ class ImmutableSliceArray implements ReadonlySliceArray {
   }
 
   at(index: number): number | undefined {
-    return this.#values.at(index);
+    return Reflect.apply(typedArrayAt, this.#values, [index]) as number | undefined;
   }
 
   [Symbol.iterator](): IterableIterator<number> {
-    return this.#values.values();
+    return Reflect.apply(typedArrayValues, this.#values, []) as IterableIterator<number>;
   }
 }
 
@@ -228,7 +315,7 @@ export function validateSliceBatchRequest(
   value: unknown,
   checkpoint: SliceKernelCheckpoint,
 ): SliceBatchRequest {
-  requireStrictRecord(
+  const snapshot = requireStrictRecord(
     value,
     ['positions', 'indices', 'planes', 'deadlineCheckInterval'],
     'INVALID_REQUEST',
@@ -236,24 +323,24 @@ export function validateSliceBatchRequest(
   );
 
   const positions = requireExactTypedArray(
-    value.positions,
+    snapshot.get('positions'),
     Float32Array,
     'positions',
     'INVALID_REQUEST',
   );
   const indices = requireExactTypedArray(
-    value.indices,
+    snapshot.get('indices'),
     Uint32Array,
     'indices',
     'INVALID_REQUEST',
   );
   const planes = requireExactTypedArray(
-    value.planes,
+    snapshot.get('planes'),
     Float64Array,
     'planes',
     'INVALID_REQUEST',
   );
-  const deadlineCheckInterval = value.deadlineCheckInterval;
+  const deadlineCheckInterval = snapshot.get('deadlineCheckInterval');
 
   if (!Number.isSafeInteger(deadlineCheckInterval)
     || (deadlineCheckInterval as number) <= 0
@@ -313,33 +400,37 @@ export function parseSliceBatchResult(
   const request = validatedRequests.has(requestValue)
     ? requestValue
     : validateSliceBatchRequest(requestValue, checkpoint);
-  requireStrictRecord(
+  const snapshot = requireStrictRecord(
     value,
     ['version', 'statusCode', 'planeOffsets', 'endpoints', 'diagnosticCounters'],
     'INVALID_RESULT',
     'slice result',
   );
 
-  const version = requireSafeInteger(value.version, 'slice result version', [SLICE_RESULT_VERSION]);
+  const version = requireSafeInteger(
+    snapshot.get('version'),
+    'slice result version',
+    [SLICE_RESULT_VERSION],
+  );
   const statusCode = requireSafeInteger(
-    value.statusCode,
+    snapshot.get('statusCode'),
     'slice result status',
     [SLICE_STATUS_OK, SLICE_STATUS_GEOMETRY_EVIDENCE],
   );
   const planeOffsets = requireExactTypedArray(
-    value.planeOffsets,
+    snapshot.get('planeOffsets'),
     Uint32Array,
     'plane offsets',
     'INVALID_RESULT',
   );
   const endpoints = requireExactTypedArray(
-    value.endpoints,
+    snapshot.get('endpoints'),
     Float64Array,
     'endpoints',
     'INVALID_RESULT',
   );
   const diagnosticCounters = requireExactTypedArray(
-    value.diagnosticCounters,
+    snapshot.get('diagnosticCounters'),
     Uint32Array,
     'diagnostic counters',
     'INVALID_RESULT',
@@ -404,13 +495,6 @@ export function parseSliceBatchResult(
   });
 }
 
-const FALLBACK_ELIGIBLE_CODES: ReadonlySet<SliceKernelErrorCode> = new Set([
-  'LOAD_FAILED',
-  'EXECUTION_FAILED',
-  'INVALID_RESULT',
-  'RESOURCE_LIMIT',
-]);
-
 declare const canonicalPublicationTokenBrand: unique symbol;
 export interface CanonicalPublicationToken {
   readonly [canonicalPublicationTokenBrand]: never;
@@ -427,7 +511,7 @@ export class CanonicalFallbackGuard {
   }
 
   claimTypeScriptFallback(error: unknown): CanonicalPublicationToken {
-    if (!(error instanceof SliceKernelError) || !FALLBACK_ELIGIBLE_CODES.has(error.code)) {
+    if (!(error instanceof SliceKernelError) || !fallbackEligibleErrors.has(error)) {
       fail('FALLBACK_NOT_ALLOWED', 'TypeScript compatibility fallback is not allowed');
     }
     return this.#claim('fallback_claimed');

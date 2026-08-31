@@ -35,6 +35,43 @@ const maliciousAbortCases = [
   })],
 ] as const;
 
+const hostileRequestRecordCases = [
+  ['revoked proxy', () => {
+    const pair = Proxy.revocable(request, {});
+    pair.revoke();
+    return pair.proxy;
+  }],
+  ['throwing prototype trap', () => new Proxy(request, {
+    getPrototypeOf: () => { throw new Error('private request prototype detail'); },
+  })],
+  ['throwing ownKeys trap', () => new Proxy(request, {
+    ownKeys: () => { throw new Error('private request ownKeys detail'); },
+  })],
+  ['throwing descriptor trap', () => new Proxy(request, {
+    getOwnPropertyDescriptor: () => { throw new Error('private request descriptor detail'); },
+  })],
+] as const;
+
+function withThrowingOwnProperty<T extends object>(target: T, key: PropertyKey): T {
+  Object.defineProperty(target, key, {
+    configurable: true,
+    get: () => { throw new Error(`private ${String(key)} detail`); },
+  });
+  return target;
+}
+
+function detachedFloat32Array(): Float32Array {
+  const view = new Float32Array([0, 0, 0]);
+  structuredClone(view.buffer, { transfer: [view.buffer] });
+  return view;
+}
+
+function expectFallbackDenied(error: unknown): void {
+  expect(() => new CanonicalFallbackGuard().claimTypeScriptFallback(error)).toThrowError(
+    expect.objectContaining({ name: 'SliceKernelError', code: 'FALLBACK_NOT_ALLOWED' }),
+  );
+}
+
 afterEach(() => {
   disposeSliceKernel();
   vi.restoreAllMocks();
@@ -189,6 +226,48 @@ describe('production-compatible browser WASM loader', () => {
       expect(() => new CanonicalFallbackGuard().claimTypeScriptFallback(error)).toThrowError(
         expect.objectContaining({ name: 'SliceKernelError', code: 'FALLBACK_NOT_ALLOWED' }),
       );
+    },
+  );
+
+  it.each(hostileRequestRecordCases)(
+    'fails closed for production request %s with INVALID_REQUEST and no fallback',
+    async (_name, createRequest) => {
+      const kernel = await loadSliceKernel();
+      const error = await kernel.sliceLayerBatch(createRequest() as never, () => undefined)
+        .catch((failure: unknown) => failure);
+      expect(error).toMatchObject({ name: 'SliceKernelError', code: 'INVALID_REQUEST' });
+      expectFallbackDenied(error);
+    },
+  );
+
+  it('uses production request descriptor snapshots without invoking an ordinary get trap', async () => {
+    const kernel = await loadSliceKernel();
+    const requestProxy = new Proxy(request, {
+      get: () => { throw new Error('ordinary production request get must not run'); },
+    });
+    await expect(kernel.sliceLayerBatch(requestProxy, () => undefined)).resolves.toMatchObject({
+      version: 1,
+    });
+  });
+
+  it.each([
+    ['Proxy-wrapped', () => new Proxy(new Float32Array([0, 0, 0]), {})],
+    ['own constructor', () => withThrowingOwnProperty(new Float32Array([0, 0, 0]), 'constructor')],
+    ['own buffer', () => withThrowingOwnProperty(new Float32Array([0, 0, 0]), 'buffer')],
+    ['own length', () => withThrowingOwnProperty(new Float32Array([0, 0, 0]), 'length')],
+    ['detached', detachedFloat32Array],
+    ['non-zero offset', () => new Float32Array(new ArrayBuffer(16), 4, 3)],
+    ['partial backing buffer', () => new Float32Array(new ArrayBuffer(16), 0, 3)],
+  ] as const)(
+    'rejects production %s request typed array with INVALID_REQUEST and no fallback',
+    async (_name, createPositions) => {
+      const kernel = await loadSliceKernel();
+      const error = await kernel.sliceLayerBatch(
+        { ...request, positions: createPositions() as Float32Array },
+        () => undefined,
+      ).catch((failure: unknown) => failure);
+      expect(error).toMatchObject({ name: 'SliceKernelError', code: 'INVALID_REQUEST' });
+      expectFallbackDenied(error);
     },
   );
 });
