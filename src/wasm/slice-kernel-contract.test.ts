@@ -58,6 +58,16 @@ function encodedResult(overrides: Partial<{
   };
 }
 
+function emptyEncodedResult(): unknown {
+  const diagnosticCounters = new Uint32Array(DIAGNOSTIC_COUNTER_COUNT);
+  diagnosticCounters[3] = 1;
+  return encodedResult({
+    planeOffsets: new Uint32Array([0, 0]),
+    endpoints: new Float64Array(0),
+    diagnosticCounters,
+  });
+}
+
 function expectKernelCode(action: () => unknown, code: SliceKernelError['code']): void {
   expect(action).toThrowError(expect.objectContaining({ name: 'SliceKernelError', code }));
 }
@@ -580,6 +590,227 @@ describe('TypeScript WASM slice contract', () => {
       expect(checkpointCount).toBe(0);
       expect([source.positions, source.indices, source.planes].map((view) => view.byteLength))
         .toEqual([0, 0, 0]);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.resetModules();
+    }
+  });
+
+  it('checks original preflight buffers when a fake clone rewrites its transport', async () => {
+    vi.resetModules();
+    const nativeClone = globalThis.structuredClone;
+    vi.stubGlobal('structuredClone', (buffers: ArrayBuffer[]) => {
+      const privateBuffers = buffers.map((buffer) => buffer.slice(0));
+      const detachedDecoys = buffers.map(() => new ArrayBuffer(0));
+      nativeClone(detachedDecoys, { transfer: detachedDecoys });
+      for (let index = 0; index < buffers.length; index += 1) {
+        Object.defineProperty(buffers, String(index), {
+          configurable: true,
+          enumerable: true,
+          value: detachedDecoys[index],
+          writable: true,
+        });
+      }
+      return privateBuffers;
+    });
+    try {
+      const isolated = await import('./slice-kernel-contract');
+      const source = request();
+      const callerViews = [source.positions, source.indices, source.planes] as const;
+      const error = captureFailure(() => isolated.validateSliceBatchRequest(
+        source,
+        continueCheckpoint,
+      ));
+      expect(error).toMatchObject({
+        name: 'SliceKernelError',
+        code: 'INVALID_REQUEST',
+        fallbackEligible: false,
+      });
+      expect(callerViews.map((view) => view.byteLength)).toEqual([36, 12, 8]);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.resetModules();
+    }
+  });
+
+  it('uses an own captured iterator when Array.prototype is patched after module load', async () => {
+    vi.resetModules();
+    const nativeClone = globalThis.structuredClone;
+    const nativeIteratorDescriptor = Object.getOwnPropertyDescriptor(
+      Array.prototype,
+      Symbol.iterator,
+    ) as PropertyDescriptor;
+    let frozenTransport = false;
+    vi.stubGlobal('structuredClone', (
+      buffers: ArrayBuffer[],
+      options: StructuredSerializeOptions,
+    ) => {
+      frozenTransport = Object.isFrozen(buffers);
+      Object.defineProperty(Array.prototype, Symbol.iterator, {
+        configurable: true,
+        value: () => { throw new Error('late iterator monkeypatch'); },
+        writable: true,
+      });
+      try {
+        return nativeClone(buffers, options);
+      } finally {
+        Object.defineProperty(Array.prototype, Symbol.iterator, nativeIteratorDescriptor);
+      }
+    });
+    try {
+      const isolated = await import('./slice-kernel-contract');
+      const source = request();
+      expect(() => isolated.validateSliceBatchRequest(source, continueCheckpoint)).not.toThrow();
+      expect(frozenTransport).toBe(true);
+      expect([source.positions, source.indices, source.planes].map((view) => view.byteLength))
+        .toEqual([0, 0, 0]);
+    } finally {
+      Object.defineProperty(Array.prototype, Symbol.iterator, nativeIteratorDescriptor);
+      vi.unstubAllGlobals();
+      vi.resetModules();
+    }
+  });
+
+  it.each([
+    ['an extra own key', (privateBuffers: ArrayBuffer[]) => {
+      Object.defineProperty(privateBuffers, 'extra', { value: true });
+      return privateBuffers;
+    }],
+    ['an accessor index', (privateBuffers: ArrayBuffer[]) => {
+      const first = privateBuffers[0];
+      Object.defineProperty(privateBuffers, '0', {
+        configurable: true,
+        enumerable: true,
+        get: () => first,
+      });
+      return privateBuffers;
+    }],
+    ['a changing Proxy index value', (privateBuffers: ArrayBuffer[]) => {
+      const alternate = privateBuffers[0].slice(0);
+      let firstRead = true;
+      return new Proxy(privateBuffers, {
+        get: (target, key, receiver) => {
+          if (key === '0' && firstRead) {
+            firstRead = false;
+            return alternate;
+          }
+          return Reflect.get(target, key, receiver);
+        },
+      });
+    }],
+    ['a throwing numeric descriptor trap', (privateBuffers: ArrayBuffer[]) => new Proxy(
+      privateBuffers,
+      {
+        getOwnPropertyDescriptor: (target, key) => {
+          if (key === '0') throw new Error('private numeric descriptor');
+          return Reflect.getOwnPropertyDescriptor(target, key);
+        },
+      },
+    )],
+  ] as const)(
+    'rejects a clone-return container with %s',
+    async (_label, mutateContainer) => {
+      vi.resetModules();
+      const nativeClone = globalThis.structuredClone;
+      vi.stubGlobal('structuredClone', (
+        buffers: ArrayBuffer[],
+        options: StructuredSerializeOptions,
+      ) => mutateContainer(nativeClone(buffers, options)));
+      try {
+        const isolated = await import('./slice-kernel-contract');
+        const source = request();
+        const error = captureFailure(() => isolated.validateSliceBatchRequest(
+          source,
+          continueCheckpoint,
+        ));
+        expect(error).toMatchObject({
+          name: 'SliceKernelError',
+          code: 'INVALID_REQUEST',
+          fallbackEligible: false,
+        });
+      } finally {
+        vi.unstubAllGlobals();
+        vi.resetModules();
+      }
+    },
+  );
+
+  it.each(['length', '0'] as const)(
+    'rejects a clone-return Proxy with a throwing %s value trap',
+    async (throwingKey) => {
+      vi.resetModules();
+      const nativeClone = globalThis.structuredClone;
+      vi.stubGlobal('structuredClone', (
+        buffers: ArrayBuffer[],
+        options: StructuredSerializeOptions,
+      ) => new Proxy(nativeClone(buffers, options), {
+        get: (target, key, receiver) => {
+          if (key === throwingKey) throw new Error('private clone value');
+          return Reflect.get(target, key, receiver);
+        },
+      }));
+      try {
+        const isolated = await import('./slice-kernel-contract');
+        expectValidationAndFallbackDenied(
+          () => isolated.validateSliceBatchRequest(request(), continueCheckpoint),
+          'INVALID_REQUEST',
+        );
+      } finally {
+        vi.unstubAllGlobals();
+        vi.resetModules();
+      }
+    },
+  );
+
+  it('accepts native transfer of a zero-byte result buffer and detaches its source', () => {
+    const source = request();
+    const encoded = emptyEncodedResult() as {
+      endpoints: Float64Array;
+    };
+    const endpointBuffer = encoded.endpoints.buffer;
+    const parsed = parseResult(encoded, source, continueCheckpoint);
+    expect(parsed.endpoints.length).toBe(0);
+    expect(() => endpointBuffer.slice(0)).toThrow();
+  });
+
+  it('rejects a fake clone that leaves only a zero-byte source attached', async () => {
+    vi.resetModules();
+    const nativeClone = globalThis.structuredClone;
+    vi.stubGlobal('structuredClone', (buffers: ArrayBuffer[]) => {
+      const privateBuffers = new Array<ArrayBuffer>(buffers.length);
+      const nonZeroBuffers: ArrayBuffer[] = [];
+      const nonZeroIndices: number[] = [];
+      for (let index = 0; index < buffers.length; index += 1) {
+        if (buffers[index].byteLength === 0) {
+          privateBuffers[index] = buffers[index].slice(0);
+        } else {
+          nonZeroBuffers.push(buffers[index]);
+          nonZeroIndices.push(index);
+        }
+      }
+      const transferred = nativeClone(nonZeroBuffers, { transfer: nonZeroBuffers });
+      for (let index = 0; index < transferred.length; index += 1) {
+        privateBuffers[nonZeroIndices[index]] = transferred[index];
+      }
+      return privateBuffers;
+    });
+    try {
+      const isolated = await import('./slice-kernel-contract');
+      const source = request();
+      const encoded = emptyEncodedResult() as { endpoints: Float64Array };
+      const endpointBuffer = encoded.endpoints.buffer;
+      const error = captureFailure(() => isolated.parseSliceBatchResult(
+        encoded,
+        source,
+        continueCheckpoint,
+      ));
+      expect(error).toMatchObject({
+        name: 'SliceKernelError',
+        code: 'INVALID_REQUEST',
+        fallbackEligible: false,
+      });
+      expect(endpointBuffer.byteLength).toBe(0);
+      expect(() => endpointBuffer.slice(0)).not.toThrow();
     } finally {
       vi.unstubAllGlobals();
       vi.resetModules();

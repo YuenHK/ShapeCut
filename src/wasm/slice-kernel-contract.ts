@@ -196,6 +196,10 @@ function requireStrictRecord<Key extends string>(
 }
 
 const reflectApply = Reflect.apply;
+const reflectGet = Reflect.get;
+const reflectOwnKeys = Reflect.ownKeys;
+const objectDefineProperty = Object.defineProperty;
+const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
 const objectGetPrototypeOf = Object.getPrototypeOf;
 const objectHasOwn = Object.hasOwn;
 const numberIsFinite = Number.isFinite;
@@ -209,6 +213,8 @@ const mathMin = Math.min;
 const structuredCloneIntrinsic = globalThis.structuredClone;
 const ArrayIntrinsic = Array;
 const arrayIsArray = Array.isArray;
+const arrayPrototype = ArrayIntrinsic.prototype;
+const arrayIterator = objectGetOwnPropertyDescriptor(arrayPrototype, Symbol.iterator)?.value;
 const ArrayBufferIntrinsic = ArrayBuffer;
 const arrayBufferPrototype = ArrayBufferIntrinsic.prototype;
 const typedArrayPrototype = objectGetPrototypeOf(Uint8Array.prototype);
@@ -226,6 +232,7 @@ const arrayBufferResizableGetter = Object.getOwnPropertyDescriptor(
   arrayBufferPrototype,
   'resizable',
 )?.get;
+const arrayBufferSlice = objectGetOwnPropertyDescriptor(arrayBufferPrototype, 'slice')?.value;
 const Float32ArrayIntrinsic = Float32Array;
 const Float64ArrayIntrinsic = Float64Array;
 const Uint32ArrayIntrinsic = Uint32Array;
@@ -355,6 +362,64 @@ function rejectSharedBackingBuffers(
   }
 }
 
+function snapshotTransferredBuffers(
+  value: unknown,
+  expectedLength: number,
+  code: 'INVALID_REQUEST' | 'INVALID_RESULT',
+  name: string,
+): readonly ArrayBuffer[] {
+  try {
+    if (!arrayIsArray(value) || objectGetPrototypeOf(value) !== arrayPrototype) {
+      throw new TypeError('ownership transfer did not return an ordinary array');
+    }
+    const keys = reflectOwnKeys(value);
+    if (keys.length !== expectedLength + 1) {
+      throw new TypeError('ownership transfer returned unexpected keys');
+    }
+    for (let index = 0; index < expectedLength; index += 1) {
+      if (keys[index] !== String(index)) {
+        throw new TypeError('ownership transfer returned unexpected numeric keys');
+      }
+    }
+    if (keys[expectedLength] !== 'length') {
+      throw new TypeError('ownership transfer omitted its exact length key');
+    }
+
+    const lengthDescriptor = objectGetOwnPropertyDescriptor(value, 'length');
+    if (!lengthDescriptor || !('value' in lengthDescriptor)) {
+      throw new TypeError('ownership transfer returned an accessor length');
+    }
+    const lengthValue = lengthDescriptor.value as unknown;
+    if (lengthValue !== expectedLength
+      || lengthDescriptor.configurable !== false
+      || lengthDescriptor.enumerable !== false
+      || lengthDescriptor.writable !== true
+      || reflectGet(value, 'length') !== lengthValue) {
+      throw new TypeError('ownership transfer returned an invalid length descriptor');
+    }
+
+    const snapshot = new ArrayIntrinsic<ArrayBuffer>(expectedLength);
+    for (let index = 0; index < expectedLength; index += 1) {
+      const key = String(index);
+      const descriptor = objectGetOwnPropertyDescriptor(value, key);
+      if (!descriptor || !('value' in descriptor)) {
+        throw new TypeError('ownership transfer returned an accessor index');
+      }
+      const descriptorValue = descriptor.value as unknown;
+      if (descriptor.configurable !== true
+        || descriptor.enumerable !== true
+        || descriptor.writable !== true
+        || reflectGet(value, key) !== descriptorValue) {
+        throw new TypeError('ownership transfer returned an invalid numeric descriptor');
+      }
+      snapshot[index] = descriptorValue as ArrayBuffer;
+    }
+    return objectFreeze(snapshot);
+  } catch {
+    failInspection(code, name);
+  }
+}
+
 function transferOwnedTypedArrays<T extends readonly AnyExactTypedArray[]>(
   inspections: T,
   code: 'INVALID_REQUEST' | 'INVALID_RESULT',
@@ -369,19 +434,44 @@ function transferOwnedTypedArrays<T extends readonly AnyExactTypedArray[]>(
     for (let index = 0; index < inspections.length; index += 1) {
       sourceBuffers[index] = inspections[index].buffer;
     }
-    const privateBuffers = structuredCloneIntrinsic(sourceBuffers, {
-      transfer: sourceBuffers,
-    }) as ArrayBuffer[];
-    if (!arrayIsArray(privateBuffers) || privateBuffers.length !== inspections.length) {
-      throw new TypeError('ownership transfer returned the wrong buffer count');
+    if (typeof arrayIterator !== 'function') {
+      throw new TypeError('array iterator unavailable at trusted bootstrap');
     }
+    objectDefineProperty(sourceBuffers, Symbol.iterator, {
+      configurable: false,
+      enumerable: false,
+      value: arrayIterator,
+      writable: false,
+    });
+    objectFreeze(sourceBuffers);
+    const cloneReturn = structuredCloneIntrinsic(sourceBuffers, {
+      transfer: sourceBuffers,
+    });
+    const privateBuffers = snapshotTransferredBuffers(
+      cloneReturn,
+      inspections.length,
+      code,
+      `${name} return container`,
+    );
     for (let index = 0; index < inspections.length; index += 1) {
+      const sourceBuffer = inspections[index].buffer;
       const sourceByteLength = reflectApply(
         arrayBufferByteLengthGetter as Function,
-        sourceBuffers[index],
+        sourceBuffer,
         [],
       ) as unknown;
-      if (sourceByteLength !== 0) throw new TypeError('ownership source was not detached');
+      if (typeof arrayBufferSlice !== 'function') {
+        throw new TypeError('array buffer slice unavailable at trusted bootstrap');
+      }
+      let sourceDetached = false;
+      try {
+        reflectApply(arrayBufferSlice, sourceBuffer, [0, 0]);
+      } catch {
+        sourceDetached = true;
+      }
+      if (sourceByteLength !== 0 || !sourceDetached) {
+        throw new TypeError('ownership source was not detached');
+      }
 
       const privateBuffer = privateBuffers[index] as unknown;
       const privateByteLength = reflectApply(
@@ -397,8 +487,8 @@ function transferOwnedTypedArrays<T extends readonly AnyExactTypedArray[]>(
         || privateResizable !== false) {
         throw new TypeError('ownership transfer returned an invalid private buffer');
       }
-      for (let sourceIndex = 0; sourceIndex < sourceBuffers.length; sourceIndex += 1) {
-        if (privateBuffer === (sourceBuffers[sourceIndex] as unknown)) {
+      for (let sourceIndex = 0; sourceIndex < inspections.length; sourceIndex += 1) {
+        if (privateBuffer === (inspections[sourceIndex].buffer as unknown)) {
           throw new TypeError('ownership transfer returned a source buffer');
         }
       }

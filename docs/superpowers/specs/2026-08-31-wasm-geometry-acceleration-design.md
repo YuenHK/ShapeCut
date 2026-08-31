@@ -76,6 +76,20 @@ byte length 與 preflight 完全相符。偽成功、未 detach、alias、resiza
 partial detach，adapter 只能偵測並拒絕；JavaScript 無法 rollback ownership，
 因此本設計不聲稱可恢復該惡意 bootstrap 狀態。
 
+Transfer transport 只由 preflight inspections 捕獲的原始 buffers 建立；在
+呼叫 clone 前加入以 module-load captured `Array` iterator 定義的 own iterator，
+再 freeze。Clone 回傳值必須以 captured prototype／ownKeys／descriptors 驗證
+為 exact ordinary array，只容許連續 numeric data descriptors 及標準 `length`；
+descriptor values 一次 snapshot 到 frozen internal array，後續 source-detach、
+private/source identity、private/private identity 及 view reconstruction 不再讀取
+transport 或 untrusted return container。Accessor、額外 key、changing／throwing
+Proxy trap 一律 fail closed。
+
+Source detach 不可只以 `byteLength === 0` 判定，因為 attached zero-byte buffer
+亦符合該值；adapter 必須再以 module-load captured
+`ArrayBuffer.prototype.slice(0, 0)` 驗證 detached buffer 會拋錯。Native
+zero-byte transfer 必須成功，fake clone 留下 attached zero-byte source 則拒絕。
+
 公開 direct verifier 必須先 preflight request/result 共六個 distinct buffers，
 再用同一次 transfer call 原子移交全部六個，之後才重建六個 private views；
 不得先 detach request 再嘗試 result transfer。若 operation 在 native transfer
