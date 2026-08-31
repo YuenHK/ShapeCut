@@ -14,6 +14,7 @@ import {
   type HoleCandidateProbeEvidence,
 } from './extract';
 import { validateOutlineLayer } from './validate';
+import type { ExactSegmentCollection } from './segment-source';
 
 const selection: OutlineAxisSelection = {
   source: 'candidate',
@@ -639,6 +640,24 @@ describe('extractProjectedContours', () => {
 });
 
 describe('extractExactContours', () => {
+  test('consumes a supplied exact segment collection instead of recomputing TypeScript slices', () => {
+    const emptyCollection: ExactSegmentCollection = Object.freeze({
+      origin: 'wasm',
+      layers: Object.freeze([Object.freeze({ planeIndex: 0, z: 0, segments: Object.freeze([]) })]),
+      diagnostics: Object.freeze({
+        degenerateTriangleCount: 0,
+        coplanarTrianglePlaneCount: 0,
+        ambiguousIntersectionCount: 0,
+        onPlaneEdgeCount: 0,
+      }),
+    });
+
+    expect(() => extractExactContours(
+      box(0, 0, 20, 12), selection, specs, DEFAULT_OUTLINE_BUDGETS,
+      undefined, undefined, emptyCollection,
+    )).toThrow(/empty segment graph/i);
+  });
+
   test('classifies a strictly nested loop as a reliable central hole', () => {
     const candidate = squareTube(20, 4);
     const first = extractExactContours(candidate, selection, specs, DEFAULT_OUTLINE_BUDGETS);

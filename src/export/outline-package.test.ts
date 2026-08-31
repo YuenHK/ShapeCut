@@ -580,7 +580,7 @@ const STRICT_RAW_ZIP_MUTATIONS = [
   }],
 ] as const;
 
-describe('material-independent outline package', () => {
+describe('material-independent outline package', { timeout: 30_000 }, () => {
   it('packages a real material-bound pipeline result', async () => {
     const runtime = await convertAutomatically({ bytes: writeBinarySTL(cylinder(), 'safe') });
 

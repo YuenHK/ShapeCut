@@ -3,10 +3,12 @@ import { finalizer, releaseProxy, wrap, type Remote } from 'comlink';
 import JSZip from 'jszip';
 import { writeBinarySTL } from '../domain/mesh/write-stl';
 import {
+  convertAutomatically as convertAutomaticOutline,
   stripAutomaticOutlineInternalEvidence,
   type AutomaticOutlineResult,
   type AutomaticOutlineProgressEvent,
 } from '../domain/pipeline/automatic-outline-pipeline';
+import { createOutlinePackage } from '../export/outline-package';
 import { featureEvidenceFingerprint } from '../domain/outline-features/types';
 import { coloredResult, nearLimitColoredResult } from '../export/colored-outline-test-fixture';
 import type { TriangleMesh } from '../domain/mesh/types';
@@ -45,6 +47,19 @@ function createRawGeometryWorkerApi(): Remote<GeometryApi> {
   rawWorkers.push(worker);
   rawWorkerApis.push(api);
   return api;
+}
+function createAcceptanceGeometryWorker(): { readonly worker: Worker; readonly api: Remote<GeometryApi> } {
+  const url = new URL('./geometry.worker.ts', import.meta.url);
+  url.searchParams.set('shapecut-acceptance', '1');
+  const worker = new Worker(url, { type: 'module' });
+  const api = wrap<GeometryApi>(worker);
+  rawWorkers.push(worker);
+  rawWorkerApis.push(api);
+  return { worker, api };
+}
+async function artifactSha256(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 const launcherCompatibleCylinder = (segments = 32): TriangleMesh => {
   const positions: number[] = [0, 0, -1, 0, 0, 1];
@@ -96,6 +111,43 @@ afterEach(() => {
 });
 
 describe('geometry worker boundary', () => {
+  it('uses verified WASM segments in production canonical extraction without changing launcher artifacts', async () => {
+    const { worker, api } = createAcceptanceGeometryWorker();
+    const source = writeBinarySTL(launcherCompatibleCylinder(), 'safe');
+    const publication = new Promise<unknown>((resolve) => {
+      worker.addEventListener('message', (event) => {
+        if (event.data?.type === 'SHAPECUT_WASM_SEGMENTS_PUBLISHED') resolve(event.data);
+      });
+    });
+    const baseline = await convertAutomaticOutline({
+      bytes: source.slice(0), material: testMaterial, launcherFitOffsetMm: 0,
+    });
+    const baselineArtifacts = await createOutlinePackage(baseline);
+
+    const acceleratedPromise = api.convertAutomatically({
+      bytes: source, material: testMaterial, launcherFitOffsetMm: 0,
+    });
+    await expect(publication).resolves.toEqual(expect.objectContaining({
+      type: 'SHAPECUT_WASM_SEGMENTS_PUBLISHED',
+      origin: 'wasm',
+    }));
+    const accelerated = await acceleratedPromise;
+    const acceleratedArtifacts = await api.packageOutline(accelerated);
+
+    expect(accelerated.layers).toEqual(baseline.layers);
+    expect(accelerated.assembly.launcher).toEqual(baseline.assembly.launcher);
+    expect(accelerated.featureEvidenceFingerprint).toBe(baseline.featureEvidenceFingerprint);
+    await expect(Promise.all([
+      artifactSha256(acceleratedArtifacts.cutSvg),
+      artifactSha256(acceleratedArtifacts.cutDxf),
+      artifactSha256(acceleratedArtifacts.launcherCouponSvg),
+    ])).resolves.toEqual(await Promise.all([
+      artifactSha256(baselineArtifacts.cutSvg),
+      artifactSha256(baselineArtifacts.cutDxf),
+      artifactSha256(baselineArtifacts.launcherCouponSvg),
+    ]));
+  }, 120_000);
+
   it('evicts the oldest entry when a fifth internal result enters the max-four cache', () => {
     const cache = new InternalAutomaticResultCache(4);
     const results = Array.from({ length: 5 }, (_, index) => cacheResult(index));

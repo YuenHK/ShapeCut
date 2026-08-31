@@ -22,8 +22,10 @@ import { createOutlinePackage } from '../export/outline-package';
 import { nearLimitColoredResult } from '../export/colored-outline-test-fixture';
 import { setHoleCandidateProbeForTesting } from '../domain/outline-2.5d/extract';
 import { createStlPresentationPayload } from '../preview/stl-presentation';
+import { WasmExactSegmentSource } from '../domain/outline-2.5d/segment-source';
 import {
   OutlineArtifactError,
+  type GeometryAccelerationProbe,
   type GeometryApi,
   type ImportRepairAnalysis,
   type MeshAnalysis,
@@ -35,6 +37,18 @@ import { InternalAutomaticResultCache } from './internal-automatic-result-cache'
 let nearLimitPackageWorkload: ReturnType<typeof nearLimitColoredResult> | undefined;
 const internalResultCache = new InternalAutomaticResultCache();
 const acceptanceProbeEnabled = new URL(globalThis.location.href).searchParams.get('shapecut-acceptance') === '1';
+const exactSegmentSource = new WasmExactSegmentSource({
+  minimumWasmWork: acceptanceProbeEnabled ? 0 : undefined,
+  onPublication: (collection) => {
+    if (!acceptanceProbeEnabled || collection.origin !== 'wasm') return;
+    const message: GeometryAccelerationProbe = {
+      type: 'SHAPECUT_WASM_SEGMENTS_PUBLISHED',
+      origin: 'wasm',
+      layerCount: collection.layers.length,
+    };
+    globalThis.postMessage(message);
+  },
+});
 
 globalThis.addEventListener('message', (event: MessageEvent<unknown>) => {
   if (!acceptanceProbeEnabled) return;
@@ -116,7 +130,7 @@ const geometryApi: GeometryApi = {
         bytes: request.bytes,
         material: validateManufacturingGeometryProfile(request.material),
         launcherFitOffsetMm: validateLauncherFitOffsetMm(request.launcherFitOffsetMm),
-      }, progress);
+      }, progress, { exactSegmentSource });
       internalResultCache.store(internalResult);
       return stripAutomaticOutlineInternalEvidence(internalResult);
     } catch (error) {

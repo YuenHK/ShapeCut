@@ -30,7 +30,8 @@ import {
   type FastenerPlan,
 } from '../outline-assembly/fasteners';
 import { createPhysicalCutProtection } from '../outline-assembly/physical-cut-envelope';
-import { createOutlineAxisBasis } from '../outline-2.5d/raster';
+import { createOutlineAxisBasis, projectMesh } from '../outline-2.5d/raster';
+import type { ExactSegmentCollection, ExactSegmentSource } from '../outline-2.5d/segment-source';
 import { scheduleOutlineLayers } from '../outline-2.5d/layer-schedule';
 import {
   featureEvidenceFingerprint,
@@ -115,6 +116,9 @@ export type AutomaticOutlineRequest = {
   readonly launcherFitOffsetMm: number;
 };
 export type AutomaticOutlineProgress = (event: AutomaticOutlineProgressEvent) => void | Promise<void>;
+export type AutomaticOutlineExecutionOptions = Readonly<{
+  exactSegmentSource?: ExactSegmentSource;
+}>;
 export type AutomaticOutlineErrorCode =
   | 'INVALID_STL'
   | 'NO_OUTLINE'
@@ -550,6 +554,7 @@ function asAutomaticOutlineError(error: unknown, fallbackCode: AutomaticOutlineE
 export async function convertAutomatically(
   request: AutomaticOutlineRequest,
   onProgress?: AutomaticOutlineProgress,
+  execution: AutomaticOutlineExecutionOptions = {},
 ): Promise<AutomaticOutlineResult> {
   const material = validateManufacturingGeometryProfile(request.material);
   const launcherFitOffsetMm = validateLauncherFitOffsetMm(request.launcherFitOffsetMm);
@@ -628,14 +633,26 @@ export async function convertAutomatically(
   if (safeRepair.accepted) {
     let exactExtraction: ReturnType<typeof extractExactContours>;
     let exactAssembly: PlannedAssembly | undefined;
+    let suppliedSegments: ExactSegmentCollection | undefined;
     try {
+      const suppliedProjection = execution.exactSegmentSource
+        ? projectMesh(extractionMesh, axis, deadline, () => checkEvidenceDeadline(deadline))
+        : undefined;
+      suppliedSegments = suppliedProjection
+        ? await execution.exactSegmentSource!.collect(
+          suppliedProjection, specs, deadline, () => checkEvidenceDeadline(deadline),
+        ) : undefined;
       exactExtraction = extractExactContours(
         extractionMesh, axis, specs, DEFAULT_OUTLINE_BUDGETS, deadline,
         extractionOptions(material, launcherFitOffsetMm, (assembly) => { exactAssembly = assembly; }),
+        suppliedSegments,
+        suppliedProjection,
       );
     } catch (exactError) {
       const mappedExactError = asAutomaticOutlineError(exactError, 'NO_OUTLINE');
-      if (mappedExactError.code !== 'NO_OUTLINE' || !(exactError instanceof ExactContourAmbiguityError)) {
+      if (mappedExactError.code !== 'NO_OUTLINE'
+        || !(exactError instanceof ExactContourAmbiguityError)
+        || suppliedSegments?.origin === 'wasm') {
         throw mappedExactError;
       }
       let projectedExtraction: ReturnType<typeof extractProjectedContours>;

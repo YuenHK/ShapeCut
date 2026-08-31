@@ -25,6 +25,14 @@ import { projectMesh, rasterCellSize, rasterProjectLayer, type ProjectedMesh } f
 import { contourBounds, signedArea, simplifyClosedLoop, type Bounds2 } from './simplify';
 import { DEFAULT_OUTLINE_BUDGETS, type OutlineAxisSelection, type OutlineBudgets, type OutlineLayerSpec } from './types';
 import { validateOutlineLayer } from './validate';
+import {
+  ExactContourAmbiguityError,
+  collectTypeScriptExactSegments,
+  type ExactSegment,
+  type ExactSegmentCollection,
+} from './segment-source';
+
+export { ExactContourAmbiguityError } from './segment-source';
 
 export type OutlineLayer = {
   readonly id: string;
@@ -234,8 +242,6 @@ function validateExteriorOverride(
 }
 
 /** Exact slice topology is ambiguous, so projected extraction may be attempted. */
-export class ExactContourAmbiguityError extends RangeError {}
-
 function checkDeadline(deadline: number): void {
   if (Date.now() > deadline) throw new RangeError('Contour extraction exceeded the runtime budget');
 }
@@ -635,73 +641,7 @@ export function extractProjectedContours(
   };
 }
 
-type Segment = readonly [Point2, Point2];
-type PlaneEdge = { readonly segment: Segment; readonly side: -1 | 1 };
-
-function sliceSegments(projected: ProjectedMesh, z: number, deadline: number): readonly Segment[] {
-  const epsilon = Math.max(1e-9, projected.planarDiameter * 1e-10), segments: Segment[] = [];
-  const planeEdges = new Map<string, PlaneEdge[]>();
-  const pointKey = ([x, y]: Point2): string => `${Math.round(x / epsilon)},${Math.round(y / epsilon)}`;
-  const segmentKey = ([a, b]: Segment): string => {
-    const ka = pointKey(a), kb = pointKey(b);
-    return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
-  };
-  for (let triangleIndex = 0; triangleIndex < projected.triangles.length; triangleIndex += 1) {
-    if ((triangleIndex & 255) === 0) checkDeadline(deadline);
-    const triangle = projected.triangles[triangleIndex];
-    const vertices = triangle.map((index) => projected.vertices[index]);
-    const distances = vertices.map((vertex) => vertex[2] - z);
-    if (distances.every((value) => value > epsilon) || distances.every((value) => value < -epsilon)) continue;
-    const onPlane = distances.map((distance, index) => Math.abs(distance) <= epsilon ? index : -1).filter((index) => index >= 0);
-    if (onPlane.length === 3) throw new ExactContourAmbiguityError('Exact contour intersects a coplanar triangle');
-    if (onPlane.length === 2) {
-      const offPlane = [0, 1, 2].find((index) => !onPlane.includes(index))!;
-      const segment: Segment = [
-        [vertices[onPlane[0]][0], vertices[onPlane[0]][1]],
-        [vertices[onPlane[1]][0], vertices[onPlane[1]][1]],
-      ];
-      const key = segmentKey(segment), values = planeEdges.get(key) ?? [];
-      values.push({ segment, side: distances[offPlane] > 0 ? 1 : -1 });
-      planeEdges.set(key, values);
-      continue;
-    }
-    if (onPlane.length === 1) {
-      const vertexIndex = onPlane[0], others = [0, 1, 2].filter((index) => index !== vertexIndex);
-      if (distances[others[0]] * distances[others[1]] >= 0) continue;
-      const a = vertices[others[0]], b = vertices[others[1]], da = distances[others[0]], db = distances[others[1]];
-      const t = da / (da - db);
-      segments.push([
-        [vertices[vertexIndex][0], vertices[vertexIndex][1]],
-        [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t],
-      ]);
-      continue;
-    }
-    const intersections: Point2[] = [];
-    for (let edge = 0; edge < 3; edge += 1) {
-      const a = vertices[edge], b = vertices[(edge + 1) % 3], da = distances[edge], db = distances[(edge + 1) % 3];
-      if ((da < -epsilon && db > epsilon) || (da > epsilon && db < -epsilon)) {
-        const t = da / (da - db);
-        intersections.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
-      }
-    }
-    if (intersections.length !== 2
-      || Math.hypot(intersections[0][0] - intersections[1][0], intersections[0][1] - intersections[1][1]) <= epsilon) {
-      throw new ExactContourAmbiguityError('Exact contour triangle intersection is ambiguous');
-    }
-    segments.push([intersections[0], intersections[1]]);
-  }
-  let edgeGroupIndex = 0;
-  for (const values of planeEdges.values()) {
-    if ((edgeGroupIndex++ & 255) === 0) checkDeadline(deadline);
-    if (values.length !== 2 || values[0].side === values[1].side) {
-      throw new ExactContourAmbiguityError('Exact contour shared plane edge is ambiguous');
-    }
-    segments.push(values[0].segment);
-  }
-  return segments;
-}
-
-function exactLoops(segments: readonly Segment[], diameter: number, deadline: number): readonly (readonly Point2[])[] {
+function exactLoops(segments: readonly ExactSegment[], diameter: number, deadline: number): readonly (readonly Point2[])[] {
   checkDeadline(deadline);
   if (segments.length === 0) throw new ExactContourAmbiguityError('Exact contour has an empty segment graph');
   const quantum = Math.max(1e-9, diameter * 1e-9);
@@ -891,18 +831,30 @@ export function extractExactContours(
   budgets: OutlineBudgets,
   deadline = Date.now() + budgets.maxRuntimeMs,
   options?: OutlineFeatureExtractionOptions,
+  suppliedSegments?: ExactSegmentCollection,
+  suppliedProjection?: ProjectedMesh,
 ): OutlineExtraction {
   validateBudgets(budgets);
-  const projected = projectMesh(mesh, selection, deadline);
+  const projected = suppliedProjection ?? projectMesh(mesh, selection, deadline);
   validateRequest(projected, specs, budgets, deadline);
   const tolerance = Math.max(rasterCellSize(projected) * 1.5, projected.planarDiameter * 0.001);
   const layers: OutlineLayer[] = [];
   const holeRequests: CentralHoleRequest[] = [];
   const cellSizeMm = rasterCellSize(projected);
+  const segmentCollection = suppliedSegments ?? collectTypeScriptExactSegments(
+    projected, specs, deadline, () => checkDeadline(deadline),
+  );
+  if (segmentCollection.layers.length !== specs.length) {
+    throw new RangeError('Exact segment collection does not match the layer schedule');
+  }
   for (let index = 0; index < specs.length; index += 1) {
     checkDeadline(deadline);
     const spec = specs[index];
-    const loops = exactLoops(sliceSegments(projected, spec.zMid, deadline), projected.planarDiameter, deadline);
+    const segmentLayer = segmentCollection.layers[index];
+    if (segmentLayer.planeIndex !== index || segmentLayer.z !== spec.zMid) {
+      throw new RangeError('Exact segment collection does not match the layer schedule');
+    }
+    const loops = exactLoops(segmentLayer.segments, projected.planarDiameter, deadline);
     const classified = classifyExactNestedLoops(loops, projected.planarDiameter, deadline);
     const layer = makeLayer(spec, clockwise(classified.exterior, deadline), tolerance, budgets, deadline, 0);
     layers.push(layer);

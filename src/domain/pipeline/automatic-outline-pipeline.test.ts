@@ -26,6 +26,7 @@ import {
 import { planFixedLauncherClearance } from '../outline-assembly/launcher';
 import { expandLauncherExterior } from '../outline-assembly/launcher-exterior-expansion';
 import { PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING } from '../outline-features/depth-field';
+import { TypeScriptExactSegmentSource, type ExactSegmentSource } from '../outline-2.5d/segment-source';
 
 const { testOutlineBudgets } = vi.hoisted(() => ({
   testOutlineBudgets: { maxRuntimeMs: Number.POSITIVE_INFINITY },
@@ -180,6 +181,47 @@ function openSquarePlate(): TriangleMesh {
 }
 
 describe('automatic outline pipeline', { timeout: 20_000 }, () => {
+  it('collects exact segments through the injected production source before canonical extraction', async () => {
+    const exactSegmentSource = new TypeScriptExactSegmentSource();
+    const collect = vi.spyOn(exactSegmentSource, 'collect');
+
+    await convertAutomaticOutline({
+      bytes: writeBinarySTL(cylinder(), 'safe'),
+      material: testMaterial,
+      launcherFitOffsetMm: 0,
+    }, undefined, { exactSegmentSource });
+
+    expect(collect).toHaveBeenCalledOnce();
+  });
+
+  it('does not switch to projected TypeScript extraction after a WASM batch is published', async () => {
+    const exactSegmentSource: ExactSegmentSource = {
+      collect: async (_mesh, layerSpecs) => Object.freeze({
+        origin: 'wasm',
+        layers: Object.freeze(layerSpecs.map((spec, planeIndex) => Object.freeze({
+          planeIndex,
+          z: spec.zMid,
+          segments: Object.freeze([]),
+        }))),
+        diagnostics: Object.freeze({
+          degenerateTriangleCount: 0,
+          coplanarTrianglePlaneCount: 0,
+          ambiguousIntersectionCount: 0,
+          onPlaneEdgeCount: 0,
+        }),
+      }),
+    };
+
+    await expect(convertAutomaticOutline({
+      bytes: writeBinarySTL(cylinder(), 'safe'),
+      material: testMaterial,
+      launcherFitOffsetMm: 0,
+    }, undefined, { exactSegmentSource })).rejects.toMatchObject({
+      name: 'AutomaticOutlineError',
+      code: 'NO_OUTLINE',
+    });
+  });
+
   it('publishes one reconciled assembly decision before engraving and preview evidence', async () => {
     const result = await convertAutomatically({ bytes: writeBinarySTL(cylinder(), 'safe') });
 

@@ -44,6 +44,12 @@ export class OutlineArtifactError extends Error {
 
 export type SerializedMesh = TriangleMesh;
 export type AutomaticOutlineProgressTransport = AutomaticOutlineProgress | MessagePort;
+/** Acceptance-only worker message; never part of GeometryApi results or artifacts. */
+export type GeometryAccelerationProbe = Readonly<{
+  type: 'SHAPECUT_WASM_SEGMENTS_PUBLISHED';
+  origin: 'wasm';
+  layerCount: number;
+}>;
 export type OutlinePackageTransfer = {
   readonly zip: Uint8Array;
   readonly cutSvg: string;
