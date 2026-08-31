@@ -768,3 +768,160 @@ the checkout remained clean.
   high vulnerabilities; dependency changes remain outside Task 3.
 - No round 4 change touches UI/CSS, fonts, colours, production deadline,
   canonical merge, materials, launcher code or official release artifacts.
+
+## Re-review round 5: findings 15–16
+
+Date: 2026-08-31
+Implementation commit: `f3faf14` (`fix(wasm): seal fallback provenance and typed array snapshots`)
+
+### Finding 15: unforgeable fallback provenance
+
+- Public `SliceKernelError` construction is now fallback-ineligible for every
+  code, including `LOAD_FAILED`, `EXECUTION_FAILED`, `INVALID_RESULT` and
+  `RESOURCE_LIMIT`. Supplying the former fourth boolean argument cannot grant
+  eligibility.
+- The fallback authority is an unexported frozen identity in the contract
+  module. Eligibility additionally requires exact base-class construction, so
+  a public subclass cannot acquire it. The publication guard continues to
+  validate membership in its private `WeakSet`; the public boolean is only a
+  frozen diagnostic projection.
+- Only the controlled runtime mapper and ordinary post-inspection result
+  validation invoke the private issuer. Request/reflection/typed-array
+  inspection, abort, deadline, cancellation and disposal paths remain
+  fallback-ineligible.
+- Direct tests cover default-looking public codes, an explicit forged fourth
+  argument and subclass construction. Positive tests prove a real production
+  asset load failure and ordinary malformed result version remain eligible.
+
+RED command:
+
+```text
+npx vitest run src/wasm/slice-kernel-contract.test.ts
+```
+
+RED result: 50 passed and 12 failed. Five failures demonstrated public/default
+and subclass provenance forgery; the remaining failures demonstrated the
+typed-array TOCTOU cases below.
+
+Final GREEN: direct contract 63/63 and production Chromium adapter 34/34.
+
+### Finding 16: fixed defensive snapshots across checkpoints
+
+- The permanent `validatedRequests` outer-identity `WeakSet` was removed.
+  `parseSliceBatchResult()` revalidates and recopies every supplied request,
+  including a previously returned validated request.
+- Exact typed-array inspection captures intrinsic brand/length/buffer/
+  byte-length/byte-offset/`at`/`values`/`set` operations and exact concrete
+  prototypes. It rejects proxies, detached/shared/partial/non-zero-offset views
+  as before, and now also rejects every resizable `ArrayBuffer` before any
+  checkpoint can run.
+- Request and encoded result arrays are copied with captured intrinsic `set()`
+  into newly allocated fixed backing buffers before the first untrusted
+  checkpoint. Validation and all later reads use captured lengths and
+  intrinsic `at()` against those private copies. The caller and checkpoint
+  never receive the copies used by controlled WASM execution or result
+  validation.
+- Result arrays are inspected and copied before request validation invokes its
+  checkpoint, preventing a reentrant checkpoint from adding own properties or
+  detaching the encoded result views.
+- Direct tests cover checkpoint-reentrant request/result own-property mutation
+  and detach, rejection-before-checkpoint of request/result resizable buffers,
+  plus own-property, detach and numeric mutation of a previously validated
+  request. Production tests cover reentrant own-property mutation/detach and
+  resizable request rejection. Every hostile validation rejection is typed and
+  denied fallback.
+
+Production RED command:
+
+```text
+npx vitest --config vitest.browser.config.ts run src/wasm/load-slice-kernel.browser.test.ts
+```
+
+RED result: 31 passed and 3 failed: the adapter used caller-owned buffers after
+checkpoint own-property mutation/detach and accepted a resizable request.
+
+### Round 5 verification
+
+Focused Node, workflow, Chromium and controlled raw boundary:
+
+```text
+npx vitest run src/wasm/slice-kernel-contract.test.ts \
+  src/test/geometry-wasm-build-contract.test.ts
+npm run test:browser -- --run src/wasm/load-slice-kernel.browser.test.ts
+npm run test:geometry-wasm-boundary
+npm run typecheck
+npm run verify:geometry-wasm-generated
+```
+
+Results: Node 67/67, Chromium 34/34 and raw boundary 31/31 passed; typecheck and
+the four-artifact tracked verifier exited 0.
+
+Production, workflow, deterministic and Rust/WASM gates:
+
+```text
+npm run build
+node scripts/verify-geometry-wasm-regeneration.mjs
+ruby -e 'require "yaml"; ARGV.each { |path| YAML.parse_file(path) }' \
+  .github/workflows/deploy-pages.yml \
+  .github/workflows/verify-geometry-wasm.yml
+cargo fmt --manifest-path crates/geometry-wasm/Cargo.toml -- --check
+cargo test --manifest-path crates/geometry-wasm/Cargo.toml --locked
+cargo clippy --manifest-path crates/geometry-wasm/Cargo.toml --locked \
+  --all-targets -- -D warnings
+cargo clippy --manifest-path crates/geometry-wasm/Cargo.toml --locked \
+  --target wasm32-unknown-unknown -- -D warnings
+cargo check --manifest-path crates/geometry-wasm/Cargo.toml --locked \
+  --target wasm32-unknown-unknown --release
+git diff --check
+```
+
+Results: production build exited 0 with one 37.86 kB WASM; pinned regeneration
+matched all tracked artifacts byte-for-byte; both workflows parsed; Rust fmt,
+native test, native/wasm32 clippy with `-D warnings`, and wasm32 release check
+all passed (1 unit and 20 integration tests).
+
+Fresh checkout at commit `f3faf14` used a path containing spaces and Chinese:
+
+```text
+git clone --local . "/tmp/ShapeCut Task 3 round 5 中文 fresh"
+cd "/tmp/ShapeCut Task 3 round 5 中文 fresh"
+npm ci --ignore-scripts --cache "/tmp/ShapeCut Task 3 round 5 中文 npm cache"
+env PATH=/usr/local/bin:/usr/bin:/bin \
+  CARGO_HOME="/tmp/ShapeCut Task 3 round 5 中文 empty cargo" \
+  npm_config_offline=true /bin/sh -c '
+    for tool in cargo rustc rustup wasm-pack; do
+      if command -v "$tool" >/dev/null 2>&1; then exit 1; fi
+    done
+    npm run build &&
+    npm test -- --run src/wasm/slice-kernel-contract.test.ts \
+      src/test/geometry-wasm-build-contract.test.ts &&
+    npm run test:browser -- --run src/wasm/load-slice-kernel.browser.test.ts &&
+    npm run test:geometry-wasm-boundary
+  '
+CARGO_ENCODED_RUSTFLAGS=$'-Cdebuginfo=0\x1f--remap-path-prefix=/tmp/Existing round 5 中文 path=/workspace/existing' \
+  node scripts/verify-geometry-wasm-regeneration.mjs
+git status --porcelain
+```
+
+Results: after the clean dependency install, the standard build/test path ran
+offline with no Rust-family tool in `PATH` and an empty Cargo home. Build,
+Node 67/67, Chromium 34/34 and raw boundary 31/31 passed. The separate pinned
+regeneration preserved the existing unit-separator flags and reproduced the
+tracked 37,856-byte artifact byte-for-byte. The fresh checkout remained clean.
+No offline regeneration claim is made.
+
+Full `npm test` passed 69/71 files and 1759 tests (4 skipped). Two existing
+geometry-heavy tests exceeded their 5-second timeout under full parallel load:
+
+```text
+npx vitest run src/export/outline-package.test.ts \
+  -t 'packages a real material-bound pipeline result'
+npx vitest run src/test/e2e-helpers.test.ts \
+  -t 'reconciles a genuine converted package with fixed launcher and three shared fasteners'
+```
+
+Each exact test passed when rerun alone (1/1). No unrelated timeout or geometry
+implementation was changed. `npm ci` still reports the existing audit state of
+1 moderate and 3 high vulnerabilities; dependency remediation is outside Task
+3. No round 5 change touches UI/CSS, fonts, colours, production deadline,
+canonical merge, materials, launcher code or official release artifacts.
