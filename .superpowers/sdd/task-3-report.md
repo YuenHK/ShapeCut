@@ -1099,3 +1099,92 @@ changed. `npm ci` still reports the existing audit state of 1 moderate and 3
 high vulnerabilities. No round 6 change touches UI/CSS, fonts, colours,
 production deadline, canonical merge, materials, launcher code or official
 release artifacts.
+
+### Round 6 self-review follow-up: segmented validated results
+
+Follow-up commit: `2ad28e4` (`fix(wasm): segment validated result snapshots`)
+
+Self-review found that commit `35c809c` bounded the copy cadence but still
+allocated one whole TypeScript destination for each validated result array.
+That did not satisfy the requirement that the controlled wrapper remain the
+only approved contiguous-output exception. A stricter TDD assertion raised
+the expected near-limit result cadence from 28 to 32 checkpoints:
+
+```text
+npx vitest run src/wasm/slice-kernel-contract.test.ts \
+  -t 'checkpoints near-limit result copies'
+```
+
+Initial result: RED, 28 checkpoints observed against the required minimum 32.
+Final result: GREEN, 1/1.
+
+Validated result data now remains in private fixed typed-array chunks, each no
+larger than the approved request interval. Every chunk allocation has a
+checkpoint immediately before allocation, immediately after strict intrinsic
+inspection and after the bounded intrinsic copy. Plane-offset, endpoint and
+diagnostic validation reads the private chunks through captured intrinsics;
+the public frozen `ReadonlySliceArray` facade supports `at()` and iteration but
+never exposes any mutable typed array or backing buffer. Consequently the
+controlled wrapper is the sole boundary permitted to create an up-to-8 MiB
+contiguous output, while the TypeScript adapter has no comparable contiguous
+result allocation.
+
+Follow-up focused and build gates:
+
+```text
+npx vitest run src/wasm/slice-kernel-contract.test.ts \
+  src/test/geometry-wasm-build-contract.test.ts
+npm run test:browser -- --run src/wasm/load-slice-kernel.browser.test.ts
+npm run test:geometry-wasm-boundary
+npm run typecheck
+npm run build
+```
+
+Results: Node contract/workflow 75/75, Chromium 35/35 and controlled raw WASM
+31/31 passed. Typecheck, tracked-artifact verification and production build
+exited 0. Public result mutation tests, immediate/delayed abort tests,
+caller-view lifecycle mutation tests and closed-authority tests remain green.
+
+Rust, deterministic regeneration and workflow gates were repeated after the
+follow-up commit. Rust fmt, 1 unit test, 20 integration tests, native/wasm32
+clippy with `-D warnings`, wasm32 release check, both workflow YAML parses and
+pinned byte comparison all passed.
+
+Fresh checkout at committed `2ad28e4` used a new path containing spaces and
+Chinese:
+
+```text
+git clone --local . "/tmp/ShapeCut Task 3 round 6b 中文 fresh"
+cd "/tmp/ShapeCut Task 3 round 6b 中文 fresh"
+npm ci --ignore-scripts --cache "/tmp/ShapeCut Task 3 round 6b 中文 npm cache"
+env PATH=/usr/local/bin:/usr/bin:/bin \
+  CARGO_HOME="/tmp/ShapeCut Task 3 round 6b 中文 empty cargo" \
+  npm_config_offline=true /bin/sh -c '
+    for tool in cargo rustc rustup wasm-pack; do
+      if command -v "$tool" >/dev/null 2>&1; then exit 1; fi
+    done
+    npm run build &&
+    npm test -- --run src/wasm/slice-kernel-contract.test.ts \
+      src/test/geometry-wasm-build-contract.test.ts &&
+    npm run test:browser -- --run src/wasm/load-slice-kernel.browser.test.ts &&
+    npm run test:geometry-wasm-boundary
+  '
+CARGO_ENCODED_RUSTFLAGS=$'-Cdebuginfo=0\x1f--remap-path-prefix=/tmp/Existing round 6b 中文 path=/workspace/existing' \
+  node scripts/verify-geometry-wasm-regeneration.mjs
+git status --porcelain
+```
+
+The standard build/test path passed offline after the empty dependency install
+with no Rust-family tool in `PATH`: build, Node 75/75, Chromium 35/35 and raw
+boundary 31/31. The separate pinned regeneration preserved the pre-existing
+unit-separator flags and reproduced the tracked 37,856-byte WASM byte-for-byte.
+The checkout remained clean. This is an offline standard-build claim only;
+regeneration used the separately verified pinned toolchain.
+
+The repeated full `npm test` result remained 68/71 files, 1766 passed and 4
+skipped. The same two 5-second geometry-heavy timeouts and one App async
+settling failure occurred only under full parallel load; the three exact tests
+again passed 1/1 when isolated. The existing `npm ci` audit state remains 1
+moderate and 3 high vulnerabilities. No follow-up change touches UI/CSS,
+fonts, colours, production deadline, canonical merge, materials, launcher code
+or official release artifacts.
