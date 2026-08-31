@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, relative, resolve } from 'node:path';
+import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -8,6 +9,10 @@ const crateDirectory = resolve(repositoryRoot, 'crates/geometry-wasm');
 const outputDirectory = resolve(repositoryRoot, 'src/wasm/generated');
 const wasmPack = process.env.WASM_PACK ?? 'wasm-pack';
 const expectedWasmPackVersion = 'wasm-pack 0.15.0';
+const rustPathRemapping = [
+  `--remap-path-prefix=${repositoryRoot}=/workspace/repository`,
+  `--remap-path-prefix=${homedir()}=/workspace/home`,
+].join(' ');
 
 const version = spawnSync(wasmPack, ['--version'], { encoding: 'utf8' });
 if (version.error) throw version.error;
@@ -34,6 +39,7 @@ const build = spawnSync(wasmPack, [
   env: {
     ...process.env,
     CARGO_PROFILE_RELEASE_DEBUG: 'false',
+    RUSTFLAGS: [process.env.RUSTFLAGS, rustPathRemapping].filter(Boolean).join(' '),
   },
   encoding: 'utf8',
   stdio: ['ignore', 'pipe', 'pipe'],
@@ -58,6 +64,12 @@ for (const entry of generatedFiles.filter((file) => file.endsWith('.js'))) {
 }
 
 const wasmPath = resolve(outputDirectory, 'geometry_wasm_bg.wasm');
+const wasmBytes = readFileSync(wasmPath);
+for (const forbidden of ['/Users/', '/private/', 'sourceMappingURL=']) {
+  if (wasmBytes.includes(Buffer.from(forbidden))) {
+    throw new Error(`WASM build retained forbidden path or source-map material: ${forbidden}`);
+  }
+}
 const report = {
   path: relative(repositoryRoot, wasmPath),
   bytes: statSync(wasmPath).size,
