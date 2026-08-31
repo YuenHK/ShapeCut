@@ -122,7 +122,7 @@ describe('real Chromium slice worker pool', () => {
           escaped = contract.takeTransferableSliceBatchResultForBundledWorker(result)
             .endpoints instanceof Float64Array;
         }
-        let closedEntryDenied = false;
+        let closedEntryDenied = typeof contract.publishBundledSliceBatchResult !== 'function';
         if (typeof contract.publishBundledSliceBatchResult === 'function') {
           try {
             contract.publishBundledSliceBatchResult(result, {

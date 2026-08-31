@@ -451,3 +451,48 @@ Commit `c76bcf7` was then checked out detached into a new temporary worktree
 and installed with `npm ci`. The same full matrix passed with the same counts,
 including the independent hashed worker-emission fixture; `git status --short`
 was empty after all gates. The temporary checkout was removed.
+
+## 2026-09-01 closed production adapter closure
+
+The production self-URL equality from round 3 is superseded here. Formal
+review correctly identified that Vite can inline the ordinary contract into
+any worker entry and rewrite `import.meta.url` to that worker's own URL, so
+self-equality does not authenticate the official adapter.
+
+Exact RED command:
+
+```text
+npm test -- --run src/wasm/slice-kernel-contract.test.ts src/workers/slice-worker-pool.build.test.ts -t "private transferable|production build fixture"
+```
+
+Observed before production changes: 2 failed. The ordinary contract still
+exported `publishBundledSliceBatchResult`. A separately production-built
+crafted worker importing that contract emitted
+`publisherExported: true` (`!0`) instead of the required false value.
+
+The raw issuer and public publisher were removed from the ordinary contract.
+The official `slice.worker.ts` entry now privately loads only the Task 3
+controlled wrapper, snapshots its exact frozen result record, validates exact
+typed arrays through captured intrinsic inspection, captures the backing
+buffers once, and transfers them through its module-private frozen own
+iterator/`next` transport with intrinsic detach postconditions. Its private
+handler and transfer closure are not exported. Public Window, Node, arbitrary
+dev workers, and arbitrary production-built workers importing the ordinary
+contract can obtain only immutable facades and no raw publisher.
+
+Focused GREEN evidence:
+
+```text
+npm test -- --run src/wasm/slice-kernel-contract.test.ts src/workers/slice-worker-pool.build.test.ts -t "private transferable|production build fixture"
+# 2 passed; crafted production artifact contains publisherExported:false
+
+npm run test:browser -- --run src/workers/slice-worker-pool.browser.test.ts -t "bootstrap primitives|crafted same-origin|arbitrary dedicated worker|loads WASM in bounded workers"
+# 4 passed in real Chromium; official private adapter transfers and merges WASM output
+```
+
+The independent production build fixture also confirms the official hashed
+worker contains the transfer path, contains no `Array.from` result copy, and
+is referenced exactly by the fixture entry. The implementation-worktree full
+matrix passed: Node 4 files / 134 tests, real Chromium 2 files / 43 tests, raw
+WASM 31 checks, Rust 1 unit / 21 integration tests, clippy `-D warnings`,
+typecheck, Vite build, pinned WASM regeneration, and `git diff --check`.

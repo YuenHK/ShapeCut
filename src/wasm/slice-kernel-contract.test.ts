@@ -404,6 +404,7 @@ describe('TypeScript WASM slice contract', () => {
     const parsed = parseSliceBatchResult(encodedResult(), request());
 
     expect('takeTransferableSliceBatchResultForBundledWorker' in contractModule).toBe(false);
+    expect('publishBundledSliceBatchResult' in contractModule).toBe(false);
     expect([...parsed.endpoints]).toEqual([0, 0, 1, 1]);
   });
 

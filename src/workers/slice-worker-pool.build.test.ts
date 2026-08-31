@@ -26,7 +26,22 @@ describe('slice worker production build fixture', () => {
       ? worker.source
       : new TextDecoder().decode(worker.source);
     expect(workerSource).toContain('slice-result');
+    expect(workerSource).toContain('transfer');
+    expect(workerSource).not.toContain('Array.from');
+    const craftedWorker = result.output.find(
+      (output) => /crafted-production-worker\.test-fixture-[\w-]+\.js$/.test(output.fileName),
+    );
+    expect(craftedWorker).toBeDefined();
+    if (craftedWorker?.type !== 'asset') {
+      throw new TypeError('crafted production worker asset was not emitted');
+    }
+    const craftedSource = typeof craftedWorker.source === 'string'
+      ? craftedWorker.source
+      : new TextDecoder().decode(craftedWorker.source);
+    expect(craftedSource).toContain('crafted-production-worker-contract-surface');
+    expect(craftedSource).toMatch(/publisherExported:!1|publisherExported:false/);
     const entry = chunks.find((chunk) => chunk.isEntry);
     expect(entry?.code).toContain(worker!.fileName);
+    expect(entry?.code).toContain(craftedWorker.fileName);
   });
 });
