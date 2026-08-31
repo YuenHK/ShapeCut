@@ -5,5 +5,7 @@ dist/
 coverage/
 test-results/
 playwright-report/
+crates/geometry-wasm/target/
+src/wasm/generated/
 .DS_Store
 *.tsbuildinfo

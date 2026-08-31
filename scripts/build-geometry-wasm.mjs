@@ -1,0 +1,66 @@
+import { spawnSync } from 'node:child_process';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { dirname, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const crateDirectory = resolve(repositoryRoot, 'crates/geometry-wasm');
+const outputDirectory = resolve(repositoryRoot, 'src/wasm/generated');
+const wasmPack = process.env.WASM_PACK ?? 'wasm-pack';
+const expectedWasmPackVersion = 'wasm-pack 0.15.0';
+
+const version = spawnSync(wasmPack, ['--version'], { encoding: 'utf8' });
+if (version.error) throw version.error;
+if (version.status !== 0 || version.stdout.trim() !== expectedWasmPackVersion) {
+  throw new Error(`Expected ${expectedWasmPackVersion}; received ${version.stdout.trim() || 'no version'}`);
+}
+
+const build = spawnSync(wasmPack, [
+  'build',
+  crateDirectory,
+  '--target',
+  'web',
+  '--release',
+  '--no-opt',
+  '--out-dir',
+  outputDirectory,
+  '--out-name',
+  'geometry_wasm',
+  '--no-pack',
+  '--',
+  '--locked',
+], {
+  cwd: repositoryRoot,
+  env: {
+    ...process.env,
+    CARGO_PROFILE_RELEASE_DEBUG: 'false',
+  },
+  encoding: 'utf8',
+  stdio: ['ignore', 'pipe', 'pipe'],
+});
+
+if (build.stdout) process.stdout.write(build.stdout);
+if (build.stderr) process.stderr.write(build.stderr);
+if (build.error) throw build.error;
+if (build.status !== 0) process.exit(build.status ?? 1);
+
+const generatedFiles = readdirSync(outputDirectory, { recursive: true })
+  .map((entry) => resolve(outputDirectory, entry.toString()))
+  .filter((entry) => statSync(entry).isFile());
+const sourceMaps = generatedFiles.filter((entry) => entry.endsWith('.map'));
+if (sourceMaps.length > 0) {
+  throw new Error(`WASM build emitted source maps: ${sourceMaps.map((entry) => relative(repositoryRoot, entry)).join(', ')}`);
+}
+for (const entry of generatedFiles.filter((file) => file.endsWith('.js'))) {
+  if (readFileSync(entry, 'utf8').includes('sourceMappingURL=')) {
+    throw new Error(`WASM build emitted a source map reference: ${relative(repositoryRoot, entry)}`);
+  }
+}
+
+const wasmPath = resolve(outputDirectory, 'geometry_wasm_bg.wasm');
+const report = {
+  path: relative(repositoryRoot, wasmPath),
+  bytes: statSync(wasmPath).size,
+  sourceMaps: 0,
+};
+process.stdout.write(`Geometry WASM size: ${JSON.stringify(report)}\n`);
