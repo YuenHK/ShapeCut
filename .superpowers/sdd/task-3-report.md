@@ -1329,3 +1329,140 @@ commands (1 + 1 + 1 + 1 + 2 + 3). No unrelated timeout, UI or geometry logic
 was changed. `npm ci` continues to report 1 moderate and 3 high vulnerabilities.
 No round 7 change touches UI/CSS, fonts, colours, production deadline,
 canonical merge, materials, launcher code or official release artifacts.
+
+## Re-review round 8: findings 22–24
+
+Date: 2026-08-31
+Implementation commit: `221df2b` (`fix(wasm): verify atomic transfer postconditions`)
+
+### Finding 22: verified ownership-transfer postconditions
+
+- The adapter captures `structuredClone` and the `ArrayBuffer` byte-length and
+  resizable getters at module evaluation. The approved spec now identifies the
+  native pre-module-load binding as a trusted bootstrap boundary and explicitly
+  states that JavaScript cannot roll back a malicious replacement's partial
+  detach.
+- After every transfer, captured intrinsics verify that every source buffer is
+  detached and every private buffer has the expected byte length, is fixed,
+  differs from every source/private peer, and reconstructs as an exact
+  full-span view of the required intrinsic typed-array brand and length.
+- Fake success that returns caller buffers, fake success that returns copies
+  without detaching, and a real-detach result that aliases private buffers all
+  fail closed with typed validation, zero caller checkpoints and no fallback
+  authority.
+
+### Finding 23: one direct-parser transfer
+
+The direct parser strictly inspects request and result records, rejects any
+shared identity across all six buffers, then transfers all six in one call and
+only afterwards rebuilds the three request and three result views. Tests assert
+one transfer call with six entries, simultaneous detachment of all six caller
+views, and a pre-transfer throw that leaves all six attached. There is no
+request-first/result-second partial-detach path.
+
+### Finding 24: immutable shared facade prototype
+
+The shared `ReadonlySliceArray` prototype is frozen immediately after class
+definition. Table-driven tests reject overwriting `at`, deleting the iterator
+and replacing the prototype chain, while preserving iteration and `at()` for
+both existing and newly produced results. The Chromium production test also
+asserts the returned facade's prototype is frozen.
+
+### Round 8 TDD and verification
+
+Initial RED:
+
+```text
+npx vitest run src/wasm/slice-kernel-contract.test.ts
+```
+
+Result: 70 passed and 8 failed. The eight failures covered the three prototype
+mutations, two non-detaching fake successes, aliased private buffers, the
+direct parser's former two transfer calls, and pre-transfer failure occurring
+after only the request-side call. Final direct contract result: 78/78.
+
+Focused gates:
+
+```text
+git diff --check
+npm run typecheck
+npx vitest run src/wasm/slice-kernel-contract.test.ts \
+  src/test/geometry-wasm-build-contract.test.ts
+npm run test:browser -- --run src/wasm/load-slice-kernel.browser.test.ts
+npm run test:geometry-wasm-boundary
+npm run build
+```
+
+Results: diff check and typecheck exited 0; Node contract/workflow 82/82,
+Chromium 34/34 and controlled raw WASM 31/31 passed. Tracked-artifact
+verification and the production build also exited 0 with one 37,856-byte WASM.
+
+Rust, regeneration and workflow gates:
+
+```text
+cargo fmt --manifest-path crates/geometry-wasm/Cargo.toml -- --check
+cargo test --manifest-path crates/geometry-wasm/Cargo.toml --locked
+cargo clippy --manifest-path crates/geometry-wasm/Cargo.toml --locked \
+  --all-targets -- -D warnings
+cargo clippy --manifest-path crates/geometry-wasm/Cargo.toml --locked \
+  --target wasm32-unknown-unknown -- -D warnings
+cargo check --manifest-path crates/geometry-wasm/Cargo.toml --locked \
+  --target wasm32-unknown-unknown --release
+node scripts/verify-geometry-wasm-regeneration.mjs
+ruby -e 'require "yaml"; ARGV.each { |path| YAML.parse_file(path) }' \
+  .github/workflows/deploy-pages.yml \
+  .github/workflows/verify-geometry-wasm.yml
+```
+
+Results: Rust fmt, 1 unit test, 20 integration tests, native/wasm32 clippy with
+`-D warnings`, wasm32 release check, pinned byte comparison and both workflow
+YAML parses passed.
+
+Fresh checkout at committed `221df2b` used a new path containing spaces and
+Chinese:
+
+```text
+git clone --no-local /tmp/shapecut-oracle.QUL6JU/repo \
+  "/tmp/ShapeCut Task 3 round 8 中文 fresh"
+git -C "/tmp/ShapeCut Task 3 round 8 中文 fresh" checkout --detach 221df2b
+cd "/tmp/ShapeCut Task 3 round 8 中文 fresh"
+npm_config_cache="/tmp/ShapeCut Task 3 round 8 中文 npm cache fresh" npm ci
+env PATH=/usr/local/bin:/usr/bin:/bin \
+  CARGO_HOME="/tmp/ShapeCut Task 3 round 8 中文 empty cargo" \
+  npm_config_offline=true npm run build
+env PATH=/usr/local/bin:/usr/bin:/bin \
+  CARGO_HOME="/tmp/ShapeCut Task 3 round 8 中文 empty cargo" \
+  npm_config_offline=true npx vitest run \
+    src/wasm/slice-kernel-contract.test.ts \
+    src/test/geometry-wasm-build-contract.test.ts
+env PATH=/usr/local/bin:/usr/bin:/bin \
+  CARGO_HOME="/tmp/ShapeCut Task 3 round 8 中文 empty cargo" \
+  npm_config_offline=true npm run test:browser -- --run \
+    src/wasm/load-slice-kernel.browser.test.ts
+env PATH=/usr/local/bin:/usr/bin:/bin \
+  CARGO_HOME="/tmp/ShapeCut Task 3 round 8 中文 empty cargo" \
+  npm_config_offline=true npm run test:geometry-wasm-boundary
+CARGO_ENCODED_RUSTFLAGS=$'-Cdebuginfo=0\x1f--remap-path-prefix=/tmp/Existing round 8 中文 path=/workspace/existing' \
+  node scripts/verify-geometry-wasm-regeneration.mjs
+git status --short
+```
+
+The empty dependency install completed. With cargo, rustc and wasm-pack absent
+from the restricted `PATH` and an empty Cargo home, the offline standard path
+passed: build, Node 82/82, Chromium 34/34 and raw boundary 31/31. The separate
+pinned regeneration preserved the pre-existing unit-separator flags and
+reproduced the tracked 37,856-byte WASM byte-for-byte. The fresh checkout
+remained clean. This is an offline standard-build claim only; regeneration
+used the separately verified pinned toolchain.
+
+Full `npm test -- --run` completed with 62/71 files, 1,752 passed, 4 skipped
+and 24 failed under high parallel load. Twenty-three of those failed cases
+passed when rerun serially (including App, outline package, launcher runtime,
+geometry API, generation performance, extraction, fasteners and launcher).
+One pre-existing E2E conversion case still timed out at 5.012 seconds against
+its 5-second test limit while its other 63 cases passed. No timeout or
+unrelated UI/geometry logic was changed. The fresh `npm ci` audit remains 1
+moderate and 3 high vulnerabilities. No round 8 change touches UI/CSS, fonts,
+colours, production
+deadline, canonical merge, materials, launcher code or official release
+artifacts.
