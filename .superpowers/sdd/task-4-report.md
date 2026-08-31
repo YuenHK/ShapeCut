@@ -399,3 +399,13 @@ npm run test:browser -- --run src/workers/slice-worker-pool.browser.test.ts -t "
 No UI, CSS, typography, colour, material, launcher, canonical artifact or
 production deadline code was changed. Task 5 still owns production graph and
 emitted slice-worker artifact proof; no full A3 completion is claimed.
+
+### Round 3 detached clean-checkout confirmation
+
+Commit `8c74aa6` was checked out detached into a new temporary worktree and
+installed with `npm ci`. The full round-3 matrix passed again with the same
+counts: Node 4 files / 134 tests; real Chromium 2 files / 43 tests; raw WASM
+31 checks; Rust 1 unit / 21 integration tests; clippy `-D warnings`; typecheck;
+Vite build; and pinned byte-for-byte regeneration of four files at 38,157 WASM
+bytes and zero source maps. `git diff --check` passed and `git status --short`
+was empty after the matrix. The temporary checkout was then removed.
