@@ -30,6 +30,10 @@ describe('real Chromium slice worker pool', () => {
   it('uses only Worker and URL bootstrap primitives captured at module load', async () => {
     const originalWorker = globalThis.Worker;
     const originalUrl = globalThis.URL;
+    const postMessageDescriptor = Object.getOwnPropertyDescriptor(originalWorker.prototype, 'postMessage');
+    const terminateDescriptor = Object.getOwnPropertyDescriptor(originalWorker.prototype, 'terminate');
+    const addDescriptor = Object.getOwnPropertyDescriptor(EventTarget.prototype, 'addEventListener');
+    const removeDescriptor = Object.getOwnPropertyDescriptor(EventTarget.prototype, 'removeEventListener');
     class ReplacedWorker {
       constructor() { throw new Error('post-load replacement must not be trusted'); }
     }
@@ -38,6 +42,18 @@ describe('real Chromium slice worker pool', () => {
     }
     Object.defineProperty(globalThis, 'Worker', { configurable: true, value: ReplacedWorker });
     Object.defineProperty(globalThis, 'URL', { configurable: true, value: ReplacedUrl });
+    Object.defineProperty(originalWorker.prototype, 'postMessage', {
+      configurable: true, value() { throw new Error('patched postMessage'); },
+    });
+    Object.defineProperty(originalWorker.prototype, 'terminate', {
+      configurable: true, value() { throw new Error('patched terminate'); },
+    });
+    Object.defineProperty(EventTarget.prototype, 'addEventListener', {
+      configurable: true, value() { throw new Error('patched addEventListener'); },
+    });
+    Object.defineProperty(EventTarget.prototype, 'removeEventListener', {
+      configurable: true, value() { throw new Error('patched removeEventListener'); },
+    });
     const pool = new SliceWorkerPool({ hardwareConcurrency: 1 });
     pools.push(pool);
     try {
@@ -46,6 +62,74 @@ describe('real Chromium slice worker pool', () => {
     } finally {
       Object.defineProperty(globalThis, 'Worker', { configurable: true, value: originalWorker });
       Object.defineProperty(globalThis, 'URL', { configurable: true, value: originalUrl });
+      Object.defineProperty(originalWorker.prototype, 'postMessage', postMessageDescriptor!);
+      Object.defineProperty(originalWorker.prototype, 'terminate', terminateDescriptor!);
+      Object.defineProperty(EventTarget.prototype, 'addEventListener', addDescriptor!);
+      Object.defineProperty(EventTarget.prototype, 'removeEventListener', removeDescriptor!);
+    }
+  });
+
+  it('does not export raw result ownership to an arbitrary dedicated worker', async () => {
+    const contractUrl = `${globalThis.location.origin}/src/wasm/slice-kernel-contract.ts`;
+    const source = `
+      self.onmessage = async (event) => {
+        const contract = await import(event.data);
+        const request = {
+          positions: new Float32Array([0,0,-1, 2,0,1, 0,2,1]),
+          indices: new Uint32Array([0,1,2]),
+          planes: new Float64Array([0]),
+          deadlineCheckInterval: 4096,
+        };
+        const counters = new Uint32Array(9);
+        counters[3] = 1;
+        counters[4] = 1;
+        const result = contract.parseSliceBatchResult({
+          version: 1,
+          statusCode: 0,
+          planeOffsets: new Uint32Array([0,1]),
+          endpoints: new Float64Array([0,0,1,1]),
+          diagnosticCounters: counters,
+        }, request, () => undefined);
+        let escaped = false;
+        if (typeof contract.takeTransferableSliceBatchResultForBundledWorker === 'function') {
+          escaped = contract.takeTransferableSliceBatchResultForBundledWorker(result)
+            .endpoints instanceof Float64Array;
+        }
+        let closedEntryDenied = false;
+        if (typeof contract.publishBundledSliceBatchResult === 'function') {
+          try {
+            contract.publishBundledSliceBatchResult(result, {
+              type: 'slice-result', generation: 1, partitionIndex: 0,
+            });
+          } catch {
+            closedEntryDenied = true;
+          }
+        }
+        self.postMessage({
+          helperExported: typeof contract.takeTransferableSliceBatchResultForBundledWorker === 'function',
+          escaped,
+          closedEntryDenied,
+          facade: [...result.endpoints],
+        });
+      };
+    `;
+    const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
+    const worker = new Worker(url, { type: 'module' });
+    try {
+      const response = new Promise<unknown>((resolve, reject) => {
+        worker.addEventListener('message', (event) => resolve(event.data), { once: true });
+        worker.addEventListener('error', reject, { once: true });
+      });
+      worker.postMessage(contractUrl);
+      await expect(response).resolves.toEqual({
+        helperExported: false,
+        escaped: false,
+        closedEntryDenied: true,
+        facade: [0, 0, 1, 1],
+      });
+    } finally {
+      worker.terminate();
+      URL.revokeObjectURL(url);
     }
   });
 

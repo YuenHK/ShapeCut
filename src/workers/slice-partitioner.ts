@@ -94,56 +94,68 @@ export async function partitionSliceWorkAsync(
   workerCount: number,
   control: AsyncSlicePartitionControl,
 ): Promise<readonly SliceWorkPartition[]> {
-  await partitionYield(control);
-  await validateInputAsync(mesh, planes, workerCount, control);
-  const degenerateTriangles = await classifyDegenerateTrianglesAsync(mesh, control);
-  const targetCount = Math.max(1, Math.min(workerCount, planes.length));
-  const planeCosts = await estimatePlaneCostsAsync(mesh, planes, degenerateTriangles, control);
-  const assignments = Array.from({ length: targetCount }, (_, partitionIndex) => ({
-    partitionIndex,
-    estimatedByteCost: 0,
-    planeIndices: [] as number[],
-  }));
-
-  for (const plane of [...planeCosts].sort((left, right) => (
-    right.estimatedByteCost - left.estimatedByteCost || left.planeIndex - right.planeIndex
-  ))) {
-    const target = assignments.reduce((best, candidate) => (
-      candidate.estimatedByteCost < best.estimatedByteCost
-        || (candidate.estimatedByteCost === best.estimatedByteCost
-          && candidate.partitionIndex < best.partitionIndex)
-        ? candidate
-        : best
-    ));
-    target.planeIndices.push(plane.planeIndex);
-    target.estimatedByteCost += plane.estimatedByteCost;
-  }
-
+  const assignments: Array<{
+    partitionIndex: number;
+    estimatedByteCost: number;
+    planeIndices: number[];
+  }> = [];
   const result: SliceWorkPartition[] = [];
-  for (const assignment of assignments) {
-    assignment.planeIndices.sort((left, right) => left - right);
-    const partitionPlanes = Float64Array.from(
-      assignment.planeIndices,
-      (planeIndex) => planes[planeIndex],
-    );
-    const partitionMesh = await copyOverlappingTrianglesAsync(
-      mesh,
-      partitionPlanes,
-      degenerateTriangles,
-      assignment.partitionIndex === 0,
-      control,
-    );
-    result.push(Object.freeze({
-      partitionIndex: assignment.partitionIndex,
-      planeIndices: Uint32Array.from(assignment.planeIndices),
-      planes: partitionPlanes,
-      positions: partitionMesh.positions,
-      indices: partitionMesh.indices,
-      estimatedByteCost: assignment.estimatedByteCost,
-    }));
+  try {
+    await partitionYield(control);
+    await validateInputAsync(mesh, planes, workerCount, control);
+    const degenerateTriangles = await classifyDegenerateTrianglesAsync(mesh, control);
+    const targetCount = Math.max(1, Math.min(workerCount, planes.length));
+    const planeCosts = await estimatePlaneCostsAsync(mesh, planes, degenerateTriangles, control);
+    assignments.push(...Array.from({ length: targetCount }, (_, partitionIndex) => ({
+      partitionIndex,
+      estimatedByteCost: 0,
+      planeIndices: [] as number[],
+    })));
+
+    for (const plane of [...planeCosts].sort((left, right) => (
+      right.estimatedByteCost - left.estimatedByteCost || left.planeIndex - right.planeIndex
+    ))) {
+      const target = assignments.reduce((best, candidate) => (
+        candidate.estimatedByteCost < best.estimatedByteCost
+          || (candidate.estimatedByteCost === best.estimatedByteCost
+            && candidate.partitionIndex < best.partitionIndex)
+          ? candidate
+          : best
+      ));
+      target.planeIndices.push(plane.planeIndex);
+      target.estimatedByteCost += plane.estimatedByteCost;
+    }
+
+    for (const assignment of assignments) {
+      assignment.planeIndices.sort((left, right) => left - right);
+      const partitionPlanes = Float64Array.from(
+        assignment.planeIndices,
+        (planeIndex) => planes[planeIndex],
+      );
+      const partitionMesh = await copyOverlappingTrianglesAsync(
+        mesh,
+        partitionPlanes,
+        degenerateTriangles,
+        assignment.partitionIndex === 0,
+        control,
+      );
+      result.push(Object.freeze({
+        partitionIndex: assignment.partitionIndex,
+        planeIndices: Uint32Array.from(assignment.planeIndices),
+        planes: partitionPlanes,
+        positions: partitionMesh.positions,
+        indices: partitionMesh.indices,
+        estimatedByteCost: assignment.estimatedByteCost,
+      }));
+    }
+    control.checkpoint();
+    return Object.freeze(result);
+  } catch (error) {
+    for (const assignment of assignments) assignment.planeIndices.length = 0;
+    assignments.length = 0;
+    result.length = 0;
+    throw error;
   }
-  control.checkpoint();
-  return Object.freeze(result);
 }
 
 async function estimatePlaneCostsAsync(
@@ -153,30 +165,35 @@ async function estimatePlaneCostsAsync(
   control: AsyncSlicePartitionControl,
 ): Promise<readonly PlaneCost[]> {
   const costs: PlaneCost[] = [];
-  let operations = 0;
-  for (let planeIndex = 0; planeIndex < planes.length; planeIndex += 1) {
-    let overlapCount = 0;
-    const plane = planes[planeIndex];
-    for (let offset = 0; offset < mesh.indices.length; offset += 3) {
-      if (!degenerateTriangles[offset / 3]) {
-        const z0 = mesh.positions[mesh.indices[offset] * 3 + 2];
-        const z1 = mesh.positions[mesh.indices[offset + 1] * 3 + 2];
-        const z2 = mesh.positions[mesh.indices[offset + 2] * 3 + 2];
-        if (triangleOverlapsPlaneForPartition(z0, z1, z2, plane)) overlapCount += 1;
+  try {
+    let operations = 0;
+    for (let planeIndex = 0; planeIndex < planes.length; planeIndex += 1) {
+      let overlapCount = 0;
+      const plane = planes[planeIndex];
+      for (let offset = 0; offset < mesh.indices.length; offset += 3) {
+        if (!degenerateTriangles[offset / 3]) {
+          const z0 = mesh.positions[mesh.indices[offset] * 3 + 2];
+          const z1 = mesh.positions[mesh.indices[offset + 1] * 3 + 2];
+          const z2 = mesh.positions[mesh.indices[offset + 2] * 3 + 2];
+          if (triangleOverlapsPlaneForPartition(z0, z1, z2, plane)) overlapCount += 1;
+        }
+        operations += 1;
+        if (operations === PARTITION_CHUNK_SIZE) {
+          operations = 0;
+          await partitionYield(control);
+        }
       }
-      operations += 1;
-      if (operations === PARTITION_CHUNK_SIZE) {
-        operations = 0;
-        await partitionYield(control);
-      }
+      costs.push(Object.freeze({
+        planeIndex,
+        overlapCount,
+        estimatedByteCost: PLANE_BYTES + overlapCount * ESTIMATED_OVERLAP_BYTES,
+      }));
     }
-    costs.push(Object.freeze({
-      planeIndex,
-      overlapCount,
-      estimatedByteCost: PLANE_BYTES + overlapCount * ESTIMATED_OVERLAP_BYTES,
-    }));
+    return Object.freeze(costs);
+  } catch (error) {
+    costs.length = 0;
+    throw error;
   }
-  return Object.freeze(costs);
 }
 
 async function copyOverlappingTrianglesAsync(
@@ -189,60 +206,70 @@ async function copyOverlappingTrianglesAsync(
   const sourceVertexIndices: number[] = [];
   const remap = new Map<number, number>();
   const indices: number[] = [];
-  let operations = 0;
-
-  for (let offset = 0; offset < mesh.indices.length; offset += 3) {
-    const triangleIndex = offset / 3;
-    const triangle = [mesh.indices[offset], mesh.indices[offset + 1], mesh.indices[offset + 2]] as const;
-    const z0 = mesh.positions[triangle[0] * 3 + 2];
-    const z1 = mesh.positions[triangle[1] * 3 + 2];
-    const z2 = mesh.positions[triangle[2] * 3 + 2];
-    let include = degenerateTriangles[triangleIndex] && includeDegenerateTriangles;
-    if (!degenerateTriangles[triangleIndex]) {
-      for (const plane of planes) {
-        if (triangleOverlapsPlaneForPartition(z0, z1, z2, plane)) {
-          include = true;
-          break;
-        }
-        operations += 1;
-        if (operations === PARTITION_CHUNK_SIZE) {
-          operations = 0;
-          await partitionYield(control);
+  try {
+    let operations = 0;
+    for (let offset = 0; offset < mesh.indices.length; offset += 3) {
+      const triangleIndex = offset / 3;
+      const triangle = [
+        mesh.indices[offset],
+        mesh.indices[offset + 1],
+        mesh.indices[offset + 2],
+      ] as const;
+      const z0 = mesh.positions[triangle[0] * 3 + 2];
+      const z1 = mesh.positions[triangle[1] * 3 + 2];
+      const z2 = mesh.positions[triangle[2] * 3 + 2];
+      let include = degenerateTriangles[triangleIndex] && includeDegenerateTriangles;
+      if (!degenerateTriangles[triangleIndex]) {
+        for (const plane of planes) {
+          if (triangleOverlapsPlaneForPartition(z0, z1, z2, plane)) {
+            include = true;
+            break;
+          }
+          operations += 1;
+          if (operations === PARTITION_CHUNK_SIZE) {
+            operations = 0;
+            await partitionYield(control);
+          }
         }
       }
-    }
-    if (include) {
-      for (const sourceIndex of triangle) {
-        let partitionIndex = remap.get(sourceIndex);
-        if (partitionIndex === undefined) {
-          partitionIndex = sourceVertexIndices.length;
-          remap.set(sourceIndex, partitionIndex);
-          sourceVertexIndices.push(sourceIndex);
+      if (include) {
+        for (const sourceIndex of triangle) {
+          let partitionIndex = remap.get(sourceIndex);
+          if (partitionIndex === undefined) {
+            partitionIndex = sourceVertexIndices.length;
+            remap.set(sourceIndex, partitionIndex);
+            sourceVertexIndices.push(sourceIndex);
+          }
+          indices.push(partitionIndex);
         }
-        indices.push(partitionIndex);
+      }
+      operations += 1;
+      if (operations === PARTITION_CHUNK_SIZE) {
+        operations = 0;
+        await partitionYield(control);
       }
     }
-    operations += 1;
-    if (operations === PARTITION_CHUNK_SIZE) {
-      operations = 0;
-      await partitionYield(control);
-    }
-  }
 
-  const positions = new Float32Array(sourceVertexIndices.length * 3);
-  for (let targetIndex = 0; targetIndex < sourceVertexIndices.length; targetIndex += 1) {
-    const sourceOffset = sourceVertexIndices[targetIndex] * 3;
-    const targetOffset = targetIndex * 3;
-    positions[targetOffset] = mesh.positions[sourceOffset];
-    positions[targetOffset + 1] = mesh.positions[sourceOffset + 1];
-    positions[targetOffset + 2] = mesh.positions[sourceOffset + 2];
-    operations += 1;
-    if (operations === PARTITION_CHUNK_SIZE) {
-      operations = 0;
-      await partitionYield(control);
+    const positions = new Float32Array(sourceVertexIndices.length * 3);
+    for (let targetIndex = 0; targetIndex < sourceVertexIndices.length; targetIndex += 1) {
+      const sourceOffset = sourceVertexIndices[targetIndex] * 3;
+      const targetOffset = targetIndex * 3;
+      positions[targetOffset] = mesh.positions[sourceOffset];
+      positions[targetOffset + 1] = mesh.positions[sourceOffset + 1];
+      positions[targetOffset + 2] = mesh.positions[sourceOffset + 2];
+      operations += 1;
+      if (operations === PARTITION_CHUNK_SIZE) {
+        operations = 0;
+        await partitionYield(control);
+      }
     }
+    return Object.freeze({ positions, indices: Uint32Array.from(indices) });
+  } catch (error) {
+    sourceVertexIndices.length = 0;
+    indices.length = 0;
+    remap.clear();
+    throw error;
   }
-  return Object.freeze({ positions, indices: Uint32Array.from(indices) });
 }
 
 async function classifyDegenerateTrianglesAsync(
@@ -250,11 +277,16 @@ async function classifyDegenerateTrianglesAsync(
   control: AsyncSlicePartitionControl,
 ): Promise<readonly boolean[]> {
   const result: boolean[] = [];
-  for (let offset = 0; offset < mesh.indices.length; offset += 3) {
-    result.push(isDegenerateTriangle(mesh, offset));
-    if (result.length % PARTITION_CHUNK_SIZE === 0) await partitionYield(control);
+  try {
+    for (let offset = 0; offset < mesh.indices.length; offset += 3) {
+      result.push(isDegenerateTriangle(mesh, offset));
+      if (result.length % PARTITION_CHUNK_SIZE === 0) await partitionYield(control);
+    }
+    return Object.freeze(result);
+  } catch (error) {
+    result.length = 0;
+    throw error;
   }
-  return Object.freeze(result);
 }
 
 async function validateInputAsync(

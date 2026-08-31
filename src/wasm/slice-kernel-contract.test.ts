@@ -8,7 +8,6 @@ import {
   parseSliceBatchResult as parseResult,
   readSliceKernelAbort,
   takeSliceBatchRequestOwnershipSnapshot,
-  takeTransferableSliceBatchResultForBundledWorker,
   validateSliceBatchRequest as validateRequest,
   type SliceBatchRequest,
 } from './slice-kernel-contract';
@@ -404,8 +403,7 @@ describe('TypeScript WASM slice contract', () => {
   it('does not expose the private transferable result capsule to public consumers', () => {
     const parsed = parseSliceBatchResult(encodedResult(), request());
 
-    expect(() => takeTransferableSliceBatchResultForBundledWorker(parsed))
-      .toThrow(/bundled worker/i);
+    expect('takeTransferableSliceBatchResultForBundledWorker' in contractModule).toBe(false);
     expect([...parsed.endpoints]).toEqual([0, 0, 1, 1]);
   });
 

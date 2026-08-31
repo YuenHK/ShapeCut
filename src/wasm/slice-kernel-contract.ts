@@ -113,12 +113,16 @@ export interface SliceBatchResult {
   readonly diagnosticCounters: ReadonlySliceArray;
 }
 
-export interface TransferableSliceBatchResult {
-  readonly version: typeof SLICE_RESULT_VERSION;
-  readonly statusCode: typeof SLICE_STATUS_OK | typeof SLICE_STATUS_GEOMETRY_EVIDENCE;
-  readonly planeOffsets: Uint32Array;
-  readonly endpoints: Float64Array;
-  readonly diagnosticCounters: Uint32Array;
+export interface InspectedSliceWorkerResultArray<T extends Uint32Array | Float64Array> {
+  readonly value: T;
+  readonly length: number;
+  readonly byteLength: number;
+}
+
+export interface InspectedSliceWorkerResultArrays {
+  readonly planeOffsets: InspectedSliceWorkerResultArray<Uint32Array>;
+  readonly endpoints: InspectedSliceWorkerResultArray<Float64Array>;
+  readonly diagnosticCounters: InspectedSliceWorkerResultArray<Uint32Array>;
 }
 
 export interface SliceKernel {
@@ -253,11 +257,19 @@ const Uint32ArrayIntrinsic = Uint32Array;
 const workerGlobalScopeIntrinsic = (globalThis as typeof globalThis & {
   readonly WorkerGlobalScope?: Function;
 }).WorkerGlobalScope;
+const capturedWorkerPathname = (globalThis as typeof globalThis & {
+  readonly location?: { readonly pathname?: unknown };
+}).location?.pathname;
+const workerPostMessageIntrinsic = (globalThis as typeof globalThis & {
+  readonly postMessage?: Function;
+}).postMessage;
 let capturedDedicatedWorkerRealm = false;
 try {
   capturedDedicatedWorkerRealm = typeof workerGlobalScopeIntrinsic === 'function'
     && globalThis instanceof (workerGlobalScopeIntrinsic as Function & { prototype: object })
-    && typeof (globalThis as typeof globalThis & { document?: unknown }).document === 'undefined';
+    && typeof (globalThis as typeof globalThis & { document?: unknown }).document === 'undefined'
+    && typeof capturedWorkerPathname === 'string'
+    && capturedWorkerPathname.includes('slice.worker');
 } catch {
   capturedDedicatedWorkerRealm = false;
 }
@@ -371,6 +383,53 @@ function inspectExactTypedArray<T extends Float32Array | Float64Array | Uint32Ar
   } catch {
     failInspection(code, name);
   }
+}
+
+export function inspectSliceWorkerResultArrays(
+  planeOffsetsValue: unknown,
+  endpointsValue: unknown,
+  diagnosticCountersValue: unknown,
+): InspectedSliceWorkerResultArrays {
+  const planeOffsets = inspectExactTypedArray(
+    planeOffsetsValue,
+    uint32ArraySpec,
+    'worker plane offsets',
+    'INVALID_RESULT',
+  );
+  const endpoints = inspectExactTypedArray(
+    endpointsValue,
+    float64ArraySpec,
+    'worker endpoints',
+    'INVALID_RESULT',
+  );
+  const diagnosticCounters = inspectExactTypedArray(
+    diagnosticCountersValue,
+    uint32ArraySpec,
+    'worker diagnostic counters',
+    'INVALID_RESULT',
+  );
+  rejectSharedBackingBuffers(
+    [planeOffsets, endpoints, diagnosticCounters],
+    'INVALID_RESULT',
+    'worker result arrays',
+  );
+  return objectFreeze({
+    planeOffsets: objectFreeze({
+      value: planeOffsets.value,
+      length: planeOffsets.length,
+      byteLength: planeOffsets.byteLength,
+    }),
+    endpoints: objectFreeze({
+      value: endpoints.value,
+      length: endpoints.length,
+      byteLength: endpoints.byteLength,
+    }),
+    diagnosticCounters: objectFreeze({
+      value: diagnosticCounters.value,
+      length: diagnosticCounters.length,
+      byteLength: diagnosticCounters.byteLength,
+    }),
+  });
 }
 
 type AnyExactTypedArray = ExactTypedArray<Float32Array | Float64Array | Uint32Array>;
@@ -607,28 +666,42 @@ const transferableSliceBatchResultOwnership = new WeakMap<
   TransferableSliceBatchResultOwnership
 >();
 
-/**
- * One-shot escape hatch for the bundled dedicated worker. The public result
- * remains an immutable facade in every ordinary window/Node consumer.
- */
-export function takeTransferableSliceBatchResultForBundledWorker(
+/** Closed one-shot publisher; it never returns the private arrays to caller code. */
+export interface BundledSliceWorkerResultEnvelope {
+  readonly type: 'slice-result';
+  readonly generation: number;
+  readonly partitionIndex: number;
+}
+
+export function publishBundledSliceBatchResult(
   result: SliceBatchResult,
-): TransferableSliceBatchResult {
-  if (!capturedDedicatedWorkerRealm) {
-    throw new TypeError('transferable slice result is restricted to the bundled worker');
+  envelope: BundledSliceWorkerResultEnvelope,
+): void {
+  if (!capturedDedicatedWorkerRealm || typeof workerPostMessageIntrinsic !== 'function') {
+    throw new TypeError('slice result publication is restricted to the bundled worker adapter');
   }
   const ownership = transferableSliceBatchResultOwnership.get(result);
   if (!ownership) {
     throw new TypeError('bundled worker result ownership is unavailable or already consumed');
   }
   transferableSliceBatchResultOwnership.delete(result);
-  return objectFreeze({
+  const response = objectFreeze({
+    type: envelope.type,
+    generation: envelope.generation,
+    partitionIndex: envelope.partitionIndex,
     version: result.version,
     statusCode: result.statusCode,
     planeOffsets: ownership.planeOffsets,
     endpoints: ownership.endpoints,
     diagnosticCounters: ownership.diagnosticCounters,
   });
+  reflectApply(workerPostMessageIntrinsic, globalThis, [response, {
+    transfer: [
+      ownership.planeOffsets.buffer,
+      ownership.endpoints.buffer,
+      ownership.diagnosticCounters.buffer,
+    ],
+  }]);
 }
 
 export function readSliceKernelAbort(checkpoint: SliceKernelCheckpoint): SliceKernelAbort | undefined {

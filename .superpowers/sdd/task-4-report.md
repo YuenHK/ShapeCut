@@ -233,3 +233,76 @@ tracked files:
 The temporary worktree was then removed. The only remaining non-Task-4
 working-tree change is the parent-owned `.superpowers/sdd/progress.md`, which
 was neither staged nor committed here.
+
+## 2026-09-01 re-review round 2 closure
+
+### Exact RED evidence
+
+Finding 9 and Finding 12 RED command:
+
+```text
+npm test -- --run src/workers/slice-worker-pool.test.ts -t "shadow keys|fail-safe best-effort|pending partition yield"
+```
+
+Observed before production changes: 2 failed / 1 passed. A result endpoints
+array with an own `Symbol.iterator` was accepted and the pool promise resolved
+instead of rejecting. A constructed worker whose listener registration threw
+was never terminated (`terminateAttempts` was 0 instead of 1). The original
+timer test was not a valid RED because the pool had captured the native timer;
+it was replaced by the isolated-bootstrap scheduler test below.
+
+Finding 11 and Finding 10 RED command:
+
+```text
+npm run test:browser -- --run src/workers/slice-worker-pool.browser.test.ts -t "bootstrap primitives|arbitrary dedicated worker"
+```
+
+Observed before production changes: 2 failed. Post-load mutation of
+`Worker.prototype.postMessage`, `Worker.prototype.terminate`, and
+`EventTarget.prototype` add/remove methods caused `WORKER_CRASH`. An arbitrary
+Blob dedicated worker observed `helperExported: true` and `escaped: true`.
+
+Finding 13 corrected RED command:
+
+```text
+npm test -- --run src/workers/slice-worker-pool.test.ts -t "pending partition yield timer"
+```
+
+The test re-imported the pool after installing an isolated tracked scheduler.
+Observed before production changes: one pending partition-yield timer remained
+after `cancel()` resolved (`expected 0, received 1`).
+
+### GREEN implementation and focused evidence
+
+- Worker result arrays now pass the Task 3 captured intrinsic brand, length,
+  byte-length, buffer, offset, fixed/full-span and forbidden-own-key inspector.
+  Its frozen metadata drives per-result and aggregate caps before indexed
+  numeric scans.
+- The raw-return result helper was removed. The only worker path is a closed
+  publisher that posts the three private buffers directly, is bound to the
+  captured bundled slice-worker realm, and returns no raw view. Window, Node,
+  and an arbitrary Blob dedicated worker retain only immutable facades.
+- Trusted Worker/EventTarget add, remove, post and terminate methods plus
+  `Reflect.apply` are captured at module evaluation. The bootstrap-mutation
+  Chromium regression now completes the real WASM request.
+- A worker enters the active set immediately after construction. Cleanup first
+  removes it from the set, then independently attempts both listener removals
+  and termination; cleanup exceptions cannot prevent exactly-once settlement.
+- A job owns the currently pending partition-yield cancellation closure.
+  Cancellation clears the timer and rejects the yield immediately. Async
+  partition estimation, mesh remap/index/source-vertex arrays, assignment lists
+  and partial partition lists clear their mutable containers in abort paths.
+
+Focused GREEN commands:
+
+```text
+npm test -- --run src/workers/slice-worker-pool.test.ts -t "shadow keys|fail-safe best-effort|pending partition yield"
+# 3 passed
+
+npm run test:browser -- --run src/workers/slice-worker-pool.browser.test.ts -t "bootstrap primitives|arbitrary dedicated worker"
+# 2 passed in Chromium
+```
+
+No UI, CSS, typography, colour, material, launcher, canonical artifact or
+production deadline code was changed. Full and clean-checkout round-2 evidence
+is appended after the final matrices below.

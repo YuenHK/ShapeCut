@@ -373,6 +373,35 @@ describe('SliceWorkerPool', () => {
     }
   });
 
+  it('rejects worker result typed-array shadow keys before any numeric traversal', async () => {
+    const worker = new ControlledWorker();
+    const pool = new SliceWorkerPool({ hardwareConcurrency: 1, workerFactory: () => worker });
+    pools.push(pool);
+    const run = pool.run(request());
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(1));
+    const submitted = worker.posted[0];
+    let traversed = false;
+    const endpoints = new Float64Array();
+    Object.defineProperty(endpoints, Symbol.iterator, {
+      value() {
+        traversed = true;
+        return [][Symbol.iterator]();
+      },
+    });
+    const diagnosticCounters = new Uint32Array(9);
+    diagnosticCounters[3] = submitted.indices.length / 3 * submitted.planes.length;
+    worker.emitMessage({
+      type: 'slice-result', generation: submitted.generation,
+      partitionIndex: submitted.partitionIndex, version: 1, statusCode: 0,
+      planeOffsets: new Uint32Array(submitted.planes.length + 1),
+      endpoints,
+      diagnosticCounters,
+    });
+
+    await expect(run).rejects.toMatchObject({ code: 'PROTOCOL_ERROR', fallbackEligible: false });
+    expect(traversed).toBe(false);
+  });
+
   it('rejects aggregate endpoint bytes before storing the overflowing partition', async () => {
     const triangleCount = 262_144;
     const indices = new Uint32Array(triangleCount * 3);
@@ -496,6 +525,90 @@ describe('SliceWorkerPool', () => {
     expect(pool.activeWorkerCount).toBe(0);
     expect(workers.every((worker) => worker.terminated)).toBe(true);
     await expect(run).rejects.toMatchObject({ code: 'CANCELLED', fallbackEligible: false });
+  });
+
+  it('registers a constructed worker before fail-safe best-effort cleanup', async () => {
+    let terminateAttempts = 0;
+    const hostile: SliceWorkerLike = {
+      postMessage() { throw new Error('post must not be reached'); },
+      addEventListener() { throw new Error('listener registration failed'); },
+      removeEventListener() { throw new Error('listener cleanup failed'); },
+      terminate() {
+        terminateAttempts += 1;
+        throw new Error('termination failed');
+      },
+    };
+    const pool = new SliceWorkerPool({ hardwareConcurrency: 1, workerFactory: () => hostile });
+    pools.push(pool);
+
+    await expect(pool.run(request())).rejects.toMatchObject({
+      code: 'WORKER_CRASH',
+      fallbackEligible: false,
+    });
+    expect(terminateAttempts).toBe(1);
+    expect(pool.activeWorkerCount).toBe(0);
+  });
+
+  it('isolates listener-removal and termination failures while settling once', async () => {
+    let removeAttempts = 0;
+    let terminateAttempts = 0;
+    const hostile: SliceWorkerLike = {
+      postMessage() { throw new Error('post failed'); },
+      addEventListener() { /* registered */ },
+      removeEventListener() {
+        removeAttempts += 1;
+        throw new Error('remove failed');
+      },
+      terminate() {
+        terminateAttempts += 1;
+        throw new Error('terminate failed');
+      },
+    };
+    const pool = new SliceWorkerPool({ hardwareConcurrency: 1, workerFactory: () => hostile });
+    pools.push(pool);
+
+    await expect(pool.run(request())).rejects.toMatchObject({ code: 'WORKER_CRASH' });
+    expect(removeAttempts).toBe(2);
+    expect(terminateAttempts).toBe(1);
+    expect(pool.activeWorkerCount).toBe(0);
+  });
+
+  it('cancels the pending partition yield timer before cancel resolves', async () => {
+    const originalSetTimeout = globalThis.setTimeout;
+    const originalClearTimeout = globalThis.clearTimeout;
+    const pending = new Map<number, () => void>();
+    let nextTimer = 1;
+    vi.stubGlobal('setTimeout', ((callback: () => void) => {
+      const timer = nextTimer;
+      nextTimer += 1;
+      pending.set(timer, () => {
+        pending.delete(timer);
+        callback();
+      });
+      return timer;
+    }) as typeof setTimeout);
+    vi.stubGlobal('clearTimeout', ((timer: number) => {
+      pending.delete(timer);
+    }) as typeof clearTimeout);
+    vi.resetModules();
+    try {
+      const isolated = await import('./slice-worker-pool');
+      const pool = new isolated.SliceWorkerPool({
+        hardwareConcurrency: 1,
+        workerFactory: () => new ControlledWorker(),
+      });
+      const run = pool.run(request());
+      const rejection = expect(run).rejects.toMatchObject({ code: 'CANCELLED' });
+      await pool.cancel();
+      await rejection;
+      expect(pending.size).toBe(0);
+      expect(pool.activeWorkerCount).toBe(0);
+    } finally {
+      for (const resume of [...pending.values()]) resume();
+      vi.stubGlobal('setTimeout', originalSetTimeout);
+      vi.stubGlobal('clearTimeout', originalClearTimeout);
+      vi.resetModules();
+    }
   });
 
   it('treats an expired worker deadline as fail-closed and never fallback eligible', async () => {

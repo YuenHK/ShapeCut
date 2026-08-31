@@ -2,6 +2,7 @@ import {
   SLICE_RESULT_VERSION,
   SLICE_STATUS_GEOMETRY_EVIDENCE,
   SLICE_STATUS_OK,
+  inspectSliceWorkerResultArrays,
   type ReadonlySliceArray,
   type SliceBatchResult,
   takeSliceBatchRequestOwnershipSnapshot,
@@ -143,13 +144,26 @@ interface ValidatedPartitionResult {
   readonly statusCode: typeof SLICE_STATUS_OK | typeof SLICE_STATUS_GEOMETRY_EVIDENCE;
   readonly planeOffsets: Uint32Array;
   readonly endpoints: Float64Array;
+  readonly endpointByteLength: number;
   readonly diagnosticCounters: Uint32Array;
 }
 
 interface ActiveWorker {
   readonly worker: SliceWorkerLike;
-  readonly messageListener: MessageListener;
-  readonly errorListener: ErrorListener;
+  messageListener: MessageListener;
+  errorListener: ErrorListener;
+  operations: WorkerOperations | undefined;
+  messageListenerRegistered: boolean;
+  errorListenerRegistered: boolean;
+}
+
+interface WorkerOperations {
+  readonly addMessageListener: (listener: MessageListener) => void;
+  readonly addErrorListener: (listener: ErrorListener) => void;
+  readonly removeMessageListener: (listener: MessageListener) => void;
+  readonly removeErrorListener: (listener: ErrorListener) => void;
+  readonly postMessage: (message: SliceWorkerInboundMessage, transfer: Transferable[]) => void;
+  readonly terminate: () => void;
 }
 
 interface ActiveJob {
@@ -161,6 +175,7 @@ interface ActiveJob {
   readonly resolve: (result: SliceBatchResult) => void;
   readonly onProgress: ((event: SliceWorkerProgress) => void) | undefined;
   timeout: ReturnType<typeof setTimeout> | undefined;
+  partitionYieldCancel: (() => void) | undefined;
   completedPlanes: number;
   aggregateEndpointBytes: number;
   settled: boolean;
@@ -174,12 +189,23 @@ const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
 const reflectOwnKeys = Reflect.ownKeys;
 const setTimeoutIntrinsic = globalThis.setTimeout.bind(globalThis);
 const clearTimeoutIntrinsic = globalThis.clearTimeout.bind(globalThis);
+const reflectApplyIntrinsic = Reflect.apply;
 const WorkerIntrinsic = globalThis.Worker;
 const bundledSliceWorkerUrl = new globalThis.URL('./slice.worker.ts', import.meta.url);
-const arrayBufferResizableGetter = objectGetOwnPropertyDescriptor(
-  ArrayBuffer.prototype,
-  'resizable',
-)?.get;
+const eventTargetAddEventListener = objectGetOwnPropertyDescriptor(
+  globalThis.EventTarget.prototype,
+  'addEventListener',
+)?.value;
+const eventTargetRemoveEventListener = objectGetOwnPropertyDescriptor(
+  globalThis.EventTarget.prototype,
+  'removeEventListener',
+)?.value;
+const workerPostMessage = typeof WorkerIntrinsic === 'function'
+  ? objectGetOwnPropertyDescriptor(WorkerIntrinsic.prototype, 'postMessage')?.value
+  : undefined;
+const workerTerminate = typeof WorkerIntrinsic === 'function'
+  ? objectGetOwnPropertyDescriptor(WorkerIntrinsic.prototype, 'terminate')?.value
+  : undefined;
 
 export class SliceWorkerPool {
   readonly #hardwareConcurrency: number | undefined;
@@ -224,6 +250,7 @@ export class SliceWorkerPool {
         resolve,
         onProgress,
         timeout: undefined,
+        partitionYieldCancel: undefined,
         completedPlanes: 0,
         aggregateEndpointBytes: 0,
         settled: false,
@@ -264,7 +291,28 @@ export class SliceWorkerPool {
         ),
         {
           checkpoint,
-          yieldControl: () => new Promise<void>((resolve) => setTimeoutIntrinsic(resolve, 0)),
+          yieldControl: () => new Promise<void>((resolve, reject) => {
+            let pending = true;
+            let cancelYield: () => void;
+            const timer = setTimeoutIntrinsic(() => {
+              if (!pending) return;
+              pending = false;
+              if (job.partitionYieldCancel === cancelYield) {
+                job.partitionYieldCancel = undefined;
+              }
+              resolve();
+            }, 0);
+            cancelYield = () => {
+              if (!pending) return;
+              pending = false;
+              clearTimeoutIntrinsic(timer);
+              if (job.partitionYieldCancel === cancelYield) {
+                job.partitionYieldCancel = undefined;
+              }
+              reject(new SliceWorkerPoolError('CANCELLED', 'Slice worker job was cancelled'));
+            };
+            job.partitionYieldCancel = cancelYield;
+          }),
         },
       );
       checkpoint();
@@ -300,13 +348,21 @@ export class SliceWorkerPool {
     request: Pick<SliceWorkerPoolRequest, 'deadlineCheckInterval' | 'deadlineAt'>,
   ): void {
     const worker = this.#workerFactory();
+    const activeWorker: ActiveWorker = {
+      worker,
+      messageListener: () => undefined,
+      errorListener: () => undefined,
+      operations: undefined,
+      messageListenerRegistered: false,
+      errorListenerRegistered: false,
+    };
+    job.workers.add(activeWorker);
     const expected: ExpectedPartition = Object.freeze({
       partitionIndex: partition.partitionIndex,
       planeIndices: partition.planeIndices,
       planeCount: partition.planes.length,
       triangleCount: partition.indices.length / 3,
     });
-    let activeWorker: ActiveWorker;
     const messageListener: MessageListener = (event) => {
       if (job !== this.#activeJob || job.generation !== this.#generation || job.settled) return;
       try {
@@ -318,7 +374,7 @@ export class SliceWorkerPool {
         if (job.results.has(expected.partitionIndex)) {
           throw new SliceWorkerPoolError('PROTOCOL_ERROR', 'Slice worker sent a duplicate result');
         }
-        const aggregateEndpointBytes = job.aggregateEndpointBytes + result.endpoints.byteLength;
+        const aggregateEndpointBytes = job.aggregateEndpointBytes + result.endpointByteLength;
         if (!Number.isSafeInteger(aggregateEndpointBytes)
           || aggregateEndpointBytes > MAX_MERGED_ENDPOINT_BYTES) {
           throw new SliceWorkerPoolError(
@@ -353,10 +409,14 @@ export class SliceWorkerPool {
         this.#trustedWorkerFactory,
       ));
     };
-    activeWorker = { worker, messageListener, errorListener };
-    worker.addEventListener('message', messageListener);
-    worker.addEventListener('error', errorListener);
-    job.workers.add(activeWorker);
+    activeWorker.messageListener = messageListener;
+    activeWorker.errorListener = errorListener;
+    const operations = createWorkerOperations(worker, this.#trustedWorkerFactory);
+    activeWorker.operations = operations;
+    activeWorker.messageListenerRegistered = true;
+    operations.addMessageListener(messageListener);
+    activeWorker.errorListenerRegistered = true;
+    operations.addErrorListener(errorListener);
     const message: SliceWorkerRequestMessage = {
       type: 'slice',
       generation: job.generation,
@@ -367,7 +427,7 @@ export class SliceWorkerPool {
       deadlineCheckInterval: request.deadlineCheckInterval,
       deadlineAt: request.deadlineAt,
     };
-    worker.postMessage(message, [
+    operations.postMessage(message, [
       partition.positions.buffer,
       partition.indices.buffer,
       partition.planes.buffer,
@@ -375,10 +435,18 @@ export class SliceWorkerPool {
   }
 
   #releaseWorker(job: ActiveJob, active: ActiveWorker): void {
-    active.worker.removeEventListener('message', active.messageListener);
-    active.worker.removeEventListener('error', active.errorListener);
-    active.worker.terminate();
-    job.workers.delete(active);
+    if (!job.workers.delete(active)) return;
+    const operations = active.operations;
+    if (operations && active.messageListenerRegistered) {
+      try { operations.removeMessageListener(active.messageListener); } catch { /* best effort */ }
+    }
+    if (operations && active.errorListenerRegistered) {
+      try { operations.removeErrorListener(active.errorListener); } catch { /* best effort */ }
+    }
+    try {
+      if (operations) operations.terminate();
+      else active.worker.terminate();
+    } catch { /* best effort */ }
   }
 
   #completeJob(job: ActiveJob): void {
@@ -400,6 +468,11 @@ export class SliceWorkerPool {
   #failJob(job: ActiveJob, error: SliceWorkerPoolError): void {
     if (job.settled) return;
     job.settled = true;
+    const cancelPartitionYield = job.partitionYieldCancel;
+    job.partitionYieldCancel = undefined;
+    if (cancelPartitionYield) {
+      try { cancelPartitionYield(); } catch { /* best effort */ }
+    }
     if (job.timeout !== undefined) clearTimeoutIntrinsic(job.timeout);
     for (const worker of [...job.workers]) this.#releaseWorker(job, worker);
     if (this.#activeJob === job) this.#activeJob = undefined;
@@ -418,6 +491,63 @@ function createBrowserSliceWorker(): SliceWorkerLike {
     throw new TypeError('captured bundled Worker constructor is unavailable');
   }
   return new WorkerIntrinsic(bundledSliceWorkerUrl, { type: 'module' });
+}
+
+function createWorkerOperations(worker: SliceWorkerLike, trusted: boolean): WorkerOperations {
+  if (trusted) {
+    if (typeof eventTargetAddEventListener !== 'function'
+      || typeof eventTargetRemoveEventListener !== 'function'
+      || typeof workerPostMessage !== 'function'
+      || typeof workerTerminate !== 'function') {
+      throw new TypeError('captured bundled Worker operations are unavailable');
+    }
+    return Object.freeze({
+      addMessageListener: (listener: MessageListener) => {
+        reflectApplyIntrinsic(eventTargetAddEventListener, worker, ['message', listener]);
+      },
+      addErrorListener: (listener: ErrorListener) => {
+        reflectApplyIntrinsic(eventTargetAddEventListener, worker, ['error', listener]);
+      },
+      removeMessageListener: (listener: MessageListener) => {
+        reflectApplyIntrinsic(eventTargetRemoveEventListener, worker, ['message', listener]);
+      },
+      removeErrorListener: (listener: ErrorListener) => {
+        reflectApplyIntrinsic(eventTargetRemoveEventListener, worker, ['error', listener]);
+      },
+      postMessage: (message: SliceWorkerInboundMessage, transfer: Transferable[]) => {
+        reflectApplyIntrinsic(workerPostMessage, worker, [message, transfer]);
+      },
+      terminate: () => { reflectApplyIntrinsic(workerTerminate, worker, []); },
+    });
+  }
+  const addEventListener = worker.addEventListener;
+  const removeEventListener = worker.removeEventListener;
+  const postMessage = worker.postMessage;
+  const terminate = worker.terminate;
+  if (typeof addEventListener !== 'function'
+    || typeof removeEventListener !== 'function'
+    || typeof postMessage !== 'function'
+    || typeof terminate !== 'function') {
+    throw new TypeError('injected worker operations are unavailable');
+  }
+  return Object.freeze({
+    addMessageListener: (listener: MessageListener) => {
+      reflectApplyIntrinsic(addEventListener, worker, ['message', listener]);
+    },
+    addErrorListener: (listener: ErrorListener) => {
+      reflectApplyIntrinsic(addEventListener, worker, ['error', listener]);
+    },
+    removeMessageListener: (listener: MessageListener) => {
+      reflectApplyIntrinsic(removeEventListener, worker, ['message', listener]);
+    },
+    removeErrorListener: (listener: ErrorListener) => {
+      reflectApplyIntrinsic(removeEventListener, worker, ['error', listener]);
+    },
+    postMessage: (message: SliceWorkerInboundMessage, transfer: Transferable[]) => {
+      reflectApplyIntrinsic(postMessage, worker, [message, transfer]);
+    },
+    terminate: () => { reflectApplyIntrinsic(terminate, worker, []); },
+  });
 }
 
 interface OwnedPoolRequestSnapshot {
@@ -457,22 +587,6 @@ function takePoolRequestOwnershipSnapshot(value: unknown): OwnedPoolRequestSnaps
     return Object.freeze({ owned, deadlineAt: deadlineAt as number });
   } catch {
     throw new SliceWorkerPoolError('INVALID_REQUEST', 'Slice worker request was rejected');
-  }
-}
-
-function isExactFullSpanTypedArray(
-  value: Float32Array | Float64Array | Uint32Array,
-  expectedPrototype: object,
-): boolean {
-  try {
-    if (objectGetPrototypeOf(value) !== expectedPrototype
-      || objectGetPrototypeOf(value.buffer) !== ArrayBuffer.prototype
-      || value.byteOffset !== 0
-      || value.byteLength !== value.buffer.byteLength) return false;
-    return typeof arrayBufferResizableGetter !== 'function'
-      || Reflect.apply(arrayBufferResizableGetter, value.buffer, []) === false;
-  } catch {
-    return false;
   }
 }
 
@@ -534,29 +648,33 @@ function validateWorkerResult(
   expected: ExpectedPartition,
   generation: number,
 ): ValidatedPartitionResult {
-  if (!isRecord(message) || message.type !== 'slice-result'
-    || !hasExactOwnDataKeys(message, [
-      'type', 'generation', 'partitionIndex', 'version', 'statusCode',
-      'planeOffsets', 'endpoints', 'diagnosticCounters',
-    ])
-    || message.generation !== generation
-    || message.partitionIndex !== expected.partitionIndex
-    || message.version !== SLICE_RESULT_VERSION
-    || (message.statusCode !== SLICE_STATUS_OK && message.statusCode !== SLICE_STATUS_GEOMETRY_EVIDENCE)
-    || !isExactFullSpanTypedArray(message.planeOffsets as Uint32Array, Uint32Array.prototype)
-    || !isExactFullSpanTypedArray(message.endpoints as Float64Array, Float64Array.prototype)
-    || !isExactFullSpanTypedArray(message.diagnosticCounters as Uint32Array, Uint32Array.prototype)) {
+  const snapshot = snapshotExactOwnDataRecord(message, [
+    'type', 'generation', 'partitionIndex', 'version', 'statusCode',
+    'planeOffsets', 'endpoints', 'diagnosticCounters',
+  ]);
+  if (!snapshot
+    || snapshot[0] !== 'slice-result'
+    || snapshot[1] !== generation
+    || snapshot[2] !== expected.partitionIndex
+    || snapshot[3] !== SLICE_RESULT_VERSION
+    || (snapshot[4] !== SLICE_STATUS_OK && snapshot[4] !== SLICE_STATUS_GEOMETRY_EVIDENCE)) {
     throw new SliceWorkerPoolError('PROTOCOL_ERROR', 'Slice worker result protocol was rejected');
   }
-  const planeOffsets = message.planeOffsets as Uint32Array;
-  const endpoints = message.endpoints as Float64Array;
-  const diagnosticCounters = message.diagnosticCounters as Uint32Array;
-  const segmentCount = endpoints.length / 4;
+  let inspected: ReturnType<typeof inspectSliceWorkerResultArrays>;
+  try {
+    inspected = inspectSliceWorkerResultArrays(snapshot[5], snapshot[6], snapshot[7]);
+  } catch {
+    throw new SliceWorkerPoolError('PROTOCOL_ERROR', 'Slice worker result protocol was rejected');
+  }
+  const { value: planeOffsets } = inspected.planeOffsets;
+  const { value: endpoints } = inspected.endpoints;
+  const { value: diagnosticCounters } = inspected.diagnosticCounters;
+  const segmentCount = inspected.endpoints.length / 4;
   const work = expected.triangleCount * expected.planeCount;
   if (segmentCount > MAX_PARTITION_SEGMENT_COUNT
-    || endpoints.byteLength > MAX_RESULT_ARRAY_BYTES
-    || planeOffsets.byteLength > MAX_RESULT_ARRAY_BYTES
-    || diagnosticCounters.byteLength > MAX_RESULT_ARRAY_BYTES) {
+    || inspected.endpoints.byteLength > MAX_RESULT_ARRAY_BYTES
+    || inspected.planeOffsets.byteLength > MAX_RESULT_ARRAY_BYTES
+    || inspected.diagnosticCounters.byteLength > MAX_RESULT_ARRAY_BYTES) {
     throw new SliceWorkerPoolError(
       'PROTOCOL_ERROR',
       'Slice worker result exceeded its allocation cap',
@@ -569,11 +687,11 @@ function validateWorkerResult(
     );
   }
   const maximumCheckpointCount = work + expected.planeCount;
-  if (planeOffsets.length !== expected.planeCount + 1
-    || endpoints.length % 4 !== 0
-    || diagnosticCounters.length !== 9
+  if (inspected.planeOffsets.length !== expected.planeCount + 1
+    || inspected.endpoints.length % 4 !== 0
+    || inspected.diagnosticCounters.length !== 9
     || planeOffsets[0] !== 0
-    || planeOffsets.at(-1) !== segmentCount
+    || planeOffsets[inspected.planeOffsets.length - 1] !== segmentCount
     || diagnosticCounters[0] > expected.triangleCount
     || diagnosticCounters[1] > work
     || diagnosticCounters[2] !== 0
@@ -586,27 +704,30 @@ function validateWorkerResult(
     throw new SliceWorkerPoolError('PROTOCOL_ERROR', 'Slice worker result was inconsistent');
   }
   let previous = 0;
-  for (const offset of planeOffsets) {
+  for (let index = 0; index < inspected.planeOffsets.length; index += 1) {
+    const offset = planeOffsets[index];
     if (offset < previous || offset > segmentCount) {
       throw new SliceWorkerPoolError('PROTOCOL_ERROR', 'Slice worker offsets were inconsistent');
     }
     previous = offset;
   }
-  for (const endpoint of endpoints) {
+  for (let index = 0; index < inspected.endpoints.length; index += 1) {
+    const endpoint = endpoints[index];
     if (!Number.isFinite(endpoint)) {
       throw new SliceWorkerPoolError('PROTOCOL_ERROR', 'Slice worker endpoints were non-finite');
     }
   }
   const hasEvidence = diagnosticCounters[0] > 0 || diagnosticCounters[1] > 0
     || diagnosticCounters[6] > 0 || diagnosticCounters[7] > 0;
-  if ((message.statusCode === SLICE_STATUS_GEOMETRY_EVIDENCE) !== hasEvidence) {
+  if ((snapshot[4] === SLICE_STATUS_GEOMETRY_EVIDENCE) !== hasEvidence) {
     throw new SliceWorkerPoolError('PROTOCOL_ERROR', 'Slice worker status was inconsistent');
   }
   return Object.freeze({
     expected,
-    statusCode: message.statusCode,
+    statusCode: snapshot[4] as typeof SLICE_STATUS_OK | typeof SLICE_STATUS_GEOMETRY_EVIDENCE,
     planeOffsets,
     endpoints,
+    endpointByteLength: inspected.endpoints.byteLength,
     diagnosticCounters,
   });
 }
@@ -718,5 +839,30 @@ function hasExactOwnDataKeys(value: object, expectedKeys: readonly string[]): bo
     });
   } catch {
     return false;
+  }
+}
+
+function snapshotExactOwnDataRecord(
+  value: unknown,
+  expectedKeys: readonly string[],
+): readonly unknown[] | undefined {
+  try {
+    if (!isRecord(value)) return undefined;
+    const prototype = objectGetPrototypeOf(value);
+    const keys = reflectOwnKeys(value);
+    if ((prototype !== Object.prototype && prototype !== null)
+      || keys.length !== expectedKeys.length
+      || keys.some((key) => typeof key !== 'string' || !expectedKeys.includes(key))) {
+      return undefined;
+    }
+    const snapshot: unknown[] = [];
+    for (const key of expectedKeys) {
+      const descriptor = objectGetOwnPropertyDescriptor(value, key);
+      if (!descriptor || !('value' in descriptor)) return undefined;
+      snapshot.push(descriptor.value);
+    }
+    return Object.freeze(snapshot);
+  } catch {
+    return undefined;
   }
 }

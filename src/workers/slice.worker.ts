@@ -1,13 +1,12 @@
 import {
   SliceKernelError,
   loadSliceKernel,
-  takeTransferableSliceBatchResultForBundledWorker,
+  publishBundledSliceBatchResult,
   type SliceKernelAbort,
 } from '../wasm/slice-kernel-contract';
 import type {
   SliceWorkerErrorMessage,
   SliceWorkerRequestMessage,
-  SliceWorkerResultMessage,
 } from './slice-worker-pool';
 
 let busy = false;
@@ -34,20 +33,10 @@ async function execute(value: unknown): Promise<void> {
       planes: request.planes,
       deadlineCheckInterval: request.deadlineCheckInterval,
     }, checkpoint);
-    const transferableResult = takeTransferableSliceBatchResultForBundledWorker(result);
-    const { planeOffsets, endpoints, diagnosticCounters } = transferableResult;
-    const response: SliceWorkerResultMessage = {
+    publishBundledSliceBatchResult(result, {
       type: 'slice-result',
       generation: request.generation,
       partitionIndex: request.partitionIndex,
-      version: result.version,
-      statusCode: result.statusCode,
-      planeOffsets,
-      endpoints,
-      diagnosticCounters,
-    };
-    globalThis.postMessage(response, {
-      transfer: [planeOffsets.buffer, endpoints.buffer, diagnosticCounters.buffer],
     });
   } catch (error) {
     if (!request) return;
