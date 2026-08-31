@@ -323,3 +323,168 @@ array. GREEN: 26/26; the same mutation checks pass in the 7/7 Chromium suite.
   any callback runs.
 - Verified the nine implementation files do not touch UI/CSS, the production
   deadline, canonical merge, materials, launcher geometry or artifacts.
+
+## Re-review round 2: findings 7–9
+
+Date: 2026-08-31
+Implementation commit: `ba908d4` (`fix(wasm): close adapter abort and build boundaries`)
+
+This section supersedes the earlier report statements that generated WASM is
+ignored and that standard build/browser tests regenerate it. Normal build and
+browser-test paths now consume tracked, hash-verified generated artifacts. Only
+the separate regeneration gate invokes the pinned Rust toolchain and
+`wasm-pack`.
+
+### Finding 7: phase-independent abort reason and source
+
+- The public TypeScript adapter checkpoint now returns an exact discriminated
+  abort record: cancellation is `{ reason: "cancelled", source:
+  "user"|"superseded" }`; deadline is `{ reason: "deadline", source:
+  "runtime-deadline" }`; no abort is `undefined`.
+- The adapter validates the abort record with `Reflect.ownKeys()` and data
+  descriptors. Boolean, malformed, accessor, thrown and mismatched
+  reason/source values fail closed.
+- Only the controlled wrapper receives the raw strict boolean deadline hook.
+  The adapter retains the observed abort record across that call and maps every
+  request, controlled-execution and result checkpoint to the same
+  `SliceKernelError` code, `abortReason` and `abortSource`.
+
+RED command:
+
+```text
+npx vitest --config vitest.browser.config.ts run src/wasm/load-slice-kernel.browser.test.ts
+```
+
+RED result: 7 passed and 4 failed. Both immediate and delayed cancellation and
+deadline cases were incorrectly returned as `DEADLINE_CHECK_FAILED`.
+
+GREEN results:
+
+- `npx vitest run src/wasm/slice-kernel-contract.test.ts` — 27/27 passed.
+- `npm run test:browser -- --run src/wasm/load-slice-kernel.browser.test.ts` —
+  11/11 passed in Chromium, including all four immediate/delayed cases.
+- `npm run typecheck` — exit 0.
+
+### Finding 8: encoded Rust flags and path safety
+
+- Path remapping now uses `CARGO_ENCODED_RUSTFLAGS` with ASCII unit separators
+  (`0x1f`). An existing encoded sequence is retained before the two generated
+  remap flags. `RUSTFLAGS` is deliberately removed from the child environment
+  so Cargo never receives both incompatible flag channels.
+- The build contract test drives the real build script through a fake pinned
+  `wasm-pack`, captures its child environment, and verifies an existing flag
+  containing spaces and Chinese remains one encoded argument.
+
+RED command:
+
+```text
+npx vitest run src/test/geometry-wasm-build-contract.test.ts
+```
+
+RED result: 2/2 failed. The build child received space-delimited `RUSTFLAGS`,
+and the standard package scripts still invoked regeneration.
+
+GREEN path verification from committed `ba908d4`:
+
+```text
+git clone --local . "/tmp/ShapeCut Task 3 中文 fresh"
+cd "/tmp/ShapeCut Task 3 中文 fresh"
+CARGO_ENCODED_RUSTFLAGS=$'-Cdebuginfo=0\x1f--remap-path-prefix=/tmp/Existing 中文 path=/workspace/existing' \
+  npm run verify:geometry-wasm-regeneration
+```
+
+Result: Rust 1.98.0 and wasm-pack 0.15.0 rebuilt the crate from the checkout
+whose path contains spaces and Chinese. The 37,856-byte output matched the
+tracked SHA-256
+`4aa7f77d0e50116c28ee06212408d72efede27e33d1e4723de65ab67d3c3795a`
+byte-for-byte.
+
+### Finding 9: tracked normal-build artifacts and separate regeneration
+
+- Tracked `geometry_wasm.js`, `geometry_wasm_bg.wasm` and both declaration
+  files, plus a pinned manifest containing size and SHA-256 for the exact four
+  generated files.
+- `verify:geometry-wasm-generated` uses Node built-ins only and fails if the
+  manifest/tool versions/artifact set/size/hash differ. Standard `build` and
+  `test:browser` call this verifier and never invoke Rust or wasm-pack.
+- Pages explicitly verifies the tracked artifacts before typecheck/build. Its
+  workflow contains no Rust, Cargo or wasm-pack setup.
+- `.github/workflows/verify-geometry-wasm.yml` is an independent online
+  regeneration gate. It explicitly installs Rust 1.98.0 with the wasm target,
+  installs wasm-pack 0.15.0 with `--locked`, verifies both tracked files and a
+  clean temporary regeneration, then compares both to the same pinned hashes.
+- Offline capability is claimed only for standard build/test after Node
+  dependencies are installed. Regeneration is not claimed offline and its CI
+  install step may use the network.
+
+Fresh-checkout verification:
+
+```text
+git clone --local . "/tmp/ShapeCut Task 3 中文 fresh"
+cd "/tmp/ShapeCut Task 3 中文 fresh"
+npm ci --ignore-scripts --cache "/tmp/ShapeCut Task 3 中文 npm cache fresh"
+env PATH=/usr/local/bin:/usr/bin:/bin \
+  CARGO_HOME="/tmp/ShapeCut Task 3 中文 empty cargo" \
+  npm_config_offline=true /bin/sh -c '
+    for tool in cargo rustc rustup wasm-pack; do
+      if command -v "$tool" >/dev/null 2>&1; then exit 1; fi
+    done
+    npm run build &&
+    npm test -- --run src/wasm/slice-kernel-contract.test.ts \
+      src/test/geometry-wasm-build-contract.test.ts &&
+    npm run test:browser -- --run src/wasm/load-slice-kernel.browser.test.ts &&
+    npm run test:geometry-wasm-boundary
+  '
+git status --porcelain
+```
+
+Results: the fresh npm cache installed 312 packages; the restricted PATH
+contained none of Cargo, rustc, rustup or wasm-pack; the Cargo home was empty;
+and npm was offline during standard build/test. Production build passed, Node
+29/29 passed, Chromium 11/11 passed, raw boundary 31/31 passed, and the fresh
+checkout remained clean. The first attempt at this check had run `npm ci` in
+the source worktree rather than the clone and therefore failed at `tsc: command
+not found`; the command above is the corrected fresh-checkout run and result.
+
+### Round 2 full verification
+
+- `npm run verify:geometry-wasm-regeneration` — tracked verification and clean
+  pinned regeneration passed twice; exact hash above.
+- `npm run test:geometry-wasm-boundary` — 31/31 passed.
+- `cargo fmt --manifest-path crates/geometry-wasm/Cargo.toml -- --check` — exit
+  0.
+- Native locked clippy with all targets/features and `-D warnings` — exit 0.
+- wasm32 locked release clippy with `-D warnings` — exit 0.
+- Locked Rust tests — 1 unit + 20 integration passed; doc tests passed.
+- wasm32 locked release check — exit 0.
+- `npm run typecheck` — exit 0.
+- Standard build with Rust tools absent from PATH, an empty Cargo home and
+  `npm_config_offline=true` — exit 0; exactly one 37.86 kB WASM asset, zero
+  maps, and no `/Users/`, `/private/` or `sourceMappingURL=` material.
+- Node syntax checks for the build/verifier/raw-wrapper scripts — exit 0.
+- `git diff --check` — exit 0.
+- Full `npm test` was run twice: both runs passed 69/71 files and
+  1721 tests (4 skipped), with the same two unrelated 5-second conversion
+  timeouts in `src/test/e2e-helpers.test.ts` and
+  `src/export/outline-package.test.ts`. Both exact tests pass when rerun alone
+  (1/1 each). No unrelated timeout or production geometry code was changed.
+
+### Round 2 self-review and concerns
+
+- Confirmed TypeScript imports only the controlled wrapper; no application
+  module imports the generated raw JS ABI.
+- Confirmed cancellation and deadline codes are selected from the retained
+  abort record rather than the checkpoint phase or an error message.
+- Confirmed normal Pages/Node build paths do not reference Rust, Cargo,
+  wasm-pack, Cargo caches or regeneration scripts.
+- Confirmed only the separate regeneration workflow installs tools and that it
+  pins and verifies exact versions before byte comparison.
+- Confirmed the round 2 diff does not touch UI/CSS, fonts, colours, production
+  deadline, canonical merge, material logic, launcher code or release
+  artifacts.
+- Remaining concern: the full Node suite's two existing heavy conversion tests
+  consistently exceed their 5-second limit under full-suite load, although
+  both pass in isolation. This is reported rather than hidden by an unrelated
+  timeout change.
+- `npm ci` reports the repository's existing audit state of 1 moderate and 3
+  high vulnerabilities; dependency changes were outside this task.
