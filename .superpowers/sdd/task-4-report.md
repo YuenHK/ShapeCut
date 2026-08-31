@@ -446,3 +446,8 @@ integration tests, clippy `-D warnings`, typecheck, Vite build, pinned WASM
 regeneration, and `git diff --check`. This fixture verifies worker emission in
 isolation; Task 5 still owns connection to the canonical production graph and
 end-to-end application artifact proof.
+
+Commit `c76bcf7` was then checked out detached into a new temporary worktree
+and installed with `npm ci`. The same full matrix passed with the same counts,
+including the independent hashed worker-emission fixture; `git status --short`
+was empty after all gates. The temporary checkout was removed.
