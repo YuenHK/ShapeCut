@@ -640,3 +640,131 @@ The fresh checkout remained clean.
   after Node dependencies are installed.
 - No round 3 change touches UI/CSS, fonts, colours, production deadline,
   canonical merge, materials, launcher code or official release artifacts.
+
+## Re-review round 4: findings 13–14
+
+Date: 2026-08-31
+Implementation commit: `40dc905` (`fix(wasm): harden record and typed array inspection`)
+
+### Finding 13: canonical strict-record snapshots
+
+- Strict request and result inspection now wraps object/prototype/own-key,
+  `Object.hasOwn()` and descriptor operations in one fail-closed boundary. Any
+  caller-controlled reflection failure becomes the supplied
+  `INVALID_REQUEST` or `INVALID_RESULT` code with a sanitized message.
+- Exact keys must be own data properties. Their verified descriptor values are
+  copied into an internal `Map` snapshot. Validation reads only
+  `snapshot.get(...)`; it never performs ordinary field access on the caller's
+  record after inspection.
+- Direct and production tests cover revoked proxies and throwing
+  `getPrototypeOf`, `ownKeys` and `getOwnPropertyDescriptor` traps. Separate
+  throwing `get` traps prove ordinary property access is not invoked: valid
+  descriptor snapshots continue successfully.
+- Hostile inspection errors receive non-rewriteable, identity-backed fallback
+  eligibility: `SliceKernelError` is frozen and the publication guard checks an
+  internal `WeakSet`, not a mutable public flag. Hostile request and result
+  inspection cannot claim TypeScript compatibility fallback. A positive test
+  confirms an ordinary non-hostile `INVALID_RESULT` remains eligible before
+  canonical publication.
+
+Direct RED command:
+
+```text
+npx vitest run src/wasm/slice-kernel-contract.test.ts
+```
+
+RED result: 30 passed and 17 failed. Reflection traps escaped as raw
+`TypeError`/`Error`, caller `get` traps were invoked, Proxy/own-property typed
+arrays escaped inspection, and hostile `INVALID_RESULT` values remained
+fallback-eligible.
+
+Production RED command:
+
+```text
+npm run test:browser -- --run src/wasm/load-slice-kernel.browser.test.ts
+```
+
+RED result: 22 passed and 9 failed. Hostile request records and typed arrays
+were collapsed to `EXECUTION_FAILED`, while the ordinary request `get` trap was
+invoked.
+
+Final GREEN: direct contract 50/50 and production Chromium adapter 31/31.
+
+### Finding 14: intrinsic exact typed-array inspection
+
+- The adapter captures the intrinsic `%TypedArray%.prototype` getters for
+  `length`, `buffer`, `byteLength` and `byteOffset`, plus intrinsic `values()`
+  and `at()`. Inspection invokes them with `Reflect.apply`, so a Proxy or own
+  accessor cannot spoof the brand or metadata.
+- Exact concrete prototype is required. Hazardous own keys including
+  `constructor`, `buffer`, `length`, byte metadata and methods used after
+  validation are rejected without invoking their accessors.
+- `ArrayBuffer.prototype.byteLength` is invoked intrinsically on the returned
+  buffer, rejecting shared buffers and non-ArrayBuffer values. Intrinsic
+  `values()` performs detached-buffer validation.
+- The view must start at byte offset zero, be element-aligned, have exact
+  `length * BYTES_PER_ELEMENT`, and span the complete owned backing buffer.
+- Direct hostile matrices cover Proxy-wrapped views, throwing own
+  `constructor`/`buffer`/`length`, detached and shared buffers, non-zero offset,
+  partial backing buffers and a misaligned prototype spoof for both request and
+  result validation. Production adapter tests cover the corresponding request
+  cases. Every inspection failure keeps its caller-supplied validation code and
+  is denied fallback.
+- Immutable public result `at()` and iteration now also use the captured
+  intrinsics rather than caller-overridable typed-array methods.
+
+### Round 4 fresh-checkout verification
+
+Committed `40dc905` was cloned into a new checkout whose path contains spaces
+and Chinese:
+
+```text
+git clone --local . "/tmp/ShapeCut Task 3 round 4 中文 fresh"
+cd "/tmp/ShapeCut Task 3 round 4 中文 fresh"
+npm ci --ignore-scripts --cache "/tmp/ShapeCut Task 3 round 4 中文 npm cache"
+env PATH=/usr/local/bin:/usr/bin:/bin \
+  CARGO_HOME="/tmp/ShapeCut Task 3 round 4 中文 empty cargo" \
+  npm_config_offline=true /bin/sh -c '
+    for tool in cargo rustc rustup wasm-pack; do
+      if command -v "$tool" >/dev/null 2>&1; then exit 1; fi
+    done
+    npm run build &&
+    npm test -- --run src/wasm/slice-kernel-contract.test.ts \
+      src/test/geometry-wasm-build-contract.test.ts &&
+    npm run test:browser -- --run src/wasm/load-slice-kernel.browser.test.ts &&
+    npm run test:geometry-wasm-boundary
+  '
+CARGO_ENCODED_RUSTFLAGS=$'-Cdebuginfo=0\x1f--remap-path-prefix=/tmp/Existing round 4 中文 path=/workspace/existing' \
+  node scripts/verify-geometry-wasm-regeneration.mjs
+git status --porcelain
+```
+
+Results: the fresh standard build ran offline after dependency installation
+with no Rust/Cargo/rustup/wasm-pack in PATH and an empty Cargo home. Focused
+Node 54/54, Chromium 31/31 and raw boundary 31/31 passed. Direct pinned
+regeneration produced the tracked 37,856-byte SHA-256
+`4aa7f77d0e50116c28ee06212408d72efede27e33d1e4723de65ab67d3c3795a`;
+the checkout remained clean.
+
+### Round 4 complete verification and concerns
+
+- Direct contract — 50/50 passed.
+- Workflow/build contract — 4/4 passed; both workflow YAML files parsed.
+- Production Chromium adapter — 31/31 passed.
+- Controlled raw WASM boundary — 31/31 passed.
+- Typecheck and restricted standard production build — exit 0; one 37.86 kB
+  WASM, zero maps and no forbidden path/source-map material.
+- Pinned regeneration — tracked and temporary generated files matched
+  byte-for-byte.
+- Rust fmt, native and wasm32 clippy with `-D warnings`, locked tests and wasm32
+  release check — all passed; 1 unit and 20 integration tests passed.
+- Full `npm test` passed 67/71 files and 1744 tests (4 skipped). Four unrelated
+  geometry-heavy tests exceeded their existing 5-second limits under full
+  parallel load: the two previously reported conversion tests plus one
+  projected-contour test and one launcher-ranking test. All four exact tests
+  passed when rerun individually (1/1 each). No unrelated timeout or geometry
+  implementation was changed.
+- `npm ci` continues to report the existing audit state of 1 moderate and 3
+  high vulnerabilities; dependency changes remain outside Task 3.
+- No round 4 change touches UI/CSS, fonts, colours, production deadline,
+  canonical merge, materials, launcher code or official release artifacts.
