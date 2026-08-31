@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import * as contractModule from './slice-kernel-contract';
 import * as loaderModule from './load-slice-kernel';
@@ -276,7 +276,7 @@ describe('TypeScript WASM slice contract', () => {
     const requestProxy = new Proxy(request(), {
       get: () => { throw new Error('ordinary request get must not run'); },
     });
-    expect(validateSliceBatchRequest(requestProxy)).toMatchObject({ deadlineCheckInterval: 4_096 });
+    expect(() => validateSliceBatchRequest(requestProxy)).not.toThrow();
 
     const resultProxy = new Proxy(encodedResult() as object, {
       get: () => { throw new Error('ordinary result get must not run'); },
@@ -364,6 +364,18 @@ describe('TypeScript WASM slice contract', () => {
     expect(parsed.diagnosticCounters.at(4)).toBe(1);
   });
 
+  it('implements Array.prototype.at ToIntegerOrInfinity semantics', () => {
+    const parsed = parseSliceBatchResult(encodedResult(), request());
+    expect(parsed.endpoints.at(1.9)).toBe(0);
+    expect(parsed.endpoints.at(-1.9)).toBe(1);
+    expect(parsed.endpoints.at(-0.9)).toBe(0);
+    expect(parsed.endpoints.at(Number.NaN)).toBe(0);
+    expect(parsed.endpoints.at(Number.POSITIVE_INFINITY)).toBeUndefined();
+    expect(parsed.endpoints.at(Number.NEGATIVE_INFINITY)).toBeUndefined();
+    expect(parsed.endpoints.at(4)).toBeUndefined();
+    expect(parsed.endpoints.at(-5)).toBeUndefined();
+  });
+
   it('prevents index, set, and fill mutation of validated public values', () => {
     const parsed = parseSliceBatchResult(encodedResult(), request());
     const publicOffsets = parsed.planeOffsets as unknown as Uint32Array;
@@ -407,55 +419,69 @@ describe('TypeScript WASM slice contract', () => {
     );
   });
 
-  it.each([
-    ['own-property mutation', (source: SliceBatchRequest) => {
-      Object.defineProperty(source.positions, 'length', {
-        configurable: true,
-        get: () => { throw new Error('reentrant caller property'); },
-      });
-    }],
-    ['detach', (source: SliceBatchRequest) => {
-      structuredClone(source.positions.buffer, { transfer: [source.positions.buffer] });
-    }],
-  ] as const)(
-    'fails closed when a checkpoint mutates request lifecycle via %s',
-    (_name, mutate) => {
-      const source = request();
-      let mutated = false;
-      expectValidationAndFallbackDenied(
-        () => validateRequest(source, () => {
-          if (!mutated) {
-            mutated = true;
-            mutate(source);
-          }
-          return undefined;
-        }),
-        'INVALID_REQUEST',
-      );
-    },
-  );
+  it('atomically transfers request ownership before the first untrusted checkpoint', () => {
+    const source = request();
+    const callerViews = [source.positions, source.indices, source.planes] as const;
+    let checkpointCount = 0;
 
-  it.each([
-    ['own-property mutation', (marked: SliceBatchRequest) => {
-      Object.defineProperty(marked.positions, 'length', { value: 0 });
-    }],
-    ['detach', (marked: SliceBatchRequest) => {
-      structuredClone(marked.positions.buffer, { transfer: [marked.positions.buffer] });
-    }],
-    ['value mutation', (marked: SliceBatchRequest) => {
-      marked.positions[0] = Number.NaN;
-    }],
-  ] as const)(
-    'revalidates a previously marked request after %s and denies fallback',
-    (_name, mutate) => {
-      const marked = validateSliceBatchRequest(request());
-      mutate(marked);
-      expectValidationAndFallbackDenied(
-        () => parseSliceBatchResult(encodedResult(), marked),
-        'INVALID_REQUEST',
-      );
-    },
-  );
+    expect(() => validateRequest(source, () => {
+      checkpointCount += 1;
+      for (const view of callerViews) {
+        expect(view.byteLength).toBe(0);
+        try { view[0] = Number.NaN; } catch { /* detached writes may throw */ }
+      }
+      return undefined;
+    })).not.toThrow();
+
+    expect(checkpointCount).toBeGreaterThan(0);
+    expect(callerViews.map((view) => view.byteLength)).toEqual([0, 0, 0]);
+  });
+
+  it('rejects request arrays that share one backing buffer before any transfer or checkpoint', () => {
+    const shared = new ArrayBuffer(72);
+    const source = request({
+      positions: new Float32Array(shared),
+      indices: new Uint32Array(shared),
+      planes: new Float64Array(shared),
+    });
+    let checkpointCount = 0;
+    expectValidationAndFallbackDenied(() => validateRequest(source, () => {
+      checkpointCount += 1;
+      return undefined;
+    }), 'INVALID_REQUEST');
+    expect(checkpointCount).toBe(0);
+    expect(shared.byteLength).toBe(72);
+  });
+
+  it('maps ownership-transfer failure to typed INVALID_REQUEST without fallback', async () => {
+    vi.resetModules();
+    const originalStructuredClone = globalThis.structuredClone;
+    vi.stubGlobal('structuredClone', () => { throw new DOMException('private', 'DataCloneError'); });
+    try {
+      const isolated = await import('./slice-kernel-contract');
+      const source = request();
+      const error = captureFailure(() => isolated.validateSliceBatchRequest(
+        source,
+        continueCheckpoint,
+      ));
+      expect(error).toMatchObject({
+        name: 'SliceKernelError',
+        code: 'INVALID_REQUEST',
+        fallbackEligible: false,
+      });
+      expect(() => new isolated.CanonicalFallbackGuard().claimTypeScriptFallback(error))
+        .toThrowError(expect.objectContaining({
+          name: 'SliceKernelError',
+          code: 'FALLBACK_NOT_ALLOWED',
+        }));
+      expect([source.positions, source.indices, source.planes].map((view) => view.byteLength))
+        .toEqual([36, 12, 8]);
+    } finally {
+      vi.unstubAllGlobals();
+      expect(globalThis.structuredClone).toBe(originalStructuredClone);
+      vi.resetModules();
+    }
+  });
 
   it('rejects resizable request and result buffers with typed validation and no fallback', () => {
     const resizablePositions = resizableView(Float32Array, 9);
@@ -484,34 +510,28 @@ describe('TypeScript WASM slice contract', () => {
     expect(resultCheckpointCount).toBe(0);
   });
 
-  it.each([
-    ['own-property mutation', (encoded: Record<string, unknown>) => {
-      Object.defineProperty(encoded.endpoints, 'length', {
-        configurable: true,
-        get: () => { throw new Error('reentrant result property'); },
-      });
-    }],
-    ['detach', (encoded: Record<string, unknown>) => {
-      const endpoints = encoded.endpoints as Float64Array;
-      structuredClone(endpoints.buffer, { transfer: [endpoints.buffer] });
-    }],
-  ] as const)(
-    'fails closed when a checkpoint mutates result lifecycle via %s',
-    (_name, mutate) => {
-      const encoded = encodedResult() as Record<string, unknown>;
-      let mutated = false;
-      expectValidationAndFallbackDenied(
-        () => parseResult(encoded, request(), () => {
-          if (!mutated) {
-            mutated = true;
-            mutate(encoded);
-          }
-          return undefined;
-        }),
-        'INVALID_RESULT',
-      );
-    },
-  );
+  it('transfers direct-parser result ownership before checkpoints and exposes no mutable buffer', () => {
+    const encoded = encodedResult() as Record<string, unknown>;
+    const callerViews = [
+      encoded.planeOffsets as Uint32Array,
+      encoded.endpoints as Float64Array,
+      encoded.diagnosticCounters as Uint32Array,
+    ] as const;
+    const parsed = parseResult(encoded, request(), () => {
+      for (const view of callerViews) {
+        expect(view.byteLength).toBe(0);
+        try { view[0] = 99; } catch { /* detached writes may throw */ }
+      }
+      return undefined;
+    });
+    expect(Array.from(parsed.endpoints)).toEqual([0, 0, 1, 1]);
+    expect(callerViews.map((view) => view.byteLength)).toEqual([0, 0, 0]);
+    expect(Reflect.ownKeys(parsed.endpoints).sort()).toEqual([
+      'byteLength',
+      'elementType',
+      'length',
+    ]);
+  });
 
   it('does not export an arbitrary eligible-error issuer or permit legacy mapper misuse', () => {
     const moduleRecord = contractModule as unknown as Record<string, unknown>;
@@ -545,7 +565,7 @@ describe('TypeScript WASM slice contract', () => {
   ] as const)(
     'preserves immediate and delayed snapshot abort $0.reason as $1',
     (abort, code) => {
-      for (const trigger of [1, 5]) {
+      for (const trigger of [1, 3]) {
         let checkpointCount = 0;
         const error = captureFailure(() => validateRequest(request(), () => {
           checkpointCount += 1;
@@ -564,40 +584,46 @@ describe('TypeScript WASM slice contract', () => {
     },
   );
 
-  it('revalidates all caller views after a delayed checkpoint mutation', () => {
+  it('keeps transferred values stable across delayed caller mutation attempts', () => {
     const source = request();
     let requestCheckpointCount = 0;
-    expectValidationAndFallbackDenied(() => validateRequest(source, () => {
+    expect(() => validateRequest(source, () => {
       requestCheckpointCount += 1;
-      if (requestCheckpointCount === 5) {
-        Object.defineProperty(source.positions, 'length', { value: 0 });
+      if (requestCheckpointCount === 3) {
+        try { source.positions[0] = Number.NaN; } catch { /* detached writes may throw */ }
+        try { source.indices[0] = 999; } catch { /* detached writes may throw */ }
+        try { source.planes[0] = Number.NaN; } catch { /* detached writes may throw */ }
       }
       return undefined;
-    }), 'INVALID_REQUEST');
+    })).not.toThrow();
+    expect([source.positions, source.indices, source.planes].map((view) => view.byteLength))
+      .toEqual([0, 0, 0]);
 
     const encoded = encodedResult() as Record<string, unknown>;
     let resultCheckpointCount = 0;
-    expectValidationAndFallbackDenied(() => parseResult(encoded, request(), () => {
+    const parsed = parseResult(encoded, request(), () => {
       resultCheckpointCount += 1;
       if (resultCheckpointCount === 5) {
         const endpoints = encoded.endpoints as Float64Array;
-        structuredClone(endpoints.buffer, { transfer: [endpoints.buffer] });
+        try { endpoints[0] = Number.NaN; } catch { /* detached writes may throw */ }
       }
       return undefined;
-    }), 'INVALID_RESULT');
+    });
+    expect(Array.from(parsed.endpoints)).toEqual([0, 0, 1, 1]);
   });
 
-  it('checkpoints intrinsic defensive copies in bounded chunks near the approved interval', () => {
+  it('transfers a near-limit request without bulk-copy allocation checkpoints', () => {
     const positions = new Float32Array((4_096 * 2) + 1);
     let checkpointCount = 0;
     validateRequest(request({ positions }), () => {
       checkpointCount += 1;
       return undefined;
     });
-    expect(checkpointCount).toBeGreaterThanOrEqual(17);
+    expect(checkpointCount).toBe(5);
+    expect(positions.byteLength).toBe(0);
   });
 
-  it('checkpoints near-limit result copies in bounded intrinsic chunks', () => {
+  it('validates near-limit results without interval-segmented storage', () => {
     const endpointLength = (4_096 * 2) + 4;
     const segmentCount = endpointLength / 4;
     const diagnosticCounters = new Uint32Array(DIAGNOSTIC_COUNTER_COUNT);
@@ -613,7 +639,31 @@ describe('TypeScript WASM slice contract', () => {
       return undefined;
     });
     expect(parsed.endpoints).toHaveLength(endpointLength);
-    expect(checkpointCount).toBeGreaterThanOrEqual(32);
+    expect(checkpointCount).toBe(7);
+    expect(Reflect.ownKeys(parsed.endpoints)).toHaveLength(3);
+  });
+
+  it('keeps interval=1 near-limit result storage object count constant', () => {
+    const endpointLength = 262_144 * 4;
+    const segmentCount = endpointLength / 4;
+    const diagnosticCounters = new Uint32Array(DIAGNOSTIC_COUNTER_COUNT);
+    diagnosticCounters[3] = 1;
+    diagnosticCounters[4] = segmentCount;
+    const activeRequest = request({ deadlineCheckInterval: 1 });
+    const encoded = encodedResult({
+      planeOffsets: new Uint32Array([0, segmentCount]),
+      endpoints: new Float64Array(endpointLength),
+      diagnosticCounters,
+    });
+
+    const parsed = parseResult(encoded, activeRequest, continueCheckpoint);
+    expect(parsed.endpoints.byteLength).toBe(8 * 1024 * 1024);
+    expect(Reflect.ownKeys(parsed.endpoints).sort()).toEqual([
+      'byteLength',
+      'elementType',
+      'length',
+    ]);
+    expect(Object.getOwnPropertySymbols(parsed.endpoints)).toHaveLength(0);
   });
 
   it('rejects a request allocation above its explicit cap before any checkpoint or fallback', () => {

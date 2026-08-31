@@ -79,6 +79,10 @@ export class SliceKernelError extends Error {
 }
 
 export interface SliceBatchRequest {
+  /**
+   * Calling `sliceLayerBatch` consumes all three full-span fixed ArrayBuffers.
+   * Their caller-owned views are detached before the first checkpoint.
+   */
   readonly positions: Float32Array;
   readonly indices: Uint32Array;
   readonly planes: Float64Array;
@@ -96,6 +100,7 @@ export interface ReadonlySliceArray extends Iterable<number> {
   readonly elementType: 'uint32' | 'float64';
   readonly length: number;
   readonly byteLength: number;
+  /** Uses the same ToIntegerOrInfinity index semantics as Array.prototype.at. */
   at(index: number): number | undefined;
 }
 
@@ -194,8 +199,9 @@ const objectGetPrototypeOf = Object.getPrototypeOf;
 const objectHasOwn = Object.hasOwn;
 const numberIsFinite = Number.isFinite;
 const numberIsSafeInteger = Number.isSafeInteger;
-const mathFloor = Math.floor;
 const mathMin = Math.min;
+const structuredCloneIntrinsic = globalThis.structuredClone;
+const ArrayIntrinsic = Array;
 const typedArrayPrototype = objectGetPrototypeOf(Uint8Array.prototype);
 const typedArrayLengthGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'length')?.get;
 const typedArrayBufferGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'buffer')?.get;
@@ -203,7 +209,6 @@ const typedArrayByteLengthGetter = Object.getOwnPropertyDescriptor(typedArrayPro
 const typedArrayByteOffsetGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'byteOffset')?.get;
 const typedArrayValues = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'values')?.value;
 const typedArrayAt = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'at')?.value;
-const typedArraySet = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'set')?.value;
 const arrayBufferByteLengthGetter = Object.getOwnPropertyDescriptor(
   ArrayBuffer.prototype,
   'byteLength',
@@ -240,14 +245,12 @@ interface ExactTypedArray<T extends Float32Array | Float64Array | Uint32Array> {
 interface ExactTypedArraySpec<T extends Float32Array | Float64Array | Uint32Array> {
   readonly prototype: object;
   readonly bytesPerElement: number;
-  create(length: number): T;
   createView(buffer: ArrayBuffer, byteOffset: number, length: number): T;
 }
 
 const float32ArraySpec: ExactTypedArraySpec<Float32Array> = objectFreeze({
   prototype: Float32ArrayIntrinsic.prototype,
   bytesPerElement: Float32ArrayIntrinsic.BYTES_PER_ELEMENT,
-  create: (length: number) => new Float32ArrayIntrinsic(length),
   createView: (buffer: ArrayBuffer, byteOffset: number, length: number) => new Float32ArrayIntrinsic(
     buffer,
     byteOffset,
@@ -257,7 +260,6 @@ const float32ArraySpec: ExactTypedArraySpec<Float32Array> = objectFreeze({
 const float64ArraySpec: ExactTypedArraySpec<Float64Array> = objectFreeze({
   prototype: Float64ArrayIntrinsic.prototype,
   bytesPerElement: Float64ArrayIntrinsic.BYTES_PER_ELEMENT,
-  create: (length: number) => new Float64ArrayIntrinsic(length),
   createView: (buffer: ArrayBuffer, byteOffset: number, length: number) => new Float64ArrayIntrinsic(
     buffer,
     byteOffset,
@@ -267,7 +269,6 @@ const float64ArraySpec: ExactTypedArraySpec<Float64Array> = objectFreeze({
 const uint32ArraySpec: ExactTypedArraySpec<Uint32Array> = objectFreeze({
   prototype: Uint32ArrayIntrinsic.prototype,
   bytesPerElement: Uint32ArrayIntrinsic.BYTES_PER_ELEMENT,
-  create: (length: number) => new Uint32ArrayIntrinsic(length),
   createView: (buffer: ArrayBuffer, byteOffset: number, length: number) => new Uint32ArrayIntrinsic(
     buffer,
     byteOffset,
@@ -289,7 +290,6 @@ function inspectExactTypedArray<T extends Float32Array | Float64Array | Uint32Ar
       || typeof typedArrayByteOffsetGetter !== 'function'
       || typeof typedArrayValues !== 'function'
       || typeof typedArrayAt !== 'function'
-      || typeof typedArraySet !== 'function'
       || typeof arrayBufferByteLengthGetter !== 'function'
       || objectGetPrototypeOf(value) !== spec.prototype
       || forbiddenTypedArrayOwnKeys.some((key) => objectHasOwn(value, key))) {
@@ -334,29 +334,53 @@ function inspectExactTypedArray<T extends Float32Array | Float64Array | Uint32Ar
 
 type AnyExactTypedArray = ExactTypedArray<Float32Array | Float64Array | Uint32Array>;
 
-interface ChunkedTypedArray<T extends Float64Array | Uint32Array> {
-  readonly chunks: readonly T[];
-  readonly length: number;
-  readonly byteLength: number;
-  readonly chunkLength: number;
-}
-
-function revalidateExactTypedArray(inspected: AnyExactTypedArray): void {
-  const current = inspectExactTypedArray(
-    inspected.value,
-    inspected.spec,
-    inspected.name,
-    inspected.code,
-  );
-  if (current.length !== inspected.length
-    || current.byteLength !== inspected.byteLength
-    || current.buffer !== inspected.buffer) {
-    failInspection(inspected.code, inspected.name);
+function rejectSharedBackingBuffers(
+  inspections: readonly AnyExactTypedArray[],
+  code: 'INVALID_REQUEST' | 'INVALID_RESULT',
+  name: string,
+): void {
+  for (let index = 0; index < inspections.length; index += 1) {
+    for (let other = index + 1; other < inspections.length; other += 1) {
+      if (inspections[index].buffer === inspections[other].buffer) failInspection(code, name);
+    }
   }
 }
 
-function revalidateAll(inspections: readonly AnyExactTypedArray[]): void {
-  for (const inspected of inspections) revalidateExactTypedArray(inspected);
+function transferOwnedTypedArrays<T extends readonly AnyExactTypedArray[]>(
+  inspections: T,
+  code: 'INVALID_REQUEST' | 'INVALID_RESULT',
+  name: string,
+): T {
+  rejectSharedBackingBuffers(inspections, code, name);
+  try {
+    if (typeof structuredCloneIntrinsic !== 'function') {
+      throw new TypeError('structured clone transfer unavailable');
+    }
+    const sourceBuffers = new ArrayIntrinsic<ArrayBuffer>(inspections.length);
+    for (let index = 0; index < inspections.length; index += 1) {
+      sourceBuffers[index] = inspections[index].buffer;
+    }
+    const privateBuffers = structuredCloneIntrinsic(sourceBuffers, {
+      transfer: sourceBuffers,
+    }) as ArrayBuffer[];
+    if (privateBuffers.length !== inspections.length) {
+      throw new TypeError('ownership transfer returned the wrong buffer count');
+    }
+    const privateInspections = new ArrayIntrinsic<AnyExactTypedArray>(inspections.length);
+    for (let index = 0; index < inspections.length; index += 1) {
+      const inspected = inspections[index];
+      privateInspections[index] = inspectExactTypedArray(
+        inspected.spec.createView(privateBuffers[index], 0, inspected.length),
+        inspected.spec,
+        `${inspected.name} private ownership`,
+        code,
+      );
+    }
+    return privateInspections as unknown as T;
+  } catch (error) {
+    if (error instanceof SliceKernelError) throw error;
+    failInspection(code, name);
+  }
 }
 
 function checkOwnedArrayCap(
@@ -378,26 +402,23 @@ class ImmutableSliceArray implements ReadonlySliceArray {
   readonly elementType: 'uint32' | 'float64';
   readonly length: number;
   readonly byteLength: number;
-  readonly #values: ChunkedTypedArray<Uint32Array | Float64Array>;
+  readonly #values: Uint32Array | Float64Array;
 
-  constructor(
-    values: ChunkedTypedArray<Uint32Array | Float64Array>,
-    elementType: 'uint32' | 'float64',
-  ) {
+  constructor(values: Uint32Array | Float64Array, elementType: 'uint32' | 'float64') {
     this.#values = values;
     this.elementType = elementType;
-    this.length = values.length;
-    this.byteLength = values.byteLength;
+    this.length = reflectApply(typedArrayLengthGetter as Function, values, []) as number;
+    this.byteLength = reflectApply(typedArrayByteLengthGetter as Function, values, []) as number;
     objectFreeze(this);
   }
 
   at(index: number): number | undefined {
-    return chunkedAt(this.#values, index);
+    return reflectApply(typedArrayAt, this.#values, [index]) as number | undefined;
   }
 
   *[Symbol.iterator](): IterableIterator<number> {
     for (let index = 0; index < this.length; index += 1) {
-      yield chunkedAt(this.#values, index) as number;
+      yield reflectApply(typedArrayAt, this.#values, [index]) as number;
     }
   }
 }
@@ -443,138 +464,9 @@ export function sliceKernelAbortError(abort: SliceKernelAbort): SliceKernelError
     : new SliceKernelError('DEADLINE_EXCEEDED', 'WASM geometry deadline was exceeded', abort);
 }
 
-function checkCheckpoint(
-  checkpoint: SliceKernelCheckpoint,
-  inspections: readonly AnyExactTypedArray[] = [],
-): void {
-  revalidateAll(inspections);
+function checkCheckpoint(checkpoint: SliceKernelCheckpoint): void {
   const abort = readSliceKernelAbort(checkpoint);
-  revalidateAll(inspections);
   if (abort) throw sliceKernelAbortError(abort);
-}
-
-function defensiveCopy<T extends Float32Array | Float64Array | Uint32Array>(
-  inspected: ExactTypedArray<T>,
-  interval: number,
-  checkpoint: SliceKernelCheckpoint,
-  surroundingInspections: readonly AnyExactTypedArray[],
-): T {
-  checkCheckpoint(checkpoint, surroundingInspections);
-  let copy: T;
-  try {
-    copy = inspected.spec.create(inspected.length);
-  } catch {
-    if (inspected.code === 'INVALID_RESULT') {
-      failOrdinaryResult('RESOURCE_LIMIT', `${inspected.name} allocation failed closed`);
-    }
-    fail('RESOURCE_LIMIT', `${inspected.name} allocation failed closed`);
-  }
-  const copiedInspection = inspectExactTypedArray(
-    copy,
-    inspected.spec,
-    `${inspected.name} defensive copy`,
-    inspected.code,
-  );
-  const activeInspections = [...surroundingInspections, copiedInspection];
-  checkCheckpoint(checkpoint, activeInspections);
-
-  try {
-    if (typeof typedArraySet !== 'function') {
-      throw new TypeError('missing typed array copy intrinsic');
-    }
-    for (let start = 0; start < inspected.length; start += interval) {
-      const end = mathMin(start + interval, inspected.length);
-      const chunk = inspected.spec.createView(
-        inspected.buffer,
-        start * inspected.spec.bytesPerElement,
-        end - start,
-      );
-      reflectApply(typedArraySet, copy, [chunk, start]);
-      checkCheckpoint(checkpoint, activeInspections);
-    }
-    return copy;
-  } catch (error) {
-    if (error instanceof SliceKernelError) throw error;
-    failInspection(inspected.code, inspected.name);
-  }
-}
-
-function defensiveChunkedCopy<T extends Float64Array | Uint32Array>(
-  inspected: ExactTypedArray<T>,
-  interval: number,
-  checkpoint: SliceKernelCheckpoint,
-  surroundingInspections: readonly AnyExactTypedArray[],
-): ChunkedTypedArray<T> {
-  const chunks: T[] = [];
-  if (inspected.length === 0) checkCheckpoint(checkpoint, surroundingInspections);
-  for (let start = 0; start < inspected.length; start += interval) {
-    const end = mathMin(start + interval, inspected.length);
-    checkCheckpoint(checkpoint, surroundingInspections);
-    let chunk: T;
-    try {
-      chunk = inspected.spec.create(end - start);
-    } catch {
-      failOrdinaryResult('RESOURCE_LIMIT', `${inspected.name} chunk allocation failed closed`);
-    }
-    const chunkInspection = inspectExactTypedArray(
-      chunk,
-      inspected.spec,
-      `${inspected.name} defensive chunk`,
-      inspected.code,
-    );
-    const activeInspections = [...surroundingInspections, chunkInspection];
-    checkCheckpoint(checkpoint, activeInspections);
-    try {
-      if (typeof typedArraySet !== 'function') {
-        throw new TypeError('missing typed array copy intrinsic');
-      }
-      const sourceChunk = inspected.spec.createView(
-        inspected.buffer,
-        start * inspected.spec.bytesPerElement,
-        end - start,
-      );
-      reflectApply(typedArraySet, chunk, [sourceChunk, 0]);
-    } catch {
-      failInspection(inspected.code, inspected.name);
-    }
-    checkCheckpoint(checkpoint, activeInspections);
-    chunks.push(chunk);
-  }
-  return objectFreeze({
-    chunks: objectFreeze(chunks),
-    length: inspected.length,
-    byteLength: inspected.byteLength,
-    chunkLength: interval,
-  });
-}
-
-function chunkedAt(
-  values: ChunkedTypedArray<Float64Array | Uint32Array>,
-  index: number,
-): number | undefined {
-  const resolved = index < 0 ? values.length + index : index;
-  if (!numberIsSafeInteger(resolved) || resolved < 0 || resolved >= values.length) {
-    return undefined;
-  }
-  const chunkIndex = mathFloor(resolved / values.chunkLength);
-  const chunkOffset = resolved - (chunkIndex * values.chunkLength);
-  return reflectApply(typedArrayAt, values.chunks[chunkIndex], [chunkOffset]) as number | undefined;
-}
-
-function forEachChunkedSnapshot<T extends Float64Array | Uint32Array>(
-  values: ChunkedTypedArray<T>,
-  interval: number,
-  checkpoint: SliceKernelCheckpoint,
-  visit: (value: number, index: number) => void,
-  inspections: readonly AnyExactTypedArray[],
-): void {
-  for (let start = 0; start < values.length; start += interval) {
-    checkCheckpoint(checkpoint, inspections);
-    const end = mathMin(start + interval, values.length);
-    for (let index = start; index < end; index += 1) {
-      visit(chunkedAt(values, index) as number, index);
-    }
-  }
 }
 
 function forEachChunked<T extends Float32Array | Float64Array | Uint32Array>(
@@ -583,10 +475,9 @@ function forEachChunked<T extends Float32Array | Float64Array | Uint32Array>(
   interval: number,
   checkpoint: SliceKernelCheckpoint,
   visit: (value: number, index: number) => void,
-  inspections: readonly AnyExactTypedArray[] = [],
 ): void {
   for (let start = 0; start < length; start += interval) {
-    checkCheckpoint(checkpoint, inspections);
+    checkCheckpoint(checkpoint);
     const end = mathMin(start + interval, length);
     for (let index = start; index < end; index += 1) {
       visit(reflectApply(typedArrayAt, values, [index]) as number, index);
@@ -607,7 +498,6 @@ interface TrustedSliceBatchRequestSnapshot {
   readonly request: SliceBatchRequest;
   readonly planeCount: number;
   readonly indexCount: number;
-  readonly sourceInspections: readonly AnyExactTypedArray[];
 }
 
 function inspectSliceBatchRequest(value: unknown): InspectedSliceBatchRequest {
@@ -677,51 +567,45 @@ function inspectSliceBatchRequest(value: unknown): InspectedSliceBatchRequest {
   });
 }
 
+function takeSliceBatchRequestOwnership(
+  inspected: InspectedSliceBatchRequest,
+): InspectedSliceBatchRequest {
+  const [privatePositions, privateIndices, privatePlanes] = transferOwnedTypedArrays([
+    inspected.positions,
+    inspected.indices,
+    inspected.planes,
+  ] as const, 'INVALID_REQUEST', 'slice request ownership transfer');
+  return objectFreeze({
+    positions: privatePositions as ExactTypedArray<Float32Array>,
+    indices: privateIndices as ExactTypedArray<Uint32Array>,
+    planes: privatePlanes as ExactTypedArray<Float64Array>,
+    interval: inspected.interval,
+    vertexCount: inspected.vertexCount,
+    triangleCount: inspected.triangleCount,
+  });
+}
+
 function materializeSliceBatchRequest(
   inspected: InspectedSliceBatchRequest,
   checkpoint: SliceKernelCheckpoint,
-  additionalInspections: readonly AnyExactTypedArray[] = [],
 ): TrustedSliceBatchRequestSnapshot {
-  const sourceInspections = [
-    ...additionalInspections,
-    inspected.positions,
-    inspected.indices,
-    inspected.planes,
-  ];
+  const positions = inspected.positions.value;
+  const indices = inspected.indices.value;
+  const planes = inspected.planes.value;
 
-  const positions = defensiveCopy(
-    inspected.positions,
-    inspected.interval,
-    checkpoint,
-    sourceInspections,
-  );
-  const indices = defensiveCopy(
-    inspected.indices,
-    inspected.interval,
-    checkpoint,
-    sourceInspections,
-  );
-  const planes = defensiveCopy(
-    inspected.planes,
-    inspected.interval,
-    checkpoint,
-    sourceInspections,
-  );
-
-  checkCheckpoint(checkpoint, sourceInspections);
   forEachChunked(positions, inspected.positions.length, inspected.interval, checkpoint, (position) => {
     if (!numberIsFinite(position)) fail('INVALID_REQUEST', 'positions must be finite');
-  }, sourceInspections);
+  });
   forEachChunked(indices, inspected.indices.length, inspected.interval, checkpoint, (index) => {
     if (index >= inspected.vertexCount) fail('INVALID_REQUEST', 'triangle index is out of range');
-  }, sourceInspections);
+  });
   let previousPlane: number | undefined;
   forEachChunked(planes, inspected.planes.length, inspected.interval, checkpoint, (plane) => {
     if (!numberIsFinite(plane) || (previousPlane !== undefined && plane <= previousPlane)) {
       fail('INVALID_REQUEST', 'planes must be finite and strictly increasing');
     }
     previousPlane = plane;
-  }, sourceInspections);
+  });
 
   const request = objectFreeze({
     positions,
@@ -733,15 +617,21 @@ function materializeSliceBatchRequest(
     request,
     planeCount: inspected.planes.length,
     indexCount: inspected.indices.length,
-    sourceInspections,
   });
 }
 
+/**
+ * Consumes and validates a request without exposing the transferred private views.
+ * All three caller buffers are detached on successful ownership transfer.
+ */
 export function validateSliceBatchRequest(
   value: unknown,
   checkpoint: SliceKernelCheckpoint,
-): SliceBatchRequest {
-  return materializeSliceBatchRequest(inspectSliceBatchRequest(value), checkpoint).request;
+): void {
+  materializeSliceBatchRequest(
+    takeSliceBatchRequestOwnership(inspectSliceBatchRequest(value)),
+    checkpoint,
+  );
 }
 
 function requireSafeInteger(
@@ -816,49 +706,45 @@ function inspectSliceBatchResult(value: unknown): InspectedSliceBatchResult {
   return objectFreeze({ version, statusCode, planeOffsets, endpoints, diagnosticCounters });
 }
 
+function takeSliceBatchResultOwnership(
+  inspected: InspectedSliceBatchResult,
+): InspectedSliceBatchResult {
+  const [planeOffsets, endpoints, diagnosticCounters] = transferOwnedTypedArrays([
+    inspected.planeOffsets,
+    inspected.endpoints,
+    inspected.diagnosticCounters,
+  ] as const, 'INVALID_RESULT', 'slice result ownership transfer');
+  return objectFreeze({
+    version: inspected.version,
+    statusCode: inspected.statusCode,
+    planeOffsets: planeOffsets as ExactTypedArray<Uint32Array>,
+    endpoints: endpoints as ExactTypedArray<Float64Array>,
+    diagnosticCounters: diagnosticCounters as ExactTypedArray<Uint32Array>,
+  });
+}
+
 function parseSliceBatchResultWithTrustedRequest(
   inspected: InspectedSliceBatchResult,
   trustedRequest: TrustedSliceBatchRequestSnapshot,
   checkpoint: SliceKernelCheckpoint,
-  additionalInspections: readonly AnyExactTypedArray[] = [],
 ): SliceBatchResult {
-  const sourceInspections = [
-    ...additionalInspections,
-    inspected.planeOffsets,
-    inspected.endpoints,
-    inspected.diagnosticCounters,
-  ];
   const { request, planeCount: requestPlaneCount, indexCount: requestIndexCount } = trustedRequest;
-  const planeOffsets = defensiveChunkedCopy(
-    inspected.planeOffsets,
-    request.deadlineCheckInterval,
-    checkpoint,
-    sourceInspections,
-  );
-  const endpoints = defensiveChunkedCopy(
-    inspected.endpoints,
-    request.deadlineCheckInterval,
-    checkpoint,
-    sourceInspections,
-  );
-  const diagnosticCounters = defensiveChunkedCopy(
-    inspected.diagnosticCounters,
-    request.deadlineCheckInterval,
-    checkpoint,
-    sourceInspections,
-  );
+  const planeOffsets = inspected.planeOffsets.value;
+  const endpoints = inspected.endpoints.value;
+  const diagnosticCounters = inspected.diagnosticCounters.value;
 
   if (inspected.planeOffsets.length !== requestPlaneCount + 1) {
     failOrdinaryResult('INVALID_RESULT', 'plane offset count does not match the request');
   }
 
   const segmentCount = inspected.endpoints.length / 4;
-  if (chunkedAt(planeOffsets, 0) !== 0) {
+  if (reflectApply(typedArrayAt, planeOffsets, [0]) !== 0) {
     failOrdinaryResult('INVALID_RESULT', 'plane offsets must start at zero');
   }
   let previousOffset: number | undefined;
-  forEachChunkedSnapshot(
+  forEachChunked(
     planeOffsets,
+    inspected.planeOffsets.length,
     request.deadlineCheckInterval,
     checkpoint,
     (offset) => {
@@ -867,14 +753,14 @@ function parseSliceBatchResultWithTrustedRequest(
       }
       previousOffset = offset;
     },
-    sourceInspections,
   );
-  if (chunkedAt(planeOffsets, inspected.planeOffsets.length - 1)
+  if (reflectApply(typedArrayAt, planeOffsets, [inspected.planeOffsets.length - 1])
     !== segmentCount) {
     failOrdinaryResult('INVALID_RESULT', 'final plane offset does not match endpoint segments');
   }
-  forEachChunkedSnapshot(
+  forEachChunked(
     endpoints,
+    inspected.endpoints.length,
     request.deadlineCheckInterval,
     checkpoint,
     (endpoint) => {
@@ -882,10 +768,13 @@ function parseSliceBatchResultWithTrustedRequest(
         failOrdinaryResult('INVALID_RESULT', 'endpoints must be finite');
       }
     },
-    sourceInspections,
   );
 
-  const counter = (index: number): number => chunkedAt(diagnosticCounters, index) as number;
+  const counter = (index: number): number => reflectApply(
+    typedArrayAt,
+    diagnosticCounters,
+    [index],
+  ) as number;
   const triangleCount = requestIndexCount / 3;
   const work = triangleCount * requestPlaneCount;
   const maxCheckpointCount = work + requestPlaneCount;
@@ -918,6 +807,11 @@ function parseSliceBatchResultWithTrustedRequest(
   });
 }
 
+/**
+ * Direct boundary verifier used by contract tests and non-controlled callers.
+ * It consumes both the request and encoded result buffers before any checkpoint.
+ * Production controlled-wrapper results are already private and are wrapped directly.
+ */
 export function parseSliceBatchResult(
   value: unknown,
   requestValue: SliceBatchRequest,
@@ -925,26 +819,21 @@ export function parseSliceBatchResult(
 ): SliceBatchResult {
   const inspectedResult = inspectSliceBatchResult(value);
   const inspectedRequest = inspectSliceBatchRequest(requestValue);
-  const resultInspections = [
-    inspectedResult.planeOffsets,
-    inspectedResult.endpoints,
-    inspectedResult.diagnosticCounters,
-  ];
-  const requestInspections = [
+  rejectSharedBackingBuffers([
     inspectedRequest.positions,
     inspectedRequest.indices,
     inspectedRequest.planes,
-  ];
-  const trustedRequest = materializeSliceBatchRequest(
-    inspectedRequest,
-    checkpoint,
-    resultInspections,
-  );
+    inspectedResult.planeOffsets,
+    inspectedResult.endpoints,
+    inspectedResult.diagnosticCounters,
+  ], 'INVALID_REQUEST', 'slice request/result ownership transfer');
+  const privateRequest = takeSliceBatchRequestOwnership(inspectedRequest);
+  const privateResult = takeSliceBatchResultOwnership(inspectedResult);
+  const trustedRequest = materializeSliceBatchRequest(privateRequest, checkpoint);
   return parseSliceBatchResultWithTrustedRequest(
-    inspectedResult,
+    privateResult,
     trustedRequest,
     checkpoint,
-    requestInspections,
   );
 }
 
@@ -1064,7 +953,7 @@ class BrowserSliceKernel implements SliceKernel {
     let checkpointFailure: SliceKernelError | undefined;
     try {
       const trustedRequest = materializeSliceBatchRequest(
-        inspectSliceBatchRequest(requestValue),
+        takeSliceBatchRequestOwnership(inspectSliceBatchRequest(requestValue)),
         checkpoint,
       );
       this.#assertCurrent(operationToken);
@@ -1074,9 +963,7 @@ class BrowserSliceKernel implements SliceKernel {
       }
       const controlledCheckpoint = (): boolean => {
         try {
-          revalidateAll(trustedRequest.sourceInspections);
           const abort = readSliceKernelAbort(checkpoint);
-          revalidateAll(trustedRequest.sourceInspections);
           if (!abort) return false;
           observedAbort = abort;
           return true;
@@ -1099,7 +986,6 @@ class BrowserSliceKernel implements SliceKernel {
         inspectSliceBatchResult(encoded),
         trustedRequest,
         checkpoint,
-        trustedRequest.sourceInspections,
       );
       this.#assertCurrent(operationToken);
       return result;

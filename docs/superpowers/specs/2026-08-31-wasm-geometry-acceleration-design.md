@@ -56,6 +56,17 @@ slice_layer_batch(
 ) -> SliceBatchResult
 ```
 
+TypeScript adapter 對三個 request typed arrays 採用明確 consume-ownership
+contract。三者必須各自覆蓋完整、固定、非 shared、非 resizable
+`ArrayBuffer`，亦不得共用同一 backing buffer。完成 strict record、intrinsic
+brand/span 及 allocation/work preflight 後，adapter 必須在任何用戶提供的
+checkpoint 前，以單次 `structuredClone(..., { transfer })` 原子移交三個
+distinct buffers；caller views 隨即 detached，不可再重用。Adapter 只從移交後
+的 private buffers 重建 exact views，不作 bulk data copy，亦不把 private views
+暴露給 checkpoint 或 canonical consumer。transfer 不可用、失敗或 shared
+buffer 均以 typed `INVALID_REQUEST` fail closed，且不得取得 compatibility
+fallback 權限。
+
 輸出為規範化typed arrays：每個plane的segment offset、segment endpoints、退化／共面／非有限統計及狀態碼。Rust不得決定材料、三爪孔、裝飾省略、輪廓角色、警告文字或artifact內容。
 
 結果順序固定為plane index、triangle index、edge index；canonical reducer在形成輪廓前再排序及驗證，確保worker完成順序不影響輸出。
@@ -63,6 +74,14 @@ slice_layer_batch(
 WASM 公開邊界接收未經 JavaScript 數值轉型的 `deadline_check_interval`，只接受有限、安全、正整數且不大於 4,096，然後才轉為 `u32`。同一個 strict boolean deadline hook 必須在輸入 allocation 前、每段最多 4,096 items 的 reserve/resize/copy、有限值與 index validation、triangle degeneracy prepass、獨立 plane traversal 及後續大型工作中 fail closed。Rust 輸入 buffer 只先 reserve capacity；不可在 checkpoint 前一次過 resize 或清零完整 maximum buffer，每個 chunk 必須先 checkpoint，才 resize/初始化該 chunk 並複製。
 
 Rust pointer/length 結果只可進入唯一受控 JavaScript wrapper。Wrapper 必須同步驗證 view bounds，複製為 owned typed arrays，並在 `finally` 恰好釋放 raw result；raw views 不得跨越該邊界。JavaScript `TypedArray(length)` 會同步初始化整段連續記憶體，因此唯一允許的 bounded allocator primitive 必須硬性限制每次 allocation 不超過 8 MiB，並在該 primitive 緊接之前及之後各執行一次同一 strict checkpoint。除此以外，所有 output copy 及 validation 仍須以最多 4,096 items 分段；不得擴大 8 MiB cap。
+
+受控 wrapper 產生的 fixed owned result arrays 已是 private ownership；TypeScript
+adapter 必須直接以 immutable `ReadonlySliceArray` facade 包裝，不得按
+`deadline_check_interval` 建第二份 copy 或 chunk table。Facade 只公開
+`elementType`、`length`、`byteLength`、數值 iterator 與 `at()`，不得洩漏
+typed array、buffer、`set()` 或 `fill()`。`at()` 完整遵從
+`Array.prototype.at` 的 ToIntegerOrInfinity 語義，包括 fraction、negative
+fraction、`NaN` 及正負 `Infinity`。
 
 ## Worker與裝置策略
 
@@ -78,7 +97,9 @@ Rust pointer/length 結果只可進入唯一受控 JavaScript wrapper。Wrapper 
 
 - STL bytes只保留一份供同一轉換需要；解析後不建立無必要的Float64 mesh副本。
 - 預覽mesh使用受界限的簡化副本，不保留完整第二份mesh。
-- 分區輸入在transfer後由orchestrator放棄ownership，完成後立即釋放worker與WASM linear memory。
+- 分區輸入在transfer後由orchestrator放棄ownership；slice adapter 同樣在首個
+  checkpoint 前消費三個 distinct request buffers，不建立完整 request 副本。
+  完成後立即釋放worker與WASM linear memory。
 - PDF、ZIP及其他artifact沿既有順序生成；每項完成後釋放中間buffer。
 - 量測只記錄byte數、triangle數、layer數、stage時間及估算live bytes，不記錄STL內容、檔名或幾何hash。
 

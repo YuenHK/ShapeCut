@@ -6,7 +6,7 @@ import {
 } from './load-slice-kernel';
 import { CanonicalFallbackGuard } from './slice-kernel-contract';
 
-const request = {
+const requestTemplate = {
   positions: new Float32Array([
     0, 0, 0,
     2, 0, 0,
@@ -17,6 +17,20 @@ const request = {
   planes: new Float64Array([0.5, 1]),
   deadlineCheckInterval: 64,
 } as const;
+
+function createRequest(): {
+  positions: Float32Array;
+  indices: Uint32Array;
+  planes: Float64Array;
+  deadlineCheckInterval: number;
+} {
+  return {
+    positions: requestTemplate.positions.slice(),
+    indices: requestTemplate.indices.slice(),
+    planes: requestTemplate.planes.slice(),
+    deadlineCheckInterval: requestTemplate.deadlineCheckInterval,
+  };
+}
 
 const maliciousAbortCases = [
   ['revoked proxy', () => {
@@ -37,17 +51,17 @@ const maliciousAbortCases = [
 
 const hostileRequestRecordCases = [
   ['revoked proxy', () => {
-    const pair = Proxy.revocable(request, {});
+    const pair = Proxy.revocable(createRequest(), {});
     pair.revoke();
     return pair.proxy;
   }],
-  ['throwing prototype trap', () => new Proxy(request, {
+  ['throwing prototype trap', () => new Proxy(createRequest(), {
     getPrototypeOf: () => { throw new Error('private request prototype detail'); },
   })],
-  ['throwing ownKeys trap', () => new Proxy(request, {
+  ['throwing ownKeys trap', () => new Proxy(createRequest(), {
     ownKeys: () => { throw new Error('private request ownKeys detail'); },
   })],
-  ['throwing descriptor trap', () => new Proxy(request, {
+  ['throwing descriptor trap', () => new Proxy(createRequest(), {
     getOwnPropertyDescriptor: () => { throw new Error('private request descriptor detail'); },
   })],
 ] as const;
@@ -80,7 +94,7 @@ afterEach(() => {
 describe('production-compatible browser WASM loader', () => {
   it('loads the Vite WASM asset and returns validated owned segments in Chromium', async () => {
     const kernel = await loadSliceKernel();
-    const result = await kernel.sliceLayerBatch(request, () => undefined);
+    const result = await kernel.sliceLayerBatch(createRequest(), () => undefined);
 
     expect(Array.from(result.planeOffsets)).toEqual([0, 3, 6]);
     expect(result.endpoints).toHaveLength(24);
@@ -91,6 +105,14 @@ describe('production-compatible browser WASM loader', () => {
     expect(() => publicOffsets.set(new Uint32Array([99]))).toThrow(TypeError);
     expect(() => publicOffsets.fill(99)).toThrow(TypeError);
     expect(Array.from(result.planeOffsets)).toEqual([0, 3, 6]);
+    expect(Reflect.ownKeys(result.endpoints).sort()).toEqual([
+      'byteLength',
+      'elementType',
+      'length',
+    ]);
+    expect(result.endpoints.at(1.9)).toBe(result.endpoints.at(1));
+    expect(result.endpoints.at(Number.NaN)).toBe(result.endpoints.at(0));
+    expect(result.endpoints.at(Number.POSITIVE_INFINITY)).toBeUndefined();
   });
 
   it('single-flights concurrent loads and explicitly disposes the published adapter', async () => {
@@ -98,14 +120,14 @@ describe('production-compatible browser WASM loader', () => {
     expect(first).toBe(second);
 
     disposeSliceKernel();
-    await expect(first.sliceLayerBatch(request, () => undefined)).rejects.toMatchObject({
+    await expect(first.sliceLayerBatch(createRequest(), () => undefined)).rejects.toMatchObject({
       name: 'SliceKernelError',
       code: 'DISPOSED',
     });
 
     const replacement = await loadSliceKernel();
     expect(replacement).not.toBe(first);
-    await expect(replacement.sliceLayerBatch(request, () => undefined)).resolves.toMatchObject({
+    await expect(replacement.sliceLayerBatch(createRequest(), () => undefined)).resolves.toMatchObject({
       version: 1,
     });
   });
@@ -116,11 +138,11 @@ describe('production-compatible browser WASM loader', () => {
 
     const replacement = await loadSliceKernel();
     expect(replacement).not.toBe(first);
-    await expect(first.sliceLayerBatch(request, () => undefined)).rejects.toMatchObject({
+    await expect(first.sliceLayerBatch(createRequest(), () => undefined)).rejects.toMatchObject({
       name: 'SliceKernelError',
       code: 'DISPOSED',
     });
-    await expect(replacement.sliceLayerBatch(request, () => undefined)).resolves.toMatchObject({
+    await expect(replacement.sliceLayerBatch(createRequest(), () => undefined)).resolves.toMatchObject({
       version: 1,
     });
   });
@@ -129,7 +151,7 @@ describe('production-compatible browser WASM loader', () => {
     const kernel = await loadSliceKernel();
     let checkpointCount = 0;
 
-    await expect(kernel.sliceLayerBatch(request, () => {
+    await expect(kernel.sliceLayerBatch(createRequest(), () => {
       checkpointCount += 1;
       if (checkpointCount === 5) kernel.dispose();
       return undefined;
@@ -159,7 +181,7 @@ describe('production-compatible browser WASM loader', () => {
     ['DEADLINE_CHECK_FAILED', (): undefined => { throw new Error('private checkpoint detail'); }],
   ] as const)('maps checkpoint failure to typed non-fallback error %s', async (code, checkpoint) => {
     const kernel = await loadSliceKernel();
-    await expect(kernel.sliceLayerBatch(request, checkpoint)).rejects.toMatchObject({
+    await expect(kernel.sliceLayerBatch(createRequest(), checkpoint)).rejects.toMatchObject({
       name: 'SliceKernelError',
       code,
     });
@@ -172,7 +194,7 @@ describe('production-compatible browser WASM loader', () => {
     'preserves immediate $0.reason from $0.source as typed error $1',
     async (abort, code) => {
       const kernel = await loadSliceKernel();
-      await expect(kernel.sliceLayerBatch(request, () => abort)).rejects.toMatchObject({
+      await expect(kernel.sliceLayerBatch(createRequest(), () => abort)).rejects.toMatchObject({
         name: 'SliceKernelError',
         code,
         abortSource: abort.source,
@@ -188,7 +210,7 @@ describe('production-compatible browser WASM loader', () => {
     async (abort, code) => {
       const kernel = await loadSliceKernel();
       let checkpointCount = 0;
-      await expect(kernel.sliceLayerBatch(request, () => {
+      await expect(kernel.sliceLayerBatch(createRequest(), () => {
         checkpointCount += 1;
         return checkpointCount === 5 ? abort : undefined;
       })).rejects.toMatchObject({
@@ -204,7 +226,7 @@ describe('production-compatible browser WASM loader', () => {
     'fails closed for immediate %s checkpoint reflection and denies fallback',
     async (_name, createAbort) => {
       const kernel = await loadSliceKernel();
-      const error = await kernel.sliceLayerBatch(request, () => createAbort() as never)
+      const error = await kernel.sliceLayerBatch(createRequest(), () => createAbort() as never)
         .catch((failure: unknown) => failure);
       expect(error).toMatchObject({ name: 'SliceKernelError', code: 'DEADLINE_CHECK_FAILED' });
       expect(() => new CanonicalFallbackGuard().claimTypeScriptFallback(error)).toThrowError(
@@ -218,7 +240,7 @@ describe('production-compatible browser WASM loader', () => {
     async (_name, createAbort) => {
       const kernel = await loadSliceKernel();
       let checkpointCount = 0;
-      const error = await kernel.sliceLayerBatch(request, () => {
+      const error = await kernel.sliceLayerBatch(createRequest(), () => {
         checkpointCount += 1;
         return checkpointCount === 5 ? createAbort() as never : undefined;
       }).catch((failure: unknown) => failure);
@@ -243,7 +265,7 @@ describe('production-compatible browser WASM loader', () => {
 
   it('uses production request descriptor snapshots without invoking an ordinary get trap', async () => {
     const kernel = await loadSliceKernel();
-    const requestProxy = new Proxy(request, {
+    const requestProxy = new Proxy(createRequest(), {
       get: () => { throw new Error('ordinary production request get must not run'); },
     });
     await expect(kernel.sliceLayerBatch(requestProxy, () => undefined)).resolves.toMatchObject({
@@ -264,7 +286,7 @@ describe('production-compatible browser WASM loader', () => {
     async (_name, createPositions) => {
       const kernel = await loadSliceKernel();
       const error = await kernel.sliceLayerBatch(
-        { ...request, positions: createPositions() as Float32Array },
+        { ...createRequest(), positions: createPositions() as Float32Array },
         () => undefined,
       ).catch((failure: unknown) => failure);
       expect(error).toMatchObject({ name: 'SliceKernelError', code: 'INVALID_REQUEST' });
@@ -272,38 +294,22 @@ describe('production-compatible browser WASM loader', () => {
     },
   );
 
-  it.each([
-    ['own-property mutation', (source: typeof request) => {
-      Object.defineProperty(source.positions, 'length', {
-        configurable: true,
-        get: () => { throw new Error('reentrant production property'); },
-      });
-    }],
-    ['detach', (source: typeof request) => {
-      structuredClone(source.positions.buffer, { transfer: [source.positions.buffer] });
-    }],
-  ] as const)(
-    'fails production request closed when checkpoint mutates lifecycle via %s',
-    async (_name, mutate) => {
-      const kernel = await loadSliceKernel();
-      const source = {
-        positions: request.positions.slice(),
-        indices: request.indices.slice(),
-        planes: request.planes.slice(),
-        deadlineCheckInterval: request.deadlineCheckInterval,
-      } as typeof request;
-      let mutated = false;
-      const error = await kernel.sliceLayerBatch(source, () => {
-        if (!mutated) {
-          mutated = true;
-          mutate(source);
-        }
-        return undefined;
-      }).catch((failure: unknown) => failure);
-      expect(error).toMatchObject({ name: 'SliceKernelError', code: 'INVALID_REQUEST' });
-      expectFallbackDenied(error);
-    },
-  );
+  it('detaches all production request buffers before the first checkpoint', async () => {
+    const kernel = await loadSliceKernel();
+    const source = createRequest();
+    let checkpointCount = 0;
+    const result = await kernel.sliceLayerBatch(source, () => {
+      checkpointCount += 1;
+      expect([source.positions, source.indices, source.planes].map((view) => view.byteLength))
+        .toEqual([0, 0, 0]);
+      try { source.positions[0] = Number.NaN; } catch { /* detached writes may throw */ }
+      try { source.indices[0] = 999; } catch { /* detached writes may throw */ }
+      try { source.planes[0] = Number.NaN; } catch { /* detached writes may throw */ }
+      return undefined;
+    });
+    expect(checkpointCount).toBeGreaterThan(0);
+    expect(Array.from(result.planeOffsets)).toEqual([0, 3, 6]);
+  });
 
   it('rejects a production resizable request buffer without permitting fallback', async () => {
     const kernel = await loadSliceKernel();
@@ -311,34 +317,32 @@ describe('production-compatible browser WASM loader', () => {
       new(byteLength: number, options: { maxByteLength: number }): ArrayBuffer;
     };
     const positions = new Float32Array(new ResizableArrayBuffer(
-      request.positions.byteLength,
-      { maxByteLength: request.positions.byteLength + Float32Array.BYTES_PER_ELEMENT },
+      requestTemplate.positions.byteLength,
+      { maxByteLength: requestTemplate.positions.byteLength + Float32Array.BYTES_PER_ELEMENT },
     ));
-    positions.set(request.positions);
-    const error = await kernel.sliceLayerBatch({ ...request, positions }, () => undefined)
+    positions.set(requestTemplate.positions);
+    const error = await kernel.sliceLayerBatch({ ...createRequest(), positions }, () => undefined)
       .catch((failure: unknown) => failure);
     expect(error).toMatchObject({ name: 'SliceKernelError', code: 'INVALID_REQUEST' });
     expectFallbackDenied(error);
   });
 
-  it('revalidates caller request lifecycle at a delayed controlled checkpoint', async () => {
+  it('keeps production values private across delayed caller mutation attempts', async () => {
     const kernel = await loadSliceKernel();
-    const source = {
-      positions: request.positions.slice(),
-      indices: request.indices.slice(),
-      planes: request.planes.slice(),
-      deadlineCheckInterval: request.deadlineCheckInterval,
-    } as typeof request;
+    const source = createRequest();
     let checkpointCount = 0;
-    const error = await kernel.sliceLayerBatch(source, () => {
+    const result = await kernel.sliceLayerBatch(source, () => {
       checkpointCount += 1;
       if (checkpointCount === 14) {
-        Object.defineProperty(source.positions, 'length', { value: 0 });
+        try { source.positions[0] = Number.NaN; } catch { /* detached writes may throw */ }
+        try { source.indices[0] = 999; } catch { /* detached writes may throw */ }
+        try { source.planes[0] = Number.NaN; } catch { /* detached writes may throw */ }
       }
       return undefined;
-    }).catch((failure: unknown) => failure);
-    expect(checkpointCount).toBe(14);
-    expect(error).toMatchObject({ name: 'SliceKernelError', code: 'INVALID_REQUEST' });
-    expectFallbackDenied(error);
+    });
+    expect(checkpointCount).toBeGreaterThanOrEqual(14);
+    expect([source.positions, source.indices, source.planes].map((view) => view.byteLength))
+      .toEqual([0, 0, 0]);
+    expect(Array.from(result.planeOffsets)).toEqual([0, 3, 6]);
   });
 });
