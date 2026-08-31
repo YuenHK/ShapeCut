@@ -1466,3 +1466,144 @@ moderate and 3 high vulnerabilities. No round 8 change touches UI/CSS, fonts,
 colours, production
 deadline, canonical merge, materials, launcher code or official release
 artifacts.
+
+## Re-review round 9: findings 25–27
+
+Date: 2026-08-31
+Implementation commit: `3f70a33` (`fix(wasm): harden transfer container snapshots`)
+
+### Finding 25: immutable transfer transport and original identities
+
+- Transfer transport entries are populated only from the buffers captured by
+  strict preflight inspections. Before clone, the transport receives an own,
+  non-configurable iterator whose function was captured from `Array.prototype`
+  at module evaluation, and the transport is frozen.
+- Source-detach and private/source identity checks use the original inspection
+  buffers directly. They never read the transport again after clone. A fake
+  clone can therefore neither rewrite transport indices to detached decoys nor
+  redirect later identity checks.
+- A regression test patches `Array.prototype[Symbol.iterator]` after module
+  evaluation but during clone. Native transfer continues through the frozen
+  transport's captured own iterator and detaches the original three sources.
+
+### Finding 26: exact clone-return reflection snapshot
+
+The clone return must have the captured ordinary `Array` prototype and exact
+captured `ownKeys`: consecutive numeric keys followed by `length`, with no
+symbols or extras. Captured descriptors must be standard writable/enumerable/
+configurable numeric data descriptors plus the standard non-enumerable,
+non-configurable length descriptor. Descriptor values are read into one frozen
+internal snapshot; source/private postconditions and view reconstruction use
+only that snapshot. Accessor indices, extra keys, changing Proxy values, and
+throwing numeric/length/index traps fail closed with typed validation and no
+fallback authority.
+
+### Finding 27: attached versus detached zero-byte buffers
+
+`byteLength === 0` is necessary but no longer sufficient for source detach.
+The adapter also invokes the module-captured `ArrayBuffer.prototype.slice` with
+`[0, 0]`; an attached zero-byte buffer succeeds, whereas a detached source
+throws. Native transfer of an empty endpoint buffer succeeds and detaches its
+source. A fake clone that transfers every non-empty buffer but leaves only the
+empty source attached is rejected.
+
+The approved design spec records the immutable transport, exact reflected
+return snapshot and zero-byte detach distinction.
+
+### Round 9 TDD and verification
+
+Initial RED:
+
+```text
+npx vitest run src/wasm/slice-kernel-contract.test.ts
+```
+
+After correcting one cross-realm TypeError assertion in the native zero-byte
+baseline, the result was 81 passed and 7 failed. The seven expected failures
+covered rewritten transport, a late iterator monkeypatch, four hostile return
+containers, and fake non-detach of only a zero-byte source. Final direct
+contract result: 88/88.
+
+Focused gates:
+
+```text
+git diff --check
+npm run typecheck
+npx vitest run src/wasm/slice-kernel-contract.test.ts \
+  src/test/geometry-wasm-build-contract.test.ts
+npm run test:browser -- --run src/wasm/load-slice-kernel.browser.test.ts
+npm run test:geometry-wasm-boundary
+npm run build
+```
+
+Results: diff check and typecheck exited 0; Node contract/workflow 92/92,
+Chromium 34/34 and controlled raw WASM 31/31 passed. Tracked-artifact
+verification and the production build exited 0 with one 37,856-byte WASM.
+
+Rust, regeneration and workflow gates:
+
+```text
+cargo fmt --manifest-path crates/geometry-wasm/Cargo.toml -- --check
+cargo test --manifest-path crates/geometry-wasm/Cargo.toml --locked
+cargo clippy --manifest-path crates/geometry-wasm/Cargo.toml --locked \
+  --all-targets -- -D warnings
+cargo clippy --manifest-path crates/geometry-wasm/Cargo.toml --locked \
+  --target wasm32-unknown-unknown -- -D warnings
+cargo check --manifest-path crates/geometry-wasm/Cargo.toml --locked \
+  --target wasm32-unknown-unknown --release
+node scripts/verify-geometry-wasm-regeneration.mjs
+ruby -e 'require "yaml"; ARGV.each { |path| YAML.parse_file(path) }' \
+  .github/workflows/deploy-pages.yml \
+  .github/workflows/verify-geometry-wasm.yml
+```
+
+Results: Rust fmt, 1 unit test, 20 integration tests, native/wasm32 clippy with
+`-D warnings`, wasm32 release check, pinned byte comparison and both workflow
+YAML parses passed.
+
+Fresh checkout at committed `3f70a33` used a new path containing spaces and
+Chinese:
+
+```text
+git clone --no-local /tmp/shapecut-oracle.QUL6JU/repo \
+  "/tmp/ShapeCut Task 3 round 9 中文 fresh"
+git -C "/tmp/ShapeCut Task 3 round 9 中文 fresh" checkout --detach 3f70a33
+cd "/tmp/ShapeCut Task 3 round 9 中文 fresh"
+npm_config_cache="/tmp/ShapeCut Task 3 round 9 中文 npm cache" npm ci
+env PATH=/usr/local/bin:/usr/bin:/bin \
+  CARGO_HOME="/tmp/ShapeCut Task 3 round 9 中文 empty cargo" \
+  npm_config_offline=true npm run build
+env PATH=/usr/local/bin:/usr/bin:/bin \
+  CARGO_HOME="/tmp/ShapeCut Task 3 round 9 中文 empty cargo" \
+  npm_config_offline=true npx vitest run \
+    src/wasm/slice-kernel-contract.test.ts \
+    src/test/geometry-wasm-build-contract.test.ts
+env PATH=/usr/local/bin:/usr/bin:/bin \
+  CARGO_HOME="/tmp/ShapeCut Task 3 round 9 中文 empty cargo" \
+  npm_config_offline=true npm run test:browser -- --run \
+    src/wasm/load-slice-kernel.browser.test.ts
+env PATH=/usr/local/bin:/usr/bin:/bin \
+  CARGO_HOME="/tmp/ShapeCut Task 3 round 9 中文 empty cargo" \
+  npm_config_offline=true npm run test:geometry-wasm-boundary
+CARGO_ENCODED_RUSTFLAGS=$'-Cdebuginfo=0\x1f--remap-path-prefix=/tmp/Existing round 9 中文 path=/workspace/existing' \
+  node scripts/verify-geometry-wasm-regeneration.mjs
+git status --short
+```
+
+The empty dependency install completed. With cargo, rustc and wasm-pack absent
+from the restricted `PATH` and an empty Cargo home, the offline standard path
+passed: build, Node 92/92, Chromium 34/34 and raw boundary 31/31. The separate
+pinned regeneration preserved the pre-existing unit-separator flags and
+reproduced the tracked 37,856-byte WASM byte-for-byte. The fresh checkout
+remained clean. This is an offline standard-build claim only; regeneration
+used the separately verified pinned toolchain.
+
+Full `npm test -- --run` completed with 65/71 files, 1,773 passed, 4 skipped
+and 13 failed under parallel load. Twelve failed timeout cases passed when
+rerun serially across fasteners, extraction, launcher, outline package and
+launcher runtime. The same pre-existing E2E conversion case remained 44 ms
+over its 5-second test limit when isolated. No timeout or unrelated UI/geometry
+logic was changed. The fresh `npm ci` audit remains 1 moderate and 3 high
+vulnerabilities. No round 9 change touches UI/CSS, fonts, colours, production
+deadline, canonical merge, materials, launcher code or official release
+artifacts.
