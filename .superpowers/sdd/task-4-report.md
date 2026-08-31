@@ -210,3 +210,26 @@ No SharedArrayBuffer, UI/CSS/typography/colour, material, launcher, canonical
 artifact, or production 120-second deadline code was changed. Formal
 independent re-review and Task 5 production-graph proof remain external gates;
 this section makes no full A3 completion claim.
+
+### Clean-checkout confirmation
+
+Commit `165174d` was checked out detached into a new temporary worktree and
+installed with `npm ci`. The following commands passed there without changing
+tracked files:
+
+- `npm test -- --run src/wasm/slice-kernel-contract.test.ts src/workers/slice-partitioner.test.ts src/workers/slice-worker-pool.test.ts`:
+  3 files / 129 tests.
+- `npm run test:browser -- --run src/wasm/load-slice-kernel.browser.test.ts src/workers/slice-worker-pool.browser.test.ts`:
+  2 files / 41 tests in real Chromium Browser Mode.
+- `npm run test:geometry-wasm-boundary`: 31 checks.
+- `cargo test --locked --manifest-path crates/geometry-wasm/Cargo.toml`:
+  1 unit / 21 integration tests.
+- `cargo clippy --locked --manifest-path crates/geometry-wasm/Cargo.toml --all-targets -- -D warnings`:
+  passed.
+- `npm run typecheck`, `npm run build`, and
+  `npm run verify:geometry-wasm-regeneration`: passed; four generated files
+  matched byte-for-byte at 38,157 WASM bytes and zero source maps.
+
+The temporary worktree was then removed. The only remaining non-Task-4
+working-tree change is the parent-owned `.superpowers/sdd/progress.md`, which
+was neither staged nor committed here.
