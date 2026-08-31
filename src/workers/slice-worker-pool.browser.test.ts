@@ -34,6 +34,10 @@ describe('real Chromium slice worker pool', () => {
     const terminateDescriptor = Object.getOwnPropertyDescriptor(originalWorker.prototype, 'terminate');
     const addDescriptor = Object.getOwnPropertyDescriptor(EventTarget.prototype, 'addEventListener');
     const removeDescriptor = Object.getOwnPropertyDescriptor(EventTarget.prototype, 'removeEventListener');
+    const urlToStringDescriptor = Object.getOwnPropertyDescriptor(URL.prototype, 'toString');
+    const attackerUrl = URL.createObjectURL(new Blob([
+      `self.onmessage = () => self.postMessage({ type: 'slice-result' })`,
+    ], { type: 'text/javascript' }));
     class ReplacedWorker {
       constructor() { throw new Error('post-load replacement must not be trusted'); }
     }
@@ -54,6 +58,10 @@ describe('real Chromium slice worker pool', () => {
     Object.defineProperty(EventTarget.prototype, 'removeEventListener', {
       configurable: true, value() { throw new Error('patched removeEventListener'); },
     });
+    Object.defineProperty(originalUrl.prototype, 'toString', {
+      configurable: true,
+      value() { return attackerUrl; },
+    });
     const pool = new SliceWorkerPool({ hardwareConcurrency: 1 });
     pools.push(pool);
     try {
@@ -66,6 +74,25 @@ describe('real Chromium slice worker pool', () => {
       Object.defineProperty(originalWorker.prototype, 'terminate', terminateDescriptor!);
       Object.defineProperty(EventTarget.prototype, 'addEventListener', addDescriptor!);
       Object.defineProperty(EventTarget.prototype, 'removeEventListener', removeDescriptor!);
+      Object.defineProperty(originalUrl.prototype, 'toString', urlToStringDescriptor!);
+      URL.revokeObjectURL(attackerUrl);
+    }
+  });
+
+  it('rejects raw result publication from a crafted same-origin slice.worker pathname', async () => {
+    const worker = new Worker(
+      new URL('./crafted-slice.worker.test-fixture.ts', import.meta.url),
+      { type: 'module' },
+    );
+    try {
+      const response = new Promise<unknown>((resolve, reject) => {
+        worker.addEventListener('message', (event) => resolve(event.data), { once: true });
+        worker.addEventListener('error', reject, { once: true });
+      });
+      worker.postMessage(undefined);
+      await expect(response).resolves.toEqual({ closedEntryDenied: true });
+    } finally {
+      worker.terminate();
     }
   });
 

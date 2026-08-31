@@ -326,3 +326,76 @@ The temporary round-2 worktree and its task-owned dependency/build outputs were
 removed. The primary worktree still contains only the parent-owned unstaged
 `.superpowers/sdd/progress.md` outside these committed Task 4 changes. Task 5
 still owns production graph/bundle proof, so no full A3 completion is claimed.
+
+## 2026-09-01 re-review round 3 closure
+
+### Exact RED evidence
+
+The bootstrap URL and crafted-path regressions were first run against the
+round-2 production code:
+
+```text
+npm run test:browser -- --run src/workers/slice-worker-pool.browser.test.ts -t "bootstrap primitives|crafted same-origin"
+```
+
+Observed before production changes: 2 failed. Replacing
+`URL.prototype.toString` after pool import redirected the captured URL object
+to an attacker Blob worker, whose malformed result reached the pool. A separate
+same-origin worker named `crafted-slice.worker.test-fixture.ts` also passed the
+substring realm gate and published its private typed-array buffers instead of
+returning `{ closedEntryDenied: true }`.
+
+The direct-transfer regression was applied to a detached checkout of round-2
+commit `0149229` and run there:
+
+```text
+npm test -- --run src/wasm/slice-result-publisher.test.ts
+```
+
+Observed before production changes: 1 failed. After contract evaluation, a
+replacement `%TypedArray%.prototype.buffer` getter threw `patched typed-array
+buffer getter` from `publishBundledSliceBatchResult`; its ordinary transfer
+array was also dependent on the mutable array iterator chain.
+
+### GREEN implementation and focused evidence
+
+- The pool now captures the intrinsic URL `href` getter at bootstrap,
+  immediately serializes the bundled worker URL to a primitive string, and
+  gives only that primitive to the captured Worker constructor. Post-load URL
+  stringifier or constructor replacement cannot redirect the trusted path.
+- The worker publisher captures WorkerLocation `href` through its intrinsic
+  prototype getter. A production single-file worker is accepted only when its
+  exact URL equals `import.meta.url`; Vite development accepts only the exact
+  same-origin pathname derived from the contract module URL. Substring matches
+  and crafted same-origin `slice.worker` names are rejected.
+- Result ownership stores the three intrinsic backing buffers when ownership
+  is created. Publication uses only those captured buffers in a frozen transfer
+  array with an own captured iterator whose returned iterator has an own
+  captured `next`. The frozen options record is posted through the captured
+  worker primitive, then every owned buffer must satisfy intrinsic detached
+  postconditions.
+
+Focused GREEN commands:
+
+```text
+npm test -- --run src/wasm/slice-result-publisher.test.ts
+# 1 passed
+
+npm run test:browser -- --run src/workers/slice-worker-pool.browser.test.ts -t "bootstrap primitives|crafted same-origin|loads WASM in bounded workers"
+# 3 passed in Chromium
+```
+
+### Round 3 full worktree evidence
+
+- Node contract/publisher/partition/pool: 4 files / 134 tests passed.
+- Real Chromium Browser Mode loader/pool: 2 files / 43 tests passed.
+- Controlled raw WASM ABI: 31 checks passed.
+- Rust: 1 unit / 21 integration tests passed; clippy `-D warnings` passed.
+- TypeScript project typecheck and Vite production build passed.
+- Pinned WASM regeneration reproduced four tracked files byte-for-byte at
+  38,157 WASM bytes and zero source maps.
+- `git diff --check` passed.
+
+No UI, CSS, typography, colour, material, launcher, canonical artifact or
+production deadline code was changed. Task 5 still owns production graph and
+emitted slice-worker artifact proof; no full A3 completion is claimed.

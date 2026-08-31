@@ -191,7 +191,12 @@ const setTimeoutIntrinsic = globalThis.setTimeout.bind(globalThis);
 const clearTimeoutIntrinsic = globalThis.clearTimeout.bind(globalThis);
 const reflectApplyIntrinsic = Reflect.apply;
 const WorkerIntrinsic = globalThis.Worker;
-const bundledSliceWorkerUrl = new globalThis.URL('./slice.worker.ts', import.meta.url);
+const URLIntrinsic = globalThis.URL;
+const urlHrefGetter = objectGetOwnPropertyDescriptor(URLIntrinsic.prototype, 'href')?.get;
+const bundledSliceWorkerUrlObject = new URLIntrinsic('./slice.worker.ts', import.meta.url);
+const bundledSliceWorkerUrl = typeof urlHrefGetter === 'function'
+  ? reflectApplyIntrinsic(urlHrefGetter, bundledSliceWorkerUrlObject, []) as string
+  : undefined;
 const eventTargetAddEventListener = objectGetOwnPropertyDescriptor(
   globalThis.EventTarget.prototype,
   'addEventListener',
@@ -487,7 +492,7 @@ export class SliceWorkerPool {
 }
 
 function createBrowserSliceWorker(): SliceWorkerLike {
-  if (typeof WorkerIntrinsic !== 'function') {
+  if (typeof WorkerIntrinsic !== 'function' || typeof bundledSliceWorkerUrl !== 'string') {
     throw new TypeError('captured bundled Worker constructor is unavailable');
   }
   return new WorkerIntrinsic(bundledSliceWorkerUrl, { type: 'module' });

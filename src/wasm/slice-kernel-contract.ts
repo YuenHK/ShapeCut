@@ -254,22 +254,68 @@ const arrayBufferSlice = objectGetOwnPropertyDescriptor(arrayBufferPrototype, 's
 const Float32ArrayIntrinsic = Float32Array;
 const Float64ArrayIntrinsic = Float64Array;
 const Uint32ArrayIntrinsic = Uint32Array;
+const URLIntrinsic = globalThis.URL;
+const urlPrototype = URLIntrinsic.prototype;
+const urlHrefGetter = objectGetOwnPropertyDescriptor(urlPrototype, 'href')?.get;
+const urlOriginGetter = objectGetOwnPropertyDescriptor(urlPrototype, 'origin')?.get;
+const urlPathnameGetter = objectGetOwnPropertyDescriptor(urlPrototype, 'pathname')?.get;
 const workerGlobalScopeIntrinsic = (globalThis as typeof globalThis & {
   readonly WorkerGlobalScope?: Function;
 }).WorkerGlobalScope;
-const capturedWorkerPathname = (globalThis as typeof globalThis & {
-  readonly location?: { readonly pathname?: unknown };
-}).location?.pathname;
+const workerLocationIntrinsic = (globalThis as typeof globalThis & {
+  readonly location?: { readonly href?: unknown };
+}).location;
+const workerLocationPrototype = workerLocationIntrinsic === undefined
+  ? undefined
+  : objectGetPrototypeOf(workerLocationIntrinsic);
+const locationHrefGetter = workerLocationPrototype === undefined
+  ? undefined
+  : objectGetOwnPropertyDescriptor(workerLocationPrototype, 'href')?.get;
+let capturedWorkerHref: string | undefined;
+try {
+  const href = typeof locationHrefGetter === 'function'
+    ? reflectApply(locationHrefGetter, workerLocationIntrinsic, []) as unknown
+    : objectGetOwnPropertyDescriptor(workerLocationIntrinsic, 'href')?.value as unknown;
+  if (typeof href === 'string') capturedWorkerHref = href;
+} catch {
+  capturedWorkerHref = undefined;
+}
 const workerPostMessageIntrinsic = (globalThis as typeof globalThis & {
   readonly postMessage?: Function;
 }).postMessage;
 let capturedDedicatedWorkerRealm = false;
 try {
+  const expectedDevelopmentWorkerUrl = new URLIntrinsic('../workers/slice.worker.ts', import.meta.url);
+  const expectedDevelopmentWorkerHref = reflectApply(
+    urlHrefGetter as Function,
+    expectedDevelopmentWorkerUrl,
+    [],
+  ) as unknown;
+  const actualWorkerUrl = new URLIntrinsic(capturedWorkerHref as string);
+  const actualWorkerOrigin = reflectApply(urlOriginGetter as Function, actualWorkerUrl, []) as unknown;
+  const actualWorkerPathname = reflectApply(
+    urlPathnameGetter as Function,
+    actualWorkerUrl,
+    [],
+  ) as unknown;
+  const expectedWorkerOrigin = reflectApply(
+    urlOriginGetter as Function,
+    expectedDevelopmentWorkerUrl,
+    [],
+  ) as unknown;
+  const expectedWorkerPathname = reflectApply(
+    urlPathnameGetter as Function,
+    expectedDevelopmentWorkerUrl,
+    [],
+  ) as unknown;
   capturedDedicatedWorkerRealm = typeof workerGlobalScopeIntrinsic === 'function'
     && globalThis instanceof (workerGlobalScopeIntrinsic as Function & { prototype: object })
     && typeof (globalThis as typeof globalThis & { document?: unknown }).document === 'undefined'
-    && typeof capturedWorkerPathname === 'string'
-    && capturedWorkerPathname.includes('slice.worker');
+    && typeof capturedWorkerHref === 'string'
+    && (capturedWorkerHref === import.meta.url
+      || (typeof expectedDevelopmentWorkerHref === 'string'
+        && actualWorkerOrigin === expectedWorkerOrigin
+        && actualWorkerPathname === expectedWorkerPathname));
 } catch {
   capturedDedicatedWorkerRealm = false;
 }
@@ -657,8 +703,11 @@ objectFreeze(ImmutableSliceArray.prototype);
 
 interface TransferableSliceBatchResultOwnership {
   readonly planeOffsets: Uint32Array;
+  readonly planeOffsetsBuffer: ArrayBuffer;
   readonly endpoints: Float64Array;
+  readonly endpointsBuffer: ArrayBuffer;
   readonly diagnosticCounters: Uint32Array;
+  readonly diagnosticCountersBuffer: ArrayBuffer;
 }
 
 const transferableSliceBatchResultOwnership = new WeakMap<
@@ -685,6 +734,18 @@ export function publishBundledSliceBatchResult(
     throw new TypeError('bundled worker result ownership is unavailable or already consumed');
   }
   transferableSliceBatchResultOwnership.delete(result);
+  const transfer = new ArrayIntrinsic<ArrayBuffer>(3);
+  transfer[0] = ownership.planeOffsetsBuffer;
+  transfer[1] = ownership.endpointsBuffer;
+  transfer[2] = ownership.diagnosticCountersBuffer;
+  objectDefineProperty(transfer, Symbol.iterator, {
+    configurable: false,
+    enumerable: false,
+    value: createPrivateTransferIterator,
+    writable: false,
+  });
+  objectFreeze(transfer);
+  const transport = objectFreeze({ transfer });
   const response = objectFreeze({
     type: envelope.type,
     generation: envelope.generation,
@@ -695,13 +756,20 @@ export function publishBundledSliceBatchResult(
     endpoints: ownership.endpoints,
     diagnosticCounters: ownership.diagnosticCounters,
   });
-  reflectApply(workerPostMessageIntrinsic, globalThis, [response, {
-    transfer: [
-      ownership.planeOffsets.buffer,
-      ownership.endpoints.buffer,
-      ownership.diagnosticCounters.buffer,
-    ],
-  }]);
+  reflectApply(workerPostMessageIntrinsic, globalThis, [response, transport]);
+  for (let index = 0; index < transfer.length; index += 1) {
+    const buffer = transfer[index];
+    const byteLength = reflectApply(arrayBufferByteLengthGetter as Function, buffer, []) as unknown;
+    let detached = false;
+    try {
+      reflectApply(arrayBufferSlice as Function, buffer, [0, 0]);
+    } catch {
+      detached = true;
+    }
+    if (byteLength !== 0 || !detached) {
+      throw new TypeError('slice result publication did not detach an owned buffer');
+    }
+  }
 }
 
 export function readSliceKernelAbort(checkpoint: SliceKernelCheckpoint): SliceKernelAbort | undefined {
@@ -1126,8 +1194,23 @@ function parseSliceBatchResultWithTrustedRequest(
   });
   transferableSliceBatchResultOwnership.set(result, objectFreeze({
     planeOffsets,
+    planeOffsetsBuffer: reflectApply(
+      typedArrayBufferGetter as Function,
+      planeOffsets,
+      [],
+    ) as ArrayBuffer,
     endpoints,
+    endpointsBuffer: reflectApply(
+      typedArrayBufferGetter as Function,
+      endpoints,
+      [],
+    ) as ArrayBuffer,
     diagnosticCounters,
+    diagnosticCountersBuffer: reflectApply(
+      typedArrayBufferGetter as Function,
+      diagnosticCounters,
+      [],
+    ) as ArrayBuffer,
   }));
   return result;
 }
