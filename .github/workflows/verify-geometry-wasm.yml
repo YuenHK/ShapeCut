@@ -5,8 +5,13 @@ on:
     paths:
       - "crates/geometry-wasm/**"
       - "scripts/build-geometry-wasm.mjs"
-      - "scripts/verify-geometry-wasm-*.mjs"
+      - "scripts/verify-geometry-wasm-generated.mjs"
+      - "scripts/verify-geometry-wasm-regeneration.mjs"
       - "src/wasm/generated/**"
+      - ".github/workflows/deploy-pages.yml"
+      - ".github/workflows/verify-geometry-wasm.yml"
+      - "package.json"
+      - "package-lock.json"
       - "Cargo.lock"
       - "rust-toolchain.toml"
   workflow_dispatch:
@@ -19,9 +24,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
       - name: Install pinned Rust toolchain
@@ -32,4 +37,4 @@ jobs:
       - name: Install pinned wasm-pack
         run: cargo install wasm-pack --version 0.15.0 --locked
       - name: Verify clean deterministic regeneration
-        run: npm run verify:geometry-wasm-regeneration
+        run: node scripts/verify-geometry-wasm-regeneration.mjs

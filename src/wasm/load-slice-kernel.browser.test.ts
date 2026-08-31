@@ -4,6 +4,7 @@ import {
   disposeSliceKernel,
   loadSliceKernel,
 } from './load-slice-kernel';
+import { CanonicalFallbackGuard } from './slice-kernel-contract';
 
 const request = {
   positions: new Float32Array([
@@ -16,6 +17,23 @@ const request = {
   planes: new Float64Array([0.5, 1]),
   deadlineCheckInterval: 64,
 } as const;
+
+const maliciousAbortCases = [
+  ['revoked proxy', () => {
+    const pair = Proxy.revocable({ reason: 'cancelled', source: 'user' }, {});
+    pair.revoke();
+    return pair.proxy;
+  }],
+  ['throwing ownKeys trap', () => new Proxy({}, {
+    ownKeys: () => { throw new Error('private ownKeys detail'); },
+  })],
+  ['throwing prototype trap', () => new Proxy({}, {
+    getPrototypeOf: () => { throw new Error('private prototype detail'); },
+  })],
+  ['throwing descriptor trap', () => new Proxy({ reason: 'cancelled', source: 'user' }, {
+    getOwnPropertyDescriptor: () => { throw new Error('private descriptor detail'); },
+  })],
+] as const;
 
 afterEach(() => {
   disposeSliceKernel();
@@ -141,6 +159,36 @@ describe('production-compatible browser WASM loader', () => {
         abortSource: abort.source,
       });
       expect(checkpointCount).toBe(5);
+    },
+  );
+
+  it.each(maliciousAbortCases)(
+    'fails closed for immediate %s checkpoint reflection and denies fallback',
+    async (_name, createAbort) => {
+      const kernel = await loadSliceKernel();
+      const error = await kernel.sliceLayerBatch(request, () => createAbort() as never)
+        .catch((failure: unknown) => failure);
+      expect(error).toMatchObject({ name: 'SliceKernelError', code: 'DEADLINE_CHECK_FAILED' });
+      expect(() => new CanonicalFallbackGuard().claimTypeScriptFallback(error)).toThrowError(
+        expect.objectContaining({ name: 'SliceKernelError', code: 'FALLBACK_NOT_ALLOWED' }),
+      );
+    },
+  );
+
+  it.each(maliciousAbortCases)(
+    'fails closed for delayed %s checkpoint reflection and denies fallback',
+    async (_name, createAbort) => {
+      const kernel = await loadSliceKernel();
+      let checkpointCount = 0;
+      const error = await kernel.sliceLayerBatch(request, () => {
+        checkpointCount += 1;
+        return checkpointCount === 5 ? createAbort() as never : undefined;
+      }).catch((failure: unknown) => failure);
+      expect(error).toMatchObject({ name: 'SliceKernelError', code: 'DEADLINE_CHECK_FAILED' });
+      expect(checkpointCount).toBe(5);
+      expect(() => new CanonicalFallbackGuard().claimTypeScriptFallback(error)).toThrowError(
+        expect.objectContaining({ name: 'SliceKernelError', code: 'FALLBACK_NOT_ALLOWED' }),
+      );
     },
   );
 });

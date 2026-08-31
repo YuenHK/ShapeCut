@@ -166,39 +166,38 @@ class ImmutableSliceArray implements ReadonlySliceArray {
 }
 
 export function readSliceKernelAbort(checkpoint: SliceKernelCheckpoint): SliceKernelAbort | undefined {
-  if (typeof checkpoint !== 'function') {
-    fail('DEADLINE_CHECK_FAILED', 'WASM geometry checkpoint failed closed');
-  }
-  let abort: unknown;
   try {
-    abort = checkpoint();
+    if (typeof checkpoint !== 'function') {
+      throw new TypeError('invalid checkpoint');
+    }
+    const abort: unknown = checkpoint();
+    if (abort === undefined) return undefined;
+    if (!isRecord(abort)) throw new TypeError('invalid abort result');
+
+    const prototype = Object.getPrototypeOf(abort);
+    const keys = Reflect.ownKeys(abort);
+    const reasonDescriptor = Object.getOwnPropertyDescriptor(abort, 'reason');
+    const sourceDescriptor = Object.getOwnPropertyDescriptor(abort, 'source');
+    if ((prototype !== Object.prototype && prototype !== null)
+      || keys.length !== 2
+      || !keys.includes('reason')
+      || !keys.includes('source')
+      || !reasonDescriptor
+      || !('value' in reasonDescriptor)
+      || !sourceDescriptor
+      || !('value' in sourceDescriptor)) {
+      throw new TypeError('invalid abort shape');
+    }
+    const reason = reasonDescriptor.value;
+    const source = sourceDescriptor.value;
+    if ((reason === 'cancelled' && (source === 'user' || source === 'superseded'))
+      || (reason === 'deadline' && source === 'runtime-deadline')) {
+      return Object.freeze({ reason, source }) as SliceKernelAbort;
+    }
+    throw new TypeError('invalid abort reason and source');
   } catch {
     fail('DEADLINE_CHECK_FAILED', 'WASM geometry checkpoint failed closed');
   }
-  if (abort === undefined) return undefined;
-  if (!isRecord(abort)) {
-    fail('DEADLINE_CHECK_FAILED', 'WASM geometry checkpoint failed closed');
-  }
-  const keys = Reflect.ownKeys(abort);
-  const reasonDescriptor = Object.getOwnPropertyDescriptor(abort, 'reason');
-  const sourceDescriptor = Object.getOwnPropertyDescriptor(abort, 'source');
-  if ((Object.getPrototypeOf(abort) !== Object.prototype && Object.getPrototypeOf(abort) !== null)
-    || keys.length !== 2
-    || !keys.includes('reason')
-    || !keys.includes('source')
-    || !reasonDescriptor
-    || !('value' in reasonDescriptor)
-    || !sourceDescriptor
-    || !('value' in sourceDescriptor)) {
-    fail('DEADLINE_CHECK_FAILED', 'WASM geometry checkpoint failed closed');
-  }
-  const reason = reasonDescriptor.value;
-  const source = sourceDescriptor.value;
-  if ((reason === 'cancelled' && (source === 'user' || source === 'superseded'))
-    || (reason === 'deadline' && source === 'runtime-deadline')) {
-    return Object.freeze({ reason, source }) as SliceKernelAbort;
-  }
-  fail('DEADLINE_CHECK_FAILED', 'WASM geometry checkpoint failed closed');
 }
 
 export function sliceKernelAbortError(abort: SliceKernelAbort): SliceKernelError {
