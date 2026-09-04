@@ -152,6 +152,9 @@ for (const triangleCount of [200_000, 500_000, 1_000_000]) test(`${triangleCount
     `${JSON.stringify({
       caseId: `synthetic-${triangleCount}`,
       runIndex: testInfo.repeatEachIndex,
+      jobGeneration: testInfo.repeatEachIndex + 1,
+      architecture: process.arch,
+      browser: testInfo.project.name,
       triangleCount,
       layerCount: 0,
       measurementInterval: 'selection-to-terminal',

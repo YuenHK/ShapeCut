@@ -7,16 +7,16 @@ import {
 
 function validEvidence(): WasmGeometryReleaseEvidence {
   const measured = [14_000, 14_200, 14_100, 14_300, 14_050];
-  const publication = (layerCount: number) => ({
-    jobGeneration: 1, generation: 1, layerCount,
+  const publication = (layerCount: number, generation: number) => ({
+    jobGeneration: generation, generation, layerCount,
     sliceWorkersCreated: 2, sliceWorkersTerminated: 2, activeWorkersAfter: 0,
   });
   return {
     schemaVersion: 1,
     host: { architecture: 'arm64', browser: 'chromium', measuredRuns: 5, warmupRuns: 1 },
     benchmarks: [
-      { caseId: 'reference-a', kind: 'private-reference', triangleCount: 37_116, layerCount: 6, measurementInterval: 'conversion-stage', origin: 'wasm', actualWasmPublication: publication(6), conversionStageMs: measured, fullOneClickMs: [30_000, 30_100, 30_200, 30_300, 30_400] },
-      { caseId: 'reference-b', kind: 'private-reference', triangleCount: 40_100, layerCount: 6, measurementInterval: 'conversion-stage', origin: 'wasm', actualWasmPublication: publication(6), conversionStageMs: measured, fullOneClickMs: [31_000, 31_100, 31_200, 31_300, 31_400] },
+      { caseId: 'reference-a', kind: 'private-reference', triangleCount: 37_116, layerCount: 6, measurementInterval: 'conversion-stage', origin: 'wasm', actualWasmPublications: Array.from({ length: 5 }, (_value, index) => publication(6, index + 2)), conversionStageMs: measured, fullOneClickMs: [30_000, 30_100, 30_200, 30_300, 30_400] },
+      { caseId: 'reference-b', kind: 'private-reference', triangleCount: 40_100, layerCount: 6, measurementInterval: 'conversion-stage', origin: 'wasm', actualWasmPublications: Array.from({ length: 5 }, (_value, index) => publication(6, index + 2)), conversionStageMs: measured, fullOneClickMs: [31_000, 31_100, 31_200, 31_300, 31_400] },
       ...([200_000, 500_000, 1_000_000] as const).map((triangleCount) => ({
         caseId: `synthetic-${triangleCount}` as const,
         kind: 'synthetic' as const,
@@ -24,7 +24,7 @@ function validEvidence(): WasmGeometryReleaseEvidence {
         layerCount: 0,
         measurementInterval: 'selection-to-terminal' as const,
         origin: 'wasm' as const,
-        actualWasmPublication: publication(0),
+        actualWasmPublications: Array.from({ length: 5 }, (_value, index) => publication(0, index + 2)),
         conversionStageMs: measured,
       })),
     ],
@@ -82,7 +82,7 @@ describe('WASM geometry release verifier', () => {
       (e) => { e.responsiveness.activeWorkersAfterCancellation = 1; },
       (e) => { e.geometry.sixOutputsCanonical = false; },
       (e) => { e.geometry.zipMembersCanonical = false; },
-      (e) => { e.benchmarks[0].origin = 'typescript'; e.benchmarks[0].actualWasmPublication = null; },
+      (e) => { e.benchmarks[0].origin = 'typescript'; e.benchmarks[0].actualWasmPublications[0] = null; },
     ];
     for (const mutate of cases) {
       const evidence = structuredClone(validEvidence()); mutate(evidence);
@@ -95,8 +95,9 @@ describe('WASM geometry release verifier', () => {
       (e) => { e.benchmarks[0].conversionStageMs[0] = 0; },
       (e) => { (e.benchmarks[0] as { kind: string }).kind = 'synthetic'; },
       (e) => { e.benchmarks[2].triangleCount = 200_001; },
-      (e) => { e.benchmarks[2].actualWasmPublication!.generation = 2; },
-      (e) => { e.benchmarks[2].actualWasmPublication!.sliceWorkersTerminated = 1; },
+      (e) => { e.benchmarks[2].actualWasmPublications[0]!.generation = 999; },
+      (e) => { e.benchmarks[2].actualWasmPublications[0]!.sliceWorkersTerminated = 1; },
+      (e) => { e.benchmarks[2].actualWasmPublications[1]!.jobGeneration = e.benchmarks[2].actualWasmPublications[0]!.jobGeneration; e.benchmarks[2].actualWasmPublications[1]!.generation = e.benchmarks[2].actualWasmPublications[0]!.generation; },
     ];
     for (const mutate of cases) {
       const evidence = structuredClone(validEvidence()); mutate(evidence);

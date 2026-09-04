@@ -182,7 +182,16 @@ interface ActiveJob {
   completedPlanes: number;
   aggregateEndpointBytes: number;
   settled: boolean;
+  workersCreated: number;
+  workersTerminated: number;
 }
+
+export type SliceWorkerJobEvidence = Readonly<{
+  generation: number;
+  workersCreated: number;
+  workersTerminated: number;
+  activeWorkersAfter: number;
+}>;
 
 const MAX_MERGED_ENDPOINT_BYTES = 8 * 1024 * 1024;
 const MAX_PARTITION_SEGMENT_COUNT = 262_144;
@@ -216,6 +225,7 @@ export class SliceWorkerPool {
   readonly #observeLiveBytes: GeometryLiveByteReporter | undefined;
   #generation = 0;
   #activeJob: ActiveJob | undefined;
+  #lastCompletedJobEvidence: SliceWorkerJobEvidence | undefined;
 
   constructor(options: SliceWorkerPoolOptions = {}) {
     this.#hardwareConcurrency = options.hardwareConcurrency;
@@ -226,6 +236,10 @@ export class SliceWorkerPool {
 
   get activeWorkerCount(): number {
     return this.#activeJob?.workers.size ?? 0;
+  }
+
+  get lastCompletedJobEvidence(): SliceWorkerJobEvidence | undefined {
+    return this.#lastCompletedJobEvidence;
   }
 
   run(
@@ -263,6 +277,8 @@ export class SliceWorkerPool {
         completedPlanes: 0,
         aggregateEndpointBytes: 0,
         settled: false,
+        workersCreated: 0,
+        workersTerminated: 0,
       };
       this.#activeJob = job;
       const timeoutMs = Math.max(0, Math.min(2_147_483_647, intake.deadlineAt - Date.now()));
@@ -380,6 +396,7 @@ export class SliceWorkerPool {
       errorListenerRegistered: false,
     };
     job.workers.add(activeWorker);
+    job.workersCreated += 1;
     const expected: ExpectedPartition = Object.freeze({
       partitionIndex: partition.partitionIndex,
       planeIndices: partition.planeIndices,
@@ -467,6 +484,7 @@ export class SliceWorkerPool {
 
   #releaseWorker(job: ActiveJob, active: ActiveWorker): void {
     if (!job.workers.delete(active)) return;
+    job.workersTerminated += 1;
     const operations = active.operations;
     if (operations && active.messageListenerRegistered) {
       try { operations.removeMessageListener(active.messageListener); } catch { /* best effort */ }
@@ -499,6 +517,12 @@ export class SliceWorkerPool {
         { owner: 'partition-results', buffers: [] },
       ]);
       if (this.#activeJob === job) this.#activeJob = undefined;
+      this.#lastCompletedJobEvidence = Object.freeze({
+        generation: job.generation,
+        workersCreated: job.workersCreated,
+        workersTerminated: job.workersTerminated,
+        activeWorkersAfter: job.workers.size,
+      });
       job.resolve(result);
     } catch (error) {
       this.#failJob(job, error instanceof SliceWorkerPoolError

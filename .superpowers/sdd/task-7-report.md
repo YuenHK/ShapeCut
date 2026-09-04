@@ -9,12 +9,16 @@ Production WASM remains disabled by default. The fixed-host release verifier cor
 - `synthetic-actual-wasm`
 - `live-byte-baseline`
 - `main-thread-responsiveness`
+- `cancellation`
+- `canonical-geometry`
+- `production-bundle`
+- `private-acceptance`
 
 The physical official-launcher coupon fit test is separately reported as external and outstanding. This task does not claim whole-branch approval or physical launcher acceptance.
 
 ## TDD RED to GREEN
 
-- Release verifier RED: the focused suite could not resolve the missing verifier module. GREEN: a strict canonical evidence parser and release decision function now has 12/12 focused tests passing. It rejects identifying fields, non-canonical evidence, missing five-run samples, non-Apple-Silicon/non-Chromium hosts, performance/memory/responsiveness/geometry/bundle failures, TypeScript fallback disguised as WASM, and absent private acceptance.
+- Release verifier RED: the focused suite could not resolve the missing verifier module. GREEN: the strict canonical evidence parser now requires five distinct measured job generations per case and rejects reused/cross-generation publication evidence. The generator has its own regeneration and hostile-schema tests; it consumes committed raw measurements plus a separate validation sidecar instead of inventing pass values.
 - Workflow RED: two build-contract tests failed because `.github/workflows/ci.yml` was absent and Pages lacked locked Rust/browser/release gates. GREEN: 19/19 combined release/workflow contract assertions pass. CI and Pages now pin the Rust toolchain and wasm-pack, cache locked Cargo inputs, run `cargo test --locked`, regenerate/verify WASM, run serial Node and Chromium differential tests, exercise the release verifier contract, verify the committed blocked evidence state, and inspect the production build.
 - Actual-WASM RED: the first private benchmark run expected an active WASM partition but observed none. The rollout-on conversion succeeded through TypeScript because the post-projection coordinates did not meet the exact Float32 eligibility boundary. The release verifier now requires both `origin: wasm` and an actual partition observation for both references.
 - Harness RED: the first draft expected the long-lived geometry worker count to be zero after successful output, then a repeated run restored the saved project and blocked the material selector. GREEN: the benchmark uses the existing discard-project control between trials and emits append-safe per-trial sanitized evidence. It completed both references in 3.6 minutes.
@@ -64,7 +68,7 @@ The Knight target fails: neither reference is at or below 15 seconds and no actu
 - Tracked WASM artifacts: 4/4 verified; Rust 1.98.0 and wasm-pack 0.15.0.
 - Public and private fixture validators: passed.
 - Typecheck, production build and `git diff --check`: passed. Build transformed 178 modules and emitted one hashed slice worker, one hashed WASM asset, zero source maps, and no private path/account data.
-- Current release evidence CLI: exits 1 by design with the five unmet software gates above; production default-off is preserved.
+- Current release evidence CLI: exits 1 by design with the nine unmet software gates above; production default-off is preserved. Gates without controlled raw validation evidence are deliberately false/unknown even where earlier test runs passed; CI regenerates the committed JSON and requires a byte-for-byte diff plus a privacy scan.
 
 ## Follow-up and external gate
 

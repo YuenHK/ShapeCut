@@ -52,7 +52,7 @@ let exactSegmentSource: WasmExactSegmentSource | undefined;
 if (wasmRolloutEnabled) {
   exactSegmentSource = new WasmExactSegmentSource({
     minimumWasmWork: acceptanceProbeEnabled ? 0 : undefined,
-    onPublication: (collection, generation) => {
+    onPublication: (collection, generation, workerEvidence) => {
       if (!acceptanceProbeEnabled || collection.origin !== 'wasm') return;
       const message: GeometryAccelerationProbe = {
         type: 'SHAPECUT_WASM_SEGMENTS_PUBLISHED',
@@ -60,6 +60,8 @@ if (wasmRolloutEnabled) {
         layerCount: collection.layers.length,
         generation,
         activeWorkerCount: exactSegmentSource?.activeWorkerCount ?? 0,
+        sliceWorkersCreated: workerEvidence?.workersCreated ?? 0,
+        sliceWorkersTerminated: workerEvidence?.workersTerminated ?? 0,
       };
       globalThis.postMessage(message);
     },

@@ -28,9 +28,9 @@ for (const reference of references) test(`release benchmark ${reference.caseId}`
     layerCount: number;
   }> = [];
   await installWorkerResultProbe(page);
+  await page.goto('/?shapecut-wasm-rollout=1');
 
   for (let run = 0; run < 6; run += 1) {
-    await page.goto('/?shapecut-wasm-rollout=1');
     const started = performance.now();
     await selectModel(page, reference.path!);
     await expectResult(page, '需注意', '2.5D 外形');
@@ -52,6 +52,9 @@ for (const reference of references) test(`release benchmark ${reference.caseId}`
       `${JSON.stringify({
         caseId: reference.caseId,
         runIndex: run,
+        jobGeneration: run + 1,
+        architecture: process.arch,
+        browser: testInfo.project.name,
         triangleCount: reference.caseId === 'reference-a' ? 37_116 : 40_100,
         layerCount: sample.layerCount,
         measurementInterval: 'conversion-stage',

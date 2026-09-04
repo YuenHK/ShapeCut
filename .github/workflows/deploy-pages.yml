@@ -70,6 +70,10 @@ jobs:
         run: npm run typecheck
       - name: Release verifier contract
         run: npm test -- src/test/wasm-geometry-release.test.ts --maxWorkers=1 --fileParallelism=false
+      - name: Regenerate committed release evidence without drift
+        run: |
+          npm exec vite-node -- scripts/generate-wasm-release-evidence.ts docs/validation/wasm-geometry-release-measurements.jsonl docs/validation/wasm-geometry-validation-evidence.json /tmp/wasm-geometry-release-evidence.json
+          diff -u docs/validation/wasm-geometry-release-evidence.json /tmp/wasm-geometry-release-evidence.json
       - name: Verify committed blocked rollout evidence
         run: npm exec vite-node -- scripts/verify-wasm-geometry-release.ts docs/validation/wasm-geometry-release-evidence.json --expect-blocked
       - name: Browser differential tests
@@ -78,6 +82,8 @@ jobs:
         run: npm run build
         env:
           SHAPECUT_BASE_PATH: /ShapeCut/
+      - name: Privacy scan release evidence
+        run: '! rg -n -i "(?:/Users/|\\\\Users\\\\|@|knight|fortress|\.stl|sha256|sourceHash)" docs/validation/wasm-geometry-*.json docs/validation/wasm-geometry-*.jsonl'
       - name: Upload GitHub Pages artifact
         uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
         with:

@@ -208,7 +208,7 @@ describe('geometry worker boundary', () => {
     const { worker, api } = createAcceptanceGeometryWorker(true);
     const source = writeBinarySTL(launcherCompatibleCylinder(12), 'safe');
     const memory: GeometryLiveByteObservation[] = [];
-    const publication = new Promise<unknown>((resolve) => {
+    const publication = new Promise<GeometryAccelerationProbe>((resolve) => {
       worker.addEventListener('message', (event) => {
         if (event.data?.type === 'SHAPECUT_WASM_SEGMENTS_PUBLISHED') resolve(event.data);
         if (event.data?.type === 'SHAPECUT_GEOMETRY_MEMORY') memory.push(event.data.observation);
@@ -225,7 +225,13 @@ describe('geometry worker boundary', () => {
     await expect(publication).resolves.toEqual(expect.objectContaining({
       type: 'SHAPECUT_WASM_SEGMENTS_PUBLISHED',
       origin: 'wasm',
+      activeWorkerCount: 0,
+      sliceWorkersCreated: expect.any(Number),
+      sliceWorkersTerminated: expect.any(Number),
     }));
+    const publicationEvidence = await publication;
+    expect(publicationEvidence.sliceWorkersCreated).toBeGreaterThan(0);
+    expect(publicationEvidence.sliceWorkersTerminated).toBe(publicationEvidence.sliceWorkersCreated);
     const accelerated = await acceleratedPromise;
     const acceleratedArtifacts = await api.packageOutline(accelerated);
 

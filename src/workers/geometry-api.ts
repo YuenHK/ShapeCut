@@ -51,6 +51,8 @@ export type GeometryAccelerationProbe = Readonly<{
   layerCount: number;
   generation: number;
   activeWorkerCount: number;
+  sliceWorkersCreated: number;
+  sliceWorkersTerminated: number;
 }>;
 export type OutlinePackageTransfer = {
   readonly zip: Uint8Array;

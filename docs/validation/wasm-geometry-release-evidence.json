@@ -14,7 +14,13 @@
       "layerCount": 6,
       "measurementInterval": "conversion-stage",
       "origin": "typescript",
-      "actualWasmPublication": null,
+      "actualWasmPublications": [
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
       "conversionStageMs": [
         15529,
         15513,
@@ -37,7 +43,13 @@
       "layerCount": 6,
       "measurementInterval": "conversion-stage",
       "origin": "typescript",
-      "actualWasmPublication": null,
+      "actualWasmPublications": [
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
       "conversionStageMs": [
         16530,
         16548,
@@ -60,7 +72,13 @@
       "layerCount": 0,
       "measurementInterval": "selection-to-terminal",
       "origin": "typescript",
-      "actualWasmPublication": null,
+      "actualWasmPublications": [
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
       "conversionStageMs": [
         14951,
         14936,
@@ -76,7 +94,13 @@
       "layerCount": 0,
       "measurementInterval": "selection-to-terminal",
       "origin": "typescript",
-      "actualWasmPublication": null,
+      "actualWasmPublications": [
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
       "conversionStageMs": [
         2249,
         2243,
@@ -92,7 +116,13 @@
       "layerCount": 0,
       "measurementInterval": "selection-to-terminal",
       "origin": "typescript",
-      "actualWasmPublication": null,
+      "actualWasmPublications": [
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
       "conversionStageMs": [
         3268,
         3218,
@@ -109,27 +139,27 @@
   },
   "responsiveness": {
     "longestMainThreadTaskMs": 291,
-    "cancellationVerifiedUnderOneSecond": true,
+    "cancellationVerifiedUnderOneSecond": false,
     "activeWorkersAfterCancellation": 0
   },
   "geometry": {
-    "differential": true,
-    "launcherFingerprint": true,
-    "launcherRotation": true,
-    "launcherFit": true,
-    "exteriorExpansion": true,
-    "decorationOmissions": true,
-    "layerCanonical": true,
-    "sixOutputsCanonical": true,
-    "zipMembersCanonical": true
+    "differential": false,
+    "launcherFingerprint": false,
+    "launcherRotation": false,
+    "launcherFit": false,
+    "exteriorExpansion": false,
+    "decorationOmissions": false,
+    "layerCanonical": false,
+    "sixOutputsCanonical": false,
+    "zipMembersCanonical": false
   },
   "bundle": {
-    "hashedWasmAssets": 1,
-    "hashedSliceWorkerAssets": 1,
+    "hashedWasmAssets": 0,
+    "hashedSliceWorkerAssets": 0,
     "sourceMaps": 0,
     "absolutePaths": false,
     "privateTokens": false
   },
-  "privateAcceptance": "passed",
+  "privateAcceptance": "conditional-skip",
   "physicalLauncherCoupon": "outstanding"
 }

@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "memory": {
+    "baselineAttributableLiveBytes": null,
+    "observationStages": []
+  },
+  "responsiveness": {
+    "cancellationVerifiedUnderOneSecond": false,
+    "activeWorkersAfterCancellation": 0
+  },
+  "geometry": {
+    "differential": false,
+    "launcherFingerprint": false,
+    "launcherRotation": false,
+    "launcherFit": false,
+    "exteriorExpansion": false,
+    "decorationOmissions": false,
+    "layerCanonical": false,
+    "sixOutputsCanonical": false,
+    "zipMembersCanonical": false
+  },
+  "bundle": {
+    "hashedWasmAssets": 0,
+    "hashedSliceWorkerAssets": 0,
+    "sourceMaps": 0,
+    "absolutePaths": false,
+    "privateTokens": false
+  },
+  "privateAcceptance": "conditional-skip",
+  "physicalLauncherCoupon": "outstanding"
+}

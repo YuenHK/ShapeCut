@@ -451,6 +451,8 @@ export type WorkerProbeState = {
     readonly generation: number;
     readonly layerCount: number;
     readonly activeWorkerCount: number;
+    readonly sliceWorkersCreated: number;
+    readonly sliceWorkersTerminated: number;
   }[];
 };
 
@@ -2827,7 +2829,7 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
       replacement?: { name: string; mimeType: string; bytes: number[] };
       memoryObservations: GeometryLiveByteObservation[];
       wasmStartRequests: number;
-      wasmPublications: Array<{ generation: number; layerCount: number; activeWorkerCount: number }>;
+      wasmPublications: Array<{ generation: number; layerCount: number; activeWorkerCount: number; sliceWorkersCreated: number; sliceWorkersTerminated: number }>;
     };
     const state: ProbeState = {
       results: [], errorCodes: [], created: 0, terminated: 0,
@@ -3149,11 +3151,15 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
           if (message?.type === 'SHAPECUT_WASM_SEGMENTS_PUBLISHED'
             && Number.isSafeInteger(message.generation)
             && Number.isSafeInteger(message.layerCount)
-            && Number.isSafeInteger(message.activeWorkerCount)) {
+            && Number.isSafeInteger(message.activeWorkerCount)
+            && Number.isSafeInteger(message.sliceWorkersCreated)
+            && Number.isSafeInteger(message.sliceWorkersTerminated)) {
             state.wasmPublications.push({
               generation: message.generation as number,
               layerCount: message.layerCount as number,
               activeWorkerCount: message.activeWorkerCount as number,
+              sliceWorkersCreated: message.sliceWorkersCreated as number,
+              sliceWorkersTerminated: message.sliceWorkersTerminated as number,
             });
           }
           inspect(event.data);

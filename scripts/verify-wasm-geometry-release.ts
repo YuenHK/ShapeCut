@@ -7,14 +7,14 @@ export type WasmGeometryBenchmarkCase = {
   layerCount: number;
   measurementInterval: 'conversion-stage' | 'selection-to-terminal';
   origin: 'wasm' | 'typescript';
-  actualWasmPublication: null | {
+  actualWasmPublications: Array<null | {
     jobGeneration: number;
     generation: number;
     layerCount: number;
     sliceWorkersCreated: number;
     sliceWorkersTerminated: number;
     activeWorkersAfter: number;
-  };
+  }>;
   conversionStageMs: number[];
   baselineConversionStageMs?: number[];
   fullOneClickMs?: number[];
@@ -136,7 +136,7 @@ export function verifyWasmGeometryRelease(input: unknown): WasmGeometryReleaseRe
     assertPlainRecord(entry, 'Benchmark case');
     exactKeys(entry, [
       'caseId', 'kind', 'triangleCount', 'layerCount', 'measurementInterval', 'origin',
-      'actualWasmPublication', 'conversionStageMs',
+      'actualWasmPublications', 'conversionStageMs',
       ...(entry.baselineConversionStageMs === undefined ? [] : ['baselineConversionStageMs']),
       ...(entry.fullOneClickMs === undefined ? [] : ['fullOneClickMs']),
     ], `${entry.caseId} benchmark`);
@@ -155,10 +155,11 @@ export function verifyWasmGeometryRelease(input: unknown): WasmGeometryReleaseRe
     }
     if (entry.kind === 'private-reference' && entry.fullOneClickMs === undefined) throw new RangeError(`${entry.caseId} requires full one-click measurements`);
     if (entry.kind === 'synthetic' && entry.fullOneClickMs !== undefined) throw new RangeError(`${entry.caseId} cannot claim full one-click measurements`);
-    if (entry.actualWasmPublication !== null) {
-      assertPlainRecord(entry.actualWasmPublication, `${entry.caseId} WASM publication`);
-      exactKeys(entry.actualWasmPublication, ['jobGeneration', 'generation', 'layerCount', 'sliceWorkersCreated', 'sliceWorkersTerminated', 'activeWorkersAfter'], `${entry.caseId} WASM publication`);
-      const publication = entry.actualWasmPublication;
+    if (!Array.isArray(entry.actualWasmPublications) || entry.actualWasmPublications.length !== 5) throw new RangeError(`${entry.caseId} requires five WASM publication observations`);
+    for (const publication of entry.actualWasmPublications) {
+      if (publication === null) continue;
+      assertPlainRecord(publication, `${entry.caseId} WASM publication`);
+      exactKeys(publication, ['jobGeneration', 'generation', 'layerCount', 'sliceWorkersCreated', 'sliceWorkersTerminated', 'activeWorkersAfter'], `${entry.caseId} WASM publication`);
       const created = finite(publication.sliceWorkersCreated, `${entry.caseId} slice workers created`);
       if (finite(publication.jobGeneration, `${entry.caseId} job generation`) !== finite(publication.generation, `${entry.caseId} publication generation`)
         || publication.layerCount !== entry.layerCount || created === 0
@@ -167,6 +168,8 @@ export function verifyWasmGeometryRelease(input: unknown): WasmGeometryReleaseRe
         throw new RangeError(`${entry.caseId} WASM publication is not bound to one clean job generation`);
       }
     }
+    const publishedGenerations = entry.actualWasmPublications.flatMap((publication) => publication === null ? [] : [publication.jobGeneration]);
+    if (new Set(publishedGenerations).size !== publishedGenerations.length) throw new RangeError(`${entry.caseId} reuses a measured job generation`);
     const conversion = measured(entry.conversionStageMs, `${entry.caseId} conversion`);
     const baseline = entry.baselineConversionStageMs === undefined ? undefined : measured(entry.baselineConversionStageMs, `${entry.caseId} baseline`);
     const full = entry.fullOneClickMs === undefined ? undefined : measured(entry.fullOneClickMs, `${entry.caseId} full one-click`);
@@ -185,11 +188,11 @@ export function verifyWasmGeometryRelease(input: unknown): WasmGeometryReleaseRe
   const fastEnough = references.every(({ conversionMedianMs }) => conversionMedianMs <= 15_000)
     || references.every(({ speedup }) => speedup !== undefined && speedup >= 2);
   if (!fastEnough) failedGates.push('knight-performance');
-  if (!evidence.benchmarks.slice(0, 2).every(({ origin, actualWasmPublication }) => (
-    origin === 'wasm' && actualWasmPublication !== null
+  if (!evidence.benchmarks.slice(0, 2).every(({ origin, actualWasmPublications }) => (
+    origin === 'wasm' && actualWasmPublications.every((publication) => publication !== null)
   ))) failedGates.push('knight-actual-wasm');
-  if (!evidence.benchmarks.slice(2).every(({ origin, actualWasmPublication }) => (
-    origin === 'wasm' && actualWasmPublication !== null
+  if (!evidence.benchmarks.slice(2).every(({ origin, actualWasmPublications }) => (
+    origin === 'wasm' && actualWasmPublications.every((publication) => publication !== null)
   ))) failedGates.push('synthetic-actual-wasm');
 
   assertPlainRecord(evidence.memory, 'Release memory');
@@ -240,7 +243,11 @@ async function main(): Promise<void> {
   const result = verifyWasmGeometryRelease(evidence);
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   if (expectBlocked) {
-    const expected = ['knight-performance', 'knight-actual-wasm', 'synthetic-actual-wasm', 'live-byte-baseline', 'main-thread-responsiveness'];
+    const expected = [
+      'knight-performance', 'knight-actual-wasm', 'synthetic-actual-wasm',
+      'live-byte-baseline', 'main-thread-responsiveness', 'cancellation',
+      'canonical-geometry', 'production-bundle', 'private-acceptance',
+    ];
     if (JSON.stringify(result.failedGates) !== JSON.stringify(expected)
       || result.softwareReleaseEligible || result.productionRolloutEligible) process.exitCode = 1;
   } else if (!result.softwareReleaseEligible) process.exitCode = 1;

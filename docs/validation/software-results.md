@@ -47,9 +47,9 @@ The final release run executes `npm test`, browser tests, both real Knight E2E c
 | External fixture presence check | 2 files present; full private validation 2/2 passed |
 | `npm run test:e2e -- --workers=1` | 19 passed, 3 truthful conditional skips; external A/B both passed |
 | `npm run validate:fixtures` | 10/10 expected outcomes passed; 8 automatic successes; launcher runtime A/B passed |
-| Fixed-host synthetic release benchmark | 18/18 passed; one warmup and five measured runs for 200k/500k/1M |
+| Fixed-host synthetic release benchmark | 18/18 runs reached a typed terminal outcome; one warmup and five measured runs for 200k/500k/1M. Release thresholds are evaluated separately and are not implied by this count. |
 | `cargo test --locked --manifest-path crates/geometry-wasm/Cargo.toml` | 22/22 passed |
 | Raw WASM boundary | 31/31 passed |
-| Release verifier | Correctly exits non-zero for the current default-off evidence and reports five unmet software gates |
+| Release verifier | Correctly exits non-zero for the current default-off evidence and reports nine unmet software gates; unsupported validation claims remain false/unknown |
 | `npm run typecheck` | passed |
 | `npm run build` | passed; 178 modules transformed; one hashed WASM and one hashed slice-worker asset; zero source maps |

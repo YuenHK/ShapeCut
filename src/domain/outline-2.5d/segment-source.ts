@@ -9,6 +9,7 @@ import {
   isSliceWorkerPoolFallbackEligible,
   SliceWorkerPool,
   type SliceWorkerPoolRequest,
+  type SliceWorkerJobEvidence,
 } from '../../workers/slice-worker-pool';
 import type { GeometryLiveByteReporter } from '../../performance/geometry-memory';
 
@@ -62,6 +63,7 @@ export interface ExactSegmentBatchRunner {
   run(request: SliceWorkerPoolRequest): Promise<SliceBatchResult>;
   isFallbackEligible(error: unknown): boolean;
   readonly activeWorkerCount?: number;
+  readonly lastCompletedJobEvidence?: SliceWorkerJobEvidence;
   cancel?(): Promise<void>;
 }
 
@@ -69,7 +71,7 @@ export interface WasmExactSegmentSourceOptions {
   readonly runner?: ExactSegmentBatchRunner;
   readonly compareWithTypeScript?: boolean;
   readonly minimumWasmWork?: number;
-  readonly onPublication?: (collection: ExactSegmentCollection, generation: number) => void;
+  readonly onPublication?: (collection: ExactSegmentCollection, generation: number, workerEvidence?: SliceWorkerJobEvidence) => void;
   readonly observeLiveBytes?: GeometryLiveByteReporter;
 }
 
@@ -299,6 +301,7 @@ class WorkerPoolBatchRunner implements ExactSegmentBatchRunner {
     this.#pool = new SliceWorkerPool({ observeLiveBytes });
   }
   get activeWorkerCount(): number { return this.#pool.activeWorkerCount; }
+  get lastCompletedJobEvidence(): SliceWorkerJobEvidence | undefined { return this.#pool.lastCompletedJobEvidence; }
   run(request: SliceWorkerPoolRequest): Promise<SliceBatchResult> { return this.#pool.run(request); }
   isFallbackEligible(error: unknown): boolean { return isSliceWorkerPoolFallbackEligible(error); }
   cancel(): Promise<void> { return this.#pool.cancel(); }
@@ -308,7 +311,7 @@ export class WasmExactSegmentSource implements ExactSegmentSource {
   readonly #runner: ExactSegmentBatchRunner;
   readonly #compareWithTypeScript: boolean;
   readonly #minimumWasmWork: number;
-  readonly #onPublication: ((collection: ExactSegmentCollection, generation: number) => void) | undefined;
+  readonly #onPublication: ((collection: ExactSegmentCollection, generation: number, workerEvidence?: SliceWorkerJobEvidence) => void) | undefined;
   readonly #observeLiveBytes: GeometryLiveByteReporter | undefined;
   #generation = 0;
 
@@ -408,7 +411,7 @@ export class WasmExactSegmentSource implements ExactSegmentSource {
     if (generation !== this.#generation) {
       throw new ExactSegmentSourceError('CANCELLED', 'Exact segment collection was cancelled');
     }
-    this.#onPublication?.(collection, generation);
+    this.#onPublication?.(collection, generation, this.#runner.lastCompletedJobEvidence);
     return collection;
   }
 }

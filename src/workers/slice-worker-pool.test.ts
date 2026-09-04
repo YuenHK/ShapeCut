@@ -118,6 +118,12 @@ describe('SliceWorkerPool', () => {
     await vi.waitFor(() => expect(worker.posted).toHaveLength(1));
     worker.complete();
     const result = await pending;
+    expect(pool.lastCompletedJobEvidence).toEqual({
+      generation: 1,
+      workersCreated: 1,
+      workersTerminated: 1,
+      activeWorkersAfter: 0,
+    });
     await pool.cancel();
 
     expect(observations.map(({ stage }) => stage)).toEqual(expect.arrayContaining([
