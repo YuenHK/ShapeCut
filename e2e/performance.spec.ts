@@ -8,6 +8,7 @@ import {
   launcherCompatibleStlFixture,
   readWorkerProbeState,
   selectModel,
+  waitForReleaseTerminal,
 } from './helpers';
 
 function binaryTetrahedra(triangleCount: number): Buffer {
@@ -135,7 +136,7 @@ for (const triangleCount of [200_000, 500_000, 1_000_000]) test(`${triangleCount
   }, async () => {
     await mark(page, 'previewAt');
   });
-  await expect(page.getByRole('alert')).toBeVisible({ timeout: 120_000 });
+  const terminal = await waitForReleaseTerminal(page);
   await mark(page, 'downloadsAt');
   const elapsedMs = Date.now() - started;
   const evidence = await performanceEvidence(page);
@@ -144,7 +145,7 @@ for (const triangleCount of [200_000, 500_000, 1_000_000]) test(`${triangleCount
     elapsedMs,
     longestMainThreadTaskMs: evidence.longestMainThreadTaskMs,
     peakAttributableLiveBytes: Math.max(...probe.memoryObservations.map(({ totalBytes }) => totalBytes)),
-    outcome: probe.errorCodes.at(-1),
+    outcome: terminal.outcome,
     wasmPublications: probe.wasmPublications,
   })}\n`);
   if (process.env.SHAPECUT_RELEASE_EVIDENCE_LOG) await appendFile(
@@ -156,12 +157,12 @@ for (const triangleCount of [200_000, 500_000, 1_000_000]) test(`${triangleCount
       architecture: process.arch,
       browser: testInfo.project.name,
       triangleCount,
-      layerCount: probe.wasmPublications.length === 1 ? probe.wasmPublications[0].layerCount : null,
+      layerCount: terminal.layerCount,
       measurementInterval: 'selection-to-terminal',
       elapsedMs,
       longestMainThreadTaskMs: evidence.longestMainThreadTaskMs,
       peakAttributableLiveBytes: Math.max(...probe.memoryObservations.map(({ totalBytes }) => totalBytes)),
-      outcome: probe.errorCodes.at(-1),
+      outcome: terminal.outcome,
       actualWasmPublications: probe.wasmPublications,
     })}\n`,
   );
@@ -170,7 +171,18 @@ for (const triangleCount of [200_000, 500_000, 1_000_000]) test(`${triangleCount
   expect(evidence.previewAt).toBeGreaterThanOrEqual(evidence.selectedAt);
   expect(evidence.longestMainThreadTaskMs).toBeGreaterThanOrEqual(0);
   expect(probe.wasmStartRequests).toBe(0);
-  expect(probe.errorCodes.at(-1)).toMatch(/^(?:NO_OUTLINE|RESOURCE_LIMIT|TIME_LIMIT)$/);
+  expect(terminal.outcome).toMatch(/^(?:SUCCESS|NO_OUTLINE|RESOURCE_LIMIT|TIME_LIMIT)$/);
+});
+
+test('release terminal logger records a real successful result', async ({ page }) => {
+  test.setTimeout(45_000);
+  await installWorkerResultProbe(page);
+  await page.goto('/?shapecut-wasm-rollout=1');
+  await selectModel(page, launcherCompatibleStlFixture('release-success.stl'));
+  await expect(waitForReleaseTerminal(page, 40_000)).resolves.toMatchObject({
+    outcome: 'SUCCESS',
+    layerCount: expect.any(Number),
+  });
 });
 
 test('feature-rich PDF packaging is terminated and replaced by a second complete result', async ({ page }, testInfo) => {

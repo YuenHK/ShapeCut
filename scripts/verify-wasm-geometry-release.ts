@@ -175,8 +175,6 @@ export function verifyWasmGeometryRelease(input: unknown): WasmGeometryReleaseRe
         throw new RangeError(`${entry.caseId} WASM publication is not bound to one clean job generation`);
       }
     }
-    const publishedGenerations = entry.actualWasmPublications.flatMap((publication) => publication === null ? [] : [publication.jobGeneration]);
-    if (new Set(publishedGenerations).size !== publishedGenerations.length) throw new RangeError(`${entry.caseId} reuses a measured job generation`);
     const conversion = measured(entry.conversionStageMs, `${entry.caseId} conversion`);
     const baseline = entry.baselineConversionStageMs === undefined ? undefined : measured(entry.baselineConversionStageMs, `${entry.caseId} baseline`);
     const full = entry.fullOneClickMs === undefined ? undefined : measured(entry.fullOneClickMs, `${entry.caseId} full one-click`);

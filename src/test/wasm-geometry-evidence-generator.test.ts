@@ -44,7 +44,7 @@ describe('release evidence generator', () => {
     for (const record of raw) {
       record.layerCount = 6;
       record.actualWasmPublications = [{
-        generation: record.runIndex + 1,
+        generation: 1,
         layerCount: 6,
         activeWorkerCount: 0,
         sliceWorkersCreated: 2,

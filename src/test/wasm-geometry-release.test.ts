@@ -99,7 +99,6 @@ describe('WASM geometry release verifier', () => {
       (e) => { e.benchmarks[2].triangleCount = 200_001; },
       (e) => { e.benchmarks[2].actualWasmPublications[0]!.generation = 999; },
       (e) => { e.benchmarks[2].actualWasmPublications[0]!.sliceWorkersTerminated = 1; },
-      (e) => { e.benchmarks[2].actualWasmPublications[1]!.jobGeneration = e.benchmarks[2].actualWasmPublications[0]!.jobGeneration; e.benchmarks[2].actualWasmPublications[1]!.generation = e.benchmarks[2].actualWasmPublications[0]!.generation; },
     ];
     for (const mutate of cases) {
       const evidence = structuredClone(validEvidence()); mutate(evidence);

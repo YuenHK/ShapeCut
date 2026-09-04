@@ -3281,6 +3281,28 @@ export async function expectResult(page: Page, status: '成功' | '需注意', m
   await expectNoEngineeringControls(page);
 }
 
+export type ReleaseTerminal = Readonly<{
+  outcome: 'SUCCESS' | 'NO_OUTLINE' | 'RESOURCE_LIMIT' | 'TIME_LIMIT';
+  layerCount: number | null;
+}>;
+
+export async function waitForReleaseTerminal(page: Page, timeout = 120_000): Promise<ReleaseTerminal> {
+  const result = page.getByRole('heading', { name: '轉換完成' }).waitFor({ state: 'visible', timeout }).then(() => 'SUCCESS' as const);
+  const failure = page.getByRole('alert').waitFor({ state: 'visible', timeout }).then(() => 'FAILURE' as const);
+  const terminal = await Promise.race([result, failure]);
+  const probe = await readWorkerProbeState(page);
+  if (terminal === 'SUCCESS') {
+    const layerCount = probe.results.at(-1)?.coloredLayers.length;
+    if (!Number.isSafeInteger(layerCount) || layerCount! <= 0) throw new Error('Successful release job did not publish a positive real layer count');
+    return Object.freeze({ outcome: 'SUCCESS', layerCount: layerCount! });
+  }
+  const outcome = probe.errorCodes.at(-1);
+  if (outcome !== 'NO_OUTLINE' && outcome !== 'RESOURCE_LIMIT' && outcome !== 'TIME_LIMIT') {
+    throw new Error('Release job failed without a supported typed terminal code');
+  }
+  return Object.freeze({ outcome, layerCount: null });
+}
+
 async function captureDownload(page: Page, linkName: string, expectedFileName: string): Promise<Uint8Array> {
   const event = page.waitForEvent('download');
   await page.getByRole('link', { name: linkName, exact: true }).click();
