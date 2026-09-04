@@ -29,6 +29,7 @@ for (const reference of references) test(`release benchmark ${reference.caseId}`
   }> = [];
   await installWorkerResultProbe(page);
   await page.goto('/?shapecut-wasm-rollout=1');
+  let publicationCursor = 0;
 
   for (let run = 0; run < 6; run += 1) {
     const started = performance.now();
@@ -38,6 +39,8 @@ for (const reference of references) test(`release benchmark ${reference.caseId}`
     const output = await downloadAndInspectOutline(page);
     const completed = performance.now();
     const probe = await readWorkerProbeState(page);
+    const runPublications = probe.wasmPublications.slice(publicationCursor);
+    publicationCursor = probe.wasmPublications.length;
     expect(probe.errorCodes).toEqual([]);
     const sample = {
       conversionStageMs: Math.round(converted - started),
@@ -52,7 +55,7 @@ for (const reference of references) test(`release benchmark ${reference.caseId}`
       `${JSON.stringify({
         caseId: reference.caseId,
         runIndex: run,
-        jobGeneration: run + 1,
+        runId: `${reference.caseId}-run-${run}`,
         architecture: process.arch,
         browser: testInfo.project.name,
         triangleCount: reference.caseId === 'reference-a' ? 37_116 : 40_100,
@@ -62,7 +65,7 @@ for (const reference of references) test(`release benchmark ${reference.caseId}`
         fullOneClickMs: sample.fullOneClickMs,
         peakAttributableLiveBytes: sample.peakAttributableLiveBytes,
         canonicalArtifactsVerified: true,
-        actualWasmPublications: probe.wasmPublications,
+        actualWasmPublications: runPublications,
       })}\n`,
     );
     if (run > 0) measured.push(sample);

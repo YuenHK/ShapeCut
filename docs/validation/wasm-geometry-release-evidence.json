@@ -14,6 +14,13 @@
       "layerCount": 6,
       "measurementInterval": "conversion-stage",
       "origin": "typescript",
+      "measuredRunIds": [
+        "reference-a-run-1",
+        "reference-a-run-2",
+        "reference-a-run-3",
+        "reference-a-run-4",
+        "reference-a-run-5"
+      ],
       "actualWasmPublications": [
         null,
         null,
@@ -43,6 +50,13 @@
       "layerCount": 6,
       "measurementInterval": "conversion-stage",
       "origin": "typescript",
+      "measuredRunIds": [
+        "reference-b-run-1",
+        "reference-b-run-2",
+        "reference-b-run-3",
+        "reference-b-run-4",
+        "reference-b-run-5"
+      ],
       "actualWasmPublications": [
         null,
         null,
@@ -69,9 +83,16 @@
       "caseId": "synthetic-200000",
       "kind": "synthetic",
       "triangleCount": 200000,
-      "layerCount": 0,
+      "layerCount": null,
       "measurementInterval": "selection-to-terminal",
       "origin": "typescript",
+      "measuredRunIds": [
+        "synthetic-200000-run-1",
+        "synthetic-200000-run-2",
+        "synthetic-200000-run-3",
+        "synthetic-200000-run-4",
+        "synthetic-200000-run-5"
+      ],
       "actualWasmPublications": [
         null,
         null,
@@ -91,9 +112,16 @@
       "caseId": "synthetic-500000",
       "kind": "synthetic",
       "triangleCount": 500000,
-      "layerCount": 0,
+      "layerCount": null,
       "measurementInterval": "selection-to-terminal",
       "origin": "typescript",
+      "measuredRunIds": [
+        "synthetic-500000-run-1",
+        "synthetic-500000-run-2",
+        "synthetic-500000-run-3",
+        "synthetic-500000-run-4",
+        "synthetic-500000-run-5"
+      ],
       "actualWasmPublications": [
         null,
         null,
@@ -113,9 +141,16 @@
       "caseId": "synthetic-1000000",
       "kind": "synthetic",
       "triangleCount": 1000000,
-      "layerCount": 0,
+      "layerCount": null,
       "measurementInterval": "selection-to-terminal",
       "origin": "typescript",
+      "measuredRunIds": [
+        "synthetic-1000000-run-1",
+        "synthetic-1000000-run-2",
+        "synthetic-1000000-run-3",
+        "synthetic-1000000-run-4",
+        "synthetic-1000000-run-5"
+      ],
       "actualWasmPublications": [
         null,
         null,

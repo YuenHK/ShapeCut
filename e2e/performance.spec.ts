@@ -152,11 +152,11 @@ for (const triangleCount of [200_000, 500_000, 1_000_000]) test(`${triangleCount
     `${JSON.stringify({
       caseId: `synthetic-${triangleCount}`,
       runIndex: testInfo.repeatEachIndex,
-      jobGeneration: testInfo.repeatEachIndex + 1,
+      runId: `synthetic-${triangleCount}-run-${testInfo.repeatEachIndex}`,
       architecture: process.arch,
       browser: testInfo.project.name,
       triangleCount,
-      layerCount: 0,
+      layerCount: probe.wasmPublications.length === 1 ? probe.wasmPublications[0].layerCount : null,
       measurementInterval: 'selection-to-terminal',
       elapsedMs,
       longestMainThreadTaskMs: evidence.longestMainThreadTaskMs,

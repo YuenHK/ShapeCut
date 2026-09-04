@@ -48,26 +48,33 @@ for (const [caseId, samples] of groups) {
   for (const sample of samples) {
     const isReference = caseId.startsWith('reference-');
     exactKeys(sample, isReference
-      ? ['caseId', 'runIndex', 'jobGeneration', 'architecture', 'browser', 'triangleCount', 'layerCount', 'measurementInterval', 'conversionStageMs', 'fullOneClickMs', 'peakAttributableLiveBytes', 'canonicalArtifactsVerified', 'actualWasmPublications']
-      : ['caseId', 'runIndex', 'jobGeneration', 'architecture', 'browser', 'triangleCount', 'layerCount', 'measurementInterval', 'elapsedMs', 'longestMainThreadTaskMs', 'peakAttributableLiveBytes', 'outcome', 'actualWasmPublications'], `${caseId} run ${sample.runIndex}`);
+      ? ['caseId', 'runIndex', 'runId', 'architecture', 'browser', 'triangleCount', 'layerCount', 'measurementInterval', 'conversionStageMs', 'fullOneClickMs', 'peakAttributableLiveBytes', 'canonicalArtifactsVerified', 'actualWasmPublications']
+      : ['caseId', 'runIndex', 'runId', 'architecture', 'browser', 'triangleCount', 'layerCount', 'measurementInterval', 'elapsedMs', 'longestMainThreadTaskMs', 'peakAttributableLiveBytes', 'outcome', 'actualWasmPublications'], `${caseId} run ${sample.runIndex}`);
     if (sample.triangleCount !== first.triangleCount || sample.layerCount !== first.layerCount
       || sample.measurementInterval !== first.measurementInterval
-      || !Number.isSafeInteger(sample.jobGeneration)) throw new Error(`${caseId} raw records are inconsistent`);
-    if (caseId.startsWith('synthetic-') && sample.outcome !== 'RESOURCE_LIMIT' && sample.outcome !== 'SUCCESS') {
+      || typeof sample.runId !== 'string' || !/^[a-z0-9-]+$/.test(sample.runId)) throw new Error(`${caseId} raw records are inconsistent`);
+    if (caseId.startsWith('synthetic-') && !['NO_OUTLINE', 'RESOURCE_LIMIT', 'TIME_LIMIT', 'SUCCESS'].includes(sample.outcome as string)) {
       throw new Error(`${caseId} requires a typed terminal outcome`);
     }
+    if (caseId.startsWith('synthetic-') && ((sample.outcome === 'SUCCESS') !== (typeof sample.layerCount === 'number' && sample.layerCount > 0))) {
+      throw new Error(`${caseId} layer count does not match its real terminal outcome`);
+    }
     if (sample.architecture !== 'arm64' || sample.browser !== 'chromium') throw new Error(`${caseId} was not measured on the fixed release host`);
-    finite(sample.runIndex, `${caseId} run index`); finite(sample.jobGeneration, `${caseId} job generation`);
-    finite(sample.triangleCount, `${caseId} triangle count`); finite(sample.layerCount, `${caseId} layer count`);
+    finite(sample.runIndex, `${caseId} run index`);
+    finite(sample.triangleCount, `${caseId} triangle count`);
+    if (sample.layerCount !== null) finite(sample.layerCount, `${caseId} layer count`);
     finite(sample.peakAttributableLiveBytes, `${caseId} live bytes`);
     if (!Array.isArray(sample.actualWasmPublications) || sample.actualWasmPublications.length > 1) throw new Error(`${caseId} requires zero or one publication per job`);
     for (const candidate of sample.actualWasmPublications as Array<Record<string, unknown>>) {
       exactKeys(candidate, ['generation', 'layerCount', 'activeWorkerCount', 'sliceWorkersCreated', 'sliceWorkersTerminated'], `${caseId} publication`);
       for (const key of Object.keys(candidate)) finite(candidate[key], `${caseId} publication ${key}`);
+      if (candidate.layerCount !== sample.layerCount) throw new Error(`${caseId} publication layer count does not match its job`);
     }
+    if (isReference && sample.canonicalArtifactsVerified !== true) throw new Error(`${caseId} canonical artifacts were not verified`);
   }
-  if (new Set(samples.map(({ jobGeneration }) => jobGeneration)).size !== 6) throw new Error(`${caseId} job generations must be unique`);
+  if (new Set(samples.map(({ runId }) => runId)).size !== 6) throw new Error(`${caseId} run IDs must be unique`);
 }
+if (new Set(records.map(({ runId }) => runId)).size !== records.length) throw new Error('Run IDs must be globally unique');
 const benchmark = caseIds.map((caseId) => {
   const samples = groups.get(caseId)!;
   const first = samples[0];
@@ -77,9 +84,9 @@ const benchmark = caseIds.map((caseId) => {
     const candidates = sample.actualWasmPublications as Array<Record<string, unknown>>;
     if (candidates.length !== 1) return null;
     const candidate = candidates[0];
-    if (candidate.generation !== sample.jobGeneration) return null;
     return {
-      jobGeneration: sample.jobGeneration,
+      runId: sample.runId,
+      jobGeneration: candidate.generation,
       generation: candidate.generation,
       layerCount: candidate.layerCount,
       sliceWorkersCreated: candidate.sliceWorkersCreated,
@@ -94,6 +101,7 @@ const benchmark = caseIds.map((caseId) => {
     layerCount: first.layerCount,
     measurementInterval: isReference ? 'conversion-stage' : 'selection-to-terminal',
     origin: observed.every((publication) => publication !== null) ? 'wasm' : 'typescript',
+    measuredRunIds: measured.map(({ runId }) => runId),
     actualWasmPublications: observed,
     conversionStageMs: measured.map((sample) => isReference ? sample.conversionStageMs : sample.elapsedMs),
     ...(isReference ? { fullOneClickMs: measured.map((sample) => sample.fullOneClickMs) } : {}),

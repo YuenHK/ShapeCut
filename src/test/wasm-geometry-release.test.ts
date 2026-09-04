@@ -7,24 +7,26 @@ import {
 
 function validEvidence(): WasmGeometryReleaseEvidence {
   const measured = [14_000, 14_200, 14_100, 14_300, 14_050];
-  const publication = (layerCount: number, generation: number) => ({
-    jobGeneration: generation, generation, layerCount,
+  const runIds = (caseId: string) => Array.from({ length: 5 }, (_value, index) => `${caseId}-measured-${index + 1}`);
+  const publication = (runId: string, layerCount: number, generation: number) => ({
+    runId, jobGeneration: generation, generation, layerCount,
     sliceWorkersCreated: 2, sliceWorkersTerminated: 2, activeWorkersAfter: 0,
   });
   return {
     schemaVersion: 1,
     host: { architecture: 'arm64', browser: 'chromium', measuredRuns: 5, warmupRuns: 1 },
     benchmarks: [
-      { caseId: 'reference-a', kind: 'private-reference', triangleCount: 37_116, layerCount: 6, measurementInterval: 'conversion-stage', origin: 'wasm', actualWasmPublications: Array.from({ length: 5 }, (_value, index) => publication(6, index + 2)), conversionStageMs: measured, fullOneClickMs: [30_000, 30_100, 30_200, 30_300, 30_400] },
-      { caseId: 'reference-b', kind: 'private-reference', triangleCount: 40_100, layerCount: 6, measurementInterval: 'conversion-stage', origin: 'wasm', actualWasmPublications: Array.from({ length: 5 }, (_value, index) => publication(6, index + 2)), conversionStageMs: measured, fullOneClickMs: [31_000, 31_100, 31_200, 31_300, 31_400] },
+      { caseId: 'reference-a', kind: 'private-reference', triangleCount: 37_116, layerCount: 6, measurementInterval: 'conversion-stage', origin: 'wasm', measuredRunIds: runIds('reference-a'), actualWasmPublications: runIds('reference-a').map((runId, index) => publication(runId, 6, index + 2)), conversionStageMs: measured, fullOneClickMs: [30_000, 30_100, 30_200, 30_300, 30_400] },
+      { caseId: 'reference-b', kind: 'private-reference', triangleCount: 40_100, layerCount: 6, measurementInterval: 'conversion-stage', origin: 'wasm', measuredRunIds: runIds('reference-b'), actualWasmPublications: runIds('reference-b').map((runId, index) => publication(runId, 6, index + 2)), conversionStageMs: measured, fullOneClickMs: [31_000, 31_100, 31_200, 31_300, 31_400] },
       ...([200_000, 500_000, 1_000_000] as const).map((triangleCount) => ({
         caseId: `synthetic-${triangleCount}` as const,
         kind: 'synthetic' as const,
         triangleCount,
-        layerCount: 0,
+        layerCount: 6,
         measurementInterval: 'selection-to-terminal' as const,
         origin: 'wasm' as const,
-        actualWasmPublications: Array.from({ length: 5 }, (_value, index) => publication(0, index + 2)),
+        measuredRunIds: runIds(`synthetic-${triangleCount}`),
+        actualWasmPublications: runIds(`synthetic-${triangleCount}`).map((runId, index) => publication(runId, 6, index + 2)),
         conversionStageMs: measured,
       })),
     ],

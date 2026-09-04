@@ -4,10 +4,12 @@ export type WasmGeometryBenchmarkCase = {
   caseId: 'reference-a' | 'reference-b' | `synthetic-${200000 | 500000 | 1000000}`;
   kind: 'private-reference' | 'synthetic';
   triangleCount: number;
-  layerCount: number;
+  layerCount: number | null;
   measurementInterval: 'conversion-stage' | 'selection-to-terminal';
   origin: 'wasm' | 'typescript';
+  measuredRunIds: string[];
   actualWasmPublications: Array<null | {
+    runId: string;
     jobGeneration: number;
     generation: number;
     layerCount: number;
@@ -135,7 +137,7 @@ export function verifyWasmGeometryRelease(input: unknown): WasmGeometryReleaseRe
   const benchmarks = evidence.benchmarks.map((entry): BenchmarkSummary => {
     assertPlainRecord(entry, 'Benchmark case');
     exactKeys(entry, [
-      'caseId', 'kind', 'triangleCount', 'layerCount', 'measurementInterval', 'origin',
+      'caseId', 'kind', 'triangleCount', 'layerCount', 'measurementInterval', 'origin', 'measuredRunIds',
       'actualWasmPublications', 'conversionStageMs',
       ...(entry.baselineConversionStageMs === undefined ? [] : ['baselineConversionStageMs']),
       ...(entry.fullOneClickMs === undefined ? [] : ['fullOneClickMs']),
@@ -146,23 +148,28 @@ export function verifyWasmGeometryRelease(input: unknown): WasmGeometryReleaseRe
     const expected = ({
       'reference-a': ['private-reference', 37_116, 6],
       'reference-b': ['private-reference', 40_100, 6],
-      'synthetic-200000': ['synthetic', 200_000, 0],
-      'synthetic-500000': ['synthetic', 500_000, 0],
-      'synthetic-1000000': ['synthetic', 1_000_000, 0],
+      'synthetic-200000': ['synthetic', 200_000, null],
+      'synthetic-500000': ['synthetic', 500_000, null],
+      'synthetic-1000000': ['synthetic', 1_000_000, null],
     } as const)[entry.caseId];
-    if (entry.kind !== expected[0] || entry.triangleCount !== expected[1] || entry.layerCount !== expected[2]) {
+    if (entry.kind !== expected[0] || entry.triangleCount !== expected[1]
+      || (entry.kind === 'private-reference' && entry.layerCount !== expected[2])
+      || (entry.kind === 'synthetic' && entry.layerCount !== null && (!Number.isSafeInteger(entry.layerCount) || entry.layerCount! <= 0))) {
       throw new RangeError(`${entry.caseId} kind or geometry counts are not canonical`);
     }
     if (entry.kind === 'private-reference' && entry.fullOneClickMs === undefined) throw new RangeError(`${entry.caseId} requires full one-click measurements`);
     if (entry.kind === 'synthetic' && entry.fullOneClickMs !== undefined) throw new RangeError(`${entry.caseId} cannot claim full one-click measurements`);
     if (!Array.isArray(entry.actualWasmPublications) || entry.actualWasmPublications.length !== 5) throw new RangeError(`${entry.caseId} requires five WASM publication observations`);
-    for (const publication of entry.actualWasmPublications) {
+    if (!Array.isArray(entry.measuredRunIds) || entry.measuredRunIds.length !== 5
+      || entry.measuredRunIds.some((runId) => typeof runId !== 'string' || !/^[a-z0-9-]+$/.test(runId))) throw new RangeError(`${entry.caseId} requires five canonical measured run IDs`);
+    for (const [index, publication] of entry.actualWasmPublications.entries()) {
       if (publication === null) continue;
       assertPlainRecord(publication, `${entry.caseId} WASM publication`);
-      exactKeys(publication, ['jobGeneration', 'generation', 'layerCount', 'sliceWorkersCreated', 'sliceWorkersTerminated', 'activeWorkersAfter'], `${entry.caseId} WASM publication`);
+      exactKeys(publication, ['runId', 'jobGeneration', 'generation', 'layerCount', 'sliceWorkersCreated', 'sliceWorkersTerminated', 'activeWorkersAfter'], `${entry.caseId} WASM publication`);
       const created = finite(publication.sliceWorkersCreated, `${entry.caseId} slice workers created`);
       if (finite(publication.jobGeneration, `${entry.caseId} job generation`) !== finite(publication.generation, `${entry.caseId} publication generation`)
-        || publication.layerCount !== entry.layerCount || created === 0
+        || publication.runId !== entry.measuredRunIds[index]
+        || (entry.layerCount !== null && publication.layerCount !== entry.layerCount) || created === 0
         || finite(publication.sliceWorkersTerminated, `${entry.caseId} slice workers terminated`) !== created
         || finite(publication.activeWorkersAfter, `${entry.caseId} active workers`) !== 0) {
         throw new RangeError(`${entry.caseId} WASM publication is not bound to one clean job generation`);
@@ -174,7 +181,7 @@ export function verifyWasmGeometryRelease(input: unknown): WasmGeometryReleaseRe
     const baseline = entry.baselineConversionStageMs === undefined ? undefined : measured(entry.baselineConversionStageMs, `${entry.caseId} baseline`);
     const full = entry.fullOneClickMs === undefined ? undefined : measured(entry.fullOneClickMs, `${entry.caseId} full one-click`);
     finite(entry.triangleCount, `${entry.caseId} triangle count`);
-    finite(entry.layerCount, `${entry.caseId} layer count`);
+    if (entry.layerCount !== null) finite(entry.layerCount, `${entry.caseId} layer count`);
     return {
       caseId: entry.caseId,
       conversionMedianMs: median(conversion),
@@ -182,6 +189,8 @@ export function verifyWasmGeometryRelease(input: unknown): WasmGeometryReleaseRe
       ...(baseline === undefined ? {} : { speedup: median(baseline) / median(conversion) }),
     };
   });
+  const allRunIds = evidence.benchmarks.flatMap(({ measuredRunIds }) => measuredRunIds);
+  if (new Set(allRunIds).size !== allRunIds.length) throw new RangeError('Measured run IDs must be globally unique');
 
   const failedGates: string[] = [];
   const references = benchmarks.slice(0, 2);
