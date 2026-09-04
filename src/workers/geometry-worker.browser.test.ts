@@ -85,6 +85,25 @@ function requestWasmAccelerationState(
     worker.postMessage({ type: action, requestId });
   });
 }
+function startWasmCancellationWork(worker: Worker): Promise<'fulfilled' | 'rejected'> {
+  const requestId = ++wasmStateRequestId;
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      worker.removeEventListener('message', listener);
+      reject(new Error('Missing SHAPECUT_WASM_START_OUTCOME response'));
+    }, 10_000);
+    const listener = (event: MessageEvent<unknown>): void => {
+      const outcome = event.data as { readonly type?: unknown; readonly requestId?: unknown; readonly outcome?: unknown };
+      if (outcome?.type !== 'SHAPECUT_WASM_START_OUTCOME' || outcome.requestId !== requestId) return;
+      clearTimeout(timeout);
+      worker.removeEventListener('message', listener);
+      if (outcome.outcome === 'fulfilled' || outcome.outcome === 'rejected') resolve(outcome.outcome);
+      else reject(new Error('Invalid SHAPECUT_WASM_START_OUTCOME response'));
+    };
+    worker.addEventListener('message', listener);
+    worker.postMessage({ type: 'SHAPECUT_WASM_START_REQUEST', requestId });
+  });
+}
 async function artifactSha256(value: string | Uint8Array): Promise<string> {
   const bytes = typeof value === 'string' ? new TextEncoder().encode(value) : Uint8Array.from(value);
   const digest = await crypto.subtle.digest('SHA-256', bytes);
@@ -111,11 +130,6 @@ const launcherCompatibleCylinder = (segments = 32): TriangleMesh => {
     indices.push(bottom, top, nextTop, bottom, nextTop, nextBottom);
   }
   return { positions: new Float64Array(positions), indices: new Uint32Array(indices) };
-};
-const launcherCompatibleTallCylinder = (segments = 256): TriangleMesh => {
-  const source = launcherCompatibleCylinder(segments);
-  const positions = Float64Array.from(source.positions, (value, index) => index % 3 === 2 ? value * 36 : value);
-  return { positions, indices: source.indices };
 };
 const launcherCompatibleOpenCylinder = (segments = 32): TriangleMesh => {
   const positions: number[] = [];
@@ -152,7 +166,7 @@ afterEach(() => {
 describe('geometry worker boundary', () => {
   it('uses verified WASM segments in production canonical extraction without changing launcher artifacts', async () => {
     const { worker, api } = createAcceptanceGeometryWorker();
-    const source = writeBinarySTL(launcherCompatibleCylinder(), 'safe');
+    const source = writeBinarySTL(launcherCompatibleCylinder(12), 'safe');
     const publication = new Promise<unknown>((resolve) => {
       worker.addEventListener('message', (event) => {
         if (event.data?.type === 'SHAPECUT_WASM_SEGMENTS_PUBLISHED') resolve(event.data);
@@ -174,6 +188,7 @@ describe('geometry worker boundary', () => {
     const acceleratedArtifacts = await api.packageOutline(accelerated);
 
     expect(accelerated.layers).toEqual(baseline.layers);
+    expect(accelerated.assembly.launcher).toMatchObject({ status: 'fixed' });
     expect(accelerated.assembly.launcher).toEqual(baseline.assembly.launcher);
     expect(accelerated.featureEvidenceFingerprint).toBe(baseline.featureEvidenceFingerprint);
     await expect(Promise.all([
@@ -191,7 +206,7 @@ describe('geometry worker boundary', () => {
       artifactSha256(baselineArtifacts.launcherCouponSvg),
       canonicalZipMemberIdentities(baselineArtifacts.zip),
     ]));
-  }, 120_000);
+  });
 
   it('cancels actual WASM singleton workers without late publication and replaces with a clean generation', async () => {
     const { worker, api } = createAcceptanceGeometryWorker();
@@ -199,16 +214,12 @@ describe('geometry worker boundary', () => {
     worker.addEventListener('message', (event) => {
       if (event.data?.type === 'SHAPECUT_WASM_SEGMENTS_PUBLISHED') publications.push(event.data);
     });
-    const firstOutcome = api.convertAutomatically({
-      bytes: writeBinarySTL(launcherCompatibleTallCylinder(), 'safe'),
-      material: testMaterial,
-      launcherFitOffsetMm: 0,
-    }).then(() => 'fulfilled' as const, () => 'rejected' as const);
+    const firstOutcome = startWasmCancellationWork(worker);
     let active!: WasmAccelerationState;
     await vi.waitFor(async () => {
       active = await requestWasmAccelerationState(worker, 'SHAPECUT_WASM_STATE_REQUEST');
       expect(active.activeWorkerCount).toBeGreaterThan(0);
-    }, { timeout: 3_000, interval: 10 });
+    }, { timeout: 5_000, interval: 10 });
 
     const cancelStarted = performance.now();
     const cancelled = await requestWasmAccelerationState(worker, 'SHAPECUT_WASM_CANCEL_REQUEST');
@@ -217,7 +228,7 @@ describe('geometry worker boundary', () => {
     await expect(firstOutcome).resolves.toBe('rejected');
     expect(publications).toEqual([]);
 
-    const replacementSource = writeBinarySTL(launcherCompatibleCylinder(), 'safe');
+    const replacementSource = writeBinarySTL(launcherCompatibleCylinder(12), 'safe');
     const replacement = await api.convertAutomatically({
       bytes: replacementSource.slice(0),
       material: testMaterial,

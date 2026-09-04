@@ -79,6 +79,35 @@ globalThis.addEventListener('message', (event: MessageEvent<unknown>) => {
       respond();
     }
   }
+  if (message?.type === 'SHAPECUT_WASM_START_REQUEST' && Number.isSafeInteger(message.requestId)) {
+    const triangles = Object.freeze(Array.from({ length: 50_000 }, () => Object.freeze([0, 1, 2] as const)));
+    const specs = Object.freeze(Array.from({ length: 24 }, (_, index) => Object.freeze({
+      index,
+      zStart: -0.5,
+      zMid: -0.48 + index * 0.04,
+      zEnd: -0.46 + index * 0.04,
+    })));
+    void exactSegmentSource.collect(Object.freeze({
+      vertices: Object.freeze([
+        Object.freeze([0, 0, -1] as const),
+        Object.freeze([2, 0, 1] as const),
+        Object.freeze([0, 2, 1] as const),
+      ]),
+      triangles,
+      minX: 0,
+      minY: 0,
+      maxX: 2,
+      maxY: 2,
+      planarDiameter: 2 * Math.SQRT2,
+    }), specs, Date.now() + 10_000, () => undefined).then(
+      () => globalThis.postMessage({
+        type: 'SHAPECUT_WASM_START_OUTCOME', requestId: message.requestId, outcome: 'fulfilled',
+      }),
+      () => globalThis.postMessage({
+        type: 'SHAPECUT_WASM_START_OUTCOME', requestId: message.requestId, outcome: 'rejected',
+      }),
+    );
+  }
   if (message?.type === 'SHAPECUT_TEST_NEAR_LIMIT_PACKAGE') {
     nearLimitPackageWorkload = nearLimitColoredResult();
     const contourPoints = nearLimitPackageWorkload.coloredLayers.flatMap((layer) => [

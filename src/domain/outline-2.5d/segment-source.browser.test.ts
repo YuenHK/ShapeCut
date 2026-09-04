@@ -82,16 +82,21 @@ async function expectEquivalentSegments(
   mesh: TriangleMesh,
   layerSpecs = specs,
   axisSelection: OutlineAxisSelection = selection,
-  expectedDifferentialOrigin: 'typescript' | 'wasm' = 'typescript',
+  expectedDifferentialOrigin: 'typescript' | 'wasm' = 'wasm',
+  expectedProductionOrigin: 'typescript' | 'wasm' = 'wasm',
 ): Promise<void> {
-  const projected = projectMesh(mesh, axisSelection, Infinity);
+  const binaryRoundTripMesh = {
+    positions: Float64Array.from(mesh.positions, Math.fround),
+    indices: mesh.indices,
+  };
+  const projected = projectMesh(binaryRoundTripMesh, axisSelection, Infinity);
   const wasm = await new WasmExactSegmentSource({ compareWithTypeScript: false, minimumWasmWork: 0 })
     .collect(projected, layerSpecs, Date.now() + 10_000, () => undefined);
   const differential = await new WasmExactSegmentSource({ compareWithTypeScript: true, minimumWasmWork: 0 })
     .collect(projected, layerSpecs, Date.now() + 10_000, () => undefined);
   const typescript = await new TypeScriptExactSegmentSource()
     .collect(projected, layerSpecs, Infinity, () => undefined);
-  expect(wasm.origin).toBe('wasm');
+  expect(wasm.origin).toBe(expectedProductionOrigin);
   expect(differential.origin).toBe(expectedDifferentialOrigin);
   expect(wasm.layers.map(({ segments }) => segments.length))
     .toEqual(typescript.layers.map(({ segments }) => segments.length));
@@ -137,7 +142,7 @@ describe('real Chromium exact segment differential', () => {
     await expectEquivalentSegments(cylinder(16), specs, {
       source: 'candidate',
       axis: { origin: [0, 0, 0], direction: [1, 0, 0], confidence: 1, confirmed: true },
-    }, 'wasm');
+    }, 'wasm', 'wasm');
   });
 
   it('uses the shared TS/Rust plane tolerance for a near-plane vertex', async () => {

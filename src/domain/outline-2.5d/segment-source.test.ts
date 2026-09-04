@@ -223,6 +223,33 @@ describe('exact segment sources', () => {
     expect(batchRunner.run).not.toHaveBeenCalled();
   });
 
+  it('preselects TypeScript when ordinary decimal positions do not round-trip through Float32', async () => {
+    const projected: ProjectedMesh = Object.freeze({
+      vertices: Object.freeze([
+        Object.freeze([0.1, 0, -1] as const),
+        Object.freeze([1.1, 0, 1] as const),
+        Object.freeze([0.1, 1, 1] as const),
+      ]),
+      triangles: Object.freeze([Object.freeze([0, 1, 2] as const)]),
+      minX: 0.1,
+      minY: 0,
+      maxX: 1.1,
+      maxY: 1,
+      planarDiameter: Math.SQRT2,
+    });
+    const batchRunner = runner(result([]));
+    const source = new WasmExactSegmentSource({
+      runner: batchRunner,
+      compareWithTypeScript: false,
+      minimumWasmWork: 0,
+    });
+
+    const collected = await source.collect(projected, specs, Infinity, () => undefined);
+
+    expect(collected.origin).toBe('typescript');
+    expect(batchRunner.run).not.toHaveBeenCalled();
+  });
+
   it('does not let a remote large triangle hide local Float32-unsafe coordinates', async () => {
     const projected: ProjectedMesh = Object.freeze({
       vertices: Object.freeze([

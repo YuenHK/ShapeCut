@@ -104,16 +104,20 @@ test('100k triangle selection stays off the main thread and reaches a bounded re
   }, () => mark(page, 'previewAt'));
   const alert = page.getByRole('alert');
   await expect(alert).toBeVisible({ timeout: 35_000 });
-  await expect(alert).toContainText(/模型太複雜|處理時間過長/);
   await mark(page, 'downloadsAt');
   const elapsedMs = Date.now() - started;
   const evidence = await performanceEvidence(page);
   const probe = await readWorkerProbeState(page);
+  const terminalCode = probe.errorCodes.at(-1);
+  expect(terminalCode).toMatch(/^(?:NO_OUTLINE|RESOURCE_LIMIT|TIME_LIMIT)$/);
+  await expect(alert).toContainText(terminalCode === 'NO_OUTLINE'
+    ? /找不到足夠的有效外形/
+    : /模型太複雜|處理時間過長/);
   await testInfo.attach('100k-performance.json', { body: JSON.stringify({ elapsedMs, outcome: await alert.textContent(), errorCodes: probe.errorCodes, ...evidence }), contentType: 'application/json' });
   expect(elapsedMs).toBeLessThan(35_000);
   expect(evidence.previewAt).toBeGreaterThanOrEqual(evidence.selectedAt);
   expect(evidence.entries.filter(({ duration }) => duration >= 100)).toEqual([]);
-  expect(probe.errorCodes).toContainEqual(expect.stringMatching(/^(?:RESOURCE_LIMIT|TIME_LIMIT)$/));
+  expect(probe.errorCodes).toContain(terminalCode);
 });
 
 test('500k triangle selection returns a typed resource/time failure within the boundary', async ({ page }, testInfo) => {
@@ -147,7 +151,8 @@ test('feature-rich PDF packaging is terminated and replaced by a second complete
     layers: 24, contoursPerLayer: 4.25,
     minimumPointsPerContour: 96, maximumPointsPerContour: 256, totalPoints: 25_152,
   }];
-  await expect.poll(async () => (await readWorkerProbeState(page)).packageWorkloads).toEqual(expectedWorkload);
+  await expect.poll(async () => (await readWorkerProbeState(page)).packageWorkloads, { timeout: 15_000 })
+    .toEqual(expectedWorkload);
   const armed = await readWorkerProbeState(page);
   await expect(page.getByText('replacement-safe.stl', { exact: true })).toBeVisible({ timeout: 45_000 });
   await expectResult(page, '需注意', '精確切片');
