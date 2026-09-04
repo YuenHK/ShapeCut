@@ -23,6 +23,7 @@ import type {
   OutlinePackageTransfer,
   SerializedMesh,
 } from './geometry-api';
+import bundledGeometryWorkerUrl from './geometry.worker.ts?worker&url';
 import {
   OUTLINE_ARTIFACT_IDS,
   OutlineArtifactError,
@@ -217,7 +218,7 @@ export function createGeometryWorkerClient(): GeometryClient {
 }
 
 function createGeometryWorker(): Worker {
-  const workerUrl = new URL('./geometry.worker.ts', import.meta.url);
+  const workerUrl = new URL(bundledGeometryWorkerUrl, import.meta.url);
   const pageUrl = new URL(globalThis.location.href);
   if (pageUrl.searchParams.get('shapecut-wasm-rollout') === '1') {
     workerUrl.searchParams.set('shapecut-wasm-rollout', '1');

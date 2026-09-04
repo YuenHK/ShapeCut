@@ -702,6 +702,9 @@ function exactLoops(segments: readonly ExactSegment[], diameter: number, deadlin
   return loops;
 }
 
+const MAX_EXACT_HOLE_CANDIDATES = 64;
+const MAX_EXACT_LOOPS_PER_LAYER = 1 + MAX_EXACT_HOLE_CANDIDATES;
+
 function exactCross(a: Point2, b: Point2, c: Point2): number {
   return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
 }
@@ -816,7 +819,9 @@ function classifyExactNestedLoops(
     throw new ExactContourAmbiguityError('Exact contour nesting depth exceeds one hole level');
   }
   const holes = loops.filter((_, index) => depths[index] === 1);
-  if (holes.length > 64) throw new RangeError('Exact contour exceeds the central-hole candidate budget');
+  if (holes.length > MAX_EXACT_HOLE_CANDIDATES) {
+    throw new RangeError('Exact contour exceeds the central-hole candidate budget');
+  }
   return { exterior: roots[0], holes };
 }
 
@@ -855,6 +860,9 @@ export function extractExactContours(
       throw new RangeError('Exact segment collection does not match the layer schedule');
     }
     const loops = exactLoops(segmentLayer.segments, projected.planarDiameter, deadline);
+    if (loops.length > MAX_EXACT_LOOPS_PER_LAYER) {
+      throw new RangeError('Exact contour loop count exceeds the layer budget');
+    }
     const classified = classifyExactNestedLoops(loops, projected.planarDiameter, deadline);
     const layer = makeLayer(spec, clockwise(classified.exterior, deadline), tolerance, budgets, deadline, 0);
     layers.push(layer);

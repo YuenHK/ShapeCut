@@ -27,6 +27,7 @@ import { planFixedLauncherClearance } from '../outline-assembly/launcher';
 import { expandLauncherExterior } from '../outline-assembly/launcher-exterior-expansion';
 import { PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING } from '../outline-features/depth-field';
 import { TypeScriptExactSegmentSource, type ExactSegmentSource } from '../outline-2.5d/segment-source';
+import { GeometryLiveByteTracker, type GeometryLiveByteObservation } from '../../performance/geometry-memory';
 
 const { testOutlineBudgets } = vi.hoisted(() => ({
   testOutlineBudgets: { maxRuntimeMs: Number.POSITIVE_INFINITY },
@@ -181,6 +182,61 @@ function openSquarePlate(): TriangleMesh {
 }
 
 describe('automatic outline pipeline', { timeout: 20_000 }, () => {
+  it('reports actual STL, parsed mesh, accepted safe-repair mesh, extraction mesh, and retained preview ownership', async () => {
+    const observations: GeometryLiveByteObservation[] = [];
+    const tracker = new GeometryLiveByteTracker((observation) => observations.push(observation));
+    const bytes = writeBinarySTL(cylinder(), 'safe');
+
+    const result = await convertAutomaticOutline({
+      bytes,
+      material: testMaterial,
+      launcherFitOffsetMm: 0,
+    }, undefined, { observeLiveBytes: (stage, replacements) => tracker.update(stage, replacements) });
+
+    const parsed = observations.find(({ stage }) => stage === 'pipeline:parsed');
+    const analyzing = observations.find(({ stage }) => stage === 'pipeline:analyzing-preview');
+    const repaired = observations.find(({ stage }) => stage === 'pipeline:repair-ready');
+    const extraction = observations.find(({ stage }) => stage === 'pipeline:extraction-mesh');
+    const retained = observations.at(-1);
+    expect(parsed?.owners['worker-stl']).toBe(bytes.byteLength);
+    expect(parsed?.owners['parsed-mesh']).toBeGreaterThan(0);
+    expect(analyzing?.owners['analyzing-preview']).toBeLessThanOrEqual(96_000);
+    expect(repaired?.owners['safe-repair-mesh']).toBeGreaterThan(0);
+    expect(extraction?.owners['parsed-mesh']).toBeGreaterThan(0);
+    expect(extraction?.owners['safe-repair-mesh']).toBeUndefined();
+    expect(extraction?.owners['extraction-mesh']).toBe(repaired?.owners['safe-repair-mesh']);
+    expect(retained).toEqual({
+      stage: 'pipeline:result-retained',
+      totalBytes: result.preview.mesh.positions.buffer.byteLength
+        + result.preview.mesh.indices.buffer.byteLength,
+      owners: { 'result-preview': result.preview.mesh.positions.buffer.byteLength
+        + result.preview.mesh.indices.buffer.byteLength },
+    });
+  });
+
+  it('retains a rejected safe-repair mesh beside the original extraction mesh until result handoff', async () => {
+    const observations: GeometryLiveByteObservation[] = [];
+    const tracker = new GeometryLiveByteTracker((observation) => observations.push(observation));
+
+    const result = await convertAutomaticOutline({
+      bytes: writeBinarySTL(openCylinder(), 'safe'),
+      material: testMaterial,
+      launcherFitOffsetMm: 0,
+    }, undefined, { observeLiveBytes: (stage, replacements) => tracker.update(stage, replacements) });
+
+    const repaired = observations.find(({ stage }) => stage === 'pipeline:repair-ready');
+    const extraction = observations.find(({ stage }) => stage === 'pipeline:extraction-mesh');
+    expect(result.repairAccepted).toBe(false);
+    expect(repaired?.owners['safe-repair-mesh']).toBeGreaterThan(0);
+    expect(extraction?.owners['safe-repair-mesh']).toBe(repaired?.owners['safe-repair-mesh']);
+    expect(extraction?.owners['parsed-mesh']).toBeUndefined();
+    expect(extraction?.owners['extraction-mesh']).toBeGreaterThan(0);
+    expect(observations.at(-1)?.owners).toEqual({
+      'result-preview': result.preview.mesh.positions.buffer.byteLength
+        + result.preview.mesh.indices.buffer.byteLength,
+    });
+  });
+
   it('collects exact segments through the injected production source before canonical extraction', async () => {
     const exactSegmentSource = new TypeScriptExactSegmentSource();
     const collect = vi.spyOn(exactSegmentSource, 'collect');

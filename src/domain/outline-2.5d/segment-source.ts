@@ -10,6 +10,7 @@ import {
   SliceWorkerPool,
   type SliceWorkerPoolRequest,
 } from '../../workers/slice-worker-pool';
+import type { GeometryLiveByteReporter } from '../../performance/geometry-memory';
 
 export type ExactSegment = readonly [Point2, Point2];
 export type ExactSegmentDiagnostics = Readonly<{
@@ -69,6 +70,7 @@ export interface WasmExactSegmentSourceOptions {
   readonly compareWithTypeScript?: boolean;
   readonly minimumWasmWork?: number;
   readonly onPublication?: (collection: ExactSegmentCollection, generation: number) => void;
+  readonly observeLiveBytes?: GeometryLiveByteReporter;
 }
 
 const DEFAULT_MINIMUM_WASM_WORK = 4_096;
@@ -292,7 +294,10 @@ export class TypeScriptExactSegmentSource implements ExactSegmentSource {
 }
 
 class WorkerPoolBatchRunner implements ExactSegmentBatchRunner {
-  readonly #pool = new SliceWorkerPool();
+  readonly #pool: SliceWorkerPool;
+  constructor(observeLiveBytes?: GeometryLiveByteReporter) {
+    this.#pool = new SliceWorkerPool({ observeLiveBytes });
+  }
   get activeWorkerCount(): number { return this.#pool.activeWorkerCount; }
   run(request: SliceWorkerPoolRequest): Promise<SliceBatchResult> { return this.#pool.run(request); }
   isFallbackEligible(error: unknown): boolean { return isSliceWorkerPoolFallbackEligible(error); }
@@ -304,6 +309,7 @@ export class WasmExactSegmentSource implements ExactSegmentSource {
   readonly #compareWithTypeScript: boolean;
   readonly #minimumWasmWork: number;
   readonly #onPublication: ((collection: ExactSegmentCollection, generation: number) => void) | undefined;
+  readonly #observeLiveBytes: GeometryLiveByteReporter | undefined;
   #generation = 0;
 
   constructor(options: WasmExactSegmentSourceOptions = {}) {
@@ -311,10 +317,11 @@ export class WasmExactSegmentSource implements ExactSegmentSource {
     if (!Number.isSafeInteger(minimumWasmWork) || minimumWasmWork < 0) {
       throw new TypeError('minimum WASM work must be a non-negative safe integer');
     }
-    this.#runner = options.runner ?? new WorkerPoolBatchRunner();
+    this.#runner = options.runner ?? new WorkerPoolBatchRunner(options.observeLiveBytes);
     this.#compareWithTypeScript = options.compareWithTypeScript ?? false;
     this.#minimumWasmWork = minimumWasmWork;
     this.#onPublication = options.onPublication;
+    this.#observeLiveBytes = options.observeLiveBytes;
   }
 
   get activeWorkerCount(): number { return this.#runner.activeWorkerCount ?? 0; }
@@ -349,18 +356,23 @@ export class WasmExactSegmentSource implements ExactSegmentSource {
       return collectTypeScriptExactSegments(mesh, specs, deadline, checkpoint);
     }
     const wasmMesh = float32ProjectedMesh(mesh, deadline, checkpoint);
+    const workerDeadline = deadline === Number.POSITIVE_INFINITY
+      ? Number.MAX_SAFE_INTEGER
+      : deadline;
+    const batch: SliceWorkerPoolRequest = {
+      positions: Float32Array.from(wasmMesh.vertices.flat()),
+      indices: Uint32Array.from(wasmMesh.triangles.flat()),
+      planes: Float64Array.from(specs, ({ zMid }) => zMid),
+      deadlineCheckInterval: 4_096,
+      deadlineAt: workerDeadline,
+    };
+    this.#observeLiveBytes?.('wasm-source:batch-ready', [{
+      owner: 'wasm-batch',
+      buffers: [batch.positions, batch.indices, batch.planes],
+    }]);
     let result: SliceBatchResult;
     try {
-      const workerDeadline = deadline === Number.POSITIVE_INFINITY
-        ? Number.MAX_SAFE_INTEGER
-        : deadline;
-      result = await this.#runner.run({
-        positions: Float32Array.from(wasmMesh.vertices.flat()),
-        indices: Uint32Array.from(wasmMesh.triangles.flat()),
-        planes: Float64Array.from(specs, ({ zMid }) => zMid),
-        deadlineCheckInterval: 4_096,
-        deadlineAt: workerDeadline,
-      });
+      result = await this.#runner.run(batch);
     } catch (error) {
       if (generation !== this.#generation) {
         throw new ExactSegmentSourceError('CANCELLED', 'Exact segment collection was cancelled');
@@ -378,6 +390,10 @@ export class WasmExactSegmentSource implements ExactSegmentSource {
 
     // Publication starts only after the complete worker batch has passed this validation.
     const collection = decodeWasmCollection(result, specs, deadline, checkpoint);
+    this.#observeLiveBytes?.('wasm-source:decoded', [
+      { owner: 'wasm-batch', buffers: [] },
+      { owner: 'wasm-result', buffers: [] },
+    ]);
     if (this.#compareWithTypeScript || result.statusCode === SLICE_STATUS_GEOMETRY_EVIDENCE) {
       const oracle = collectTypeScriptExactSegments(mesh, specs, deadline, checkpoint);
       try {

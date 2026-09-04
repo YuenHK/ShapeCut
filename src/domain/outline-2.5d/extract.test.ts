@@ -658,6 +658,33 @@ describe('extractExactContours', () => {
     )).toThrow(/empty segment graph/i);
   });
 
+  test('rejects more closed loops than one exterior plus the bounded hole candidates before classification', () => {
+    const loopCount = 66;
+    const segments = Object.freeze(Array.from({ length: loopCount }, (_, loop) => {
+      const x = loop * 3;
+      return [
+        [[x, 0], [x + 1, 0]],
+        [[x + 1, 0], [x, 1]],
+        [[x, 1], [x, 0]],
+      ] as const;
+    }).flat());
+    const collection: ExactSegmentCollection = Object.freeze({
+      origin: 'wasm',
+      layers: Object.freeze([Object.freeze({ planeIndex: 0, z: 0, segments })]),
+      diagnostics: Object.freeze({
+        degenerateTriangleCount: 0,
+        coplanarTrianglePlaneCount: 0,
+        ambiguousIntersectionCount: 0,
+        onPlaneEdgeCount: 0,
+      }),
+    });
+
+    expect(() => extractExactContours(
+      box(0, 0, 200, 12), selection, specs, DEFAULT_OUTLINE_BUDGETS,
+      undefined, undefined, collection,
+    )).toThrow(/loop.*budget/i);
+  });
+
   test('classifies a strictly nested loop as a reliable central hole', () => {
     const candidate = squareTube(20, 4);
     const first = extractExactContours(candidate, selection, specs, DEFAULT_OUTLINE_BUDGETS);

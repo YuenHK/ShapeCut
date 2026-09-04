@@ -14,6 +14,7 @@ import {
   type SliceWorkPartition,
 } from './slice-partitioner';
 import bundledSliceWorkerUrl from './slice.worker.ts?worker&url';
+import type { GeometryBufferOwnership, GeometryLiveByteReporter } from '../performance/geometry-memory';
 
 export type SliceWorkerPoolErrorCode =
   | 'INVALID_REQUEST'
@@ -131,6 +132,7 @@ export interface SliceWorkerLike {
 export interface SliceWorkerPoolOptions {
   readonly hardwareConcurrency?: number;
   readonly workerFactory?: () => SliceWorkerLike;
+  readonly observeLiveBytes?: GeometryLiveByteReporter;
 }
 
 interface ExpectedPartition {
@@ -211,6 +213,7 @@ export class SliceWorkerPool {
   readonly #hardwareConcurrency: number | undefined;
   readonly #workerFactory: () => SliceWorkerLike;
   readonly #trustedWorkerFactory: boolean;
+  readonly #observeLiveBytes: GeometryLiveByteReporter | undefined;
   #generation = 0;
   #activeJob: ActiveJob | undefined;
 
@@ -218,6 +221,7 @@ export class SliceWorkerPool {
     this.#hardwareConcurrency = options.hardwareConcurrency;
     this.#workerFactory = options.workerFactory ?? createBrowserSliceWorker;
     this.#trustedWorkerFactory = options.workerFactory === undefined;
+    this.#observeLiveBytes = options.observeLiveBytes;
   }
 
   get activeWorkerCount(): number {
@@ -233,10 +237,15 @@ export class SliceWorkerPool {
     let intake: OwnedPoolRequestSnapshot;
     try {
       intake = takePoolRequestOwnershipSnapshot(request);
+      this.#report('slice-pool:batch-owned', [{
+        owner: 'wasm-batch',
+        buffers: [intake.owned.positions, intake.owned.indices, intake.owned.planes],
+      }]);
       if (intake.deadlineAt <= Date.now()) {
         throw new SliceWorkerPoolError('DEADLINE_EXCEEDED', 'Slice worker deadline was exceeded');
       }
     } catch (error) {
+      this.#reportCleanup();
       return Promise.reject(asPoolRequestError(error));
     }
 
@@ -270,6 +279,7 @@ export class SliceWorkerPool {
   cancel(): Promise<void> {
     this.#generation += 1;
     this.#abortActive(new SliceWorkerPoolError('CANCELLED', 'Slice worker job was cancelled'));
+    this.#reportCleanup();
     return Promise.resolve();
   }
 
@@ -316,6 +326,12 @@ export class SliceWorkerPool {
         },
       );
       checkpoint();
+      this.#report('slice-pool:partitions-ready', [{
+        owner: 'worker-partitions',
+        buffers: partitions.flatMap((partition) => [
+          partition.positions, partition.indices, partition.planes, partition.planeIndices,
+        ]),
+      }]);
       for (const partition of partitions) {
         checkpoint();
         this.#submitPartition(job, partition, {
@@ -323,6 +339,13 @@ export class SliceWorkerPool {
           deadlineAt: intake.deadlineAt,
         });
       }
+      this.#report('slice-pool:partitions-transferred', [
+        { owner: 'wasm-batch', buffers: [] },
+        {
+          owner: 'worker-partitions',
+          buffers: partitions.map(({ planeIndices }) => planeIndices),
+        },
+      ]);
     } catch (error) {
       if (job.settled) return;
       if (error instanceof SliceWorkerPoolError) {
@@ -384,6 +407,14 @@ export class SliceWorkerPool {
         }
         job.aggregateEndpointBytes = aggregateEndpointBytes;
         job.results.set(expected.partitionIndex, result);
+        this.#report('slice-pool:partition-result-received', [{
+          owner: 'partition-results',
+          buffers: [...job.results.values()].flatMap((partitionResult) => [
+            partitionResult.planeOffsets,
+            partitionResult.endpoints,
+            partitionResult.diagnosticCounters,
+          ]),
+        }]);
         job.completedPlanes += expected.planeCount;
         this.#releaseWorker(job, activeWorker);
         job.onProgress?.(Object.freeze({
@@ -452,10 +483,21 @@ export class SliceWorkerPool {
   #completeJob(job: ActiveJob): void {
     if (job.settled) return;
     try {
-      const result = mergePartitionResults([...job.results.values()], job.totalPlanes);
+      const result = mergePartitionResults(
+        [...job.results.values()],
+        job.totalPlanes,
+        (buffers) => this.#report('slice-pool:result-merged', [
+          { owner: 'wasm-result', buffers },
+        ]),
+      );
       job.settled = true;
       if (job.timeout !== undefined) clearTimeoutIntrinsic(job.timeout);
       for (const worker of [...job.workers]) this.#releaseWorker(job, worker);
+      job.results.clear();
+      this.#report('slice-pool:result-handoff', [
+        { owner: 'worker-partitions', buffers: [] },
+        { owner: 'partition-results', buffers: [] },
+      ]);
       if (this.#activeJob === job) this.#activeJob = undefined;
       job.resolve(result);
     } catch (error) {
@@ -476,6 +518,7 @@ export class SliceWorkerPool {
     if (job.timeout !== undefined) clearTimeoutIntrinsic(job.timeout);
     for (const worker of [...job.workers]) this.#releaseWorker(job, worker);
     if (this.#activeJob === job) this.#activeJob = undefined;
+    this.#reportCleanup();
     job.reject(error);
   }
 
@@ -483,6 +526,19 @@ export class SliceWorkerPool {
     const job = this.#activeJob;
     if (!job) return;
     this.#failJob(job, error);
+  }
+
+  #report(stage: string, replacements: readonly GeometryBufferOwnership[]): void {
+    this.#observeLiveBytes?.(stage, replacements);
+  }
+
+  #reportCleanup(): void {
+    this.#report('slice-pool:cleanup', [
+      { owner: 'wasm-batch', buffers: [] },
+      { owner: 'worker-partitions', buffers: [] },
+      { owner: 'partition-results', buffers: [] },
+      { owner: 'wasm-result', buffers: [] },
+    ]);
   }
 }
 
@@ -735,6 +791,7 @@ function validateWorkerResult(
 function mergePartitionResults(
   results: readonly ValidatedPartitionResult[],
   planeCount: number,
+  onMerged?: (buffers: readonly ArrayBufferView[]) => void,
 ): SliceBatchResult {
   const byPlane = new Array<{
     readonly source: Float64Array;
@@ -782,6 +839,7 @@ function mergePartitionResults(
     offsets[planeIndex + 1] = writeOffset / 4;
   }
   diagnostics[4] = totalEndpointValues / 4;
+  onMerged?.([offsets, endpoints, diagnostics]);
   return Object.freeze({
     version: SLICE_RESULT_VERSION,
     statusCode,

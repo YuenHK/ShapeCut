@@ -8,6 +8,7 @@ import {
   launcherCompatibleStlFixture,
   readWorkerProbeState,
   selectModel,
+  startActualWasmWork,
 } from './helpers';
 
 function binaryTetrahedra(triangleCount: number): Buffer {
@@ -73,9 +74,10 @@ test('safe conversion has no 100 ms main-thread task through preview, explosion,
   await selectModel(page, launcherCompatibleStlFixture(), async () => {
     await installLongTaskObserver(page);
     await mark(page, 'selectedAt');
+  }, async () => {
+    await mark(page, 'previewAt');
   });
   await expect(page.locator('.outline-process-webgl canvas')).toBeVisible({ timeout: 30_000 });
-  await mark(page, 'previewAt');
   await expectResult(page, '需注意', '精確切片');
   await expect(page.getByRole('img', { name: /真實網格和爆炸圖/ })).toBeVisible();
   await mark(page, 'resultAt');
@@ -123,18 +125,23 @@ test('100k triangle selection stays off the main thread and reaches a bounded re
 for (const triangleCount of [200_000, 500_000, 1_000_000]) test(`${triangleCount} triangle selection has no 100 ms main-thread task and cleans up deterministically`, async ({ page }, testInfo) => {
   test.setTimeout(15_000);
   await installWorkerResultProbe(page);
-  await page.goto('/');
+  await page.goto('/?shapecut-wasm-rollout=1');
   const fixturePath = testInfo.outputPath(`${triangleCount}.stl`);
   await writeFile(fixturePath, binaryTetrahedra(triangleCount));
   const started = Date.now();
   await selectModel(page, fixturePath, async () => {
     await installLongTaskObserver(page);
     await mark(page, 'selectedAt');
+  }, async () => {
+    await mark(page, 'previewAt');
+    await startActualWasmWork(page);
+    await expect.poll(async () => (await readWorkerProbeState(page)).memoryObservations
+      .some(({ stage }) => stage === 'slice-pool:partitions-ready'), { timeout: 8_000 }).toBe(true);
   });
-  await mark(page, 'previewAt');
-  await page.waitForTimeout(2_000);
+  await expect(page.getByRole('button', { name: '取消處理' })).toBeVisible();
   await page.getByRole('button', { name: '取消處理' }).click();
   await expect(page.getByLabel('選擇 STL 模型')).toBeVisible();
+  await expect.poll(async () => (await readWorkerProbeState(page)).active).toBe(0);
   await mark(page, 'downloadsAt');
   const elapsedMs = Date.now() - started;
   const evidence = await performanceEvidence(page);
@@ -144,7 +151,10 @@ for (const triangleCount of [200_000, 500_000, 1_000_000]) test(`${triangleCount
   expect(evidence.previewAt).toBeGreaterThanOrEqual(evidence.selectedAt);
   expect(evidence.entries.filter(({ duration }) => duration >= 100), JSON.stringify(evidence)).toEqual([]);
   expect(evidence.longestMainThreadTaskMs).toBeLessThan(100);
-  expect(probe.terminated).toBeGreaterThanOrEqual(1);
+  expect(probe.wasmStartRequests).toBe(1);
+  expect(probe.memoryObservations.some(({ stage }) => stage === 'wasm-source:batch-ready')).toBe(true);
+  expect(probe.created).toBe(probe.terminated);
+  expect(probe.active).toBe(0);
 });
 
 test('feature-rich PDF packaging is terminated and replaced by a second complete result', async ({ page }, testInfo) => {

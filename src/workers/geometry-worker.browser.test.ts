@@ -19,9 +19,13 @@ import {
   tetrahedronWithOneReversedFace,
 } from '../test/mesh-builders';
 import type { GeometryClient } from './geometry-client';
-import { createGeometryWorkerClient as createActualGeometryWorkerClient } from './geometry-client';
+import {
+  createGeometryClient,
+  createGeometryWorkerClient as createActualGeometryWorkerClient,
+} from './geometry-client';
 import type { GeometryAccelerationProbe, GeometryApi } from './geometry-api';
 import { InternalAutomaticResultCache } from './internal-automatic-result-cache';
+import type { GeometryLiveByteObservation } from '../performance/geometry-memory';
 
 const clients: Array<Pick<GeometryClient, 'dispose'>> = [];
 const rawWorkerApis: Array<Remote<GeometryApi>> = [];
@@ -203,9 +207,11 @@ describe('geometry worker boundary', () => {
   it('uses verified WASM segments in production canonical extraction without changing launcher artifacts', async () => {
     const { worker, api } = createAcceptanceGeometryWorker(true);
     const source = writeBinarySTL(launcherCompatibleCylinder(12), 'safe');
+    const memory: GeometryLiveByteObservation[] = [];
     const publication = new Promise<unknown>((resolve) => {
       worker.addEventListener('message', (event) => {
         if (event.data?.type === 'SHAPECUT_WASM_SEGMENTS_PUBLISHED') resolve(event.data);
+        if (event.data?.type === 'SHAPECUT_GEOMETRY_MEMORY') memory.push(event.data.observation);
       });
     });
     const baseline = await convertAutomaticOutline({
@@ -222,6 +228,36 @@ describe('geometry worker boundary', () => {
     }));
     const accelerated = await acceleratedPromise;
     const acceleratedArtifacts = await api.packageOutline(accelerated);
+
+    expect(memory.map(({ stage }) => stage)).toEqual(expect.arrayContaining([
+      'pipeline:input',
+      'pipeline:parsed',
+      'pipeline:analyzing-preview',
+      'pipeline:repair-ready',
+      'pipeline:extraction-mesh',
+      'wasm-source:batch-ready',
+      'slice-pool:batch-owned',
+      'slice-pool:partitions-ready',
+      'slice-pool:partitions-transferred',
+      'slice-pool:partition-result-received',
+      'slice-pool:result-merged',
+      'slice-pool:result-handoff',
+      'wasm-source:decoded',
+      'pipeline:result-retained',
+    ]));
+    const merged = memory.find(({ stage }) => stage === 'slice-pool:result-merged');
+    const handedOff = memory.find(({ stage }) => stage === 'slice-pool:result-handoff');
+    expect(merged?.owners['worker-partitions']).toBeGreaterThan(0);
+    expect(merged?.owners['partition-results']).toBeGreaterThan(0);
+    expect(merged?.owners['wasm-result']).toBeGreaterThan(0);
+    expect(merged?.totalBytes).toBeGreaterThan(handedOff?.totalBytes ?? Number.POSITIVE_INFINITY);
+    expect(handedOff?.owners['worker-partitions']).toBeUndefined();
+    expect(handedOff?.owners['partition-results']).toBeUndefined();
+    expect(handedOff?.owners['wasm-result']).toBe(merged?.owners['wasm-result']);
+    expect(Math.max(...memory.map(({ totalBytes }) => totalBytes))).toBeGreaterThan(source.byteLength);
+    expect(memory.find(({ stage }) => stage === 'pipeline:result-retained')?.owners)
+      .toEqual({ 'result-preview': accelerated.preview.mesh.positions.buffer.byteLength
+        + accelerated.preview.mesh.indices.buffer.byteLength });
 
     expect(accelerated.layers).toEqual(baseline.layers);
     expect(accelerated.assembly.launcher).toMatchObject({ status: 'fixed' });
@@ -360,15 +396,27 @@ describe('geometry worker boundary', () => {
 
     const largeSource = new ArrayBuffer(84 + 500_000 * 50);
     new DataView(largeSource).setUint32(80, 500_000, true);
-    const workerMessages = vi.spyOn(Worker.prototype, 'postMessage');
-    const messageCount = workerMessages.mock.calls.length;
-    const pending = client.createStlPresentation(largeSource);
-    await vi.waitFor(() => expect(workerMessages.mock.calls.length).toBeGreaterThan(messageCount));
-    client.cancelActive();
+    const acceptanceUrl = new URL('./geometry.worker.ts', import.meta.url);
+    acceptanceUrl.searchParams.set('shapecut-acceptance', '1');
+    const cancellableWorker = new Worker(acceptanceUrl, { type: 'module' });
+    const cancellable = createGeometryClient(cancellableWorker);
+    clients.push(cancellable);
+    const scanStarted = new Promise<void>((resolve) => {
+      cancellableWorker.addEventListener('message', (event) => {
+        if (event.data?.type === 'SHAPECUT_PRESENTATION_SCAN_STARTED') resolve();
+      });
+    });
+    const terminate = vi.spyOn(Worker.prototype, 'terminate');
+    const terminatedBefore = terminate.mock.calls.length;
+    const pending = cancellable.createStlPresentation(largeSource);
+    await scanStarted;
+    cancellable.cancelActive();
     await expect(pending).rejects.toMatchObject({ name: 'SupersededError', code: 'SUPERSEDED' });
-    workerMessages.mockRestore();
+    expect(terminate.mock.calls.length).toBeGreaterThan(terminatedBefore);
+    expect(largeSource.byteLength).toBe(84 + 500_000 * 50);
+    terminate.mockRestore();
 
-    const replacement = await client.createStlPresentation(source);
+    const replacement = await cancellable.createStlPresentation(source);
     expect(replacement.mesh.indices.length).toBe(12);
     expect(source.byteLength).toBe(sourceLength);
   });

@@ -41,6 +41,7 @@ import { PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING } from '../src/domain/outlin
 import { READY_TEST_MATERIAL } from '../src/test/ready-material';
 import { writeBinarySTL } from '../src/domain/mesh/write-stl';
 import type { TriangleMesh } from '../src/domain/mesh/types';
+import type { GeometryLiveByteObservation } from '../src/performance/geometry-memory';
 
 export function launcherCompatibleStlFixture(
   name = 'launcher-compatible-cylinder.stl',
@@ -430,6 +431,7 @@ export type WorkerProbeState = {
   readonly errorCodes: readonly string[];
   readonly created: number;
   readonly terminated: number;
+  readonly active: number;
   readonly packageRequests: number;
   readonly packageCheckpoints: readonly string[];
   readonly replacementTriggered: number;
@@ -443,6 +445,8 @@ export type WorkerProbeState = {
     readonly maximumPointsPerContour: number;
     readonly totalPoints: number;
   }[];
+  readonly memoryObservations: readonly GeometryLiveByteObservation[];
+  readonly wasmStartRequests: number;
 };
 
 type MutableSvgRoleGroup = {
@@ -2813,13 +2817,16 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
       applyPaths: string[];
       holeCandidates: WorkerHoleCandidateEvidence[];
       packageWorkloads: WorkerProbeState['packageWorkloads'][number][];
-      activeWorker?: Worker;
+      activeWorkers: Set<Worker>;
       nearLimitPackageArmed?: boolean;
       replacement?: { name: string; mimeType: string; bytes: number[] };
+      memoryObservations: GeometryLiveByteObservation[];
+      wasmStartRequests: number;
     };
     const state: ProbeState = {
       results: [], errorCodes: [], created: 0, terminated: 0,
       packageRequests: 0, packageCheckpoints: [], replacementTriggered: 0, applyPaths: [], holeCandidates: [], packageWorkloads: [],
+      activeWorkers: new Set(), memoryObservations: [], wasmStartRequests: 0,
     };
     Object.assign(window, { __shapeCutWorkerProbe: state });
     const inspect = (candidate: unknown, seen = new WeakSet<object>()): void => {
@@ -3112,7 +3119,7 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
       constructor(url: string | URL, options?: WorkerOptions) {
         super(acceptanceWorkerUrl(url), options);
         state.created += 1;
-        state.activeWorker = this;
+        state.activeWorkers.add(this);
         super.addEventListener('message', (event) => {
           const message = typeof event.data === 'object' && event.data !== null
             ? event.data as Record<string, unknown>
@@ -3128,14 +3135,17 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
           if (message?.type === 'SHAPECUT_PACKAGE_WORKLOAD_READY' && typeof message.evidence === 'object' && message.evidence !== null) {
             state.packageWorkloads.push(message.evidence as WorkerProbeState['packageWorkloads'][number]);
           }
+          if (message?.type === 'SHAPECUT_GEOMETRY_MEMORY'
+            && typeof message.observation === 'object' && message.observation !== null) {
+            state.memoryObservations.push(message.observation as GeometryLiveByteObservation);
+          }
           inspect(event.data);
         });
         super.postMessage({ type: 'SHAPECUT_TEST_HOLE_PROBE_ENABLE' });
       }
 
       override terminate(): void {
-        state.terminated += 1;
-        if (state.activeWorker === this) state.activeWorker = undefined;
+        if (state.activeWorkers.delete(this)) state.terminated += 1;
         super.terminate();
       }
 
@@ -3185,14 +3195,32 @@ export async function armWorkerPackageReplacement(
   }, { name: fixture.name, mimeType: fixture.mimeType, bytes: Array.from(fixture.buffer) });
 }
 
+export async function startActualWasmWork(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const state = (window as unknown as {
+      __shapeCutWorkerProbe: {
+        activeWorkers: Set<Worker>;
+        wasmStartRequests: number;
+      };
+    }).__shapeCutWorkerProbe;
+    const worker = [...state.activeWorkers].at(-1);
+    if (!worker) throw new Error('No active geometry worker is available for the WASM cleanup gate');
+    state.wasmStartRequests += 1;
+    worker.postMessage({ type: 'SHAPECUT_WASM_START_REQUEST', requestId: state.wasmStartRequests });
+  });
+}
+
 export async function readWorkerProbeState(page: Page): Promise<WorkerProbeState> {
   return page.evaluate(() => {
-    const state = (window as unknown as { __shapeCutWorkerProbe: WorkerProbeState }).__shapeCutWorkerProbe;
+    const state = (window as unknown as {
+      __shapeCutWorkerProbe: WorkerProbeState & { activeWorkers: Set<Worker> };
+    }).__shapeCutWorkerProbe;
     return {
       results: state.results,
       errorCodes: state.errorCodes,
       created: state.created,
       terminated: state.terminated,
+      active: state.activeWorkers.size,
       packageRequests: state.packageRequests,
       packageCheckpoints: state.packageCheckpoints,
       replacementTriggered: state.replacementTriggered,
@@ -3200,6 +3228,8 @@ export async function readWorkerProbeState(page: Page): Promise<WorkerProbeState
       applyPaths: state.applyPaths,
       holeCandidates: state.holeCandidates,
       packageWorkloads: state.packageWorkloads,
+      memoryObservations: state.memoryObservations,
+      wasmStartRequests: state.wasmStartRequests,
     };
   });
 }

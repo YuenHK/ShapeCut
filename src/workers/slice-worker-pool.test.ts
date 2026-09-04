@@ -9,6 +9,7 @@ import {
   type SliceWorkerLike,
   type SliceWorkerOutboundMessage,
 } from './slice-worker-pool';
+import { GeometryLiveByteTracker, type GeometryLiveByteObservation } from '../performance/geometry-memory';
 
 type MessageListener = (event: MessageEvent<SliceWorkerOutboundMessage>) => void;
 type ErrorListener = (event: ErrorEvent) => void;
@@ -98,6 +99,64 @@ afterEach(async () => {
 });
 
 describe('SliceWorkerPool', () => {
+  it('retains partition metadata and input results through the simultaneous merge allocation before handoff', async () => {
+    const observations: GeometryLiveByteObservation[] = [];
+    const tracker = new GeometryLiveByteTracker((observation) => observations.push(observation));
+    const worker = new ControlledWorker();
+    const input = request();
+    const pool = new SliceWorkerPool({
+      hardwareConcurrency: 1,
+      workerFactory: () => worker,
+      observeLiveBytes: (stage, replacements) => tracker.update(stage, replacements),
+    });
+    pools.push(pool);
+
+    const pending = pool.run(input);
+    expect(input.positions.byteLength).toBe(0);
+    expect(input.indices.byteLength).toBe(0);
+    expect(input.planes.byteLength).toBe(0);
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(1));
+    worker.complete();
+    const result = await pending;
+    await pool.cancel();
+
+    expect(observations.map(({ stage }) => stage)).toEqual(expect.arrayContaining([
+      'slice-pool:batch-owned',
+      'slice-pool:partitions-ready',
+      'slice-pool:partitions-transferred',
+      'slice-pool:partition-result-received',
+      'slice-pool:result-merged',
+      'slice-pool:result-handoff',
+      'slice-pool:cleanup',
+    ]));
+    expect(observations.find(({ stage }) => stage === 'slice-pool:batch-owned')?.owners['wasm-batch'])
+      .toBeGreaterThan(0);
+    expect(observations.find(({ stage }) => stage === 'slice-pool:partitions-ready')?.owners['worker-partitions'])
+      .toBeGreaterThan(0);
+    const retainedPartitionMetadataBytes = 4 * Uint32Array.BYTES_PER_ELEMENT;
+    expect(observations.find(({ stage }) => stage === 'slice-pool:partitions-transferred')?.owners['worker-partitions'])
+      .toBe(retainedPartitionMetadataBytes);
+    expect(observations.find(({ stage }) => stage === 'slice-pool:partition-result-received')?.owners['partition-results'])
+      .toBe(result.planeOffsets.byteLength + result.endpoints.byteLength + result.diagnosticCounters.byteLength);
+    const resultBytes = result.planeOffsets.byteLength + result.endpoints.byteLength
+      + result.diagnosticCounters.byteLength;
+    expect(observations.find(({ stage }) => stage === 'slice-pool:result-merged')).toEqual({
+      stage: 'slice-pool:result-merged',
+      totalBytes: retainedPartitionMetadataBytes + resultBytes * 2,
+      owners: {
+        'worker-partitions': retainedPartitionMetadataBytes,
+        'partition-results': resultBytes,
+        'wasm-result': resultBytes,
+      },
+    });
+    expect(observations.find(({ stage }) => stage === 'slice-pool:result-handoff')).toEqual({
+      stage: 'slice-pool:result-handoff',
+      totalBytes: resultBytes,
+      owners: { 'wasm-result': resultBytes },
+    });
+    expect(observations.at(-1)).toEqual({ stage: 'slice-pool:cleanup', totalBytes: 0, owners: {} });
+  });
+
   it('cancels before asynchronous partitioning can create a worker', async () => {
     const workers: ControlledWorker[] = [];
     const pool = new SliceWorkerPool({

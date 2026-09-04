@@ -21,7 +21,7 @@ import { writeBinarySTL } from '../domain/mesh/write-stl';
 import { createOutlinePackage } from '../export/outline-package';
 import { nearLimitColoredResult } from '../export/colored-outline-test-fixture';
 import { setHoleCandidateProbeForTesting } from '../domain/outline-2.5d/extract';
-import { createStlPresentationPayload } from '../preview/stl-presentation';
+import { createStlPresentationPayloadAsync } from '../preview/stl-presentation';
 import { WasmExactSegmentSource } from '../domain/outline-2.5d/segment-source';
 import {
   OutlineArtifactError,
@@ -33,12 +33,21 @@ import {
   type OutlinePackageTransfer,
 } from './geometry-api';
 import { InternalAutomaticResultCache } from './internal-automatic-result-cache';
+import { GeometryLiveByteTracker, type GeometryLiveByteReporter } from '../performance/geometry-memory';
 
 let nearLimitPackageWorkload: ReturnType<typeof nearLimitColoredResult> | undefined;
 const internalResultCache = new InternalAutomaticResultCache();
 const workerSearchParams = new URL(globalThis.location.href).searchParams;
 const acceptanceProbeEnabled = workerSearchParams.get('shapecut-acceptance') === '1';
 const wasmRolloutEnabled = workerSearchParams.get('shapecut-wasm-rollout') === '1';
+const liveByteTracker = acceptanceProbeEnabled
+  ? new GeometryLiveByteTracker((observation) => {
+    globalThis.postMessage({ type: 'SHAPECUT_GEOMETRY_MEMORY', observation });
+  })
+  : undefined;
+const observeLiveBytes: GeometryLiveByteReporter | undefined = liveByteTracker
+  ? (stage, replacements) => { liveByteTracker.update(stage, replacements); }
+  : undefined;
 let exactSegmentSource: WasmExactSegmentSource | undefined;
 if (wasmRolloutEnabled) {
   exactSegmentSource = new WasmExactSegmentSource({
@@ -54,6 +63,7 @@ if (wasmRolloutEnabled) {
       };
       globalThis.postMessage(message);
     },
+    observeLiveBytes,
   });
 }
 
@@ -171,11 +181,26 @@ function hashBuffer(input: ArrayBuffer): string {
 
 const geometryApi: GeometryApi = {
   async createStlPresentation(input) {
-    const presentation = createStlPresentationPayload(input);
-    return transfer(presentation, [
-      presentation.mesh.positions.buffer,
-      presentation.mesh.indices.buffer,
-    ]);
+    observeLiveBytes?.('presentation:input', [{ owner: 'worker-stl', buffers: [input] }]);
+    if (acceptanceProbeEnabled) {
+      globalThis.postMessage({ type: 'SHAPECUT_PRESENTATION_SCAN_STARTED' });
+    }
+    try {
+      const presentation = await createStlPresentationPayloadAsync(input);
+      observeLiveBytes?.('presentation:preview-ready', [{
+        owner: 'presentation-preview',
+        buffers: [presentation.mesh.positions, presentation.mesh.indices],
+      }]);
+      return transfer(presentation, [
+        presentation.mesh.positions.buffer,
+        presentation.mesh.indices.buffer,
+      ]);
+    } finally {
+      observeLiveBytes?.('presentation:released', [
+        { owner: 'worker-stl', buffers: [] },
+        { owner: 'presentation-preview', buffers: [] },
+      ]);
+    }
   },
   async convertAutomatically(request, onProgress) {
     let progressProxy: Remote<AutomaticOutlineProgress> | undefined;
@@ -191,7 +216,7 @@ const geometryApi: GeometryApi = {
         bytes: request.bytes,
         material: validateManufacturingGeometryProfile(request.material),
         launcherFitOffsetMm: validateLauncherFitOffsetMm(request.launcherFitOffsetMm),
-      }, progress, { exactSegmentSource });
+      }, progress, { exactSegmentSource, observeLiveBytes });
       internalResultCache.store(internalResult);
       return stripAutomaticOutlineInternalEvidence(internalResult);
     } catch (error) {

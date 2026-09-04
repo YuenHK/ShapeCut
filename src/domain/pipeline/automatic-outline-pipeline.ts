@@ -53,6 +53,7 @@ import {
   type OutlineMode,
   type OutlineResultStatus,
 } from '../outline-2.5d/types';
+import type { GeometryLiveByteReporter } from '../../performance/geometry-memory';
 
 export type AutomaticOutlineProgressStage = 'reading' | 'analyzing' | 'simplifying' | 'slicing' | 'packaging';
 export type AutomaticOutlineProgressEvent =
@@ -118,6 +119,7 @@ export type AutomaticOutlineRequest = {
 export type AutomaticOutlineProgress = (event: AutomaticOutlineProgressEvent) => void | Promise<void>;
 export type AutomaticOutlineExecutionOptions = Readonly<{
   exactSegmentSource?: ExactSegmentSource;
+  observeLiveBytes?: GeometryLiveByteReporter;
 }>;
 export type AutomaticOutlineErrorCode =
   | 'INVALID_STL'
@@ -568,6 +570,8 @@ export async function convertAutomatically(
     throw new AutomaticOutlineError('RESOURCE_LIMIT', '模型超出安全處理資源上限');
   }
   const deadline = Date.now() + DEFAULT_OUTLINE_BUDGETS.maxRuntimeMs;
+  const observeLiveBytes = execution.observeLiveBytes;
+  observeLiveBytes?.('pipeline:input', [{ owner: 'worker-stl', buffers: [request.bytes] }]);
   let lastStage = -1;
   const previewStages = new Set<AutomaticOutlineProgressEvent['stage']>();
   const stages: readonly AutomaticOutlineProgressStage[] = ['reading', 'analyzing', 'simplifying', 'slicing', 'packaging'];
@@ -593,6 +597,10 @@ export async function convertAutomatically(
   } catch (error) {
     throw asAutomaticOutlineError(error, 'INVALID_STL');
   }
+  observeLiveBytes?.('pipeline:parsed', [{
+    owner: 'parsed-mesh',
+    buffers: [originalMesh.positions, originalMesh.indices],
+  }]);
 
   const provisionalBasis = createOutlineAxisBasis({ origin: [0, 0, 0], direction: [0, 0, 1] });
   let analyzingPreviewMesh: OutlinePreviewPayload['mesh'];
@@ -603,6 +611,10 @@ export async function convertAutomatically(
   } catch (error) {
     throw asAutomaticOutlineError(error, 'TIME_LIMIT');
   }
+  observeLiveBytes?.('pipeline:analyzing-preview', [{
+    owner: 'analyzing-preview',
+    buffers: [analyzingPreviewMesh.positions, analyzingPreviewMesh.indices],
+  }]);
   await emit({
     stage: 'analyzing',
     preview: {
@@ -622,9 +634,17 @@ export async function convertAutomatically(
   } catch (error) {
     throw asAutomaticOutlineError(error, 'NO_OUTLINE');
   }
+  observeLiveBytes?.('pipeline:repair-ready', [{
+    owner: 'safe-repair-mesh',
+    buffers: [safeRepair.mesh.positions, safeRepair.mesh.indices],
+  }]);
 
   await emit({ stage: 'simplifying' });
   const extractionMesh = safeRepair.accepted ? safeRepair.mesh : originalMesh;
+  observeLiveBytes?.('pipeline:extraction-mesh', [
+    { owner: safeRepair.accepted ? 'safe-repair-mesh' : 'parsed-mesh', buffers: [] },
+    { owner: 'extraction-mesh', buffers: [extractionMesh.positions, extractionMesh.indices] },
+  ]);
   let axis: OutlineAxisSelection;
   let specs: ReturnType<typeof scheduleOutlineLayers>;
   try {
@@ -685,6 +705,14 @@ export async function convertAutomatically(
       }, extractionMesh, deadline, projectedExtraction, material, projectedAssembly!.summary);
       await emit({ stage: 'slicing', preview: clonePreviewPayload(result.preview) });
       await emit({ stage: 'packaging' });
+      observeLiveBytes?.('pipeline:result-retained', [
+        { owner: 'worker-stl', buffers: [] },
+        { owner: 'parsed-mesh', buffers: [] },
+        { owner: 'safe-repair-mesh', buffers: [] },
+        { owner: 'extraction-mesh', buffers: [] },
+        { owner: 'analyzing-preview', buffers: [] },
+        { owner: 'result-preview', buffers: [result.preview.mesh.positions, result.preview.mesh.indices] },
+      ]);
       return result;
     }
     const result = withResultEvidence({
@@ -701,6 +729,14 @@ export async function convertAutomatically(
     }, extractionMesh, deadline, exactExtraction, material, exactAssembly!.summary);
     await emit({ stage: 'slicing', preview: clonePreviewPayload(result.preview) });
     await emit({ stage: 'packaging' });
+    observeLiveBytes?.('pipeline:result-retained', [
+      { owner: 'worker-stl', buffers: [] },
+      { owner: 'parsed-mesh', buffers: [] },
+      { owner: 'safe-repair-mesh', buffers: [] },
+      { owner: 'extraction-mesh', buffers: [] },
+      { owner: 'analyzing-preview', buffers: [] },
+      { owner: 'result-preview', buffers: [result.preview.mesh.positions, result.preview.mesh.indices] },
+    ]);
     return result;
   }
 
@@ -728,5 +764,13 @@ export async function convertAutomatically(
   }, originalMesh, deadline, projectedExtraction, material, projectedAssembly!.summary);
   await emit({ stage: 'slicing', preview: clonePreviewPayload(result.preview) });
   await emit({ stage: 'packaging' });
+  observeLiveBytes?.('pipeline:result-retained', [
+    { owner: 'worker-stl', buffers: [] },
+    { owner: 'parsed-mesh', buffers: [] },
+    { owner: 'safe-repair-mesh', buffers: [] },
+    { owner: 'extraction-mesh', buffers: [] },
+    { owner: 'analyzing-preview', buffers: [] },
+    { owner: 'result-preview', buffers: [result.preview.mesh.positions, result.preview.mesh.indices] },
+  ]);
   return result;
 }
