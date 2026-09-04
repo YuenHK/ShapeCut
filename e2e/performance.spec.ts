@@ -120,22 +120,31 @@ test('100k triangle selection stays off the main thread and reaches a bounded re
   expect(probe.errorCodes).toContain(terminalCode);
 });
 
-test('500k triangle selection returns a typed resource/time failure within the boundary', async ({ page }, testInfo) => {
-  test.setTimeout(25_000);
+for (const triangleCount of [200_000, 500_000, 1_000_000]) test(`${triangleCount} triangle selection has no 100 ms main-thread task and cleans up deterministically`, async ({ page }, testInfo) => {
+  test.setTimeout(15_000);
   await installWorkerResultProbe(page);
   await page.goto('/');
-  const fixturePath = testInfo.outputPath('500k.stl');
-  await writeFile(fixturePath, binaryTetrahedra(500_000));
+  const fixturePath = testInfo.outputPath(`${triangleCount}.stl`);
+  await writeFile(fixturePath, binaryTetrahedra(triangleCount));
   const started = Date.now();
-  await selectModel(page, fixturePath);
-  const alert = page.getByRole('alert');
-  await expect(alert).toBeVisible({ timeout: 20_000 });
-  await expect(alert).toContainText(/模型太複雜|處理時間過長/);
+  await selectModel(page, fixturePath, async () => {
+    await installLongTaskObserver(page);
+    await mark(page, 'selectedAt');
+  });
+  await mark(page, 'previewAt');
+  await page.waitForTimeout(2_000);
+  await page.getByRole('button', { name: '取消處理' }).click();
+  await expect(page.getByLabel('選擇 STL 模型')).toBeVisible();
+  await mark(page, 'downloadsAt');
   const elapsedMs = Date.now() - started;
+  const evidence = await performanceEvidence(page);
   const probe = await readWorkerProbeState(page);
-  await testInfo.attach('500k-performance.json', { body: JSON.stringify({ elapsedMs, outcome: await alert.textContent(), errorCodes: probe.errorCodes }), contentType: 'application/json' });
-  expect(elapsedMs).toBeLessThan(20_000);
-  expect(probe.errorCodes).toContainEqual(expect.stringMatching(/^(?:RESOURCE_LIMIT|TIME_LIMIT)$/));
+  await testInfo.attach(`${triangleCount}-performance.json`, { body: JSON.stringify({ triangleCount, elapsedMs, ...probe, ...evidence }), contentType: 'application/json' });
+  expect(elapsedMs).toBeLessThan(10_000);
+  expect(evidence.previewAt).toBeGreaterThanOrEqual(evidence.selectedAt);
+  expect(evidence.entries.filter(({ duration }) => duration >= 100), JSON.stringify(evidence)).toEqual([]);
+  expect(evidence.longestMainThreadTaskMs).toBeLessThan(100);
+  expect(probe.terminated).toBeGreaterThanOrEqual(1);
 });
 
 test('feature-rich PDF packaging is terminated and replaced by a second complete result', async ({ page }, testInfo) => {

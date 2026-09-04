@@ -173,6 +173,12 @@ function checkEvidenceDeadline(deadline: number): void {
 }
 
 const MAX_PREVIEW_TRIANGLES = 2_000;
+const MAX_PREVIEW_VERTICES = MAX_PREVIEW_TRIANGLES * 3;
+
+export const GEOMETRY_PREVIEW_LIMITS = Object.freeze({
+  maxTriangles: MAX_PREVIEW_TRIANGLES,
+  maxVertices: MAX_PREVIEW_VERTICES,
+});
 
 function copyPreviewMesh(mesh: TriangleMesh, deadline: number): OutlinePreviewPayload['mesh'] {
   checkEvidenceDeadline(deadline);
