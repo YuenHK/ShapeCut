@@ -1,6 +1,14 @@
 # Software validation results
 
-Last verified: 2026-07-22
+Last verified: 2026-09-04
+
+## WASM geometry A3 release decision
+
+Production WASM remains off. On the same Apple Silicon/Chromium host, each external reference received one warmup followed by five measured runs. Reference A conversion-stage median was 16.045 seconds and complete upload-to-reconciled-six-download median was 16.377 seconds. Reference B medians were 16.533 seconds and 16.819 seconds. All ten measured reference runs completed through the TypeScript fallback: no actual WASM partition observation was emitted because the post-projection positions did not satisfy the exact Float32 eligibility boundary. The result therefore fails both the actual-WASM gate and the `both <=15 seconds` performance alternative.
+
+The synthetic 200k/500k/1M selection-to-cancel-cleanup medians were 4.001/4.402/4.949 seconds. Across the 18 synthetic runs (one warmup and five measured runs per size), the longest observed main-thread task was 50 ms and active workers were zero after cancellation. Runtime-attributable peak observations were 10,096,084/25,096,084/50,096,084 bytes. No comparable pre-Task-6 runtime owner observation exists, so the required 30% reduction is not claimed; the release verifier reports `live-byte-baseline` instead of manufacturing a theoretical baseline.
+
+Canonical differential geometry, launcher fingerprint/rotation/fit/exterior-expansion/decoration-omission decisions, layers, the six downloads, and unpacked canonical ZIP members remain covered by the existing Node, Chromium, private fixture, and E2E gates. The physical official-launcher coupon fit test remains external and outstanding. A future transform-aware exact path may preserve the original binary Float32 coordinates and apply a verified transform inside Rust, but it requires a new differential contract and must not relax the current exact eligibility gate.
 
 ShapeCut now exposes one workflow: selecting one STL immediately runs analysis, exact slicing when safe, otherwise bounded 2.5D largest-exterior projection, validation, and package generation. There are no repair, axis, material, decomposition, next-step, or export-confirmation controls in the main UI.
 
@@ -34,11 +42,14 @@ The final release run executes `npm test`, browser tests, both real Knight E2E c
 
 | Command | Fresh result |
 | --- | --- |
-| `npm test` | 42 files, 1096 tests passed; exact artifact parser tests 41/41 |
-| `npm run test:browser -- --run` | 5 files, 38 tests passed |
-| External fixture presence check | 2 files present |
-| `npm run test:e2e -- --workers=1` | 15/15 passed, including Knight 2/2; 0 skipped |
-| `npm run validate:fixtures` | 10/10 expected outcomes passed; 8 automatic successes |
-| `npm run test:performance` | 4/4 passed in 51.7 s overall; 100k classification 30.7 s |
+| `npm test -- --maxWorkers=1 --fileParallelism=false` | 78/78 files; 1874 passed, 4 skipped |
+| `npm run test:browser -- --run` | 9/9 files; 142/142 passed under the unchanged 15-second per-test gate |
+| External fixture presence check | 2 files present; full private validation 2/2 passed |
+| `npm run test:e2e -- --workers=1` | 19 passed, 3 truthful conditional skips; external A/B both passed |
+| `npm run validate:fixtures` | 10/10 expected outcomes passed; 8 automatic successes; launcher runtime A/B passed |
+| Fixed-host synthetic release benchmark | 18/18 passed; one warmup and five measured runs for 200k/500k/1M |
+| `cargo test --locked --manifest-path crates/geometry-wasm/Cargo.toml` | 22/22 passed |
+| Raw WASM boundary | 31/31 passed |
+| Release verifier | Correctly exits non-zero for the current default-off evidence and reports three unmet software gates |
 | `npm run typecheck` | passed |
-| `npm run build` | passed; 57 modules transformed |
+| `npm run build` | passed; 178 modules transformed; one hashed WASM and one hashed slice-worker asset; zero source maps |

@@ -146,6 +146,12 @@ for (const triangleCount of [200_000, 500_000, 1_000_000]) test(`${triangleCount
   const elapsedMs = Date.now() - started;
   const evidence = await performanceEvidence(page);
   const probe = await readWorkerProbeState(page);
+  process.stdout.write(`synthetic-release-benchmark ${triangleCount} ${JSON.stringify({
+    elapsedMs,
+    longestMainThreadTaskMs: evidence.longestMainThreadTaskMs,
+    peakAttributableLiveBytes: Math.max(...probe.memoryObservations.map(({ totalBytes }) => totalBytes)),
+    cancellationActiveWorkers: probe.active,
+  })}\n`);
   await testInfo.attach(`${triangleCount}-performance.json`, { body: JSON.stringify({ triangleCount, elapsedMs, ...probe, ...evidence }), contentType: 'application/json' });
   expect(elapsedMs).toBeLessThan(10_000);
   expect(evidence.previewAt).toBeGreaterThanOrEqual(evidence.selectedAt);

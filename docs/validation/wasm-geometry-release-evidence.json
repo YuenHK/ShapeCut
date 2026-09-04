@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 1,
+  "host": {
+    "architecture": "arm64",
+    "browser": "chromium",
+    "measuredRuns": 5,
+    "warmupRuns": 1
+  },
+  "benchmarks": [
+    {
+      "caseId": "reference-a",
+      "kind": "private-reference",
+      "triangleCount": 37116,
+      "layerCount": 6,
+      "measurementInterval": "conversion-stage",
+      "origin": "typescript",
+      "actualWasmPartitionsObserved": false,
+      "conversionStageMs": [16084, 16044, 16016, 16048, 16045],
+      "fullOneClickMs": [18635, 16400, 16320, 16334, 16377]
+    },
+    {
+      "caseId": "reference-b",
+      "kind": "private-reference",
+      "triangleCount": 40100,
+      "layerCount": 6,
+      "measurementInterval": "conversion-stage",
+      "origin": "typescript",
+      "actualWasmPartitionsObserved": false,
+      "conversionStageMs": [16577, 16549, 16533, 16522, 16520],
+      "fullOneClickMs": [16864, 16811, 16808, 16819, 16821]
+    },
+    {
+      "caseId": "synthetic-200000",
+      "kind": "synthetic",
+      "triangleCount": 200000,
+      "layerCount": 0,
+      "measurementInterval": "selection-to-cancel-cleanup",
+      "origin": "wasm",
+      "actualWasmPartitionsObserved": true,
+      "conversionStageMs": [4010, 4005, 4001, 4000, 3987]
+    },
+    {
+      "caseId": "synthetic-500000",
+      "kind": "synthetic",
+      "triangleCount": 500000,
+      "layerCount": 0,
+      "measurementInterval": "selection-to-cancel-cleanup",
+      "origin": "wasm",
+      "actualWasmPartitionsObserved": true,
+      "conversionStageMs": [4413, 4394, 4401, 4402, 4403]
+    },
+    {
+      "caseId": "synthetic-1000000",
+      "kind": "synthetic",
+      "triangleCount": 1000000,
+      "layerCount": 0,
+      "measurementInterval": "selection-to-cancel-cleanup",
+      "origin": "wasm",
+      "actualWasmPartitionsObserved": true,
+      "conversionStageMs": [4950, 4894, 4934, 4949, 4967]
+    }
+  ],
+  "memory": {
+    "baselineAttributableLiveBytes": null,
+    "runtimeAttributableLiveBytes": 50096084,
+    "observationStages": [
+      "pipeline:stl-received",
+      "slice-pool:partitions-ready",
+      "slice-pool:result-merged",
+      "slice-pool:cleanup"
+    ]
+  },
+  "responsiveness": {
+    "longestMainThreadTaskMs": 50,
+    "cancellationVerifiedUnderOneSecond": true,
+    "activeWorkersAfterCancellation": 0
+  },
+  "geometry": {
+    "differential": true,
+    "launcherFingerprint": true,
+    "launcherRotation": true,
+    "launcherFit": true,
+    "exteriorExpansion": true,
+    "decorationOmissions": true,
+    "layerCanonical": true,
+    "sixOutputsCanonical": true,
+    "zipMembersCanonical": true
+  },
+  "bundle": {
+    "hashedWasmAssets": 1,
+    "hashedSliceWorkerAssets": 1,
+    "sourceMaps": 0,
+    "absolutePaths": false,
+    "privateTokens": false
+  },
+  "privateAcceptance": "passed",
+  "physicalLauncherCoupon": "outstanding"
+}

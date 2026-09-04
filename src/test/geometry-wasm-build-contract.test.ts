@@ -158,6 +158,7 @@ process.exit(73);
       'actions/configure-pages': { sha: '983d7736d9b0ae728b81ab479565c72886d7745b', version: 'v5' },
       'actions/upload-pages-artifact': { sha: '7b1f4a764d45c48632c6b24a0339c27f5614fb0b', version: 'v4' },
       'actions/deploy-pages': { sha: 'd6db90164ac5ed86f2b6aed7e0febac5b3c0c03e', version: 'v4' },
+      'actions/cache': { sha: '0057852bfaa89a56745cba8c7296529d2fc39830', version: 'v4' },
     };
     const workflowDirectory = resolve(repositoryRoot, '.github/workflows');
     const workflowPaths = readdirSync(workflowDirectory)
@@ -177,5 +178,24 @@ process.exit(73);
         expect({ sha: match![2], version: match![3] }).toEqual(expected);
       }
     }
+  });
+
+  it('runs the locked Rust, WASM, differential browser, bundle and release verifier gates in CI', () => {
+    const ci = readFileSync(resolve(repositoryRoot, '.github/workflows/ci.yml'), 'utf8');
+    expect(ci).toContain('actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4');
+    expect(ci).toContain('cargo test --locked --manifest-path crates/geometry-wasm/Cargo.toml');
+    expect(ci).toContain('npm run build:geometry-wasm');
+    expect(ci).toContain('npm test -- --maxWorkers=1 --fileParallelism=false');
+    expect(ci).toContain('npm run test:browser -- --run');
+    expect(ci).toContain('npm run build');
+    expect(ci).toContain('npm run verify:geometry-wasm-generated');
+    expect(ci).toContain('src/test/wasm-geometry-release.test.ts');
+  });
+
+  it('does not deploy without the same locked Rust and software release contract gates', () => {
+    const pages = readFileSync(resolve(repositoryRoot, '.github/workflows/deploy-pages.yml'), 'utf8');
+    expect(pages).toContain('cargo test --locked --manifest-path crates/geometry-wasm/Cargo.toml');
+    expect(pages).toContain('src/test/wasm-geometry-release.test.ts');
+    expect(pages).toContain('npm run test:browser -- --run');
   });
 });

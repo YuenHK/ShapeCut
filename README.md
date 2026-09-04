@@ -18,7 +18,7 @@ npm run dev
 - 「需注意 · 2.5D 外形」：已自動使用近似外形；細小分離零件會被移除，不可靠的孔洞或深淺特徵會被省略。
 - 「失敗」：檔案無法讀取、沒有有效外形，或超出時間／資源上限；可立即選擇另一個檔案。
 
-成功或需注意時，頁面會提供五個下載：ZIP 製作套件、SVG、DXF、平面預覽 PDF 及爆炸圖 PDF。ZIP 內四項檔案與四個個別下載逐 byte 相同，並以同一組來源及特徵 fingerprint 對齊。
+成功或需注意時，頁面會提供六個下載：ZIP 製作套件、SVG、DXF、平面預覽 PDF、爆炸圖 PDF 及官方三爪孔配合測試券。ZIP 內五項製作檔案與五個個別下載逐 byte 相同，並以同一組來源及特徵 fingerprint 對齊。
 
 輸出使用三種固定顏色表示相對角色：
 
@@ -42,6 +42,8 @@ npm run typecheck
 npm run build
 ```
 
+Rust WASM 幾何核心及最多四個 Web Workers 已納入測試，但 production 仍預設使用 TypeScript 路徑。2026-09-04 的固定 Apple Silicon／Chromium release gate 發現兩個外部參考模型均因投影後座標未能通過 exact Float32 安全條件而在啟動 slice workers 前回到 TypeScript；純轉換中位數分別為 16.045 秒及 16.533 秒。因此現階段沒有把實驗性 WASM rollout 設為 production 預設，也沒有聲稱取得 WASM 加速。完整、可機器驗證的結果見 [WASM geometry release evidence](docs/validation/wasm-geometry-release-evidence.json)。
+
 `validate:fixtures` 是發佈用 gate，必須同時提供兩個外部驗收輸入；本機日常開發只驗證公開 fixtures 時，請使用上述獨立的 `validate:fixtures:public` 命令。
 
 Production build 位於 `dist/`。應用包含 Web App Manifest 與只快取同源靜態 shell 的 service worker；使用者選取的 STL 不會進入離線 cache。
@@ -59,7 +61,7 @@ ShapeCut 公開網站：[https://yuenhk.github.io/ShapeCut/](https://yuenhk.gith
 
 ## GitHub Pages 部署
 
-每次 push 到 `main` 時，GitHub Actions 會先執行 `npm run typecheck` 及 production build；只有通過這兩項 gate 才會部署到 GitHub Pages。
+每次 push 到 `main` 時，GitHub Actions 會先執行 locked Rust kernel、WASM regeneration、release verifier contract、TypeScript、Node、Chromium differential 及 production bundle gates；只有通過後才會部署到 GitHub Pages。私有參考模型與實體官方發射器配合測試仍是獨立 release acceptance，不會提交到 repository 或假裝由公開 CI 完成。
 
 本機可用以下命令重現 Pages build：
 

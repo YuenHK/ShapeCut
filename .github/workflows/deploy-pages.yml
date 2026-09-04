@@ -16,6 +16,8 @@ concurrency:
 jobs:
   regenerate_wasm:
     runs-on: ubuntu-latest
+    env:
+      CARGO_INCREMENTAL: 0
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -23,6 +25,14 @@ jobs:
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
+      - name: Cache locked Rust dependencies
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            crates/geometry-wasm/target
+          key: geometry-wasm-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
       - name: Install pinned Rust toolchain
         run: |
           rustup toolchain install 1.98.0 --profile minimal --target wasm32-unknown-unknown
@@ -30,6 +40,10 @@ jobs:
           rustc --version
       - name: Install pinned wasm-pack
         run: cargo install wasm-pack --version 0.15.0 --locked
+      - name: Test locked Rust kernel
+        run: cargo test --locked --manifest-path crates/geometry-wasm/Cargo.toml
+      - name: Build deterministic WASM
+        run: npm run build:geometry-wasm
       - name: Compare pinned regeneration with tracked artifacts
         run: node scripts/verify-geometry-wasm-regeneration.mjs
 
@@ -48,10 +62,16 @@ jobs:
         uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
       - name: Install dependencies
         run: npm ci
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
       - name: Verify tracked geometry WASM artifacts
         run: npm run verify:geometry-wasm-generated
       - name: Type-check
         run: npm run typecheck
+      - name: Release verifier contract
+        run: npm test -- src/test/wasm-geometry-release.test.ts --maxWorkers=1 --fileParallelism=false
+      - name: Browser differential tests
+        run: npm run test:browser -- --run
       - name: Build
         run: npm run build
         env:

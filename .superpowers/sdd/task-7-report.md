@@ -1,0 +1,72 @@
+# Task 7 implementation report
+
+## Release decision
+
+Production WASM remains disabled by default. The fixed-host release verifier correctly exits 1 and reports:
+
+- `knight-performance`
+- `knight-actual-wasm`
+- `live-byte-baseline`
+
+The physical official-launcher coupon fit test is separately reported as external and outstanding. This task does not claim whole-branch approval or physical launcher acceptance.
+
+## TDD RED to GREEN
+
+- Release verifier RED: the focused suite could not resolve the missing verifier module. GREEN: a strict canonical evidence parser and release decision function now has 12/12 focused tests passing. It rejects identifying fields, non-canonical evidence, missing five-run samples, non-Apple-Silicon/non-Chromium hosts, performance/memory/responsiveness/geometry/bundle failures, TypeScript fallback disguised as WASM, and absent private acceptance.
+- Workflow RED: two build-contract tests failed because `.github/workflows/ci.yml` was absent and Pages lacked locked Rust/browser/release gates. GREEN: 18/18 combined release/workflow contract assertions pass. CI and Pages now pin the Rust toolchain and wasm-pack, cache locked Cargo inputs, run `cargo test --locked`, regenerate/verify WASM, run serial Node and Chromium differential tests, exercise the release verifier contract, and inspect the production build.
+- Actual-WASM RED: the first private benchmark run expected an active WASM partition but observed none. The rollout-on conversion succeeded through TypeScript because the post-projection coordinates did not meet the exact Float32 eligibility boundary. The release verifier now requires both `origin: wasm` and an actual partition observation for both references.
+- Harness RED: the first draft expected the long-lived geometry worker count to be zero after successful output, then a repeated run restored the saved project and blocked the material selector. GREEN: the benchmark uses the existing discard-project control between trials and emits append-safe per-trial sanitized evidence. It completed both references in 3.6 minutes.
+
+No production geometry predicate, tolerance, UI, style, typography, colour, layout, launcher rule, artifact rule, or exact Float32 eligibility rule was relaxed.
+
+## Fixed-host benchmarks
+
+Host contract: Apple Silicon arm64, Chromium, one warmup then five measured runs, single worker. Private input paths, filenames and geometry hashes are absent from the committed evidence and report.
+
+| Case | Measured interval | Measured values (ms) | Median (ms) | Actual WASM |
+| --- | --- | --- | ---: | --- |
+| Reference A | conversion stage | 16084, 16044, 16016, 16048, 16045 | 16045 | no; TypeScript fallback |
+| Reference A | upload to reconciled six downloads | 18635, 16400, 16320, 16334, 16377 | 16377 | no; TypeScript fallback |
+| Reference B | conversion stage | 16577, 16549, 16533, 16522, 16520 | 16533 | no; TypeScript fallback |
+| Reference B | upload to reconciled six downloads | 16864, 16811, 16808, 16819, 16821 | 16819 | no; TypeScript fallback |
+| Synthetic 200k | selection to cancel and cleanup | 4010, 4005, 4001, 4000, 3987 | 4001 | yes, controlled actual-WASM workload |
+| Synthetic 500k | selection to cancel and cleanup | 4413, 4394, 4401, 4402, 4403 | 4402 | yes, controlled actual-WASM workload |
+| Synthetic 1M | selection to cancel and cleanup | 4950, 4894, 4934, 4949, 4967 | 4949 | yes, controlled actual-WASM workload |
+
+The Knight target fails: neither reference is at or below 15 seconds and no actual WASM partition was used. A future transform-aware exact path could retain original binary Float32 positions and apply a verified projection transform in Rust, but that changes the Task 5 kernel boundary and requires new TypeScript-oracle differential and six-artifact identity gates. It must not bypass or loosen the current exact eligibility rule.
+
+## Memory, responsiveness and cancellation
+
+- Synthetic runtime-attributable peaks: 10,096,084 / 25,096,084 / 50,096,084 bytes for 200k / 500k / 1M.
+- Longest main-thread task across the 18 fixed-host synthetic runs: 50 ms; no run reached 100 ms.
+- Every synthetic run finished cancellation with active worker count zero. The existing actual-WASM browser cancellation gate verifies termination within one second.
+- The current runtime tracker covers STL, parsed/safe-repair/extraction meshes, bounded preview, WASM batch, partition copies/metadata/results, simultaneous merge inputs/output, retained preview, and cleanup.
+- There is no comparable pre-Task-6 runtime-owner observation. The report therefore does not derive a theoretical denominator or claim a 30% reduction; the verifier emits `live-byte-baseline` and blocks release.
+
+## Geometry and artifact acceptance
+
+- Public fixture validator: 10/10 expected outcomes; 8 automatic successes; output comparison passed.
+- Private runtime validator: 2/2 references passed. Fixed launcher status, one safe plan, six artifact cuts, template version/fingerprint, zero fit offset, canonical rotation, positive exterior expansion, expected decoration omissions, black geometry stability, and artifact geometry reconciliation passed.
+- Full private browser acceptance: A and B both produced two deterministic complete runs with six reconciled downloads. ZIP members were unpacked and compared through canonical name/content parsing rather than ZIP metadata bytes alone.
+- Differential Node/Chromium gates preserve canonical layers, launcher decisions, feature evidence and all artifacts.
+
+## Verification matrix
+
+- Focused release/workflow contracts: 2 files, 18 tests passed.
+- Full serial Node: 78/78 files; 1,874 passed, 4 skipped; 289.02 seconds.
+- Full Chromium: 9/9 files; 142/142 passed; 83.87 seconds under the unchanged 15-second per-test gate.
+- Full E2E with external A/B: 19 passed, 3 truthful conditional skips; A 38.8 seconds, B 40.2 seconds. The skips were one legacy path-only optional case and two explicit benchmark-only cases; the actual A/B release cases passed.
+- Fixed-host synthetic benchmark: 18/18 passed in 1.6 minutes.
+- Rust: 1 unit + 21 integration tests passed; locked; clippy `-D warnings` passed.
+- Raw WASM boundary: 31/31 passed.
+- Tracked WASM artifacts: 4/4 verified; Rust 1.98.0 and wasm-pack 0.15.0.
+- Public and private fixture validators: passed.
+- Typecheck, production build and `git diff --check`: passed. Build transformed 178 modules and emitted one hashed slice worker, one hashed WASM asset, zero source maps, and no private path/account data.
+- Current release evidence CLI: exits 1 by design with the three unmet software gates above; production default-off is preserved.
+
+## Follow-up and external gate
+
+1. Design and TDD a transform-aware exact WASM input contract so reference meshes can use WASM without converting the canonical projected geometry to an inexact Float32 representation.
+2. Capture a comparable old/new runtime-owner baseline before claiming the required 30% live-byte reduction.
+3. Repeat the same one-warmup/five-measured fixed-host benchmark and require both actual-WASM reference runs plus the speed target.
+4. Perform the physical official-launcher coupon fit test externally and record signed fabrication evidence.
