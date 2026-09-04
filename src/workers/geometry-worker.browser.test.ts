@@ -48,9 +48,12 @@ function createRawGeometryWorkerApi(): Remote<GeometryApi> {
   rawWorkerApis.push(api);
   return api;
 }
-function createAcceptanceGeometryWorker(): { readonly worker: Worker; readonly api: Remote<GeometryApi> } {
+function createAcceptanceGeometryWorker(
+  wasmRolloutEnabled = false,
+): { readonly worker: Worker; readonly api: Remote<GeometryApi> } {
   const url = new URL('./geometry.worker.ts', import.meta.url);
   url.searchParams.set('shapecut-acceptance', '1');
+  if (wasmRolloutEnabled) url.searchParams.set('shapecut-wasm-rollout', '1');
   const worker = new Worker(url, { type: 'module' });
   const api = wrap<GeometryApi>(worker);
   rawWorkers.push(worker);
@@ -62,6 +65,8 @@ type WasmAccelerationState = Readonly<{
   requestId: number;
   generation: number;
   activeWorkerCount: number;
+  rolloutEnabled: boolean;
+  sourceConstructed: boolean;
 }>;
 let wasmStateRequestId = 0;
 function requestWasmAccelerationState(
@@ -164,8 +169,39 @@ afterEach(() => {
 });
 
 describe('geometry worker boundary', () => {
-  it('uses verified WASM segments in production canonical extraction without changing launcher artifacts', async () => {
+  it('keeps the production default on TypeScript without constructing or executing WASM', async () => {
     const { worker, api } = createAcceptanceGeometryWorker();
+    const publications: GeometryAccelerationProbe[] = [];
+    worker.addEventListener('message', (event) => {
+      if (event.data?.type === 'SHAPECUT_WASM_SEGMENTS_PUBLISHED') publications.push(event.data);
+    });
+
+    const before = await requestWasmAccelerationState(worker, 'SHAPECUT_WASM_STATE_REQUEST');
+    const converted = await api.convertAutomatically({
+      bytes: writeBinarySTL(launcherCompatibleCylinder(12), 'safe'),
+      material: testMaterial,
+      launcherFitOffsetMm: 0,
+    });
+    const after = await requestWasmAccelerationState(worker, 'SHAPECUT_WASM_STATE_REQUEST');
+
+    expect(converted).toMatchObject({ mode: 'exact' });
+    expect(before).toMatchObject({
+      rolloutEnabled: false,
+      sourceConstructed: false,
+      generation: 0,
+      activeWorkerCount: 0,
+    });
+    expect(after).toMatchObject({
+      rolloutEnabled: false,
+      sourceConstructed: false,
+      generation: 0,
+      activeWorkerCount: 0,
+    });
+    expect(publications).toEqual([]);
+  });
+
+  it('uses verified WASM segments in production canonical extraction without changing launcher artifacts', async () => {
+    const { worker, api } = createAcceptanceGeometryWorker(true);
     const source = writeBinarySTL(launcherCompatibleCylinder(12), 'safe');
     const publication = new Promise<unknown>((resolve) => {
       worker.addEventListener('message', (event) => {
@@ -209,7 +245,7 @@ describe('geometry worker boundary', () => {
   });
 
   it('cancels actual WASM singleton workers without late publication and replaces with a clean generation', async () => {
-    const { worker, api } = createAcceptanceGeometryWorker();
+    const { worker, api } = createAcceptanceGeometryWorker(true);
     const publications: Array<GeometryAccelerationProbe & { readonly generation: number }> = [];
     worker.addEventListener('message', (event) => {
       if (event.data?.type === 'SHAPECUT_WASM_SEGMENTS_PUBLISHED') publications.push(event.data);

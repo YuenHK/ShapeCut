@@ -36,21 +36,26 @@ import { InternalAutomaticResultCache } from './internal-automatic-result-cache'
 
 let nearLimitPackageWorkload: ReturnType<typeof nearLimitColoredResult> | undefined;
 const internalResultCache = new InternalAutomaticResultCache();
-const acceptanceProbeEnabled = new URL(globalThis.location.href).searchParams.get('shapecut-acceptance') === '1';
-const exactSegmentSource = new WasmExactSegmentSource({
-  minimumWasmWork: acceptanceProbeEnabled ? 0 : undefined,
-  onPublication: (collection, generation) => {
-    if (!acceptanceProbeEnabled || collection.origin !== 'wasm') return;
-    const message: GeometryAccelerationProbe = {
-      type: 'SHAPECUT_WASM_SEGMENTS_PUBLISHED',
-      origin: 'wasm',
-      layerCount: collection.layers.length,
-      generation,
-      activeWorkerCount: exactSegmentSource.activeWorkerCount,
-    };
-    globalThis.postMessage(message);
-  },
-});
+const workerSearchParams = new URL(globalThis.location.href).searchParams;
+const acceptanceProbeEnabled = workerSearchParams.get('shapecut-acceptance') === '1';
+const wasmRolloutEnabled = workerSearchParams.get('shapecut-wasm-rollout') === '1';
+let exactSegmentSource: WasmExactSegmentSource | undefined;
+if (wasmRolloutEnabled) {
+  exactSegmentSource = new WasmExactSegmentSource({
+    minimumWasmWork: acceptanceProbeEnabled ? 0 : undefined,
+    onPublication: (collection, generation) => {
+      if (!acceptanceProbeEnabled || collection.origin !== 'wasm') return;
+      const message: GeometryAccelerationProbe = {
+        type: 'SHAPECUT_WASM_SEGMENTS_PUBLISHED',
+        origin: 'wasm',
+        layerCount: collection.layers.length,
+        generation,
+        activeWorkerCount: exactSegmentSource?.activeWorkerCount ?? 0,
+      };
+      globalThis.postMessage(message);
+    },
+  });
+}
 
 globalThis.addEventListener('message', (event: MessageEvent<unknown>) => {
   if (!acceptanceProbeEnabled) return;
@@ -69,17 +74,25 @@ globalThis.addEventListener('message', (event: MessageEvent<unknown>) => {
       globalThis.postMessage({
         type: 'SHAPECUT_WASM_STATE',
         requestId: message.requestId,
-        generation: exactSegmentSource.generation,
-        activeWorkerCount: exactSegmentSource.activeWorkerCount,
+        generation: exactSegmentSource?.generation ?? 0,
+        activeWorkerCount: exactSegmentSource?.activeWorkerCount ?? 0,
+        rolloutEnabled: wasmRolloutEnabled,
+        sourceConstructed: exactSegmentSource !== undefined,
       });
     };
     if (message.type === 'SHAPECUT_WASM_CANCEL_REQUEST') {
-      void exactSegmentSource.cancel().then(respond);
+      void (exactSegmentSource?.cancel() ?? Promise.resolve()).then(respond);
     } else {
       respond();
     }
   }
   if (message?.type === 'SHAPECUT_WASM_START_REQUEST' && Number.isSafeInteger(message.requestId)) {
+    if (!exactSegmentSource) {
+      globalThis.postMessage({
+        type: 'SHAPECUT_WASM_START_OUTCOME', requestId: message.requestId, outcome: 'rejected',
+      });
+      return;
+    }
     const triangles = Object.freeze(Array.from({ length: 50_000 }, () => Object.freeze([0, 1, 2] as const)));
     const specs = Object.freeze(Array.from({ length: 24 }, (_, index) => Object.freeze({
       index,

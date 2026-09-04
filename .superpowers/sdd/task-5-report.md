@@ -2,11 +2,52 @@
 
 ## 狀態
 
-READY_FOR_FINAL_REVIEW。
+READY_FOR_REVIEW。最新獨立 review 的 C1、I1 及 I2 修正已完成，但本報告不會
+在新一輪獨立 review 回覆前聲稱已獲批准。
 
-Final implementation commit 是 `819a1b9`。Review findings 1–9 已按嚴格
+Earlier final-review implementation commit 是 `819a1b9`。Review findings 1–9 已按嚴格
 RED → GREEN 處理，implementation worktree 及 detached fresh clone 的完整 gate
-均已完成；本報告不會在正式獨立 review 回覆前聲稱已獲批准。
+均已完成。最新 gate fix 是包含本報告的 commit。
+
+### C1：Task 7 前 production default-off rollout gate
+
+- 根因：`geometry.worker.ts` 原先無條件建構 `WasmExactSegmentSource`，並將它
+  注入每次 production conversion；沒有 rollout gate。
+- RED：新 default-production Chromium regression 是 0/1（1 failed、36 skipped）。
+  Worker state 沒有 `rolloutEnabled: false` 或 `sourceConstructed: false`，而舊路徑
+  會建構及執行 WASM source。
+- GREEN：新的明確 rollout flag 是 page query `shapecut-wasm-rollout=1`。
+  Geometry client 只在值精確為 `1` 時把 flag 傳入 worker；worker 只在同一條件
+  下建構及注入 WASM source。Flag 缺省、空白或非 `1` 時繼續使用原本
+  TypeScript production path，不建構 source、不啟動 worker、不會 publication；
+  generation 及 active worker count 在 conversion 前後都是 0。沒有 UI、CSS、文案
+  或 interaction 改動。
+- Focused Chromium GREEN：default-off 與 explicit-on 2/2；連同 actual-WASM
+  cancel/replacement 為 3/3（4.101 s、8.827 s、12.107 s），每-test 15 秒 gate
+  沒有放寬。完整 geometry-worker Chromium 為 37/37（86.84 s）。
+
+### I1：exact-Float32 same-topology wrong-coordinate differential
+
+- 新 regression 使用 exact-Float32 box projected mesh；worker result 保持相同 layer
+  及 segment 數量，但改動一個座標。測試明確要求 runner 只執行一次、
+  錯誤 WASM 不 publication，回傳 original TypeScript oracle。
+- Mutation RED：暫時停用 coordinate comparison 後 0/1（1 failed、16 skipped），
+  實際收到 `origin: wasm` 與錯誤座標，證明新測試不會被 exact-Float32
+  preflight 短路。
+- GREEN：還原 fail-closed coordinate comparison 後 1/1（16 skipped）；完整
+  segment-source Node 為 17/17。Runner 呼叫一次、publication 零次、回傳值與
+  original TypeScript oracle 完全相同。
+
+### 最新 gate-fix verification
+
+- Automatic pipeline：37/37（145.36 s），每-test 20 秒 gate 沒有放寬。
+- Geometry-worker Chromium：37/37（86.84 s），每-test 15 秒 gate 沒有放寬。
+- Typecheck：passed。Production build：passed；177 modules transformed。
+- Bundle：1 個 hashed slice worker、1 個 hashed WASM、0 source maps；沒有 absolute
+  local paths、private fixture token、private model path 或 model data。
+- 本次沒有重跑無關的 full 75-file Node、full 9-file Chromium、E2E、private
+  heavy fixtures、Rust 或 raw-WASM gates；最新改動只觸及 production rollout routing、
+  worker acceptance probes 及 TypeScript differential regression。
 
 Production canonical extraction 只在所有 projected positions 均可 exact Float32
 round-trip、worker batch validation 及 publication boundary 全部通過後，才使用

@@ -196,6 +196,33 @@ describe('exact segment sources', () => {
     expect(publication).not.toHaveBeenCalled();
   });
 
+  it('rejects same-topology wrong coordinates from an executed runner before publication', async () => {
+    const projected = projectMesh(box(), selection, Infinity);
+    const oracle = await new TypeScriptExactSegmentSource()
+      .collect(projected, specs, Infinity, () => undefined);
+    const wrongCoordinates = oracle.layers[0].segments.flatMap((segment, segmentIndex) => (
+      segment.flatMap((point, pointIndex) => point.map((coordinate, coordinateIndex) => (
+        segmentIndex === 0 && pointIndex === 0 && coordinateIndex === 0
+          ? coordinate + 0.25
+          : coordinate
+      )))
+    ));
+    const batchRunner = runner(result(wrongCoordinates));
+    const publication = vi.fn();
+    const source = new WasmExactSegmentSource({
+      runner: batchRunner,
+      compareWithTypeScript: true,
+      minimumWasmWork: 0,
+      onPublication: publication,
+    });
+
+    const collected = await source.collect(projected, specs, Infinity, () => undefined);
+
+    expect(batchRunner.run).toHaveBeenCalledOnce();
+    expect(collected).toEqual(oracle);
+    expect(publication).not.toHaveBeenCalled();
+  });
+
   it('preselects the original TypeScript source for Float32-unsafe coordinates without starting a worker', async () => {
     const projected: ProjectedMesh = Object.freeze({
       vertices: Object.freeze([

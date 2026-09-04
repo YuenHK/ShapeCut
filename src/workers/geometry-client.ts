@@ -217,7 +217,12 @@ export function createGeometryWorkerClient(): GeometryClient {
 }
 
 function createGeometryWorker(): Worker {
-  return new Worker(new URL('./geometry.worker.ts', import.meta.url), { type: 'module' });
+  const workerUrl = new URL('./geometry.worker.ts', import.meta.url);
+  const pageUrl = new URL(globalThis.location.href);
+  if (pageUrl.searchParams.get('shapecut-wasm-rollout') === '1') {
+    workerUrl.searchParams.set('shapecut-wasm-rollout', '1');
+  }
+  return new Worker(workerUrl, { type: 'module' });
 }
 
 function dynamicApi(
