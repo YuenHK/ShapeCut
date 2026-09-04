@@ -1,137 +1,132 @@
-# Task 5 Report: WASM Segments in Canonical Extraction
+# Task 5 報告：WASM segments 接入 canonical extraction
 
-## Status
+## 狀態
 
-DONE_WITH_CONCERNS. Production canonical extraction now consumes validated,
-canonical-sorted WASM segments for sufficiently large batches. Small batches
-select the existing TypeScript source before worker startup to avoid paying a
-worker/WASM startup penalty; this is capability routing, not an error fallback.
-TypeScript still owns topology, material validation, launcher planning,
-canonical assembly, preview and all release artifacts.
+DONE_WITH_CONCERNS。
 
-No UI, CSS, typography, colour, layout, material rule, launcher rule or
-production processing deadline was changed.
+Task 5 的五項 review findings 已完成，並在最終 code commit
+`c25a13c` 上取得 fresh full matrix 及獨立 re-review。正式 review 結果為
+0 Critical、0 Important、0 Minor，可接受。
 
-## TDD evidence
+Production canonical extraction 只在 Float32 preflight、worker batch validation
+及 publication boundary 全部通過後使用 canonical-sorted WASM segments；
+TypeScript 仍負責 topology、材料驗證、launcher planning、canonical assembly、
+preview 及所有 release artifacts。任何 differential 非 exact 結果均在
+publication 前改用 original projected TypeScript mesh；publication 後不得混用
+TypeScript extraction。
 
-RED:
+沒有修改 UI、CSS、字體、字型、大小、顏色、layout、材料規則、launcher 規則，
+亦沒有修改 production 120 秒、automatic 20 秒或 browser 15 秒限制。
 
-- The new segment-source suite initially failed because the module and adapter
-  did not exist.
-- Supplied segment batches were ignored by exact extraction and the automatic
-  pipeline did not call an injected source.
-- The real production worker acceptance timed out waiting for a WASM
-  publication and then exposed a sanitized `NO_OUTLINE` result.
-- Small-model real-worker tests exceeded their existing 15-second browser test
-  limit after unconditional worker startup.
+## TDD RED → GREEN 證據
 
-Root causes and GREEN:
+### Finding 5：actual-WASM singleton cancel／replacement
 
-- Added `ExactSegmentSource`, the existing TypeScript oracle and the WASM pool
-  adapter; focused source/extraction tests pass 70/70.
-- The original `NO_OUTLINE` was an unbounded `Infinity` pipeline deadline being
-  rejected by the pool's safe-integer ownership contract. Only the transport
-  representation is mapped to `Number.MAX_SAFE_INTEGER`; finite deadlines and
-  production policy are unchanged.
-- Added a 4,096 triangle-plane work threshold so small jobs select TypeScript
-  before worker startup. Acceptance can explicitly force the real WASM route;
-  private reference A/B remain above the production threshold.
-- Restored the TypeScript oracle's original triangle-order segment traversal;
-  only the differential copy and every WASM batch are canonical-sorted. This
-  avoids changing the established downstream traversal cost.
+- RED mutation：暫時令 acceptance cancel 訊息只回報狀態而不呼叫
+  `exactSegmentSource.cancel()`；同一 real Chromium test 收到
+  `activeWorkerCount: 4`，在預期 `0` 處失敗。
+- GREEN：還原實作後，focused test 1/1 通過；取消後 workers 在 1 秒內歸零，
+  第一代工作被拒絕，沒有 late publication，replacement generation 遞增，
+  唯一 publication 來自新 generation 且 `activeWorkerCount: 0`。
+- replacement 與獨立 fresh TypeScript baseline 精確比較 canonical layers、
+  完整 assembly 及 feature-evidence fingerprint。
+- contamination mutation 將 replacement layers 刪去第一層後，同一 test 正確
+  RED；還原後在 15 秒 test gate 內 GREEN，focused runtime 約 10.00 秒。
 
-## Implementation
+### Finding 2：mixed-scale Float32 preselection
 
-- `segment-source.ts` owns immutable exact segment batches, deterministic
-  endpoint direction/order for WASM, on-plane edge reconciliation, diagnostic
-  comparison, Float32 precision preflight and the closed fallback boundary.
-- Only trusted pool startup/load/execution failures marked eligible by the
-  Task 4 pool may restart from TypeScript before publication. Cancellation,
-  deadline, invalid request, precision validation, protocol validation,
-  differential mismatch and post-result validation never fallback.
-- Automatic extraction projects once, asks the selected source for segments,
-  and gives the same projection and segments to the existing TypeScript
-  topology reducer. Existing progress stages and public result shape remain
-  unchanged.
-- The publication boundary is carried into the pipeline: after an accepted
-  WASM batch is returned, later exact-topology ambiguity fails closed and
-  cannot switch to projected TypeScript extraction. TypeScript-oracle
-  ambiguity during differential comparison is likewise converted to a
-  non-fallback `DIFFERENTIAL_MISMATCH` before the publication callback.
-- The production geometry worker owns one source and one pool. An
-  acceptance-query-only probe proves publication without entering the public
-  API or any artifact.
+- 首個反例使用非 Float32-exact 的遠端十進制座標，舊 preflight 已保守回 TS，
+  因而不是有效 RED；該 fixture 沒有被當成缺陷證據。
+- 有效 RED 改用 Float32-exact 的遠端 `2^40`／`2^30` 三角形放大全局直徑，
+  並保留局部 `100000000.25` 座標。舊全局 tolerance 錯誤回
+  `origin: wasm`，而要求是 TypeScript、runner 0。
+- GREEN：preflight 現逐 triangle 以最小 positive local edge scale 評估
+  coordinate round-off，並核對原始／Float32 degeneracy 及每個切片 plane 的
+  classification。Node 明確驗證 `origin: typescript` 且 runner 未啟動；real
+  Chromium 驗證 `origin: typescript`、active workers 0。
 
-## Canonical and artifact verification
+### Full Node genuine-package timeout
 
-- Real Chromium raw-segment differential: 10/10 passed, covering closed, open,
-  duplicate, stepped, disconnected, mixed-scale, degenerate, coplanar and
-  one-sided non-manifold evidence plus unsafe-precision fail-closed behavior.
-  Every successful case explicitly asserted `origin: wasm`, so compatibility
-  fallback cannot make a differential fixture pass silently.
-- Production worker acceptance: 1/1 passed. It observed actual WASM publication
-  and matched TypeScript canonical layers, launcher decision, feature evidence
-  fingerprint, and SHA-256 identities for the canonical SVG, DXF and launcher
-  coupon.
-- Outline package reconciliation: 449/449 passed. A test-only 30-second file
-  timeout is evidence-based: the slowest isolated case was 18.1 seconds under
-  the former 5-second default. No production deadline changed.
-- Private fixture A and B each passed the production one-click browser flow,
-  six-download reconciliation and the separate focused release download path.
-  No private path, file name, geometry hash or model byte is recorded here or
-  committed.
+- RED：full serial Node 唯一失敗是 genuine converted six-artifact reconciliation
+  在預設 5 秒 timeout；該次工作耗時 6.894 秒，沒有 geometry 或 artifact
+  assertion mismatch。
+- GREEN：只為這個同時進行真實 conversion、六輸出 packaging 及 parsing 的
+  evidence-heavy test 設 30 秒 test-only timeout。先前隔離最慢約 18.1 秒；
+  focused 1/1 約 8.13 秒，final full Node 75/75 files 通過。
+- automatic 20 秒、browser 15 秒及 production 120 秒沒有改動。
 
-## Build, WASM and fixture gates
+## 實作及 correctness boundary
 
-- Typecheck: passed.
-- Rust: 22/22 passed (1 unit plus 21 integration tests).
-- Raw WASM boundary: all 31 checks passed.
-- Tracked generated artifacts: verified; pinned fresh regeneration reproduced
-  all four files byte-for-byte.
-- Public fixture validator: 10/10 passed, 8 automatic successes and output
-  comparison passed.
-- `/ShapeCut/` production build: passed. It emitted one hashed slice worker and
-  one hashed WASM asset (`slice.worker-BoiGYt_n.js` and
-  `geometry_wasm_bg-Bt8U_Fm2.wasm`); the hashed production geometry worker
-  points to both under
-  `/ShapeCut/assets/`, and the slice worker points to that same WASM. There are
-  no source maps, private models or absolute local paths. The two pre-existing
-  public sample STL files remain in the site bundle.
+- Differential oracle 使用 original production TypeScript projected mesh，不使用
+  Float32 WASM projection 作 oracle。
+- TS/Rust 共用相同的 local degeneracy、plane 及 planar tolerance 語義；
+  non-Z axis、near-plane、Float32 edge、mixed-scale、coplanar、open、duplicate、
+  stepped、disconnected 及 non-manifold evidence 均有 Node／real Chromium coverage。
+- Small batches 及 Float32-unsafe inputs 在 worker startup 前選擇 TypeScript，回傳
+  `origin: typescript`；不是 resource error，也不是 compatibility fallback。
+- 非 production 不再無條件執行 full TypeScript oracle；differential mode 必須
+  明確開啟。
+- Worker/pool generation 及 hard cancel 阻止舊結果 publication；新的 replacement
+  使用乾淨 generation。
+- Expanded edge-AABB rejection 只略過在 tolerance／distance 外不可能命中的 pair，
+  保留原 predicate、tolerance 及最終 `Math.hypot` 距離計算。
+- 六個輸出逐一比較：SVG、DXF、preview PDF、exploded-view PDF、launcher coupon
+  SVG；ZIP 先解包，再按 canonical member name 及 member content hash 比較，
+  不以 nondeterministic ZIP metadata 判定差異。
 
-## Full-suite evidence and concerns
+## Final code commit 的 fresh 驗證
 
-- Focused canonical serial run: 98/107 passed. All nine failures were the
-  same geometry-heavy automatic-pipeline cases at the approved file-level
-  20-second timeout. The timeout was not broadened.
-- Fresh full serial Node: 73/75 files passed; 1,835/1,849 tests passed, 10
-  failed and 4 skipped in 787.78 seconds. Nine failures were the same approved
-  automatic-pipeline 20-second timeouts. The other was a genuine-package
-  reconciliation test at its existing 5-second default; the work completed in
-  18.979 seconds. There was no canonical or artifact assertion mismatch.
-- Fresh full Chromium after the final publication fix: 8/9 files and 130/136
-  tests passed. All six failures were existing 15-second geometry-worker
-  timeouts. Focused production WASM publication and artifact invariance passed
-  1/1 in 33.36 seconds; focused raw differential passed 10/10.
-- Full E2E without private environment inputs: 12 passed, 1 skipped, 2 did not
-  run and 3 failed. Two failures were only the absent private A/B environment
-  inputs and both pass in the conditional private run. The remaining 100k
-  synthetic case returned bounded `NO_OUTLINE` while its test expects only
-  `RESOURCE_LIMIT` or `TIME_LIMIT`; no deadline or error mapping was weakened
-  to hide that classification difference. This performance case already
-  failed on the pre-Task-5 baseline by reaching no alert within 35 seconds;
-  Task 6/7 own its resource/performance policy, so Task 5 does not relabel a
-  genuine empty-topology result as a resource failure.
+Implementation worktree：
 
-## Self-review and independent review
+- Focused actual-WASM cancel/replacement：1/1。
+- Automatic pipeline：37/37，保留每 test 20 秒 gate。
+- Geometry worker：36/36，使用 15 秒 browser gate。
+- Real Chromium segment differential/preflight：14/14。
+- Full serial Node：75/75 files；1,850 passed、4 skipped；282.29 秒。
+- Full Chromium：9/9 files；141/141；83.67 秒。
+- Public fixtures：10/10；8 automatic successes；output comparison passed。
+- Rust：1 unit + 21 integration tests；clippy `-D warnings` passed。
+- Raw WASM boundary：31/31。
+- Typecheck、production build、pinned WASM regeneration、`git diff --check`：passed。
+- Bundle inspection：1 個 hashed slice worker、1 個 hashed WASM、0 source maps；
+  worker references 正確，沒有 absolute local path、private fixture token 或 model data。
 
-- `git diff --check` passed. Self-review confirmed no UI/CSS/typography/colour,
-  production deadline, material, launcher or artifact-format edits.
-- Generated screenshots and Vitest attachments are excluded from the commit;
-  the controller-owned progress file remains untouched by this commit.
-- Independent final re-review approved Task 5 with zero Critical and zero
-  Important findings. The review specifically rechecked the post-publication
-  no-mix boundary, non-fallback oracle ambiguity and per-fixture WASM-origin
-  assertions.
+Detached fresh clone（commit `c25a13c`，路徑包含空格及中文，重新 `npm ci`）：
 
-This task does not claim the A3 two-times speed or memory target. Five-trial
-performance acceptance remains Task 7 work.
+- Full serial Node：75/75 files；1,850 passed、4 skipped；275.75 秒。
+- Full Chromium：9/9 files；141/141；80.70 秒。
+- Raw WASM 31/31、Rust 22/22、clippy、typecheck、production build、pinned
+  regeneration、public fixtures 10/10、`git diff --check` 及 clean git status：passed。
+
+## E2E 及 private A/B
+
+- 無 private environment inputs 的 full E2E：12 passed、1 skipped、2 did not run、
+  3 failed。兩個 failure 只因 A/B env 未提供；其後已用外部 fixtures 個別補跑。
+- 其餘 failure 是 100k synthetic case 真實回 `NO_OUTLINE`，但測試只接受
+  `RESOURCE_LIMIT`／`TIME_LIMIT`。沒有改寫 genuine empty-topology classification
+  來令測試假通過。
+- Final code commit 後 private A/B one-click six-download acceptance：2/2 passed；
+  每個 case 均包括兩次完整 upload-to-six-download reconciliation 及 deterministic
+  comparison。整個 test runtime 分別約 39.6 秒及 42.8 秒。
+- Full private fixture validator：10/10；launcher template、determinism、runtime
+  validation、artifact geometry 及 output comparison 全部 passed。單次 conversion
+  約 14.1 秒及 14.5 秒。
+- 報告及 commit 沒有記錄 private fixture 路徑、檔名或 geometry hash。
+
+## Review、清理及 concerns
+
+- 最終獨立 re-review 實際審查 `d8c6696..c25a13c`，結論可接受：
+  0 Critical、0 Important、0 Minor。這取代舊報告中未有證據的批准聲稱。
+- Task 產生的 Vitest attachments/screenshots 及 disposable fresh clone 已移到
+  macOS Trash，可復原；沒有清理其他檔案。
+- Controller-owned `.superpowers/sdd/progress.md` 保持 unstaged，沒有納入任何
+  Task 5 commit。
+- 本 Task 不聲稱 A3 兩倍速度、五次 warmed median、30% peak-live-byte reduction、
+  1M/120 秒或 physical launcher acceptance 已完成。這些仍屬後續 performance／
+  memory／physical acceptance 工作。
+
+## Commits
+
+- `9283269` — `fix: close wasm canonical extraction review findings`
+- `e6fd668` — `test: bound genuine artifact reconciliation`
+- `c25a13c` — `fix: preflight local wasm precision`
