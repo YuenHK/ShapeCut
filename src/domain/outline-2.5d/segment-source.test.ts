@@ -223,6 +223,39 @@ describe('exact segment sources', () => {
     expect(batchRunner.run).not.toHaveBeenCalled();
   });
 
+  it('does not let a remote large triangle hide local Float32-unsafe coordinates', async () => {
+    const projected: ProjectedMesh = Object.freeze({
+      vertices: Object.freeze([
+        Object.freeze([100_000_000.25, 0, -1] as const),
+        Object.freeze([100_000_001.25, 0, 1] as const),
+        Object.freeze([100_000_000.25, 1, 1] as const),
+        Object.freeze([2 ** 40, 0, -1] as const),
+        Object.freeze([2 ** 40 + 2 ** 30, 0, 1] as const),
+        Object.freeze([2 ** 40, 2 ** 30, 1] as const),
+      ]),
+      triangles: Object.freeze([
+        Object.freeze([0, 1, 2] as const),
+        Object.freeze([3, 4, 5] as const),
+      ]),
+      minX: 100_000_000.25,
+      minY: 0,
+      maxX: 2 ** 40 + 2 ** 30,
+      maxY: 2 ** 30,
+      planarDiameter: Math.hypot(2 ** 40 + 2 ** 30 - 100_000_000.25, 2 ** 30),
+    });
+    const batchRunner = runner(result([]));
+    const source = new WasmExactSegmentSource({
+      runner: batchRunner,
+      compareWithTypeScript: false,
+      minimumWasmWork: 0,
+    });
+
+    const collected = await source.collect(projected, specs, Infinity, () => undefined);
+
+    expect(collected.origin).toBe('typescript');
+    expect(batchRunner.run).not.toHaveBeenCalled();
+  });
+
   it('uses the TypeScript source only for an eligible pre-publication worker failure', async () => {
     const projected = projectMesh(box(), selection, Infinity);
     const failure = new Error('trusted worker load failed');

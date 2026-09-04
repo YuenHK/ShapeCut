@@ -242,27 +242,38 @@ function countDegenerateTriangles(
   let count = 0;
   for (let index = 0; index < mesh.triangles.length; index += 1) {
     if ((index & 255) === 0) checkRuntime(deadline, checkpoint);
-    const [first, second, third] = mesh.triangles[index].map((vertex) => mesh.vertices[vertex]);
-    const ab = [second[0] - first[0], second[1] - first[1], second[2] - first[2]] as const;
-    const ac = [third[0] - first[0], third[1] - first[1], third[2] - first[2]] as const;
-    const cross = [
-      ab[1] * ac[2] - ab[2] * ac[1],
-      ab[2] * ac[0] - ab[0] * ac[2],
-      ab[0] * ac[1] - ab[1] * ac[0],
-    ] as const;
-    const edgeLength = (left: typeof first, right: typeof first) => Math.hypot(
-      right[0] - left[0], right[1] - left[1], right[2] - left[2],
-    );
-    const localEdgeScale = Math.max(
-      edgeLength(first, second), edgeLength(second, third), edgeLength(third, first),
-    );
-    const areaTolerance = Math.max(
-      Number.MIN_VALUE,
-      localEdgeScale * localEdgeScale * 64 * Number.EPSILON,
-    );
-    if (Math.hypot(...cross) <= areaTolerance) count += 1;
+    const vertices = mesh.triangles[index].map((vertex) => mesh.vertices[vertex]);
+    if (isDegenerateTriangle(vertices)) count += 1;
   }
   return count;
+}
+
+function edgeLength(
+  first: readonly [number, number, number],
+  second: readonly [number, number, number],
+): number {
+  return Math.hypot(
+    second[0] - first[0], second[1] - first[1], second[2] - first[2],
+  );
+}
+
+function isDegenerateTriangle(vertices: readonly (readonly [number, number, number])[]): boolean {
+  const [first, second, third] = vertices;
+  const ab = [second[0] - first[0], second[1] - first[1], second[2] - first[2]] as const;
+  const ac = [third[0] - first[0], third[1] - first[1], third[2] - first[2]] as const;
+  const cross = [
+    ab[1] * ac[2] - ab[2] * ac[1],
+    ab[2] * ac[0] - ab[0] * ac[2],
+    ab[0] * ac[1] - ab[1] * ac[0],
+  ] as const;
+  const localEdgeScale = Math.max(
+    edgeLength(first, second), edgeLength(second, third), edgeLength(third, first),
+  );
+  const areaTolerance = Math.max(
+    Number.MIN_VALUE,
+    localEdgeScale * localEdgeScale * 64 * Number.EPSILON,
+  );
+  return Math.hypot(...cross) <= areaTolerance;
 }
 
 export class TypeScriptExactSegmentSource implements ExactSegmentSource {
@@ -330,7 +341,7 @@ export class WasmExactSegmentSource implements ExactSegmentSource {
       }
       return collectTypeScriptExactSegments(mesh, specs, deadline, checkpoint);
     }
-    if (!hasSufficientFloat32Precision(mesh, deadline, checkpoint)) {
+    if (!hasSufficientFloat32Precision(mesh, specs, deadline, checkpoint)) {
       await this.#runner.cancel?.();
       if (generation !== this.#generation) {
         throw new ExactSegmentSourceError('CANCELLED', 'Exact segment collection was cancelled');
@@ -398,15 +409,40 @@ function canonicalizeCollection(collection: ExactSegmentCollection): ExactSegmen
 
 function hasSufficientFloat32Precision(
   mesh: ProjectedMesh,
+  specs: readonly OutlineLayerSpec[],
   deadline: number,
   checkpoint: () => void,
 ): boolean {
-  const tolerance = Math.max(1e-5, mesh.planarDiameter * 1e-9);
-  for (let index = 0; index < mesh.vertices.length; index += 1) {
-    if ((index & 255) === 0) checkRuntime(deadline, checkpoint);
-    if (mesh.vertices[index].some((coordinate) => (
-      Math.abs(coordinate - Math.fround(coordinate)) > tolerance
-    ))) return false;
+  const classify = (coordinate: number, plane: number, tolerance: number): -1 | 0 | 1 => {
+    const distance = coordinate - plane;
+    return distance < -tolerance ? -1 : distance > tolerance ? 1 : 0;
+  };
+  for (let triangleIndex = 0; triangleIndex < mesh.triangles.length; triangleIndex += 1) {
+    if ((triangleIndex & 255) === 0) checkRuntime(deadline, checkpoint);
+    const original = mesh.triangles[triangleIndex].map((vertex) => mesh.vertices[vertex]);
+    const rounded = original.map((vertex) => vertex.map(Math.fround) as [number, number, number]);
+    const positiveEdgeLengths = [
+      edgeLength(original[0], original[1]),
+      edgeLength(original[1], original[2]),
+      edgeLength(original[2], original[0]),
+    ].filter((length) => length > 0);
+    const localFeatureScale = Math.min(...positiveEdgeLengths);
+    const coordinateTolerance = Math.max(1e-5, localFeatureScale * 1e-9);
+    if (!Number.isFinite(localFeatureScale)
+      || original.some((vertex, vertexIndex) => vertex.some((coordinate, coordinateIndex) => (
+        Math.abs(coordinate - rounded[vertexIndex][coordinateIndex]) > coordinateTolerance
+      )))
+      || isDegenerateTriangle(original) !== isDegenerateTriangle(rounded)) return false;
+    for (let specIndex = 0; specIndex < specs.length; specIndex += 1) {
+      if ((specIndex & 255) === 0) checkRuntime(deadline, checkpoint);
+      const plane = specs[specIndex].zMid;
+      const originalTolerance = planeTolerance(original, plane);
+      const roundedTolerance = planeTolerance(rounded, plane);
+      if (original.some((vertex, vertexIndex) => (
+        classify(vertex[2], plane, originalTolerance)
+          !== classify(rounded[vertexIndex][2], plane, roundedTolerance)
+      ))) return false;
+    }
   }
   return true;
 }

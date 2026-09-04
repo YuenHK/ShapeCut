@@ -217,12 +217,20 @@ describe('geometry worker boundary', () => {
     await expect(firstOutcome).resolves.toBe('rejected');
     expect(publications).toEqual([]);
 
+    const replacementSource = writeBinarySTL(launcherCompatibleCylinder(), 'safe');
     const replacement = await api.convertAutomatically({
-      bytes: writeBinarySTL(launcherCompatibleCylinder(), 'safe'),
+      bytes: replacementSource.slice(0),
       material: testMaterial,
       launcherFitOffsetMm: 0,
     });
-    expect(replacement).toMatchObject({ mode: 'exact', status: 'warning' });
+    const freshBaseline = await convertAutomaticOutline({
+      bytes: replacementSource,
+      material: testMaterial,
+      launcherFitOffsetMm: 0,
+    });
+    expect(replacement.layers).toEqual(freshBaseline.layers);
+    expect(replacement.assembly).toEqual(freshBaseline.assembly);
+    expect(replacement.featureEvidenceFingerprint).toBe(freshBaseline.featureEvidenceFingerprint);
     const finalState = await requestWasmAccelerationState(worker, 'SHAPECUT_WASM_STATE_REQUEST');
     expect(finalState.activeWorkerCount).toBe(0);
     expect(finalState.generation).toBeGreaterThan(cancelled.generation);

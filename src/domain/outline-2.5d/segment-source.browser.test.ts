@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { TriangleMesh } from '../mesh/types';
-import { projectMesh } from './raster';
+import { projectMesh, type ProjectedMesh } from './raster';
 import { TypeScriptExactSegmentSource, WasmExactSegmentSource } from './segment-source';
 import type { OutlineAxisSelection, OutlineLayerSpec } from './types';
 
@@ -168,6 +168,33 @@ describe('real Chromium exact segment differential', () => {
     await expect(new WasmExactSegmentSource({ compareWithTypeScript: true, minimumWasmWork: 0 })
       .collect(projected, specs, Date.now() + 10_000, () => undefined))
       .resolves.toMatchObject({ origin: 'typescript' });
+  });
+
+  it('preselects TypeScript before real worker startup when a remote extent hides local Float32 error', async () => {
+    const projected: ProjectedMesh = Object.freeze({
+      vertices: Object.freeze([
+        Object.freeze([100_000_000.25, 0, -1] as const),
+        Object.freeze([100_000_001.25, 0, 1] as const),
+        Object.freeze([100_000_000.25, 1, 1] as const),
+        Object.freeze([2 ** 40, 0, -1] as const),
+        Object.freeze([2 ** 40 + 2 ** 30, 0, 1] as const),
+        Object.freeze([2 ** 40, 2 ** 30, 1] as const),
+      ]),
+      triangles: Object.freeze([
+        Object.freeze([0, 1, 2] as const),
+        Object.freeze([3, 4, 5] as const),
+      ]),
+      minX: 100_000_000.25,
+      minY: 0,
+      maxX: 2 ** 40 + 2 ** 30,
+      maxY: 2 ** 30,
+      planarDiameter: Math.hypot(2 ** 40 + 2 ** 30 - 100_000_000.25, 2 ** 30),
+    });
+    const source = new WasmExactSegmentSource({ compareWithTypeScript: false, minimumWasmWork: 0 });
+
+    await expect(source.collect(projected, specs, Date.now() + 10_000, () => undefined))
+      .resolves.toMatchObject({ origin: 'typescript' });
+    expect(source.activeWorkerCount).toBe(0);
   });
 
   it('matches degenerate diagnostics while retaining the ordinary closed slice', async () => {
