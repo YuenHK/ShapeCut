@@ -80,11 +80,11 @@ function scaleOf(...loops: readonly (readonly Point2[])[]): number {
 }
 
 function onSegment(a: Point2, b: Point2, point: Point2, areaTolerance: number, lengthTolerance: number): boolean {
-  return Math.abs(cross(a, b, point)) <= areaTolerance
-    && point[0] >= Math.min(a[0], b[0]) - lengthTolerance
+  return point[0] >= Math.min(a[0], b[0]) - lengthTolerance
     && point[0] <= Math.max(a[0], b[0]) + lengthTolerance
     && point[1] >= Math.min(a[1], b[1]) - lengthTolerance
-    && point[1] <= Math.max(a[1], b[1]) + lengthTolerance;
+    && point[1] <= Math.max(a[1], b[1]) + lengthTolerance
+    && Math.abs(cross(a, b, point)) <= areaTolerance;
 }
 
 function segmentsIntersect(
@@ -93,6 +93,10 @@ function segmentsIntersect(
   areaTolerance: number,
   lengthTolerance: number,
 ): boolean {
+  if (Math.max(a[0], b[0]) + lengthTolerance < Math.min(c[0], d[0])
+    || Math.max(c[0], d[0]) + lengthTolerance < Math.min(a[0], b[0])
+    || Math.max(a[1], b[1]) + lengthTolerance < Math.min(c[1], d[1])
+    || Math.max(c[1], d[1]) + lengthTolerance < Math.min(a[1], b[1])) return false;
   const abC = cross(a, b, c), abD = cross(a, b, d), cdA = cross(c, d, a), cdB = cross(c, d, b);
   if (((abC > areaTolerance && abD < -areaTolerance) || (abC < -areaTolerance && abD > areaTolerance))
     && ((cdA > areaTolerance && cdB < -areaTolerance) || (cdA < -areaTolerance && cdB > areaTolerance))) return true;
@@ -158,19 +162,23 @@ function distancePointToSegment(point: Point2, a: Point2, b: Point2): number {
 
 function boundaryClearance(inner: readonly Point2[], outer: readonly Point2[], deadline: number): number {
   let distance = Infinity;
+  const consider = (point: Point2, start: Point2, end: Point2): void => {
+    if (point[0] < Math.min(start[0], end[0]) - distance
+      || point[0] > Math.max(start[0], end[0]) + distance
+      || point[1] < Math.min(start[1], end[1]) - distance
+      || point[1] > Math.max(start[1], end[1]) + distance) return;
+    distance = Math.min(distance, distancePointToSegment(point, start, end));
+  };
   for (let innerIndex = 0; innerIndex < inner.length; innerIndex += 1) {
     checkDeadline(deadline);
     const innerStart = inner[innerIndex], innerEnd = inner[(innerIndex + 1) % inner.length];
     for (let outerIndex = 0; outerIndex < outer.length; outerIndex += 1) {
       if ((outerIndex & 63) === 0) checkDeadline(deadline);
       const outerStart = outer[outerIndex], outerEnd = outer[(outerIndex + 1) % outer.length];
-      distance = Math.min(
-        distance,
-        distancePointToSegment(innerStart, outerStart, outerEnd),
-        distancePointToSegment(innerEnd, outerStart, outerEnd),
-        distancePointToSegment(outerStart, innerStart, innerEnd),
-        distancePointToSegment(outerEnd, innerStart, innerEnd),
-      );
+      consider(innerStart, outerStart, outerEnd);
+      consider(innerEnd, outerStart, outerEnd);
+      consider(outerStart, innerStart, innerEnd);
+      consider(outerEnd, innerStart, innerEnd);
     }
   }
   return distance;

@@ -39,12 +39,14 @@ const internalResultCache = new InternalAutomaticResultCache();
 const acceptanceProbeEnabled = new URL(globalThis.location.href).searchParams.get('shapecut-acceptance') === '1';
 const exactSegmentSource = new WasmExactSegmentSource({
   minimumWasmWork: acceptanceProbeEnabled ? 0 : undefined,
-  onPublication: (collection) => {
+  onPublication: (collection, generation) => {
     if (!acceptanceProbeEnabled || collection.origin !== 'wasm') return;
     const message: GeometryAccelerationProbe = {
       type: 'SHAPECUT_WASM_SEGMENTS_PUBLISHED',
       origin: 'wasm',
       layerCount: collection.layers.length,
+      generation,
+      activeWorkerCount: exactSegmentSource.activeWorkerCount,
     };
     globalThis.postMessage(message);
   },
@@ -59,6 +61,23 @@ globalThis.addEventListener('message', (event: MessageEvent<unknown>) => {
     setHoleCandidateProbeForTesting((evidence) => {
       globalThis.postMessage({ type: 'SHAPECUT_HOLE_CANDIDATES', evidence });
     });
+  }
+  if ((message?.type === 'SHAPECUT_WASM_STATE_REQUEST'
+      || message?.type === 'SHAPECUT_WASM_CANCEL_REQUEST')
+    && Number.isSafeInteger(message.requestId)) {
+    const respond = (): void => {
+      globalThis.postMessage({
+        type: 'SHAPECUT_WASM_STATE',
+        requestId: message.requestId,
+        generation: exactSegmentSource.generation,
+        activeWorkerCount: exactSegmentSource.activeWorkerCount,
+      });
+    };
+    if (message.type === 'SHAPECUT_WASM_CANCEL_REQUEST') {
+      void exactSegmentSource.cancel().then(respond);
+    } else {
+      respond();
+    }
   }
   if (message?.type === 'SHAPECUT_TEST_NEAR_LIMIT_PACKAGE') {
     nearLimitPackageWorkload = nearLimitColoredResult();

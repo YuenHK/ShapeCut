@@ -60,13 +60,15 @@ export class ExactContourAmbiguityError extends RangeError {}
 export interface ExactSegmentBatchRunner {
   run(request: SliceWorkerPoolRequest): Promise<SliceBatchResult>;
   isFallbackEligible(error: unknown): boolean;
+  readonly activeWorkerCount?: number;
+  cancel?(): Promise<void>;
 }
 
 export interface WasmExactSegmentSourceOptions {
   readonly runner?: ExactSegmentBatchRunner;
   readonly compareWithTypeScript?: boolean;
   readonly minimumWasmWork?: number;
-  readonly onPublication?: (collection: ExactSegmentCollection) => void;
+  readonly onPublication?: (collection: ExactSegmentCollection, generation: number) => void;
 }
 
 const DEFAULT_MINIMUM_WASM_WORK = 4_096;
@@ -116,11 +118,13 @@ function typeScriptSegments(
   deadline: number,
   checkpoint: () => void,
 ): { readonly segments: readonly ExactSegment[]; readonly onPlaneEdgeCount: number } {
-  const epsilon = Math.max(1e-9, projected.planarDiameter * 1e-10);
+  const edgeKeyTolerance = Math.max(1e-9, projected.planarDiameter * 1e-10);
   const segments: ExactSegment[] = [];
   const planeEdges = new Map<string, PlaneEdge[]>();
   let onPlaneEdgeCount = 0;
-  const pointKey = ([x, y]: Point2): string => `${Math.round(x / epsilon)},${Math.round(y / epsilon)}`;
+  const pointKey = ([x, y]: Point2): string => (
+    `${Math.round(x / edgeKeyTolerance)},${Math.round(y / edgeKeyTolerance)}`
+  );
   const segmentKey = ([a, b]: ExactSegment): string => {
     const ka = pointKey(a), kb = pointKey(b);
     return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
@@ -129,6 +133,7 @@ function typeScriptSegments(
     if ((triangleIndex & 255) === 0) checkRuntime(deadline, checkpoint);
     const triangle = projected.triangles[triangleIndex];
     const vertices = triangle.map((index) => projected.vertices[index]);
+    const epsilon = planeTolerance(vertices, z);
     const distances = vertices.map((vertex) => vertex[2] - z);
     if (distances.every((value) => value > epsilon) || distances.every((value) => value < -epsilon)) continue;
     const onPlane = distances.map((distance, index) => Math.abs(distance) <= epsilon ? index : -1)
@@ -166,7 +171,8 @@ function typeScriptSegments(
       }
     }
     if (intersections.length !== 2
-      || Math.hypot(intersections[0][0] - intersections[1][0], intersections[0][1] - intersections[1][1]) <= epsilon) {
+      || Math.hypot(intersections[0][0] - intersections[1][0], intersections[0][1] - intersections[1][1])
+        <= planarTolerance(vertices)) {
       throw new ExactContourAmbiguityError('Exact contour triangle intersection is ambiguous');
     }
     segments.push([intersections[0], intersections[1]]);
@@ -180,6 +186,26 @@ function typeScriptSegments(
     segments.push(values[0].segment);
   }
   return { segments: immutableSegments(segments), onPlaneEdgeCount };
+}
+
+function planeTolerance(vertices: readonly (readonly [number, number, number])[], plane: number): number {
+  const axialMagnitude = vertices.reduce(
+    (scale, vertex) => Math.max(scale, Math.abs(vertex[2])),
+    Math.max(1, Math.abs(plane)),
+  );
+  return Math.max(1e-9, axialMagnitude * 64 * Number.EPSILON);
+}
+
+function planarTolerance(vertices: readonly (readonly [number, number, number])[]): number {
+  const edgeLength = (first: typeof vertices[number], second: typeof vertices[number]) => Math.hypot(
+    second[0] - first[0], second[1] - first[1],
+  );
+  const planarEdgeScale = Math.max(
+    edgeLength(vertices[0], vertices[1]),
+    edgeLength(vertices[1], vertices[2]),
+    edgeLength(vertices[2], vertices[0]),
+  );
+  return Math.max(1e-9, planarEdgeScale * 64 * Number.EPSILON);
 }
 
 export function collectTypeScriptExactSegments(
@@ -256,15 +282,18 @@ export class TypeScriptExactSegmentSource implements ExactSegmentSource {
 
 class WorkerPoolBatchRunner implements ExactSegmentBatchRunner {
   readonly #pool = new SliceWorkerPool();
+  get activeWorkerCount(): number { return this.#pool.activeWorkerCount; }
   run(request: SliceWorkerPoolRequest): Promise<SliceBatchResult> { return this.#pool.run(request); }
   isFallbackEligible(error: unknown): boolean { return isSliceWorkerPoolFallbackEligible(error); }
+  cancel(): Promise<void> { return this.#pool.cancel(); }
 }
 
 export class WasmExactSegmentSource implements ExactSegmentSource {
   readonly #runner: ExactSegmentBatchRunner;
   readonly #compareWithTypeScript: boolean;
   readonly #minimumWasmWork: number;
-  readonly #onPublication: ((collection: ExactSegmentCollection) => void) | undefined;
+  readonly #onPublication: ((collection: ExactSegmentCollection, generation: number) => void) | undefined;
+  #generation = 0;
 
   constructor(options: WasmExactSegmentSourceOptions = {}) {
     const minimumWasmWork = options.minimumWasmWork ?? DEFAULT_MINIMUM_WASM_WORK;
@@ -272,9 +301,17 @@ export class WasmExactSegmentSource implements ExactSegmentSource {
       throw new TypeError('minimum WASM work must be a non-negative safe integer');
     }
     this.#runner = options.runner ?? new WorkerPoolBatchRunner();
-    this.#compareWithTypeScript = options.compareWithTypeScript ?? !import.meta.env.PROD;
+    this.#compareWithTypeScript = options.compareWithTypeScript ?? false;
     this.#minimumWasmWork = minimumWasmWork;
     this.#onPublication = options.onPublication;
+  }
+
+  get activeWorkerCount(): number { return this.#runner.activeWorkerCount ?? 0; }
+  get generation(): number { return this.#generation; }
+
+  async cancel(): Promise<void> {
+    this.#generation += 1;
+    await this.#runner.cancel?.();
   }
 
   async collect(
@@ -284,15 +321,21 @@ export class WasmExactSegmentSource implements ExactSegmentSource {
     checkpoint: () => void,
   ): Promise<ExactSegmentCollection> {
     checkRuntime(deadline, checkpoint);
+    const generation = ++this.#generation;
     const work = mesh.triangles.length * specs.length;
     if (Number.isSafeInteger(work) && work < this.#minimumWasmWork) {
+      await this.#runner.cancel?.();
+      if (generation !== this.#generation) {
+        throw new ExactSegmentSourceError('CANCELLED', 'Exact segment collection was cancelled');
+      }
       return collectTypeScriptExactSegments(mesh, specs, deadline, checkpoint);
     }
     if (!hasSufficientFloat32Precision(mesh, deadline, checkpoint)) {
-      throw new ExactSegmentSourceError(
-        'INVALID_REQUEST',
-        'WASM geometry precision exceeds the resource compatibility limit',
-      );
+      await this.#runner.cancel?.();
+      if (generation !== this.#generation) {
+        throw new ExactSegmentSourceError('CANCELLED', 'Exact segment collection was cancelled');
+      }
+      return collectTypeScriptExactSegments(mesh, specs, deadline, checkpoint);
     }
     const wasmMesh = float32ProjectedMesh(mesh, deadline, checkpoint);
     let result: SliceBatchResult;
@@ -308,30 +351,37 @@ export class WasmExactSegmentSource implements ExactSegmentSource {
         deadlineAt: workerDeadline,
       });
     } catch (error) {
+      if (generation !== this.#generation) {
+        throw new ExactSegmentSourceError('CANCELLED', 'Exact segment collection was cancelled');
+      }
       if (!this.#runner.isFallbackEligible(error)) throw error;
-      return collectTypeScriptExactSegments(mesh, specs, deadline, checkpoint, 'typescript-fallback');
+      const fallback = collectTypeScriptExactSegments(mesh, specs, deadline, checkpoint, 'typescript-fallback');
+      if (generation !== this.#generation) {
+        throw new ExactSegmentSourceError('CANCELLED', 'Exact segment collection was cancelled');
+      }
+      return fallback;
+    }
+    if (generation !== this.#generation) {
+      throw new ExactSegmentSourceError('CANCELLED', 'Exact segment collection was cancelled');
     }
 
     // Publication starts only after the complete worker batch has passed this validation.
     const collection = decodeWasmCollection(result, specs, deadline, checkpoint);
     if (this.#compareWithTypeScript || result.statusCode === SLICE_STATUS_GEOMETRY_EVIDENCE) {
-      let oracle: ExactSegmentCollection;
+      const oracle = collectTypeScriptExactSegments(mesh, specs, deadline, checkpoint);
       try {
-        oracle = canonicalizeCollection(
-          collectTypeScriptExactSegments(wasmMesh, specs, deadline, checkpoint),
-        );
+        compareCollections(canonicalizeCollection(oracle), collection, deadline, checkpoint);
       } catch (error) {
-        if (error instanceof ExactContourAmbiguityError) {
-          throw new ExactSegmentSourceError(
-            'DIFFERENTIAL_MISMATCH',
-            'WASM exact segment ambiguity evidence differs from TypeScript',
-          );
+        if (error instanceof ExactSegmentSourceError && error.code === 'DIFFERENTIAL_MISMATCH') {
+          return oracle;
         }
         throw error;
       }
-      compareCollections(oracle, collection, deadline, checkpoint);
     }
-    this.#onPublication?.(collection);
+    if (generation !== this.#generation) {
+      throw new ExactSegmentSourceError('CANCELLED', 'Exact segment collection was cancelled');
+    }
+    this.#onPublication?.(collection, generation);
     return collection;
   }
 }

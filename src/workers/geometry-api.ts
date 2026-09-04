@@ -49,6 +49,8 @@ export type GeometryAccelerationProbe = Readonly<{
   type: 'SHAPECUT_WASM_SEGMENTS_PUBLISHED';
   origin: 'wasm';
   layerCount: number;
+  generation: number;
+  activeWorkerCount: number;
 }>;
 export type OutlinePackageTransfer = {
   readonly zip: Uint8Array;

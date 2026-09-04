@@ -152,25 +152,101 @@ function cross(a: Point2, b: Point2, c: Point2): number {
   return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
 }
 
-function pointLocation(point: Point2, polygon: readonly Point2[], deadline: number, checkpoint: () => void): -1 | 0 | 1 {
+type PreparedPolygon = {
+  readonly polygon: readonly Point2[];
+  readonly bounds: { readonly minX: number; readonly maxX: number; readonly minY: number; readonly maxY: number };
+  readonly minimumX: Float64Array;
+  readonly maximumX: Float64Array;
+  readonly minimumY: Float64Array;
+  readonly maximumY: Float64Array;
+  readonly areaTolerance: number;
+  readonly lengthTolerance: number;
+  readonly locationEdgesByY: Map<number, Uint32Array>;
+  readonly boundaryEdgesByThreshold: Map<number, Map<number, Uint32Array>>;
+};
+
+function preparePolygon(
+  polygon: readonly Point2[],
+  deadline: number,
+  checkpoint: () => void,
+): PreparedPolygon {
   let scale = 1;
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  const minimumX = new Float64Array(polygon.length);
+  const maximumX = new Float64Array(polygon.length);
+  const minimumY = new Float64Array(polygon.length);
+  const maximumY = new Float64Array(polygon.length);
   for (let index = 0; index < polygon.length; index += 1) {
     if ((index & 63) === 0) checkRuntime(deadline, checkpoint);
     const [x, y] = polygon[index];
     scale = Math.max(scale, Math.abs(x), Math.abs(y));
+    minX = Math.min(minX, x);
+    maxX = Math.max(maxX, x);
+    minY = Math.min(minY, y);
+    maxY = Math.max(maxY, y);
+    const next = polygon[(index + 1) % polygon.length];
+    minimumX[index] = Math.min(x, next[0]);
+    maximumX[index] = Math.max(x, next[0]);
+    minimumY[index] = Math.min(y, next[1]);
+    maximumY[index] = Math.max(y, next[1]);
   }
-  const areaTolerance = scale * scale * 64 * Number.EPSILON;
-  const lengthTolerance = scale * 64 * Number.EPSILON;
-  const onSegment = (a: Point2, b: Point2): boolean => Math.abs(cross(a, b, point)) <= areaTolerance
-    && point[0] >= Math.min(a[0], b[0]) - lengthTolerance
-    && point[0] <= Math.max(a[0], b[0]) + lengthTolerance
-    && point[1] >= Math.min(a[1], b[1]) - lengthTolerance
-    && point[1] <= Math.max(a[1], b[1]) + lengthTolerance;
-  let inside = false;
-  for (let index = 0; index < polygon.length; index += 1) {
+  return {
+    polygon,
+    bounds: { minX, maxX, minY, maxY },
+    minimumX,
+    maximumX,
+    minimumY,
+    maximumY,
+    areaTolerance: scale * scale * 64 * Number.EPSILON,
+    lengthTolerance: scale * 64 * Number.EPSILON,
+    locationEdgesByY: new Map(),
+    boundaryEdgesByThreshold: new Map(),
+  };
+}
+
+function candidateEdgesAtY(
+  prepared: PreparedPolygon,
+  y: number,
+  expansion: number,
+  cache: Map<number, Uint32Array>,
+  deadline: number,
+  checkpoint: () => void,
+): Uint32Array {
+  const cached = cache.get(y);
+  if (cached) return cached;
+  const candidates: number[] = [];
+  for (let index = 0; index < prepared.polygon.length; index += 1) {
     if ((index & 63) === 0) checkRuntime(deadline, checkpoint);
+    if (y >= prepared.minimumY[index] - expansion
+      && y <= prepared.maximumY[index] + expansion) candidates.push(index);
+  }
+  const result = Uint32Array.from(candidates);
+  cache.set(y, result);
+  return result;
+}
+
+function pointLocation(point: Point2, prepared: PreparedPolygon, deadline: number, checkpoint: () => void): -1 | 0 | 1 {
+  const { polygon, areaTolerance, lengthTolerance } = prepared;
+  if (point[0] < prepared.bounds.minX - lengthTolerance
+    || point[0] > prepared.bounds.maxX + lengthTolerance
+    || point[1] < prepared.bounds.minY - lengthTolerance
+    || point[1] > prepared.bounds.maxY + lengthTolerance) return -1;
+  const onSegment = (a: Point2, b: Point2): boolean => {
+    return Math.abs(cross(a, b, point)) <= areaTolerance;
+  };
+  let inside = false;
+  const candidates = candidateEdgesAtY(
+    prepared, point[1], lengthTolerance, prepared.locationEdgesByY, deadline, checkpoint,
+  );
+  for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex += 1) {
+    if ((candidateIndex & 63) === 0) checkRuntime(deadline, checkpoint);
+    const index = candidates[candidateIndex];
     const a = polygon[index], b = polygon[(index + 1) % polygon.length];
-    if (onSegment(a, b)) return 0;
+    if (point[0] >= prepared.minimumX[index] - lengthTolerance
+      && point[0] <= prepared.maximumX[index] + lengthTolerance
+      && point[1] >= prepared.minimumY[index] - lengthTolerance
+      && point[1] <= prepared.maximumY[index] + lengthTolerance
+      && onSegment(a, b)) return 0;
     if ((a[1] > point[1]) !== (b[1] > point[1])) {
       const intersectionX = a[0] + (point[1] - a[1]) * (b[0] - a[0]) / (b[1] - a[1]);
       if (intersectionX > point[0]) inside = !inside;
@@ -190,18 +266,35 @@ function pointSegmentDistance(point: Point2, start: Point2, end: Point2): number
 
 function pointWithinBoundaryDistance(
   point: Point2,
-  polygon: readonly Point2[],
+  prepared: PreparedPolygon,
   threshold: number,
   comparison: 'strict-after-tolerance' | 'inclusive',
   deadline: number,
   checkpoint: () => void,
 ): boolean {
-  for (let index = 0; index < polygon.length; index += 1) {
-    if ((index & 63) === 0) checkRuntime(deadline, checkpoint);
+  const { polygon } = prepared;
+  if (point[0] < prepared.bounds.minX - threshold
+    || point[0] > prepared.bounds.maxX + threshold
+    || point[1] < prepared.bounds.minY - threshold
+    || point[1] > prepared.bounds.maxY + threshold) return false;
+  let edgesByY = prepared.boundaryEdgesByThreshold.get(threshold);
+  if (!edgesByY) {
+    edgesByY = new Map();
+    prepared.boundaryEdgesByThreshold.set(threshold, edgesByY);
+  }
+  const candidates = candidateEdgesAtY(prepared, point[1], threshold, edgesByY, deadline, checkpoint);
+  for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex += 1) {
+    if ((candidateIndex & 63) === 0) checkRuntime(deadline, checkpoint);
+    const index = candidates[candidateIndex];
+    const start = polygon[index], end = polygon[(index + 1) % polygon.length];
+    if (point[0] < prepared.minimumX[index] - threshold
+      || point[0] > prepared.maximumX[index] + threshold
+      || point[1] < prepared.minimumY[index] - threshold
+      || point[1] > prepared.maximumY[index] + threshold) continue;
     const distance = pointSegmentDistance(
       point,
-      polygon[index],
-      polygon[(index + 1) % polygon.length],
+      start,
+      end,
     );
     if (comparison === 'inclusive' ? distance <= threshold : distance + 1e-12 < threshold) {
       return true;
@@ -544,18 +637,20 @@ export function buildDepthField(projected: ProjectedMesh, request: DepthFeatureR
   const cutClearance = Math.max(cellSize, request.planarDiameterMm * 0.001);
   const centerMargin = cutClearance + cellSize * Math.SQRT1_2;
   const retainedHole = holeLoop(request);
+  const preparedExterior = preparePolygon(request.exterior, deadline, checkpoint);
+  const preparedHole = retainedHole ? preparePolygon(retainedHole, deadline, checkpoint) : undefined;
   for (let y = 0; y < height; y += 1) {
     checkRuntime(deadline, checkpoint);
     for (let x = 0; x < width; x += 1) {
       if ((x & 255) === 0) checkRuntime(deadline, checkpoint);
       const point: Point2 = [origin[0] + (x + 0.5) * cellSize, origin[1] + (y + 0.5) * cellSize];
-      if (pointLocation(point, request.exterior, deadline, checkpoint) !== 1
+      if (pointLocation(point, preparedExterior, deadline, checkpoint) !== 1
         || pointWithinBoundaryDistance(
-          point, request.exterior, centerMargin, 'strict-after-tolerance', deadline, checkpoint,
+          point, preparedExterior, centerMargin, 'strict-after-tolerance', deadline, checkpoint,
         )) continue;
-      if (retainedHole && (pointLocation(point, retainedHole, deadline, checkpoint) >= 0
+      if (preparedHole && (pointLocation(point, preparedHole, deadline, checkpoint) >= 0
         || pointWithinBoundaryDistance(
-          point, retainedHole, centerMargin + 1e-12, 'inclusive', deadline, checkpoint,
+          point, preparedHole, centerMargin + 1e-12, 'inclusive', deadline, checkpoint,
         ))) continue;
       eligible[y * width + x] = 1;
     }
@@ -1054,7 +1149,7 @@ function candidateStorageBytes(candidates: readonly DepthFeatureCandidate[]): nu
 
 function protectedCell(
   point: Point2,
-  cuts: readonly (readonly Point2[])[],
+  cuts: readonly PreparedPolygon[],
   clearanceMm: number,
   deadline: number,
   checkpoint: () => void,
@@ -1076,6 +1171,7 @@ function maskProtectedCuts(
   deadline: number,
   checkpoint: () => void,
 ): void {
+  const preparedCuts = cuts.map((cut) => preparePolygon(cut, deadline, checkpoint));
   for (let index = 0; index < source.length; index += 1) {
     if ((index & 255) === 0) checkRuntime(deadline, checkpoint);
     if (!source[index]) continue;
@@ -1084,7 +1180,7 @@ function maskProtectedCuts(
       field.origin[0] + (x + 0.5) * field.cellSizeMm,
       field.origin[1] + (y + 0.5) * field.cellSizeMm,
     ];
-    if (protectedCell(point, cuts, clearanceMm, deadline, checkpoint)) source[index] = 0;
+    if (protectedCell(point, preparedCuts, clearanceMm, deadline, checkpoint)) source[index] = 0;
   }
 }
 

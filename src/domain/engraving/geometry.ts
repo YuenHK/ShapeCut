@@ -113,6 +113,15 @@ export function validatePolygon(polygon: Polygon2, checkpointOrIndex: (() => voi
   }
   const scale = geometryScale(polygon, () => checkpoint());
   if (Math.abs(signedArea(polygon, () => checkpoint())) <= scale * scale * 128 * Number.EPSILON) return false;
+  const edgeBounds = polygon.points.map((point, index) => {
+    const next = polygon.points[(index + 1) % polygon.points.length];
+    return {
+      minX: Math.min(point[0], next[0]),
+      minY: Math.min(point[1], next[1]),
+      maxX: Math.max(point[0], next[0]),
+      maxY: Math.max(point[1], next[1]),
+    };
+  });
   for (let first = 0; first < polygon.points.length; first += 1) {
     checkpoint();
     const firstNext = (first + 1) % polygon.points.length;
@@ -120,6 +129,7 @@ export function validatePolygon(polygon: Polygon2, checkpointOrIndex: (() => voi
       if ((second & 63) === 0) checkpoint();
       const secondNext = (second + 1) % polygon.points.length;
       if (first === second || firstNext === second || secondNext === first) continue;
+      if (!boundsOverlap(edgeBounds[first], edgeBounds[second], tolerance)) continue;
       if (segmentsIntersect(polygon.points[first], polygon.points[firstNext], polygon.points[second], polygon.points[secondNext], tolerance)) return false;
     }
   }

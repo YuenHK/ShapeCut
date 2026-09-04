@@ -20,7 +20,7 @@ import {
 } from '../test/mesh-builders';
 import type { GeometryClient } from './geometry-client';
 import { createGeometryWorkerClient as createActualGeometryWorkerClient } from './geometry-client';
-import type { GeometryApi } from './geometry-api';
+import type { GeometryAccelerationProbe, GeometryApi } from './geometry-api';
 import { InternalAutomaticResultCache } from './internal-automatic-result-cache';
 
 const clients: Array<Pick<GeometryClient, 'dispose'>> = [];
@@ -57,9 +57,43 @@ function createAcceptanceGeometryWorker(): { readonly worker: Worker; readonly a
   rawWorkerApis.push(api);
   return { worker, api };
 }
-async function artifactSha256(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+type WasmAccelerationState = Readonly<{
+  type: 'SHAPECUT_WASM_STATE';
+  requestId: number;
+  generation: number;
+  activeWorkerCount: number;
+}>;
+let wasmStateRequestId = 0;
+function requestWasmAccelerationState(
+  worker: Worker,
+  action: 'SHAPECUT_WASM_STATE_REQUEST' | 'SHAPECUT_WASM_CANCEL_REQUEST',
+): Promise<WasmAccelerationState> {
+  const requestId = ++wasmStateRequestId;
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      worker.removeEventListener('message', listener);
+      reject(new Error(`Missing ${action} response`));
+    }, 500);
+    const listener = (event: MessageEvent<unknown>): void => {
+      const state = event.data as Partial<WasmAccelerationState> | undefined;
+      if (state?.type !== 'SHAPECUT_WASM_STATE' || state.requestId !== requestId) return;
+      clearTimeout(timeout);
+      worker.removeEventListener('message', listener);
+      resolve(state as WasmAccelerationState);
+    };
+    worker.addEventListener('message', listener);
+    worker.postMessage({ type: action, requestId });
+  });
+}
+async function artifactSha256(value: string | Uint8Array): Promise<string> {
+  const bytes = typeof value === 'string' ? new TextEncoder().encode(value) : Uint8Array.from(value);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+async function canonicalZipMemberIdentities(zip: Uint8Array): Promise<readonly (readonly [string, string])[]> {
+  const archive = await JSZip.loadAsync(zip);
+  return Promise.all(Object.keys(archive.files).filter((name) => !archive.files[name].dir).sort()
+    .map(async (name) => [name, await artifactSha256(await archive.files[name].async('uint8array'))] as const));
 }
 const launcherCompatibleCylinder = (segments = 32): TriangleMesh => {
   const positions: number[] = [0, 0, -1, 0, 0, 1];
@@ -77,6 +111,11 @@ const launcherCompatibleCylinder = (segments = 32): TriangleMesh => {
     indices.push(bottom, top, nextTop, bottom, nextTop, nextBottom);
   }
   return { positions: new Float64Array(positions), indices: new Uint32Array(indices) };
+};
+const launcherCompatibleTallCylinder = (segments = 256): TriangleMesh => {
+  const source = launcherCompatibleCylinder(segments);
+  const positions = Float64Array.from(source.positions, (value, index) => index % 3 === 2 ? value * 36 : value);
+  return { positions, indices: source.indices };
 };
 const launcherCompatibleOpenCylinder = (segments = 32): TriangleMesh => {
   const positions: number[] = [];
@@ -140,13 +179,61 @@ describe('geometry worker boundary', () => {
     await expect(Promise.all([
       artifactSha256(acceleratedArtifacts.cutSvg),
       artifactSha256(acceleratedArtifacts.cutDxf),
+      artifactSha256(acceleratedArtifacts.previewPdf),
+      artifactSha256(acceleratedArtifacts.explodedViewPdf),
       artifactSha256(acceleratedArtifacts.launcherCouponSvg),
+      canonicalZipMemberIdentities(acceleratedArtifacts.zip),
     ])).resolves.toEqual(await Promise.all([
       artifactSha256(baselineArtifacts.cutSvg),
       artifactSha256(baselineArtifacts.cutDxf),
+      artifactSha256(baselineArtifacts.previewPdf),
+      artifactSha256(baselineArtifacts.explodedViewPdf),
       artifactSha256(baselineArtifacts.launcherCouponSvg),
+      canonicalZipMemberIdentities(baselineArtifacts.zip),
     ]));
   }, 120_000);
+
+  it('cancels actual WASM singleton workers without late publication and replaces with a clean generation', async () => {
+    const { worker, api } = createAcceptanceGeometryWorker();
+    const publications: Array<GeometryAccelerationProbe & { readonly generation: number }> = [];
+    worker.addEventListener('message', (event) => {
+      if (event.data?.type === 'SHAPECUT_WASM_SEGMENTS_PUBLISHED') publications.push(event.data);
+    });
+    const firstOutcome = api.convertAutomatically({
+      bytes: writeBinarySTL(launcherCompatibleTallCylinder(), 'safe'),
+      material: testMaterial,
+      launcherFitOffsetMm: 0,
+    }).then(() => 'fulfilled' as const, () => 'rejected' as const);
+    let active!: WasmAccelerationState;
+    await vi.waitFor(async () => {
+      active = await requestWasmAccelerationState(worker, 'SHAPECUT_WASM_STATE_REQUEST');
+      expect(active.activeWorkerCount).toBeGreaterThan(0);
+    }, { timeout: 3_000, interval: 10 });
+
+    const cancelStarted = performance.now();
+    const cancelled = await requestWasmAccelerationState(worker, 'SHAPECUT_WASM_CANCEL_REQUEST');
+    expect(cancelled.activeWorkerCount).toBe(0);
+    expect(performance.now() - cancelStarted).toBeLessThan(1_000);
+    await expect(firstOutcome).resolves.toBe('rejected');
+    expect(publications).toEqual([]);
+
+    const replacement = await api.convertAutomatically({
+      bytes: writeBinarySTL(launcherCompatibleCylinder(), 'safe'),
+      material: testMaterial,
+      launcherFitOffsetMm: 0,
+    });
+    expect(replacement).toMatchObject({ mode: 'exact', status: 'warning' });
+    const finalState = await requestWasmAccelerationState(worker, 'SHAPECUT_WASM_STATE_REQUEST');
+    expect(finalState.activeWorkerCount).toBe(0);
+    expect(finalState.generation).toBeGreaterThan(cancelled.generation);
+    expect(publications).toEqual([
+      expect.objectContaining({
+        origin: 'wasm',
+        generation: finalState.generation,
+        activeWorkerCount: 0,
+      }),
+    ]);
+  });
 
   it('evicts the oldest entry when a fifth internal result enters the max-four cache', () => {
     const cache = new InternalAutomaticResultCache(4);

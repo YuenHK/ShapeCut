@@ -92,10 +92,17 @@ function signedDistanceToLoop(
 ): number {
   let inside = false;
   let distance = Infinity;
+  const consider = (start: Point2, end: Point2): void => {
+    if (point[0] < Math.min(start[0], end[0]) - distance
+      || point[0] > Math.max(start[0], end[0]) + distance
+      || point[1] < Math.min(start[1], end[1]) - distance
+      || point[1] > Math.max(start[1], end[1]) + distance) return;
+    distance = Math.min(distance, pointSegmentDistance(point, start, end));
+  };
   for (let index = 0; index < loop.length; index += 1) {
     if ((index & 63) === 0) checkRuntime(deadline, checkpoint);
     const start = loop[index], end = loop[(index + 1) % loop.length];
-    distance = Math.min(distance, pointSegmentDistance(point, start, end));
+    consider(start, end);
     if ((start[1] > point[1]) !== (end[1] > point[1])) {
       const intersectionX = start[0]
         + (point[1] - start[1]) * (end[0] - start[0]) / (end[1] - start[1]);

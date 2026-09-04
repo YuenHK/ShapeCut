@@ -274,17 +274,23 @@ function boundaryDistance(
   checkpoint: () => void,
 ): number {
   let distance = Infinity;
+  const consider = (point: Point2, start: Point2, end: Point2): void => {
+    if (point[0] < Math.min(start[0], end[0]) - distance
+      || point[0] > Math.max(start[0], end[0]) + distance
+      || point[1] < Math.min(start[1], end[1]) - distance
+      || point[1] > Math.max(start[1], end[1]) + distance) return;
+    distance = Math.min(distance, distancePointToSegment(point, start, end));
+  };
   for (let leftIndex = 0; leftIndex < left.length; leftIndex += 1) {
     if ((leftIndex & 63) === 0) checkRuntime(deadline, checkpoint);
     const leftStart = left[leftIndex], leftEnd = left[(leftIndex + 1) % left.length];
     for (let rightIndex = 0; rightIndex < right.length; rightIndex += 1) {
       if ((rightIndex & 255) === 0) checkRuntime(deadline, checkpoint);
       const rightStart = right[rightIndex], rightEnd = right[(rightIndex + 1) % right.length];
-      distance = Math.min(distance,
-        distancePointToSegment(leftStart, rightStart, rightEnd),
-        distancePointToSegment(leftEnd, rightStart, rightEnd),
-        distancePointToSegment(rightStart, leftStart, leftEnd),
-        distancePointToSegment(rightEnd, leftStart, leftEnd));
+      consider(leftStart, rightStart, rightEnd);
+      consider(leftEnd, rightStart, rightEnd);
+      consider(rightStart, leftStart, leftEnd);
+      consider(rightEnd, leftStart, leftEnd);
     }
   }
   return distance;
