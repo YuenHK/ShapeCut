@@ -190,6 +190,7 @@ process.exit(73);
     expect(ci).toContain('npm run build');
     expect(ci).toContain('npm run verify:geometry-wasm-generated');
     expect(ci).toContain('src/test/wasm-geometry-release.test.ts');
+    expect(ci).toContain('docs/validation/wasm-geometry-release-evidence.json --expect-blocked');
   });
 
   it('does not deploy without the same locked Rust and software release contract gates', () => {
@@ -197,5 +198,6 @@ process.exit(73);
     expect(pages).toContain('cargo test --locked --manifest-path crates/geometry-wasm/Cargo.toml');
     expect(pages).toContain('src/test/wasm-geometry-release.test.ts');
     expect(pages).toContain('npm run test:browser -- --run');
+    expect(pages).toContain('docs/validation/wasm-geometry-release-evidence.json --expect-blocked');
   });
 });

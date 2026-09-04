@@ -14,9 +14,21 @@
       "layerCount": 6,
       "measurementInterval": "conversion-stage",
       "origin": "typescript",
-      "actualWasmPartitionsObserved": false,
-      "conversionStageMs": [16084, 16044, 16016, 16048, 16045],
-      "fullOneClickMs": [18635, 16400, 16320, 16334, 16377]
+      "actualWasmPublication": null,
+      "conversionStageMs": [
+        15529,
+        15513,
+        16036,
+        15515,
+        15523
+      ],
+      "fullOneClickMs": [
+        15794,
+        15796,
+        16320,
+        15781,
+        15791
+      ]
     },
     {
       "caseId": "reference-b",
@@ -25,53 +37,78 @@
       "layerCount": 6,
       "measurementInterval": "conversion-stage",
       "origin": "typescript",
-      "actualWasmPartitionsObserved": false,
-      "conversionStageMs": [16577, 16549, 16533, 16522, 16520],
-      "fullOneClickMs": [16864, 16811, 16808, 16819, 16821]
+      "actualWasmPublication": null,
+      "conversionStageMs": [
+        16530,
+        16548,
+        16534,
+        16525,
+        16536
+      ],
+      "fullOneClickMs": [
+        16793,
+        16813,
+        16798,
+        16822,
+        16789
+      ]
     },
     {
       "caseId": "synthetic-200000",
       "kind": "synthetic",
       "triangleCount": 200000,
       "layerCount": 0,
-      "measurementInterval": "selection-to-cancel-cleanup",
-      "origin": "wasm",
-      "actualWasmPartitionsObserved": true,
-      "conversionStageMs": [4010, 4005, 4001, 4000, 3987]
+      "measurementInterval": "selection-to-terminal",
+      "origin": "typescript",
+      "actualWasmPublication": null,
+      "conversionStageMs": [
+        14951,
+        14936,
+        14936,
+        15838,
+        13926
+      ]
     },
     {
       "caseId": "synthetic-500000",
       "kind": "synthetic",
       "triangleCount": 500000,
       "layerCount": 0,
-      "measurementInterval": "selection-to-cancel-cleanup",
-      "origin": "wasm",
-      "actualWasmPartitionsObserved": true,
-      "conversionStageMs": [4413, 4394, 4401, 4402, 4403]
+      "measurementInterval": "selection-to-terminal",
+      "origin": "typescript",
+      "actualWasmPublication": null,
+      "conversionStageMs": [
+        2249,
+        2243,
+        2242,
+        2248,
+        2231
+      ]
     },
     {
       "caseId": "synthetic-1000000",
       "kind": "synthetic",
       "triangleCount": 1000000,
       "layerCount": 0,
-      "measurementInterval": "selection-to-cancel-cleanup",
-      "origin": "wasm",
-      "actualWasmPartitionsObserved": true,
-      "conversionStageMs": [4950, 4894, 4934, 4949, 4967]
+      "measurementInterval": "selection-to-terminal",
+      "origin": "typescript",
+      "actualWasmPublication": null,
+      "conversionStageMs": [
+        3268,
+        3218,
+        3217,
+        3737,
+        3221
+      ]
     }
   ],
   "memory": {
     "baselineAttributableLiveBytes": null,
     "runtimeAttributableLiveBytes": 50096084,
-    "observationStages": [
-      "pipeline:stl-received",
-      "slice-pool:partitions-ready",
-      "slice-pool:result-merged",
-      "slice-pool:cleanup"
-    ]
+    "observationStages": []
   },
   "responsiveness": {
-    "longestMainThreadTaskMs": 50,
+    "longestMainThreadTaskMs": 291,
     "cancellationVerifiedUnderOneSecond": true,
     "activeWorkersAfterCancellation": 0
   },

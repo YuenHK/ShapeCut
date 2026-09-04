@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { appendFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 
 import {
@@ -46,6 +47,21 @@ for (const reference of references) test(`release benchmark ${reference.caseId}`
       wasmPartitioned: probe.memoryObservations.some(({ stage }) => stage === 'slice-pool:partitions-ready'),
     };
     process.stdout.write(`release-benchmark ${reference.caseId} ${run === 0 ? 'warmup' : `measured-${run}`} ${JSON.stringify(sample)}\n`);
+    if (process.env.SHAPECUT_RELEASE_EVIDENCE_LOG) await appendFile(
+      process.env.SHAPECUT_RELEASE_EVIDENCE_LOG,
+      `${JSON.stringify({
+        caseId: reference.caseId,
+        runIndex: run,
+        triangleCount: reference.caseId === 'reference-a' ? 37_116 : 40_100,
+        layerCount: sample.layerCount,
+        measurementInterval: 'conversion-stage',
+        conversionStageMs: sample.conversionStageMs,
+        fullOneClickMs: sample.fullOneClickMs,
+        peakAttributableLiveBytes: sample.peakAttributableLiveBytes,
+        canonicalArtifactsVerified: true,
+        actualWasmPublications: probe.wasmPublications,
+      })}\n`,
+    );
     if (run > 0) measured.push(sample);
     await page.getByRole('button', { name: '捨棄已儲存專案並選擇另一個模型' }).click();
     await expect(page.getByTestId('apple-workbench')).toHaveAttribute('data-state', 'upload');

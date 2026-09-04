@@ -447,6 +447,11 @@ export type WorkerProbeState = {
   }[];
   readonly memoryObservations: readonly GeometryLiveByteObservation[];
   readonly wasmStartRequests: number;
+  readonly wasmPublications: readonly {
+    readonly generation: number;
+    readonly layerCount: number;
+    readonly activeWorkerCount: number;
+  }[];
 };
 
 type MutableSvgRoleGroup = {
@@ -2822,11 +2827,13 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
       replacement?: { name: string; mimeType: string; bytes: number[] };
       memoryObservations: GeometryLiveByteObservation[];
       wasmStartRequests: number;
+      wasmPublications: Array<{ generation: number; layerCount: number; activeWorkerCount: number }>;
     };
     const state: ProbeState = {
       results: [], errorCodes: [], created: 0, terminated: 0,
       packageRequests: 0, packageCheckpoints: [], replacementTriggered: 0, applyPaths: [], holeCandidates: [], packageWorkloads: [],
       activeWorkers: new Set(), memoryObservations: [], wasmStartRequests: 0,
+      wasmPublications: [],
     };
     Object.assign(window, { __shapeCutWorkerProbe: state });
     const inspect = (candidate: unknown, seen = new WeakSet<object>()): void => {
@@ -3139,6 +3146,16 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
             && typeof message.observation === 'object' && message.observation !== null) {
             state.memoryObservations.push(message.observation as GeometryLiveByteObservation);
           }
+          if (message?.type === 'SHAPECUT_WASM_SEGMENTS_PUBLISHED'
+            && Number.isSafeInteger(message.generation)
+            && Number.isSafeInteger(message.layerCount)
+            && Number.isSafeInteger(message.activeWorkerCount)) {
+            state.wasmPublications.push({
+              generation: message.generation as number,
+              layerCount: message.layerCount as number,
+              activeWorkerCount: message.activeWorkerCount as number,
+            });
+          }
           inspect(event.data);
         });
         super.postMessage({ type: 'SHAPECUT_TEST_HOLE_PROBE_ENABLE' });
@@ -3230,6 +3247,7 @@ export async function readWorkerProbeState(page: Page): Promise<WorkerProbeState
       packageWorkloads: state.packageWorkloads,
       memoryObservations: state.memoryObservations,
       wasmStartRequests: state.wasmStartRequests,
+      wasmPublications: state.wasmPublications,
     };
   });
 }

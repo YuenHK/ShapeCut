@@ -5,9 +5,16 @@ export type WasmGeometryBenchmarkCase = {
   kind: 'private-reference' | 'synthetic';
   triangleCount: number;
   layerCount: number;
-  measurementInterval: 'conversion-stage' | 'selection-to-cancel-cleanup';
+  measurementInterval: 'conversion-stage' | 'selection-to-terminal';
   origin: 'wasm' | 'typescript';
-  actualWasmPartitionsObserved: boolean;
+  actualWasmPublication: null | {
+    jobGeneration: number;
+    generation: number;
+    layerCount: number;
+    sliceWorkersCreated: number;
+    sliceWorkersTerminated: number;
+    activeWorkersAfter: number;
+  };
   conversionStageMs: number[];
   baselineConversionStageMs?: number[];
   fullOneClickMs?: number[];
@@ -97,7 +104,11 @@ function finite(value: unknown, label: string): number {
 
 function measured(values: unknown, label: string): number[] {
   if (!Array.isArray(values) || values.length !== 5) throw new RangeError(`${label} requires five measured trials`);
-  return values.map((value, index) => finite(value, `${label}[${index}]`));
+  return values.map((value, index) => {
+    const duration = finite(value, `${label}[${index}]`);
+    if (duration === 0) throw new RangeError(`${label}[${index}] must be positive`);
+    return duration;
+  });
 }
 
 function median(values: readonly number[]): number {
@@ -125,13 +136,37 @@ export function verifyWasmGeometryRelease(input: unknown): WasmGeometryReleaseRe
     assertPlainRecord(entry, 'Benchmark case');
     exactKeys(entry, [
       'caseId', 'kind', 'triangleCount', 'layerCount', 'measurementInterval', 'origin',
-      'actualWasmPartitionsObserved', 'conversionStageMs',
+      'actualWasmPublication', 'conversionStageMs',
       ...(entry.baselineConversionStageMs === undefined ? [] : ['baselineConversionStageMs']),
       ...(entry.fullOneClickMs === undefined ? [] : ['fullOneClickMs']),
     ], `${entry.caseId} benchmark`);
     const expectedInterval = entry.kind === 'private-reference'
-      ? 'conversion-stage' : 'selection-to-cancel-cleanup';
+      ? 'conversion-stage' : 'selection-to-terminal';
     if (entry.measurementInterval !== expectedInterval) throw new RangeError(`${entry.caseId} measurement interval is not canonical`);
+    const expected = ({
+      'reference-a': ['private-reference', 37_116, 6],
+      'reference-b': ['private-reference', 40_100, 6],
+      'synthetic-200000': ['synthetic', 200_000, 0],
+      'synthetic-500000': ['synthetic', 500_000, 0],
+      'synthetic-1000000': ['synthetic', 1_000_000, 0],
+    } as const)[entry.caseId];
+    if (entry.kind !== expected[0] || entry.triangleCount !== expected[1] || entry.layerCount !== expected[2]) {
+      throw new RangeError(`${entry.caseId} kind or geometry counts are not canonical`);
+    }
+    if (entry.kind === 'private-reference' && entry.fullOneClickMs === undefined) throw new RangeError(`${entry.caseId} requires full one-click measurements`);
+    if (entry.kind === 'synthetic' && entry.fullOneClickMs !== undefined) throw new RangeError(`${entry.caseId} cannot claim full one-click measurements`);
+    if (entry.actualWasmPublication !== null) {
+      assertPlainRecord(entry.actualWasmPublication, `${entry.caseId} WASM publication`);
+      exactKeys(entry.actualWasmPublication, ['jobGeneration', 'generation', 'layerCount', 'sliceWorkersCreated', 'sliceWorkersTerminated', 'activeWorkersAfter'], `${entry.caseId} WASM publication`);
+      const publication = entry.actualWasmPublication;
+      const created = finite(publication.sliceWorkersCreated, `${entry.caseId} slice workers created`);
+      if (finite(publication.jobGeneration, `${entry.caseId} job generation`) !== finite(publication.generation, `${entry.caseId} publication generation`)
+        || publication.layerCount !== entry.layerCount || created === 0
+        || finite(publication.sliceWorkersTerminated, `${entry.caseId} slice workers terminated`) !== created
+        || finite(publication.activeWorkersAfter, `${entry.caseId} active workers`) !== 0) {
+        throw new RangeError(`${entry.caseId} WASM publication is not bound to one clean job generation`);
+      }
+    }
     const conversion = measured(entry.conversionStageMs, `${entry.caseId} conversion`);
     const baseline = entry.baselineConversionStageMs === undefined ? undefined : measured(entry.baselineConversionStageMs, `${entry.caseId} baseline`);
     const full = entry.fullOneClickMs === undefined ? undefined : measured(entry.fullOneClickMs, `${entry.caseId} full one-click`);
@@ -150,9 +185,12 @@ export function verifyWasmGeometryRelease(input: unknown): WasmGeometryReleaseRe
   const fastEnough = references.every(({ conversionMedianMs }) => conversionMedianMs <= 15_000)
     || references.every(({ speedup }) => speedup !== undefined && speedup >= 2);
   if (!fastEnough) failedGates.push('knight-performance');
-  if (!evidence.benchmarks.slice(0, 2).every(({ origin, actualWasmPartitionsObserved }) => (
-    origin === 'wasm' && actualWasmPartitionsObserved
+  if (!evidence.benchmarks.slice(0, 2).every(({ origin, actualWasmPublication }) => (
+    origin === 'wasm' && actualWasmPublication !== null
   ))) failedGates.push('knight-actual-wasm');
+  if (!evidence.benchmarks.slice(2).every(({ origin, actualWasmPublication }) => (
+    origin === 'wasm' && actualWasmPublication !== null
+  ))) failedGates.push('synthetic-actual-wasm');
 
   assertPlainRecord(evidence.memory, 'Release memory');
   exactKeys(evidence.memory, ['baselineAttributableLiveBytes', 'runtimeAttributableLiveBytes', 'observationStages'], 'Release memory');
@@ -194,12 +232,18 @@ export function verifyWasmGeometryRelease(input: unknown): WasmGeometryReleaseRe
 }
 
 async function main(): Promise<void> {
-  const evidencePath = process.argv.at(-1);
-  if (evidencePath === undefined || !evidencePath.endsWith('.json')) throw new Error('Usage: verify-wasm-geometry-release.ts <evidence.json>');
+  const arguments_ = process.argv.slice(2);
+  const expectBlocked = arguments_.includes('--expect-blocked');
+  const evidencePath = arguments_.find((argument) => argument.endsWith('.json'));
+  if (evidencePath === undefined || arguments_.some((argument) => argument !== evidencePath && argument !== '--expect-blocked')) throw new Error('Usage: verify-wasm-geometry-release.ts <evidence.json> [--expect-blocked]');
   const evidence: unknown = JSON.parse(await readFile(evidencePath, 'utf8'));
   const result = verifyWasmGeometryRelease(evidence);
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-  if (!result.softwareReleaseEligible) process.exitCode = 1;
+  if (expectBlocked) {
+    const expected = ['knight-performance', 'knight-actual-wasm', 'synthetic-actual-wasm', 'live-byte-baseline', 'main-thread-responsiveness'];
+    if (JSON.stringify(result.failedGates) !== JSON.stringify(expected)
+      || result.softwareReleaseEligible || result.productionRolloutEligible) process.exitCode = 1;
+  } else if (!result.softwareReleaseEligible) process.exitCode = 1;
 }
 
 if (process.env.VITEST === undefined) await main();

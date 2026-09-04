@@ -6,14 +6,16 @@ Production WASM remains disabled by default. The fixed-host release verifier cor
 
 - `knight-performance`
 - `knight-actual-wasm`
+- `synthetic-actual-wasm`
 - `live-byte-baseline`
+- `main-thread-responsiveness`
 
 The physical official-launcher coupon fit test is separately reported as external and outstanding. This task does not claim whole-branch approval or physical launcher acceptance.
 
 ## TDD RED to GREEN
 
 - Release verifier RED: the focused suite could not resolve the missing verifier module. GREEN: a strict canonical evidence parser and release decision function now has 12/12 focused tests passing. It rejects identifying fields, non-canonical evidence, missing five-run samples, non-Apple-Silicon/non-Chromium hosts, performance/memory/responsiveness/geometry/bundle failures, TypeScript fallback disguised as WASM, and absent private acceptance.
-- Workflow RED: two build-contract tests failed because `.github/workflows/ci.yml` was absent and Pages lacked locked Rust/browser/release gates. GREEN: 18/18 combined release/workflow contract assertions pass. CI and Pages now pin the Rust toolchain and wasm-pack, cache locked Cargo inputs, run `cargo test --locked`, regenerate/verify WASM, run serial Node and Chromium differential tests, exercise the release verifier contract, and inspect the production build.
+- Workflow RED: two build-contract tests failed because `.github/workflows/ci.yml` was absent and Pages lacked locked Rust/browser/release gates. GREEN: 19/19 combined release/workflow contract assertions pass. CI and Pages now pin the Rust toolchain and wasm-pack, cache locked Cargo inputs, run `cargo test --locked`, regenerate/verify WASM, run serial Node and Chromium differential tests, exercise the release verifier contract, verify the committed blocked evidence state, and inspect the production build.
 - Actual-WASM RED: the first private benchmark run expected an active WASM partition but observed none. The rollout-on conversion succeeded through TypeScript because the post-projection coordinates did not meet the exact Float32 eligibility boundary. The release verifier now requires both `origin: wasm` and an actual partition observation for both references.
 - Harness RED: the first draft expected the long-lived geometry worker count to be zero after successful output, then a repeated run restored the saved project and blocked the material selector. GREEN: the benchmark uses the existing discard-project control between trials and emits append-safe per-trial sanitized evidence. It completed both references in 3.6 minutes.
 
@@ -25,21 +27,21 @@ Host contract: Apple Silicon arm64, Chromium, one warmup then five measured runs
 
 | Case | Measured interval | Measured values (ms) | Median (ms) | Actual WASM |
 | --- | --- | --- | ---: | --- |
-| Reference A | conversion stage | 16084, 16044, 16016, 16048, 16045 | 16045 | no; TypeScript fallback |
-| Reference A | upload to reconciled six downloads | 18635, 16400, 16320, 16334, 16377 | 16377 | no; TypeScript fallback |
-| Reference B | conversion stage | 16577, 16549, 16533, 16522, 16520 | 16533 | no; TypeScript fallback |
-| Reference B | upload to reconciled six downloads | 16864, 16811, 16808, 16819, 16821 | 16819 | no; TypeScript fallback |
-| Synthetic 200k | selection to cancel and cleanup | 4010, 4005, 4001, 4000, 3987 | 4001 | yes, controlled actual-WASM workload |
-| Synthetic 500k | selection to cancel and cleanup | 4413, 4394, 4401, 4402, 4403 | 4402 | yes, controlled actual-WASM workload |
-| Synthetic 1M | selection to cancel and cleanup | 4950, 4894, 4934, 4949, 4967 | 4949 | yes, controlled actual-WASM workload |
+| Reference A | conversion stage | 15529, 15513, 16036, 15515, 15523 | 15523 | no; TypeScript fallback |
+| Reference A | upload to reconciled six downloads | 15794, 15796, 16320, 15781, 15791 | 15794 | no; TypeScript fallback |
+| Reference B | conversion stage | 16530, 16548, 16534, 16525, 16536 | 16534 | no; TypeScript fallback |
+| Reference B | upload to reconciled six downloads | 16793, 16813, 16798, 16822, 16789 | 16798 | no; TypeScript fallback |
+| Synthetic 200k | selection to typed terminal | 14951, 14936, 14936, 15838, 13926 | 14936 | no publication; TypeScript/resource path |
+| Synthetic 500k | selection to typed terminal | 2249, 2243, 2242, 2248, 2231 | 2243 | no publication; TypeScript/resource path |
+| Synthetic 1M | selection to typed terminal | 3268, 3218, 3217, 3737, 3221 | 3221 | no publication; TypeScript/resource path |
 
 The Knight target fails: neither reference is at or below 15 seconds and no actual WASM partition was used. A future transform-aware exact path could retain original binary Float32 positions and apply a verified projection transform in Rust, but that changes the Task 5 kernel boundary and requires new TypeScript-oracle differential and six-artifact identity gates. It must not bypass or loosen the current exact eligibility rule.
 
 ## Memory, responsiveness and cancellation
 
-- Synthetic runtime-attributable peaks: 10,096,084 / 25,096,084 / 50,096,084 bytes for 200k / 500k / 1M.
-- Longest main-thread task across the 18 fixed-host synthetic runs: 50 ms; no run reached 100 ms.
-- Every synthetic run finished cancellation with active worker count zero. The existing actual-WASM browser cancellation gate verifies termination within one second.
+- Synthetic runtime-attributable peaks: 38,896,356 / 25,096,084 / 50,096,084 bytes for 200k / 500k / 1M.
+- Longest main-thread task across the 18 fixed-host synthetic runs: 291 ms; the 100 ms responsiveness gate failed.
+- Every synthetic job reached typed `RESOURCE_LIMIT`; the 1M median was 3.221 seconds and every 1M trial was inside 120 seconds. No synthetic job published WASM segments.
 - The current runtime tracker covers STL, parsed/safe-repair/extraction meshes, bounded preview, WASM batch, partition copies/metadata/results, simultaneous merge inputs/output, retained preview, and cleanup.
 - There is no comparable pre-Task-6 runtime-owner observation. The report therefore does not derive a theoretical denominator or claim a 30% reduction; the verifier emits `live-byte-baseline` and blocks release.
 
@@ -52,17 +54,17 @@ The Knight target fails: neither reference is at or below 15 seconds and no actu
 
 ## Verification matrix
 
-- Focused release/workflow contracts: 2 files, 18 tests passed.
+- Focused release/workflow contracts: 2 files, 19 tests passed.
 - Full serial Node: 78/78 files; 1,874 passed, 4 skipped; 289.02 seconds.
 - Full Chromium: 9/9 files; 142/142 passed; 83.87 seconds under the unchanged 15-second per-test gate.
 - Full E2E with external A/B: 19 passed, 3 truthful conditional skips; A 38.8 seconds, B 40.2 seconds. The skips were one legacy path-only optional case and two explicit benchmark-only cases; the actual A/B release cases passed.
-- Fixed-host synthetic benchmark: 18/18 passed in 1.6 minutes.
+- Fixed-host synthetic benchmark: 18/18 reached a typed terminal outcome in 2.3 minutes; release thresholds are evaluated separately and failed where reported.
 - Rust: 1 unit + 21 integration tests passed; locked; clippy `-D warnings` passed.
 - Raw WASM boundary: 31/31 passed.
 - Tracked WASM artifacts: 4/4 verified; Rust 1.98.0 and wasm-pack 0.15.0.
 - Public and private fixture validators: passed.
 - Typecheck, production build and `git diff --check`: passed. Build transformed 178 modules and emitted one hashed slice worker, one hashed WASM asset, zero source maps, and no private path/account data.
-- Current release evidence CLI: exits 1 by design with the three unmet software gates above; production default-off is preserved.
+- Current release evidence CLI: exits 1 by design with the five unmet software gates above; production default-off is preserved.
 
 ## Follow-up and external gate
 

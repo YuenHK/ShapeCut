@@ -70,6 +70,8 @@ jobs:
         run: npm run typecheck
       - name: Release verifier contract
         run: npm test -- src/test/wasm-geometry-release.test.ts --maxWorkers=1 --fileParallelism=false
+      - name: Verify committed blocked rollout evidence
+        run: npm exec vite-node -- scripts/verify-wasm-geometry-release.ts docs/validation/wasm-geometry-release-evidence.json --expect-blocked
       - name: Browser differential tests
         run: npm run test:browser -- --run
       - name: Build
