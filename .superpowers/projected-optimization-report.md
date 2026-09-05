@@ -15,7 +15,7 @@ Scope: Task 1 only. The implementation is confined to `src/domain/outline-featur
 
 ## TDD and oracle evidence
 
-The test-local reference independently spells out ray casting, tolerant segment intersection, endpoint-to-segment distance, and the original running-minimum result. It covers concavity, touching/crossing, midpoint escape, both sides of the `1e-12` clearance allowance, translation, mixed scale, reversed winding, empty/degenerate inputs, malformed clearances, and checkpoint cancellation. A deterministic matrix adds 192 scale/translation/winding/position/clearance comparisons.
+The test-local reference independently spells out ray casting, tolerant segment intersection, endpoint-to-segment distance, and the original dynamic running-minimum AABB pruning in the same observation order. It covers concavity, touching/crossing, midpoint escape, both sides of the `1e-12` clearance allowance, translation, mixed scale, reversed winding, empty/degenerate inputs, malformed clearances and coordinates (`NaN`/`Infinity`), finite `1e155` overflow scale, and checkpoint cancellation. A deterministic matrix adds 192 scale/translation/winding/position/clearance comparisons. Later-checkpoint cancellation is permanently sampled at callback counts 2, 6, 12, and 21, and the successful-path callback count must equal the legacy reference.
 
 RED mechanism evidence (original source): the 256-edge coordinate-access test observed 49,706 exterior-coordinate reads, exceeding the final non-timing cap of 40,000. GREEN optimized source observes 31,374 reads. This assertion is deterministic and does not use wall time.
 
@@ -24,7 +24,7 @@ RED mechanism evidence (original source): the 256-edge coordinate-access test ob
 ```text
 npm test -- src/domain/outline-features/hole.test.ts
 Test Files  1 passed (1)
-Tests       31 passed (31)
+Tests       38 passed (38)
 
 npm run typecheck
 tsc -b --pretty false
@@ -34,4 +34,4 @@ git diff --check
 exit 0
 ```
 
-The controller is running the private reference A/B outside this commit to avoid benchmark contention. Its canonical six-artifact and unpacked-ZIP comparison belongs to the controller's Task 2 evidence; no independent review or release acceptance is claimed here.
+An independent Task 1 review returned PASS/Approved with 0 critical, 0 important, and 2 minor test-evidence requests. The dynamic-pruning oracle plus non-finite/overflow cases close the first request; later cancellation and callback-count equivalence close the second. The controller is running the private reference A/B outside this commit to avoid benchmark contention. Its canonical six-artifact and unpacked-ZIP comparison belongs to the controller's Task 2 evidence; no release acceptance is claimed here.

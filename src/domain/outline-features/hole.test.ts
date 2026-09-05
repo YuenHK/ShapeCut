@@ -13,7 +13,9 @@ function referenceStrictContainment(
   exterior: readonly Point2[],
   candidate: readonly Point2[],
   minimumClearance: number,
+  checkpoint: () => void = () => undefined,
 ): boolean {
+  checkpoint();
   if (!Number.isFinite(minimumClearance) || minimumClearance < 0) return false;
   const allPoints = [...exterior, ...candidate];
   const scale = allPoints.reduce((largest, [x, y]) => Math.max(largest, Math.abs(x), Math.abs(y)), 1);
@@ -72,23 +74,32 @@ function referenceStrictContainment(
   };
 
   for (let index = 0; index < candidate.length; index += 1) {
+    checkpoint();
     const start = candidate[index], end = candidate[(index + 1) % candidate.length];
     if (location(start) !== 1
       || location([(start[0] + end[0]) / 2, (start[1] + end[1]) / 2]) !== 1) return false;
     for (let outerIndex = 0; outerIndex < exterior.length; outerIndex += 1) {
+      if ((outerIndex & 63) === 0) checkpoint();
       if (intersects(start, end, exterior[outerIndex], exterior[(outerIndex + 1) % exterior.length])) return false;
     }
   }
+  checkpoint();
   let clearance = Infinity;
+  const consider = (point: Point2, start: Point2, end: Point2): void => {
+    if (point[0] < Math.min(start[0], end[0]) - clearance
+      || point[0] > Math.max(start[0], end[0]) + clearance
+      || point[1] < Math.min(start[1], end[1]) - clearance
+      || point[1] > Math.max(start[1], end[1]) + clearance) return;
+    clearance = Math.min(clearance, segmentDistance(point, start, end));
+  };
   for (let innerIndex = 0; innerIndex < candidate.length; innerIndex += 1) {
     const innerStart = candidate[innerIndex], innerEnd = candidate[(innerIndex + 1) % candidate.length];
     for (let outerIndex = 0; outerIndex < exterior.length; outerIndex += 1) {
       const outerStart = exterior[outerIndex], outerEnd = exterior[(outerIndex + 1) % exterior.length];
-      clearance = Math.min(clearance,
-        segmentDistance(innerStart, outerStart, outerEnd),
-        segmentDistance(innerEnd, outerStart, outerEnd),
-        segmentDistance(outerStart, innerStart, innerEnd),
-        segmentDistance(outerEnd, innerStart, innerEnd));
+      consider(innerStart, outerStart, outerEnd);
+      consider(innerEnd, outerStart, outerEnd);
+      consider(outerStart, innerStart, innerEnd);
+      consider(outerEnd, innerStart, innerEnd);
     }
   }
   return clearance + 1e-12 >= minimumClearance;
@@ -138,8 +149,14 @@ describe('isStrictlyContainedLoop', () => {
     ['clearance just beyond the allowance', square(10), square(8), 1 + 2e-12],
     ['mixed coordinate scales', square(2e9, 3e12, -4e12), square(2e6, 3e12, -4e12), 1],
     ['empty candidate legacy behavior', square(10), [], 1],
+    ['empty candidate with malformed exterior', [[Number.NaN, Infinity]], [], 1],
+    ['both loops empty legacy behavior', [], [], 1],
     ['empty exterior', [], square(2), 0],
+    ['single-point exterior', [[0, 0]], square(2), 0],
     ['degenerate candidate', square(10), [[0, 0], [0, 0], [0, 0]], 0],
+    ['NaN candidate coordinate', square(10), [[Number.NaN, 0], [1, 0], [0, 1]], 0],
+    ['infinite candidate coordinate', square(10), [[Infinity, 0], [1, 0], [0, 1]], 0],
+    ['overflow-scale finite coordinates', square(1e155), square(1e154), 1e140],
   ];
 
   test.each(cases)('matches the independent reference for %s', (_name, exterior, candidate, clearance) => {
@@ -187,6 +204,33 @@ describe('isStrictlyContainedLoop', () => {
     expect(() => isStrictlyContainedLoop(square(10), square(2), 0, Infinity, () => {
       throw new Error('cancelled');
     })).toThrow('cancelled');
+  });
+
+  test('matches legacy callback counts and cancellation at later checkpoints', () => {
+    const exterior = Array.from({ length: 256 }, (_, index): Point2 => {
+      const angle = index / 256 * Math.PI * 2;
+      return [10 * Math.cos(angle), 10 * Math.sin(angle)];
+    });
+    let referenceCalls = 0, actualCalls = 0;
+    expect(referenceStrictContainment(exterior, square(2), 0.1, () => { referenceCalls += 1; })).toBe(true);
+    expect(isStrictlyContainedLoop(exterior, square(2), 0.1, Infinity, () => { actualCalls += 1; })).toBe(true);
+    expect(actualCalls).toBe(referenceCalls);
+
+    for (const cancelAt of [2, 6, 12, 21]) {
+      const run = (reference: boolean): number => {
+        let calls = 0;
+        const checkpoint = (): void => {
+          calls += 1;
+          if (calls === cancelAt) throw new Error(`cancelled-${cancelAt}`);
+        };
+        expect(() => reference
+          ? referenceStrictContainment(exterior, square(2), 0.1, checkpoint)
+          : isStrictlyContainedLoop(exterior, square(2), 0.1, Infinity, checkpoint))
+          .toThrow(`cancelled-${cancelAt}`);
+        return calls;
+      };
+      expect(run(false)).toBe(run(true));
+    }
   });
 
   test('prepares exterior coordinates once instead of rescanning them for every point tolerance', () => {
