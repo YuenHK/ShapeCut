@@ -32,7 +32,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             crates/geometry-wasm/target
-          key: geometry-wasm-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          key: geometry-wasm-${{ runner.os }}-${{ hashFiles('crates/geometry-wasm/Cargo.lock', 'rust-toolchain.toml') }}
       - name: Install pinned Rust toolchain
         run: |
           rustup toolchain install 1.98.0 --profile minimal --target wasm32-unknown-unknown

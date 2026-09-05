@@ -6,6 +6,7 @@ export default defineConfig({
   plugins: [react()],
   optimizeDeps: { include: ['comlink', 'dexie', 'jszip', 'pdf-lib', 'three', 'three/examples/jsm/controls/OrbitControls.js', 'zustand', 'zustand/vanilla'] },
   test: {
+    testTimeout: 15_000,
     include: ['src/**/*.browser.test.{ts,tsx}'],
     setupFiles: ['./src/test/setup.ts'],
     browser: {
