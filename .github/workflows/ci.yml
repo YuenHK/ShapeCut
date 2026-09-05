@@ -63,4 +63,4 @@ jobs:
       - name: Production build and bundle inspection
         run: npm run build
       - name: Privacy scan release evidence
-        run: '! rg -n -i "(?:/Users/|\\\\Users\\\\|@|knight|fortress|\.stl|sha256|sourceHash)" docs/validation/wasm-geometry-*.json docs/validation/wasm-geometry-*.jsonl'
+        run: node scripts/verify-release-privacy.mjs
