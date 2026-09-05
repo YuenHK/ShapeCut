@@ -36,3 +36,21 @@ Verification on the final production code:
 The changes are committed on the local optimization branch; this report does not assert GitHub Pages deployment.
 
 This confirms the targeted TypeScript optimization and identical reference outputs. It does not enable WASM or supersede the historical A3 blocked release evidence, establish a memory reduction, or complete physical launcher testing. Browser responsiveness and full packaging time must not be inferred from these conversion-only timings.
+
+## Final polygon fast rejection
+
+Production commit `df40d46` additionally rejects points outside the original tolerance-expanded segment bounds before computing segment length/cross products. The original terminal bounds remain, preserving non-finite behavior. Independent review found no blocking issues; a later-checkpoint cancellation trace was suggested as optional coverage, while checkpoint placement is unchanged.
+
+The same baseline, host, harness, one warmup and five measured conversions were used again. All twelve canonical results and both final artifact sets match the baseline exactly. These remain Node conversion-only measurements, not browser or packaging timings.
+
+| Reference | Baseline median | Final median | Time reduction |
+| --- | ---: | ---: | ---: |
+| A | 14.232 s | 9.612 s | 32.5% |
+| B | 14.701 s | 9.994 s | 32.0% |
+
+Measured final milliseconds:
+
+- A: 9611.653, 9502.108, 9624.841, 9491.226, 9635.902.
+- B: 9993.797, 9975.330, 10137.682, 10131.169, 9969.351.
+
+Focused direct-dependency tests passed (6 files, 170 tests), and typecheck passed. Final release-wide verification is recorded separately after completion.
