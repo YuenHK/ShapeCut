@@ -3,15 +3,14 @@ import { validateManufacturingGeometryProfile } from './manufacturing-profile';
 import { GEOMETRY_ESTIMATE_MATERIALS } from './geometry-estimates';
 
 describe('GEOMETRY_ESTIMATE_MATERIALS', () => {
-  it('contains exactly the five approved geometry estimates in display order', () => {
+  it('contains exactly the four geometry estimates in display order', () => {
     expect(GEOMETRY_ESTIMATE_MATERIALS.map(({ id, name, thicknessMm }) => ({
       id, name, thicknessMm,
     }))).toEqual([
-      { id: 'plywood-3', name: '木夾板（幾何估算）', thicknessMm: 3 },
-      { id: 'plywood-5', name: '木夾板（幾何估算）', thicknessMm: 5 },
-      { id: 'acrylic-3', name: '鑄造壓克力（幾何估算）', thicknessMm: 3 },
-      { id: 'acrylic-5', name: '鑄造壓克力（幾何估算）', thicknessMm: 5 },
-      { id: 'cardboard-2', name: '紙板（幾何估算）', thicknessMm: 2 },
+      { id: 'acrylic-6', name: '壓克力（幾何估算）', thicknessMm: 6 },
+      { id: 'acrylic-3', name: '壓克力（幾何估算）', thicknessMm: 3 },
+      { id: 'plywood-6', name: '木（幾何估算）', thicknessMm: 6 },
+      { id: 'plywood-3', name: '木（幾何估算）', thicknessMm: 3 },
     ]);
   });
 
@@ -30,11 +29,10 @@ describe('GEOMETRY_ESTIMATE_MATERIALS', () => {
 
   it('uses the approved conservative geometry values', () => {
     expect(GEOMETRY_ESTIMATE_MATERIALS).toEqual([
-      expect.objectContaining({ id: 'plywood-3', thicknessMm: 3, kerfMm: 0.15, minFeatureMm: 0.8, minWebMm: 0.4 }),
-      expect.objectContaining({ id: 'plywood-5', thicknessMm: 5, kerfMm: 0.15, minFeatureMm: 0.8, minWebMm: 0.4 }),
+      expect.objectContaining({ id: 'acrylic-6', thicknessMm: 6, kerfMm: 0.15, minFeatureMm: 0.8, minWebMm: 0.4 }),
       expect.objectContaining({ id: 'acrylic-3', thicknessMm: 3, kerfMm: 0.15, minFeatureMm: 0.8, minWebMm: 0.4 }),
-      expect.objectContaining({ id: 'acrylic-5', thicknessMm: 5, kerfMm: 0.15, minFeatureMm: 0.8, minWebMm: 0.4 }),
-      expect.objectContaining({ id: 'cardboard-2', thicknessMm: 2, kerfMm: 0.15, minFeatureMm: 0.8, minWebMm: 0.4 }),
+      expect.objectContaining({ id: 'plywood-6', thicknessMm: 6, kerfMm: 0.15, minFeatureMm: 0.8, minWebMm: 0.4 }),
+      expect.objectContaining({ id: 'plywood-3', thicknessMm: 3, kerfMm: 0.15, minFeatureMm: 0.8, minWebMm: 0.4 }),
     ]);
   });
 

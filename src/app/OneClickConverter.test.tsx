@@ -14,7 +14,7 @@ import { SupersededError } from '../workers/geometry-client';
 import { OutlineArtifactError } from '../workers/geometry-api';
 import * as outlineProcessScene from '../preview/outline-process-scene';
 import { createStlPresentationPayload } from '../preview/stl-presentation';
-import { BLOCKED_TEST_MATERIAL, READY_TEST_MATERIAL } from '../test/ready-material';
+import { BLOCKED_TEST_MATERIAL, READY_TEST_MATERIAL as SOURCE_READY_TEST_MATERIAL } from '../test/ready-material';
 import {
   OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
   OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
@@ -51,6 +51,8 @@ const coloredLayer: ColoredOutlineLayer = {
     depth: { cellSizeMm: 0, contrastMm: 0, redThresholdMm: 0, blueThresholdMm: 0 },
   },
 };
+const READY_TEST_MATERIAL = { ...SOURCE_READY_TEST_MATERIAL, id: 'acrylic-6', thicknessMm: 6 };
+
 const resultMaterial = manufacturingGeometryProfile(defaultPendingMaterialProfile('plywood-3')!);
 
 const result: AutomaticOutlineResult = {
@@ -191,6 +193,7 @@ function services(overrides: Partial<OneClickConverterServices> = {}): OneClickC
 async function uploadAndSelectMaterial(user: ReturnType<typeof userEvent.setup>, file: File): Promise<void> {
   await user.upload(screen.getByLabelText('選擇 STL 模型'), file);
   await user.selectOptions(await screen.findByLabelText('選擇製作材料'), READY_TEST_MATERIAL.id);
+    await user.click(screen.getByRole('button', { name: '開始製作' }));
 }
 
 describe('OneClickConverter', () => {
@@ -291,6 +294,7 @@ describe('OneClickConverter', () => {
     expect(deleteSavedProject).toHaveBeenCalledOnce();
     await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['different'], 'different.stl'));
     await user.selectOptions(await screen.findByLabelText('選擇製作材料'), READY_TEST_MATERIAL.id);
+    await user.click(screen.getByRole('button', { name: '開始製作' }));
     expect(convert).toHaveBeenCalledTimes(2);
     expect(await screen.findByRole('heading', { name: '轉換完成' })).toBeVisible();
 
@@ -553,6 +557,7 @@ describe('OneClickConverter', () => {
     expectState('material');
 
     await user.selectOptions(screen.getByLabelText('選擇製作材料'), READY_TEST_MATERIAL.id);
+    await user.click(screen.getByRole('button', { name: '開始製作' }));
     expectState('processing');
     expect(api.convert).toHaveBeenCalledOnce();
 
@@ -649,7 +654,7 @@ describe('OneClickConverter', () => {
         fireEvent.change(screen.getByLabelText('選擇 STL 模型'), { target: { files: [file] } });
       });
       await act(async () => {
-        fireEvent.change(screen.getByLabelText('選擇製作材料'), { target: { value: READY_TEST_MATERIAL.id } });
+        fireEvent.change(screen.getByLabelText('選擇製作材料'), { target: { value: READY_TEST_MATERIAL.id } }); fireEvent.click(screen.getByRole('button', { name: '開始製作' }));
       });
       await act(async () => { await Promise.resolve(); });
       packaged.resolve(packageDownloads('runtime-swap-held'));
@@ -726,7 +731,7 @@ describe('OneClickConverter', () => {
       const file = new File(['mesh'], 'fast.stl');
       Object.defineProperty(file, 'arrayBuffer', { value: vi.fn().mockResolvedValue(new ArrayBuffer(4)) });
       await act(async () => { fireEvent.change(screen.getByLabelText('選擇 STL 模型'), { target: { files: [file] } }); });
-      await act(async () => { fireEvent.change(screen.getByLabelText('選擇製作材料'), { target: { value: READY_TEST_MATERIAL.id } }); });
+      await act(async () => { fireEvent.change(screen.getByLabelText('選擇製作材料'), { target: { value: READY_TEST_MATERIAL.id } }); fireEvent.click(screen.getByRole('button', { name: '開始製作' })); });
       await act(async () => { await Promise.resolve(); });
       await vi.advanceTimersByTimeAsync(7_999);
       expect(screen.queryByRole('heading', { name: '轉換完成' })).toBeNull();
@@ -762,7 +767,7 @@ describe('OneClickConverter', () => {
       Object.defineProperty(first, 'arrayBuffer', { value: vi.fn().mockResolvedValue(new ArrayBuffer(4)) });
       Object.defineProperty(replacement, 'arrayBuffer', { value: vi.fn().mockResolvedValue(new ArrayBuffer(4)) });
       await act(async () => { fireEvent.change(screen.getByLabelText('選擇 STL 模型'), { target: { files: [first] } }); });
-      await act(async () => { fireEvent.change(screen.getByLabelText('選擇製作材料'), { target: { value: READY_TEST_MATERIAL.id } }); });
+      await act(async () => { fireEvent.change(screen.getByLabelText('選擇製作材料'), { target: { value: READY_TEST_MATERIAL.id } }); fireEvent.click(screen.getByRole('button', { name: '開始製作' })); });
       await act(async () => { await Promise.resolve(); });
       packaged.resolve(packageDownloads('held'));
       await act(async () => { await Promise.resolve(); });
@@ -794,7 +799,7 @@ describe('OneClickConverter', () => {
       Object.defineProperty(first, 'arrayBuffer', { value: vi.fn().mockResolvedValue(new ArrayBuffer(4)) });
       Object.defineProperty(replacement, 'arrayBuffer', { value: vi.fn().mockResolvedValue(new ArrayBuffer(4)) });
       await act(async () => { fireEvent.change(screen.getByLabelText('選擇 STL 模型'), { target: { files: [first] } }); });
-      await act(async () => { fireEvent.change(screen.getByLabelText('選擇製作材料'), { target: { value: READY_TEST_MATERIAL.id } }); });
+      await act(async () => { fireEvent.change(screen.getByLabelText('選擇製作材料'), { target: { value: READY_TEST_MATERIAL.id } }); fireEvent.click(screen.getByRole('button', { name: '開始製作' })); });
       await act(async () => { await Promise.resolve(); });
       await act(async () => { fireEvent.change(screen.getByLabelText('選擇 STL 模型'), { target: { files: [replacement] } }); });
       packaged.resolve(packageDownloads('late'));
@@ -822,7 +827,7 @@ describe('OneClickConverter', () => {
       const file = new File(['mesh'], 'unmount-held.stl');
       Object.defineProperty(file, 'arrayBuffer', { value: vi.fn().mockResolvedValue(new ArrayBuffer(4)) });
       await act(async () => { fireEvent.change(screen.getByLabelText('選擇 STL 模型'), { target: { files: [file] } }); });
-      await act(async () => { fireEvent.change(screen.getByLabelText('選擇製作材料'), { target: { value: READY_TEST_MATERIAL.id } }); });
+      await act(async () => { fireEvent.change(screen.getByLabelText('選擇製作材料'), { target: { value: READY_TEST_MATERIAL.id } }); fireEvent.click(screen.getByRole('button', { name: '開始製作' })); });
       await act(async () => { await Promise.resolve(); });
       packaged.resolve(packageDownloads('unmount-held'));
       await act(async () => { await Promise.resolve(); });
@@ -854,7 +859,7 @@ describe('OneClickConverter', () => {
       const file = new File(['mesh'], 'late-progress.stl');
       Object.defineProperty(file, 'arrayBuffer', { value: vi.fn().mockResolvedValue(new ArrayBuffer(4)) });
       await act(async () => { fireEvent.change(screen.getByLabelText('選擇 STL 模型'), { target: { files: [file] } }); });
-      await act(async () => { fireEvent.change(screen.getByLabelText('選擇製作材料'), { target: { value: READY_TEST_MATERIAL.id } }); });
+      await act(async () => { fireEvent.change(screen.getByLabelText('選擇製作材料'), { target: { value: READY_TEST_MATERIAL.id } }); fireEvent.click(screen.getByRole('button', { name: '開始製作' })); });
       await act(async () => { await Promise.resolve(); });
       report?.({ stage: 'analyzing', preview: result.preview });
       await vi.advanceTimersByTimeAsync(8_000);
@@ -976,7 +981,7 @@ describe('OneClickConverter', () => {
     await screen.findByRole('heading', { name: '轉換完成' });
     expect(api.convert).toHaveBeenCalledOnce();
   });
-  it('requires material selection before conversion and resets the chooser for a replacement file', async () => {
+  it('requires explicit start before conversion and resets the chooser for a replacement file', async () => {
     const user = userEvent.setup();
     const api = services();
     render(<OneClickConverter services={api} />);
@@ -987,12 +992,13 @@ describe('OneClickConverter', () => {
 
     expect(api.cancel).toHaveBeenCalledOnce();
     expect(api.convert).not.toHaveBeenCalled();
-    await user.selectOptions(await screen.findByLabelText('選擇製作材料'), expectedSubset.id);
+    expect(await screen.findByLabelText('選擇製作材料')).toHaveValue(expectedSubset.id);
+    await user.click(screen.getByRole('button', { name: '開始製作' }));
     expect(api.convert).toHaveBeenCalledOnce();
     expect(api.convert).toHaveBeenCalledWith(expect.any(ArrayBuffer), expectedSubset, 0, expect.any(Function));
     await screen.findByRole('heading', { name: '轉換完成' });
     await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['replacement'], 'replacement.stl'));
-    expect(await screen.findByLabelText('選擇製作材料')).toHaveValue('');
+    expect(await screen.findByLabelText('選擇製作材料')).toHaveValue('acrylic-6');
     expect(screen.getByLabelText('三爪配合微調')).toHaveValue(0);
   });
 
@@ -1007,6 +1013,7 @@ describe('OneClickConverter', () => {
     await user.clear(fitInput);
     await user.type(fitInput, '0.05');
     await user.selectOptions(screen.getByLabelText('選擇製作材料'), 'plywood-3');
+    await user.click(screen.getByRole('button', { name: '開始製作' }));
 
     expect(api.convert).toHaveBeenCalledWith(
       expect.any(ArrayBuffer),
@@ -1028,12 +1035,13 @@ describe('OneClickConverter', () => {
     await user.clear(fitInput);
     await user.type(fitInput, '0.05');
     await user.selectOptions(screen.getByLabelText('選擇製作材料'), READY_TEST_MATERIAL.id);
+    await user.click(screen.getByRole('button', { name: '開始製作' }));
     await screen.findByRole('alert');
 
     await user.click(screen.getByRole('button', { name: '選擇另一個模型' }));
     await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'second-fit.stl'));
     expect(await screen.findByLabelText('三爪配合微調')).toHaveValue(0);
-    expect(screen.getByLabelText('選擇製作材料')).toHaveValue('');
+    expect(screen.getByLabelText('選擇製作材料')).toHaveValue('acrylic-6');
   });
 
   it.each([
@@ -1060,8 +1068,9 @@ describe('OneClickConverter', () => {
 
     expect(screen.getByRole('alert')).toHaveTextContent('請輸入 -0.20 至 +0.20 mm，步進 0.01 mm。');
     await user.selectOptions(screen.getByLabelText('選擇製作材料'), 'plywood-3');
+    await user.click(screen.getByRole('button', { name: '開始製作' }));
     expect(api.convert).not.toHaveBeenCalled();
-    expect(screen.getByLabelText('選擇製作材料')).toHaveValue('');
+    expect(screen.getByLabelText('選擇製作材料')).toHaveValue('plywood-3');
   });
 
   it.each([
@@ -1080,6 +1089,7 @@ describe('OneClickConverter', () => {
       target: { value: fitValue },
     });
     await user.selectOptions(screen.getByLabelText('選擇製作材料'), 'plywood-3');
+    await user.click(screen.getByRole('button', { name: '開始製作' }));
 
     expect(api.convert).toHaveBeenCalledWith(
       expect.any(ArrayBuffer),
@@ -1125,7 +1135,23 @@ describe('OneClickConverter', () => {
     expect(screen.getByRole('link', { name: '下載三爪尺寸測試片' })).toBeVisible();
   });
 
-  it('offers exactly five geometry estimates on a fresh installation', async () => {
+  it('preselects acrylic-6 but waits for explicit start and hides custom materials', async () => {
+    const user = userEvent.setup();
+    const api = services({ materialProfiles: [SOURCE_READY_TEST_MATERIAL] });
+    render(<OneClickConverter services={api} />);
+    await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'defaults.stl'));
+    const picker = await screen.findByLabelText('選擇製作材料');
+    expect(picker).toHaveValue('acrylic-6');
+    expect(within(picker).getAllByRole('option').map((option) => (option as HTMLOptionElement).value))
+      .toEqual(['acrylic-6', 'acrylic-3', 'plywood-6', 'plywood-3']);
+    expect(api.convert).not.toHaveBeenCalled();
+    await user.selectOptions(picker, 'plywood-6');
+    expect(api.convert).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: '開始製作' }));
+    expect(api.convert).toHaveBeenCalledWith(expect.any(ArrayBuffer), expect.objectContaining({ id: 'plywood-6', thicknessMm: 6 }), 0, expect.any(Function));
+  });
+
+  it('offers exactly four geometry estimates on a fresh installation', async () => {
     const user = userEvent.setup();
     render(<OneClickConverter services={services({ materialProfiles: [] })} />);
 
@@ -1136,20 +1162,18 @@ describe('OneClickConverter', () => {
 
     const picker = await screen.findByLabelText('選擇製作材料');
     expect(within(picker).getAllByRole('option').map((option) => option.textContent)).toEqual([
-      '選擇製作材料',
-      '木夾板（幾何估算） (3 mm)',
-      '木夾板（幾何估算） (5 mm)',
-      '鑄造壓克力（幾何估算） (3 mm)',
-      '鑄造壓克力（幾何估算） (5 mm)',
-      '紙板（幾何估算） (2 mm)',
+      '壓克力（幾何估算） (6 mm)',
+      '壓克力（幾何估算） (3 mm)',
+      '木（幾何估算） (6 mm)',
+      '木（幾何估算） (3 mm)',
     ]);
   });
 
   it.each([
     ['plywood-3', 3],
-    ['plywood-5', 5],
+    ['plywood-6', 6],
     ['acrylic-3', 3],
-    ['acrylic-5', 5],
+    ['acrylic-6', 6],
   ] as const)('passes %s with exact thickness %s into conversion', async (id, thicknessMm) => {
     const user = userEvent.setup();
     const api = services({ materialProfiles: [] });
@@ -1157,6 +1181,7 @@ describe('OneClickConverter', () => {
 
     await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], `${id}.stl`));
     await user.selectOptions(await screen.findByLabelText('選擇製作材料'), id);
+    await user.click(screen.getByRole('button', { name: '開始製作' }));
 
     expect(api.convert).toHaveBeenCalledWith(
       expect.any(ArrayBuffer),
@@ -1195,6 +1220,7 @@ describe('OneClickConverter', () => {
     expect(container.querySelector('.material-presentation-preview')).toBeNull();
 
     await user.selectOptions(screen.getByLabelText('選擇製作材料'), READY_TEST_MATERIAL.id);
+    await user.click(screen.getByRole('button', { name: '開始製作' }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent('這個檔案不是可讀取的 STL');
     expect(api.convert).toHaveBeenCalledOnce();
@@ -1245,6 +1271,7 @@ describe('OneClickConverter', () => {
     expect(api.convert).not.toHaveBeenCalled();
     replacementRead.resolve(replacementBytes);
     await user.selectOptions(await screen.findByLabelText('選擇製作材料'), READY_TEST_MATERIAL.id);
+    await user.click(screen.getByRole('button', { name: '開始製作' }));
 
     expect(api.convert).toHaveBeenCalledWith(replacementBytes, expect.any(Object), 0, expect.any(Function));
   });
@@ -1275,6 +1302,7 @@ describe('OneClickConverter', () => {
     expect(api.convert).not.toHaveBeenCalled();
 
     await user.selectOptions(picker, readyReplacement.id);
+    await user.click(screen.getByRole('button', { name: '開始製作' }));
     expect(api.convert).toHaveBeenCalledWith(
       expect.any(ArrayBuffer), manufacturingGeometryProfile(readyReplacement), 0, expect.any(Function),
     );
@@ -1284,7 +1312,7 @@ describe('OneClickConverter', () => {
     const user = userEvent.setup();
     const first = {
       ...READY_TEST_MATERIAL,
-      id: 'duplicate-ready-profile',
+      id: 'acrylic-6',
       materialName: 'TEST ONLY first duplicate ready profile',
       thicknessMm: 3.1,
     };
@@ -1307,6 +1335,7 @@ describe('OneClickConverter', () => {
     expect(matchingOptions[0]).toHaveTextContent('TEST ONLY last duplicate ready profile (3.2 mm)');
 
     await user.selectOptions(picker, first.id);
+    await user.click(screen.getByRole('button', { name: '開始製作' }));
     expect(api.convert).toHaveBeenCalledWith(
       expect.any(ArrayBuffer),
       manufacturingGeometryProfile(last),
@@ -1414,12 +1443,14 @@ describe('OneClickConverter', () => {
       fireEvent.change(screen.getByLabelText('選擇製作材料'), {
         target: { value: READY_TEST_MATERIAL.id },
       });
+      fireEvent.click(screen.getByRole('button', { name: '開始製作' }));
       fireEvent.click(screen.getByRole('button', { name: '取消處理' }));
 
       act(() => vi.advanceTimersByTime(20_000));
       fireEvent.change(screen.getByLabelText('選擇製作材料'), {
         target: { value: READY_TEST_MATERIAL.id },
       });
+      fireEvent.click(screen.getByRole('button', { name: '開始製作' }));
       expect(screen.getByText('已處理 00:00')).toBeVisible();
 
       act(() => vi.advanceTimersByTime(5_000));
@@ -1434,7 +1465,7 @@ describe('OneClickConverter', () => {
     const user = userEvent.setup();
     const bytes = new TextEncoder().encode('saved cancellation mesh');
     const conversion = deferred<AutomaticOutlineResult>();
-    const savedMaterial = manufacturingGeometryProfile(READY_TEST_MATERIAL);
+    const savedMaterial = manufacturingGeometryProfile(SOURCE_READY_TEST_MATERIAL);
     const savedProject = {
       schemaVersion: 3 as const,
       id: 'one-click-current' as const,
@@ -1456,7 +1487,9 @@ describe('OneClickConverter', () => {
     render(<OneClickConverter services={api} />);
 
     await user.upload(screen.getByLabelText('選擇 STL 模型'), new File([bytes], 'saved-cancel.stl'));
+    expect(screen.getByRole('option', { name: `${savedMaterial.name} (${savedMaterial.thicknessMm} mm)` })).toBeVisible();
     await user.click(await screen.findByRole('button', { name: '重新產生正式輸出' }));
+    expect(api.convert).toHaveBeenCalledWith(expect.any(ArrayBuffer), savedMaterial, 0, expect.any(Function));
     await user.click(screen.getByRole('button', { name: '取消處理' }));
 
     expect(screen.getByLabelText('選擇製作材料')).toBeDisabled();
@@ -1493,6 +1526,7 @@ describe('OneClickConverter', () => {
     expect(screen.queryByRole('heading', { name: 'replacement.stl' })).toBeNull();
 
     await user.selectOptions(screen.getByLabelText('選擇製作材料'), READY_TEST_MATERIAL.id);
+    await user.click(screen.getByRole('button', { name: '開始製作' }));
     expect(api.convert).toHaveBeenCalledWith(selectedBytes, expect.any(Object), 0, expect.any(Function));
   });
 

@@ -30,9 +30,8 @@ function estimate(
 
 export const GEOMETRY_ESTIMATE_MATERIALS: readonly ManufacturingGeometryProfile[] =
   Object.freeze([
-    estimate('plywood-3', '木夾板（幾何估算）', 3),
-    estimate('plywood-5', '木夾板（幾何估算）', 5),
-    estimate('acrylic-3', '鑄造壓克力（幾何估算）', 3),
-    estimate('acrylic-5', '鑄造壓克力（幾何估算）', 5),
-    estimate('cardboard-2', '紙板（幾何估算）', 2),
+    estimate('acrylic-6', '壓克力（幾何估算）', 6),
+    estimate('acrylic-3', '壓克力（幾何估算）', 3),
+    estimate('plywood-6', '木（幾何估算）', 6),
+    estimate('plywood-3', '木（幾何估算）', 3),
   ]);

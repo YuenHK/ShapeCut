@@ -38,7 +38,7 @@ import {
   normalizeLauncherExteriorExpansionMm,
 } from '../src/domain/outline-assembly/launcher-exterior-expansion';
 import { PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING } from '../src/domain/outline-features/depth-field';
-import { READY_TEST_MATERIAL } from '../src/test/ready-material';
+import { READY_TEST_MATERIAL as SOURCE_READY_TEST_MATERIAL } from '../src/test/ready-material';
 import { writeBinarySTL } from '../src/domain/mesh/write-stl';
 import type { TriangleMesh } from '../src/domain/mesh/types';
 import type { GeometryLiveByteObservation } from '../src/performance/geometry-memory';
@@ -71,6 +71,8 @@ export function launcherCompatibleStlFixture(
 
 export const COLORED_ROLES = ['CUT_BLACK', 'DEEP_RED', 'LIGHT_BLUE'] as const;
 export type ColoredRole = typeof COLORED_ROLES[number];
+
+const READY_TEST_MATERIAL = { ...SOURCE_READY_TEST_MATERIAL, id: 'plywood-3' };
 
 const ROLE_COLORS: Readonly<Record<ColoredRole, string>> = Object.freeze({
   CUT_BLACK: '#000000',
@@ -2772,6 +2774,7 @@ export async function selectModel(
     await beforeMaterialSelection();
   }
   await page.getByLabel('選擇製作材料').selectOption(READY_TEST_MATERIAL.id);
+  await page.getByRole('button', { name: '開始製作', exact: true }).click();
 }
 
 export async function installWorkerResultProbe(page: Page): Promise<void> {
@@ -3106,8 +3109,12 @@ export async function installWorkerResultProbe(page: Page): Promise<void> {
         const chooseMaterial = (): boolean => {
           const material = document.querySelector<HTMLSelectElement>('select[aria-label="選擇製作材料"]');
           if (!material || material.options.length < 2) return false;
-          material.selectedIndex = 1;
+          material.value = 'plywood-3';
           material.dispatchEvent(new Event('change', { bubbles: true }));
+          queueMicrotask(() => {
+            const start = Array.from(document.querySelectorAll('button')).find((button) => button.textContent?.trim() === '開始製作');
+            start?.click();
+          });
           return true;
         };
         if (!chooseMaterial()) {

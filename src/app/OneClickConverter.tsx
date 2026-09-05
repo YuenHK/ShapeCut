@@ -99,23 +99,15 @@ const STAGE_LABELS: Record<AutomaticOutlineProgressStage, string> = {
 
 function selectableMaterials(savedProfiles: readonly MaterialProfileV1[] = []): readonly ManufacturingGeometryProfile[] {
   const readyById = new Map<string, ManufacturingGeometryProfile>();
-  const storedIdOrder: string[] = [];
   for (const profile of savedProfiles) {
     if (classifyMaterialReadiness(profile).status !== 'ready') continue;
     const projected = manufacturingGeometryProfile(profile);
-    if (!readyById.has(projected.id)) storedIdOrder.push(projected.id);
     readyById.set(projected.id, projected);
   }
   const builtins = GEOMETRY_ESTIMATE_MATERIALS.map(
     (profile) => readyById.get(profile.id) ?? profile,
   );
-  const builtinIds = new Set(GEOMETRY_ESTIMATE_MATERIALS.map(({ id }) => id));
-  return [
-    ...builtins,
-    ...storedIdOrder
-      .filter((id) => !builtinIds.has(id))
-      .map((id) => readyById.get(id)!),
-  ];
+  return builtins;
 }
 
 function failureMessage(error: unknown): string {
@@ -391,7 +383,7 @@ export function OneClickConverter({
   const [dragActive, setDragActive] = useState(false);
   const [presentationPreview, setPresentationPreview] = useState<OutlinePreviewPayload | undefined>(undefined);
   const [launcherFitInput, setLauncherFitInput] = useState('0.00');
-  const [selectedMaterialId, setSelectedMaterialId] = useState('');
+  const [selectedMaterialId, setSelectedMaterialId] = useState('acrylic-6');
   const [sourceSha256, setSourceSha256] = useState<string | undefined>();
   const [savedSourceReattached, setSavedSourceReattached] = useState(false);
   const [savedDecisionMismatchCause, setSavedDecisionMismatchCause] = useState<
@@ -652,7 +644,7 @@ export function OneClickConverter({
   const selectFile = useCallback(async (file: File) => {
     const current = ++requestId.current;
     setLauncherFitInput('0.00');
-    setSelectedMaterialId('');
+    setSelectedMaterialId('acrylic-6');
     setSavedDecisionMismatchCause(undefined);
     clearPresentationPreview();
     processingStartedAtRef.current = Date.now();
@@ -696,20 +688,18 @@ export function OneClickConverter({
     }
   }, [clearPresentationPreview, releaseCurrentDownloads, runtimeServices, savedProject, schedulePresentationPreview, services.saveProject]);
 
-  const selectMaterial = useCallback((id: string) => {
+  const startSelectedMaterial = useCallback(() => {
     if (view.kind !== 'material') return;
     if (savedProject) return;
     const fitOffsetMm = parsedLauncherFitOffset(launcherFitInput);
     if (fitOffsetMm === undefined) {
-      setSelectedMaterialId('');
       return;
     }
-    const material = materials.find((profile) => profile.id === id);
+    const material = materials.find((profile) => profile.id === selectedMaterialId);
     if (material) {
-      setSelectedMaterialId(id);
       void processFile(view.fileName, view.bytes, material, fitOffsetMm);
     }
-  }, [launcherFitInput, materials, processFile, savedProject, view]);
+  }, [launcherFitInput, materials, processFile, savedProject, selectedMaterialId, view]);
 
   const reset = () => {
     clearDrag();
@@ -722,7 +712,7 @@ export function OneClickConverter({
     runtimeServices.cancel();
     releaseCurrentDownloads();
     setLauncherFitInput('0.00');
-    setSelectedMaterialId('');
+    setSelectedMaterialId('acrylic-6');
     setSourceSha256(undefined);
     setSavedSourceReattached(false);
     setSavedDecisionMismatchCause(undefined);
@@ -738,7 +728,7 @@ export function OneClickConverter({
     processingStartedAtRef.current = undefined;
     runtimeServices.cancel();
     releaseCurrentDownloads();
-    setSelectedMaterialId(savedProject?.material.id ?? '');
+    setSelectedMaterialId(savedProject?.material.id ?? 'acrylic-6');
     setView(activeFile
       ? { kind: 'material', fileName: activeFile.fileName, bytes: activeFile.bytes }
       : { kind: 'upload' });
@@ -872,14 +862,22 @@ export function OneClickConverter({
           aria-label="選擇製作材料"
           value={selectedMaterialId}
           disabled={Boolean(savedProject)}
-          onChange={(event) => selectMaterial(event.target.value)}
+          onChange={(event) => setSelectedMaterialId(event.target.value)}
         >
-          <option value="" disabled>選擇製作材料</option>
-          {materials.map((profile) => (
+          {(savedProject ? [savedProject.material] : materials).map((profile) => (
             <option key={profile.id} value={profile.id}>{profile.name} ({profile.thicknessMm} mm)</option>
           ))}
         </select>
       </label>
+      {!savedProject && (
+        <button
+          type="button"
+          onClick={startSelectedMaterial}
+          disabled={parsedLauncherFitOffset(launcherFitInput) === undefined}
+        >
+          開始製作
+        </button>
+      )}
       <ModelInput compact level={effectLevel} onFile={(file) => void selectFile(file)} />
     </section>
   );

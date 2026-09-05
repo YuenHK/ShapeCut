@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { AutomaticOutlineProgressEvent, AutomaticOutlineResult } from '../domain/pipeline/automatic-outline-pipeline';
 import { featureEvidenceFingerprint, type ColoredOutlineLayer } from '../domain/outline-features/types';
 import { manufacturingGeometryProfile } from '../domain/materials/manufacturing-profile';
-import { READY_TEST_MATERIAL } from '../test/ready-material';
+import { READY_TEST_MATERIAL as SOURCE_READY_TEST_MATERIAL } from '../test/ready-material';
 import {
   OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
   OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
@@ -14,6 +14,8 @@ import '../styles.css';
 import { App } from './App';
 import type { OneClickConverterServices } from './OneClickConverter';
 import { sampleModelUrl } from './sample-models';
+
+const READY_TEST_MATERIAL = { ...SOURCE_READY_TEST_MATERIAL, id: 'plywood-3' };
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -204,6 +206,7 @@ describe('App real browser one-click flow', () => {
     expect(services.convert).not.toHaveBeenCalled();
     const materialSelect = await screen.findByLabelText('選擇製作材料');
     await user.selectOptions(materialSelect, material.id);
+    await user.click(screen.getByRole('button', { name: '開始製作' }));
     expect(services.convert).toHaveBeenCalledWith(expect.any(ArrayBuffer), material, 0, expect.any(Function));
 
     expect(document.querySelector('.processing-loading-panel')).toBeInTheDocument();

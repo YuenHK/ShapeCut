@@ -5,7 +5,7 @@ import type { AutomaticOutlineResult } from '../domain/pipeline/automatic-outlin
 import type { OneClickConverterServices, OutlineDownloads } from './OneClickConverter';
 import { OutlineArtifactError } from '../workers/geometry-api';
 import { App, createDownloadUrls } from './App';
-import { BLOCKED_TEST_MATERIAL, READY_TEST_MATERIAL } from '../test/ready-material';
+import { BLOCKED_TEST_MATERIAL, READY_TEST_MATERIAL as SOURCE_READY_TEST_MATERIAL } from '../test/ready-material';
 import { defaultPendingMaterialProfile } from '../domain/materials/default-profiles';
 import { manufacturingGeometryProfile } from '../domain/materials/manufacturing-profile';
 import type { StoredOneClickProjectV3 } from '../persistence/one-click-project-repository';
@@ -15,6 +15,8 @@ import {
 } from '../domain/outline-assembly/launcher-template';
 import { sha256Hex } from '../persistence/project-repository';
 import { coloredResult } from '../export/colored-outline-test-fixture';
+
+const READY_TEST_MATERIAL = { ...SOURCE_READY_TEST_MATERIAL, id: 'plywood-3' };
 
 const services: OneClickConverterServices = {
   convert: vi.fn(() => new Promise<AutomaticOutlineResult>(() => undefined)),
@@ -227,11 +229,11 @@ describe('App', () => {
     expect(chrome).toHaveClass('floating-chrome');
   });
 
-  it('loads only approved stored material profiles through the production App catalog path', async () => {
+  it('keeps ready custom profiles stored but hides them from new model choices', async () => {
     const user = userEvent.setup();
     const repository = {
       list: vi.fn().mockResolvedValue([
-        defaultPendingMaterialProfile('cardboard-2')!, BLOCKED_TEST_MATERIAL, READY_TEST_MATERIAL,
+        defaultPendingMaterialProfile('cardboard-2')!, BLOCKED_TEST_MATERIAL, SOURCE_READY_TEST_MATERIAL,
       ]),
       get: vi.fn(),
       importJson: vi.fn(),
@@ -240,7 +242,8 @@ describe('App', () => {
 
     await user.upload(await screen.findByLabelText('選擇 STL 模型'), new File(['mesh'], 'stored-ready.stl'));
 
-    expect(await screen.findByRole('option', { name: /TEST ONLY ready birch plywood/ })).toBeVisible();
+    expect(await screen.findByLabelText('選擇製作材料')).toHaveValue('acrylic-6');
+    expect(screen.queryByRole('option', { name: /TEST ONLY ready birch plywood/ })).toBeNull();
     expect(screen.queryByRole('option', { name: /pending/i })).toBeNull();
     expect(screen.queryByRole('option', { name: /unknown composition/i })).toBeNull();
   });
@@ -272,11 +275,12 @@ describe('App', () => {
     const picker = await screen.findByLabelText('選擇製作材料');
 
     expect(await screen.findByRole('option', { name: /TEST ONLY App catalog calibrated plywood/ })).toBeVisible();
-    expect(within(picker).getAllByRole('option', { name: /plywood|木夾板/i })).toHaveLength(2);
+    expect(within(picker).getAllByRole('option', { name: /plywood|木（/i })).toHaveLength(2);
     expect(screen.queryByRole('option', { name: /unknown composition/i })).toBeNull();
     expect(screen.queryByRole('option', { name: /pending/i })).toBeNull();
 
     await user.selectOptions(picker, replacement.id);
+    await user.click(screen.getByRole('button', { name: '開始製作' }));
     expect(activeServices.convert).toHaveBeenCalledWith(
       expect.any(ArrayBuffer),
       manufacturingGeometryProfile(replacement),
@@ -304,6 +308,7 @@ describe('App', () => {
 
     await user.upload(await screen.findByLabelText('選擇 STL 模型'), new File(['mesh'], 'catalog-race.stl'));
     await user.selectOptions(await screen.findByLabelText('選擇製作材料'), READY_TEST_MATERIAL.id);
+    await user.click(screen.getByRole('button', { name: '開始製作' }));
     expect(activeServices.convert).toHaveBeenCalledOnce();
     vi.mocked(activeServices.cancel).mockClear();
 
