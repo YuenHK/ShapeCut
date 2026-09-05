@@ -1,6 +1,6 @@
 # Software validation results
 
-Last verified: 2026-09-04
+Performance matrix verified: 2026-09-04. Reference routing diagnosis verified: 2026-09-05.
 
 ## WASM geometry A3 release decision
 

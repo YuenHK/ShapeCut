@@ -19,7 +19,13 @@ Changing the exact kernel to accept original Float32 coordinates plus a transfor
 
 The existing release measurements remain historical measurements. No new speedup, memory reduction, production rollout or physical launcher acceptance is claimed by this diagnosis.
 
-## Reproduction
+## Exploratory CPU profile
+
+One Node CPU-profiled conversion per reference completed in 15,881 ms and 15,535 ms, both with rejected repair, projected mode and six layers. These are exploratory single runs, not replacement five-run browser benchmarks. Profiles include some runner startup and exclude ZIP/PDF generation.
+
+Feature/depth geometry accounted for approximately 63% of self samples in each run; launcher/protected-region work accounted for about 11%, repair/topology 9%, and projected raster 5%. The largest files were `hole.ts` (about 41%) and `engraving/geometry.ts` (about 18%). Candidate optimization targets are repeated containment, boundary clearance, scale calculation and polygon intersection. Preserve their current predicates and tolerances when testing optimizations.
+
+## Reproduction commands
 
 Read each externally supplied STL as an ArrayBuffer, call `parseSTL`, pass its mesh to `analyzeMeshProblems`, then call `repairMeshSafe(mesh, { beforeReport })`. Report only the case label, triangle count, accepted flag and blocking-reason count. Do not store external paths, filenames or source geometry in committed evidence.
 
