@@ -46,6 +46,12 @@ jobs:
         run: npm run build:geometry-wasm
       - name: Compare pinned regeneration with tracked artifacts
         run: node scripts/verify-geometry-wasm-regeneration.mjs
+      - name: Diagnose generated artifact mismatch
+        if: failure()
+        run: |
+          git diff --stat -- src/wasm/generated
+          strings src/wasm/generated/geometry_wasm_bg.wasm | rg 'workspace|cargo|rustc|home|runner' || true
+          node --input-type=module -e 'import {readFileSync} from "node:fs"; const b=readFileSync("src/wasm/generated/geometry_wasm_bg.wasm"); let p=8; const u=()=>{let n=0,s=0,v;do{v=b[p++];n|=(v&127)<<s;s+=7;}while(v&128);return n>>>0;};while(p<b.length){const id=b[p++],size=u(),start=p;console.log({id,size,start});p+=size;}'
 
   build:
     needs: regenerate_wasm
