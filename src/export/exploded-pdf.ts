@@ -20,6 +20,11 @@ const RELATIVE_LEVEL_GUIDANCE = 'Red and blue are relative processing levels, no
 const TEST_CUT_GUIDANCE = 'Assign machine-specific settings after material test cuts.';
 const PREVIEW_SAFETY_NOTE_MINIMUM_WIDTH_MM = 80;
 
+function physicalLayerName(layerCount: number, layerIndex: number): string {
+  if (layerCount === 3) return ['Bottom', 'Middle', 'Top'][layerIndex];
+  return `Layer ${layerIndex + 1}`;
+}
+
 function assemblySafetyNotes(document: ColoredOutlineDocument): readonly string[] {
   return publicSafetyNotesFromWarnings(document.safetyNotes);
 }
@@ -139,8 +144,8 @@ export async function writeColoredPreviewPdf(
       drawCheckpoint('pdf:preview-entity-loop');
       drawLoop(page, entity.points, map, entity.role, drawCheckpoint);
     }
-    for (const { layer, x, y } of layerLabels) {
-      page.drawText(`Layer ${layer.order}`, { x, y, size: 7, font });
+    for (const [layerIndex, { x, y }] of layerLabels.entries()) {
+      page.drawText(physicalLayerName(document.layers.length, layerIndex), { x, y, size: 7, font });
     }
     const guidanceY = layout.height * MM_TO_POINTS;
     page.drawText(`Scale 1:1 | ${ROLE_LEGEND_LABEL}`, {
@@ -197,6 +202,9 @@ export async function writeExplodedViewPdf(
       thickness: 0.6, color: rgb(0.35, 0.35, 0.35), dashArray: [3, 3],
     });
     page.drawText('Central axis', { x: centerX + 3 * MM_TO_POINTS, y: topY - 6, size: 8, font });
+    page.drawText(`Assembled thickness: ${document.layers.length * document.assembly.material.thicknessMm} mm`, {
+      x: 10 * MM_TO_POINTS, y: 197 * MM_TO_POINTS, size: 8, font,
+    });
     for (const [layerIndex, layer] of document.layers.entries()) {
       drawCheckpoint('pdf:exploded-layer-loop');
       const exterior = layer.roles.CUT_BLACK[0], box = exterior.boundsMm;
@@ -216,7 +224,7 @@ export async function writeExplodedViewPdf(
       const height = exteriorBounds.maxY - exteriorBounds.minY;
       const central = centralHoleForLayer(document, layerIndex);
       const diameter = central ? Number((2 * Math.sqrt(central.areaMm2 / Math.PI)).toFixed(3)) : '—';
-      page.drawText(`${layer.order}. ${layer.id}  thickness ${document.assembly.material.thicknessMm} X ${width} Y ${height} hole diameter ${diameter}`, {
+      page.drawText(`${layer.order}. ${physicalLayerName(document.layers.length, layerIndex)} (${layer.id})  thickness ${document.assembly.material.thicknessMm} X ${width} Y ${height} hole diameter ${diameter}`, {
         x: 184 * MM_TO_POINTS, y: offsetY + 4, size: 7, font,
       });
     }

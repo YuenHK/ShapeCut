@@ -193,7 +193,44 @@ function services(overrides: Partial<OneClickConverterServices> = {}): OneClickC
 async function uploadAndSelectMaterial(user: ReturnType<typeof userEvent.setup>, file: File): Promise<void> {
   await user.upload(screen.getByLabelText('選擇 STL 模型'), file);
   await user.selectOptions(await screen.findByLabelText('選擇製作材料'), READY_TEST_MATERIAL.id);
-    await user.click(screen.getByRole('button', { name: '開始製作' }));
+  await user.click(screen.getByRole('button', { name: '開始製作' }));
+}
+
+type ResultDetailTab = '製作設定' | '處理提示' | '技術資料';
+
+async function resetDetailPage(user: ReturnType<typeof userEvent.setup>, tab: ResultDetailTab): Promise<void> {
+  await user.click(screen.getByRole('tab', { name: tab }));
+  const previous = screen.getByRole('button', { name: `${tab}上一頁` });
+  while (!previous.hasAttribute('disabled')) await user.click(previous);
+}
+
+async function showResultDetail(
+  user: ReturnType<typeof userEvent.setup>,
+  tab: ResultDetailTab,
+  text: string | RegExp,
+): Promise<HTMLElement> {
+  await resetDetailPage(user, tab);
+  const next = screen.getByRole('button', { name: `${tab}下一頁` });
+  for (;;) {
+    const match = screen.queryAllByText(text).find((candidate) => candidate.closest('[hidden]') === null);
+    if (match) return match;
+    if (next.hasAttribute('disabled')) throw new Error(`${tab} does not contain the requested result detail`);
+    await user.click(next);
+  }
+}
+
+async function collectResultDetailPages(
+  user: ReturnType<typeof userEvent.setup>,
+  tab: ResultDetailTab,
+): Promise<string[]> {
+  await resetDetailPage(user, tab);
+  const next = screen.getByRole('button', { name: `${tab}下一頁` });
+  const pages: string[] = [];
+  for (;;) {
+    pages.push(screen.getByRole('tabpanel').textContent ?? '');
+    if (next.hasAttribute('disabled')) return pages;
+    await user.click(next);
+  }
 }
 
 describe('OneClickConverter', () => {
@@ -903,12 +940,12 @@ describe('OneClickConverter', () => {
     await uploadAndSelectMaterial(user, new File(['mesh'], 'assembly.stl'));
     await screen.findByRole('heading', { name: '轉換完成' });
 
-    expect(screen.getByText('發射器相容性').nextElementSibling).toHaveTextContent('官方三爪孔：已加入頂部兩層');
-    expect(screen.getByText('固定螺絲孔').nextElementSibling).toHaveTextContent('2 個');
-    expect(screen.getByText('頂層紅色特徵').nextElementSibling).toHaveTextContent('保留 4，省略 2');
-    expect(screen.getByText('頂層藍色特徵').nextElementSibling).toHaveTextContent('保留 3，省略 1');
-    expect(screen.getByText('製作材料').nextElementSibling).toHaveTextContent(/3 mm.*kerf 0\.15 mm/i);
-    expect(screen.getByText('頂部兩層外框已共同擴大 2.35 mm')).toBeVisible();
+    expect((await showResultDetail(user, '製作設定', '製作材料')).nextElementSibling).toHaveTextContent(/3 mm.*kerf 0\.15 mm/i);
+    expect((await showResultDetail(user, '製作設定', '發射器相容性')).nextElementSibling).toHaveTextContent('官方三爪孔：已加入頂部兩層');
+    expect((await showResultDetail(user, '製作設定', '固定螺絲孔')).nextElementSibling).toHaveTextContent('2 個');
+    expect((await showResultDetail(user, '製作設定', '頂層紅色特徵')).nextElementSibling).toHaveTextContent('保留 4，省略 2');
+    expect((await showResultDetail(user, '製作設定', '頂層藍色特徵')).nextElementSibling).toHaveTextContent('保留 3，省略 1');
+    expect(await showResultDetail(user, '製作設定', '頂部兩層外框已共同擴大 2.35 mm')).toBeVisible();
     expect(screen.getAllByRole('link', { name: /下載/ })).toHaveLength(6);
   });
 
@@ -922,15 +959,11 @@ describe('OneClickConverter', () => {
     await uploadAndSelectMaterial(user, new File(['mesh'], 'protected-work-warning.stl'));
     await screen.findByRole('heading', { name: '轉換完成' });
 
-    expect(screen.getByText(
-      PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING,
-    )).toBeVisible();
-    const affected = screen.getAllByText(/^受影響層：/);
-    expect(affected.map((item) => item.textContent)).toEqual([
-      '受影響層：layer-2',
-      '受影響層：layer-4',
-    ]);
-    expect(screen.getByText('官方三爪孔及黑色切割幾何已保留')).toBeVisible();
+    const warningPages = (await collectResultDetailPages(user, '處理提示')).join('\n');
+    expect(warningPages).toContain(PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING);
+    expect(warningPages).toContain('受影響層：layer-2');
+    expect(warningPages).toContain('受影響層：layer-4');
+    expect(warningPages).toContain('官方三爪孔及黑色切割幾何已保留');
     expect(screen.getByText('需注意')).toHaveClass('warning');
     expect(screen.queryByText('成功')).not.toBeInTheDocument();
     expect(screen.getByText(
@@ -1126,11 +1159,12 @@ describe('OneClickConverter', () => {
     await uploadAndSelectMaterial(user, new File(['mesh'], 'launcher-status.stl'));
     await screen.findByRole('heading', { name: '轉換完成' });
 
-    expect(screen.getByText('官方三爪孔：已加入頂部兩層')).toBeVisible();
-    expect(screen.getByText(/模板版本 1/)).toBeVisible();
-    expect(screen.getByText(/配合微調 \+0\.05 mm/)).toBeVisible();
-    expect(screen.getByText('頂部兩層外框已共同擴大 0.00 mm')).toBeVisible();
-    expect(screen.getByText(/已裁切紅色 1/)).toBeVisible();
+    expect(await showResultDetail(user, '製作設定', '官方三爪孔：已加入頂部兩層')).toBeVisible();
+    expect(await showResultDetail(user, '製作設定', `模板版本 ${OFFICIAL_THREE_PRONG_TEMPLATE_VERSION}`)).toBeVisible();
+    expect(await showResultDetail(user, '製作設定', /配合微調 \+0\.05 mm/)).toBeVisible();
+    expect(await showResultDetail(user, '製作設定', '頂部兩層外框已共同擴大 0.00 mm')).toBeVisible();
+    expect(await showResultDetail(user, '製作設定', /已裁切紅色 1/)).toBeVisible();
+    await user.click(screen.getByRole('tab', { name: '處理提示' }));
     expect(screen.getByText('依 Knight Fortress 樣本建立，待官方發射器實物校準')).toBeVisible();
     expect(screen.getByRole('link', { name: '下載三爪尺寸測試片' })).toBeVisible();
   });
@@ -1646,7 +1680,7 @@ describe('OneClickConverter', () => {
 
     await screen.findByRole('heading', { name: '轉換完成' });
     expect(screen.getAllByRole('status').some((status) => status.textContent?.includes('需注意'))).toBe(true);
-    expect(screen.getAllByText(/模型已使用 2.5D 外形簡化/)[0]).toBeVisible();
+    expect(await showResultDetail(user, '處理提示', /模型已使用 2.5D 外形簡化/)).toBeVisible();
     expect(screen.getByRole('link', { name: '下載 ZIP 製作套件' })).toHaveAttribute('href', 'blob:zip');
     expect(screen.getByRole('link', { name: /下載 ZIP/ })).toHaveAttribute('download', 'shapecut-files.zip');
     expect(screen.getByRole('link', { name: /下載 SVG/ })).toHaveAttribute('download', 'cut-and-engrave.svg');
@@ -1654,8 +1688,8 @@ describe('OneClickConverter', () => {
     expect(screen.getByRole('link', { name: /平面預覽 PDF/ })).toHaveAttribute('download', 'preview.pdf');
     expect(screen.getByRole('link', { name: /爆炸圖 PDF/ })).toHaveAttribute('download', 'exploded-view.pdf');
     expect(screen.queryByRole('link', { name: /JSON|manifest/i })).not.toBeInTheDocument();
-    expect(screen.getByText('10 × 5 mm')).toBeVisible();
-    expect(screen.getByText('總高度 1 mm')).toBeVisible();
+    expect(await showResultDetail(user, '製作設定', '10 × 5 mm')).toBeVisible();
+    expect(await showResultDetail(user, '製作設定', '總高度 1 mm')).toBeVisible();
     expect(screen.getByRole('img', { name: /模型分層預覽/ })).toBeVisible();
     expect(screen.getByText(/顏色.*相對.*不代表.*雷射功率/)).toBeVisible();
   });
@@ -1726,14 +1760,13 @@ describe('OneClickConverter', () => {
     await uploadAndSelectMaterial(user, new File(['mesh'], 'features.stl'));
     await screen.findByRole('heading', { name: '轉換完成' });
 
-    const warningPanel = screen.getByRole('region', { name: '模型處理提示' });
-    expect(warningPanel).toHaveTextContent('部分切片未偵測到可靠中央孔');
-    expect(warningPanel).toHaveTextContent('部分切片未保留較深層紅色特徵');
-    expect(warningPanel).toHaveTextContent('未保留較淺層藍色特徵');
-    await user.click(screen.getByText('技術資料'));
-    expect(screen.getByText('1.6 mm')).toBeVisible();
-    expect(screen.getByText('0.7 mm')).toBeVisible();
-    expect(screen.queryByText('0.3 mm')).toBeNull();
+    const warningText = (await collectResultDetailPages(user, '處理提示')).join('\n');
+    expect(warningText).toContain('部分切片未偵測到可靠中央孔');
+    expect(warningText).toContain('部分切片未保留較深層紅色特徵');
+    expect(warningText).toContain('未保留較淺層藍色特徵');
+    expect(await showResultDetail(user, '技術資料', '1.6 mm')).toBeVisible();
+    expect(await showResultDetail(user, '技術資料', '0.7 mm')).toBeVisible();
+    expect((await collectResultDetailPages(user, '技術資料')).join('\n')).not.toContain('0.3 mm');
   });
 
   it('omits hole diameter and depth-threshold rows when no corresponding feature was detected', async () => {
@@ -1758,7 +1791,7 @@ describe('OneClickConverter', () => {
 
     expect(screen.queryByText('已簡化模型')).toBeNull();
     expect(screen.queryByText(/內部細節、孔洞/)).toBeNull();
-    expect(screen.getAllByText(axisWarning)[0]).toBeVisible();
+    expect(await showResultDetail(user, '處理提示', axisWarning)).toBeVisible();
   });
 
   it('provides keyboard-accessible technical data and describes the exact ZIP contents', async () => {
@@ -1768,19 +1801,19 @@ describe('OneClickConverter', () => {
     await uploadAndSelectMaterial(user, new File(['mesh'], 'private-name.stl'));
     await screen.findByRole('heading', { name: '轉換完成' });
 
-    const summary = screen.getByText('技術資料');
-    const details = summary.closest('details');
-    expect(details).not.toHaveAttribute('open');
-    summary.focus();
-    expect(summary).toHaveFocus();
-    await user.click(summary);
-    expect(details).toHaveAttribute('open');
-    expect(details).toHaveTextContent('outline-2.5d');
-    expect(details).toHaveTextContent('warning');
-    expect(details).toHaveTextContent('a'.repeat(32));
-    expect(details).toHaveTextContent('正式製作前應先試切少量零件');
-    expect(details).toHaveTextContent('cut-and-engrave.svg、cut-and-engrave.dxf、preview.pdf、exploded-view.pdf、launcher-fit-coupon.svg、project.json 及 manifest.json 七項檔案');
-    expect(details).not.toHaveTextContent('private-name.stl');
+    const technicalTab = screen.getByRole('tab', { name: '技術資料' });
+    expect(technicalTab).toHaveAttribute('aria-selected', 'false');
+    technicalTab.focus();
+    expect(technicalTab).toHaveFocus();
+    await user.keyboard('{Enter}');
+    expect(technicalTab).toHaveAttribute('aria-selected', 'true');
+    expect(await showResultDetail(user, '技術資料', 'outline-2.5d')).toBeVisible();
+    expect(await showResultDetail(user, '技術資料', 'warning')).toBeVisible();
+    expect(await showResultDetail(user, '技術資料', 'a'.repeat(32))).toBeVisible();
+    const technicalPages = (await collectResultDetailPages(user, '技術資料')).join('\n');
+    expect(technicalPages).toContain('cut-and-engrave.svg、cut-and-engrave.dxf、preview.pdf、exploded-view.pdf、launcher-fit-coupon.svg、project.json 及 manifest.json 七項檔案');
+    expect(technicalPages).not.toContain('private-name.stl');
+    expect(await showResultDetail(user, '處理提示', '正式製作前應先試切少量零件')).toBeVisible();
   });
 
   it('renders the result viewport from the actual preview payload instead of a fixed decorative shape', async () => {

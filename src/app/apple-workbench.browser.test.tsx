@@ -88,8 +88,9 @@ async function renderProcessingSurfaces(): Promise<readonly HTMLElement[]> {
     target: { files: [new File(['mesh'], 'media-query.stl', { type: 'model/stl' })] },
   });
   fireEvent.change(await screen.findByLabelText('選擇製作材料'), {
-    target: { value: READY_TEST_MATERIAL.id },
+    target: { value: 'acrylic-6' },
   });
+  fireEvent.click(screen.getByRole('button', { name: '開始製作' }));
   await waitFor(() => {
     expect(document.querySelector('.processing-status-overlay')).toBeTruthy();
   });
@@ -159,7 +160,7 @@ describe('Apple workbench visual contracts', () => {
     fireEvent.change(fitInput, { target: { value: '0.205' } });
     expect(screen.getByRole('alert')).toHaveTextContent('請輸入 -0.20 至 +0.20 mm，步進 0.01 mm。');
     fireEvent.change(screen.getByLabelText('選擇製作材料'), {
-      target: { value: READY_TEST_MATERIAL.id },
+      target: { value: 'acrylic-6' },
     });
     expect(activeServices.convert).not.toHaveBeenCalled();
 
@@ -187,14 +188,14 @@ describe('Apple workbench visual contracts', () => {
     await userEvent.paste();
     expect((fitInput as HTMLInputElement).value).toBe('1e-9999');
     expect(screen.getByRole('alert')).toHaveTextContent('請輸入 -0.20 至 +0.20 mm，步進 0.01 mm。');
-    await userEvent.selectOptions(materialPicker, READY_TEST_MATERIAL.id);
+    await userEvent.selectOptions(materialPicker, 'acrylic-6');
     expect(activeServices.convert).not.toHaveBeenCalled();
 
     await userEvent.clear(fitInput);
     await userEvent.type(fitInput, '0.1000000000000000001');
     expect((fitInput as HTMLInputElement).value).toBe('0.1000000000000000001');
     expect(screen.getByRole('alert')).toHaveTextContent('請輸入 -0.20 至 +0.20 mm，步進 0.01 mm。');
-    await userEvent.selectOptions(materialPicker, READY_TEST_MATERIAL.id);
+    await userEvent.selectOptions(materialPicker, 'acrylic-6');
     expect(activeServices.convert).not.toHaveBeenCalled();
   });
 

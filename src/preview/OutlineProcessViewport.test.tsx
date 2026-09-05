@@ -240,7 +240,7 @@ describe('OutlineProcessViewport', () => {
     const selector = screen.getByRole('combobox', { name: '選擇預覽切片' });
     expect(selector).toHaveValue('layer-0');
     expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual([
-      '第 1 層：layer-0', '第 2 層：layer-1', '第 3 層：layer-2',
+      '下層：layer-0', '中層：layer-1', '上層：layer-2',
     ]);
     await user.selectOptions(selector, 'layer-2');
     expect(scene.setHighlightedLayer).toHaveBeenLastCalledWith('layer-2');

@@ -61,7 +61,7 @@ describe('launcher fit calibration coupon', () => {
     const svg = writeLauncherFitCouponSvg(coupon);
 
     expect(writeLauncherFitCouponSvg(createLauncherFitCoupon(readyMaterial))).toBe(svg);
-    expect(svg).toContain('data-template-version="1"');
+    expect(svg).toContain('data-template-version="2"');
     expect(svg).toContain(`data-template-fingerprint="${OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT}"`);
     expect(svg).toContain('data-material-id="plywood-3"');
     expect(svg).toContain('data-kerf-mm="0.15"');

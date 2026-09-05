@@ -177,6 +177,7 @@ export type ParsedColoredPdf = {
   readonly textBlockCount: number;
   readonly textRecords: readonly PdfTextRecord[];
   readonly keywords: readonly string[];
+  readonly assembledThicknessMm?: number;
 };
 
 export type PdfTextRecord = {
@@ -295,7 +296,7 @@ export type ParsedColoredManifest = {
 };
 
 export type ParsedLauncherFitCoupon = {
-  readonly templateVersion: 1;
+  readonly templateVersion: 2;
   readonly templateFingerprint: string;
   readonly materialId: string;
   readonly kerfMm: number;
@@ -1603,6 +1604,22 @@ export async function parseColoredOutlinePdf(
     || layerRecords.some(({ order }, index) => order !== index + 1)) {
     throw new Error(`Colored ${kind} PDF layer record cardinality or order is invalid`);
   }
+  const assembledThickness = kind === 'exploded'
+    ? onePdfToken(
+      keywords,
+      'assembled-thickness-mm:',
+      /^assembled-thickness-mm:([^:]+)$/,
+      'assembled thickness',
+    ) : undefined;
+  const assembledThicknessMm = assembledThickness
+    ? safeFinite(assembledThickness[1], 'Colored exploded PDF assembled thickness')
+    : undefined;
+  if (assembledThickness) {
+    const expectedThickness = layerRecords.reduce((sum, record) => sum + (record.thickness ?? Number.NaN), 0);
+    if (assembledThicknessMm !== expectedThickness) {
+      throw new Error('Colored exploded PDF assembled thickness is inconsistent with its layers');
+    }
+  }
   const fixedTokens = kind === 'preview'
     ? ['scale:1:1', 'disclaimer:verify-fit-before-fabrication', 'levels:relative-machine-settings-after-test-cuts']
     : ['view:isometric-exploded', 'axis:central', 'levels:relative-machine-settings-after-test-cuts'];
@@ -1611,7 +1628,7 @@ export async function parseColoredOutlinePdf(
       throw new Error(`Colored ${kind} PDF is missing canonical ${token} metadata`);
     }
   }
-  const recognizedCount = 3 + 1 + fixedTokens.length + layerRecords.length;
+  const recognizedCount = 3 + 1 + fixedTokens.length + layerRecords.length + Number(assembledThickness !== undefined);
   if (keywords.length !== recognizedCount) throw new Error(`Colored ${kind} PDF contains extra or malformed metadata markers`);
   assertPublicText(keywordsText, `Colored ${kind} PDF metadata`);
   const parsedGeometry = parsePdfGeometry(pdf);
@@ -1643,6 +1660,7 @@ export async function parseColoredOutlinePdf(
     textBlockCount: parsedGeometry.texts.length,
     textRecords: parsedGeometry.texts,
     keywords,
+    ...(assembledThicknessMm === undefined ? {} : { assembledThicknessMm }),
   };
 }
 
@@ -2278,7 +2296,7 @@ export function parseLauncherFitCouponArtifact(svg: string): ParsedLauncherFitCo
   const publicText = svg.replace(/\sdata-material-id="[^"]*"/, '');
   assertPublicText(publicText, 'Launcher fit coupon SVG');
   return {
-    templateVersion: 1,
+    templateVersion: 2,
     templateFingerprint,
     materialId,
     kerfMm,
@@ -2396,6 +2414,11 @@ function roleStroke(
   return expectedPdfStroke(role, PDF_ROLE_RGB[role], role === 'CUT_BLACK' ? 0.8 : 1.2, [], start, end);
 }
 
+function physicalLayerLabel(layerCount: number, layerIndex: number): string {
+  if (layerCount === 3) return ['Bottom', 'Middle', 'Top'][layerIndex];
+  return `Layer ${layerIndex + 1}`;
+}
+
 function assertPdfStrokeRecords(actual: readonly PdfStrokeRecord[], expected: readonly PdfStrokeRecord[], kind: string): void {
   if (actual.length !== expected.length) throw new Error(`Colored ${kind} PDF drawing cardinality does not reconcile with SVG`);
   for (let index = 0; index < expected.length; index += 1) {
@@ -2467,7 +2490,7 @@ function reconcilePdf(
     for (const layer of svg.layers) {
       const bounds = entityBounds(exteriorForLayer(svg.entities, layer));
       expectedTexts.push({
-        text: `Layer ${layer.order}`, size: 7,
+        text: physicalLayerLabel(svg.layers.length, layer.order - 1), size: 7,
         x: (bounds.minX + 1) * MM_TO_POINTS, y: (bounds.maxY - 3) * MM_TO_POINTS,
       });
     }
@@ -2494,7 +2517,8 @@ function reconcilePdf(
       && entity.role === 'CUT_BLACK' && entity.id.endsWith('-hole')
       && !entity.id.includes('-fastener-hole-'));
     const expectedHole = central ? Number((2 * Math.sqrt(polygonArea(central.points) / Math.PI)).toFixed(3)) : null;
-    if (!nearlyEqual(record.thickness, layer.zEnd - layer.zStart)
+    if (!Number.isFinite(record.thickness) || record.thickness! <= 0
+      || !nearlyEqual(record.thickness, pdf.layerRecords[0].thickness!)
       || !nearlyEqual(record.width, Math.max(...xs) - Math.min(...xs))
       || !nearlyEqual(record.height, Math.max(...ys) - Math.min(...ys))
       || record.holeDiameter !== expectedHole) {
@@ -2503,7 +2527,7 @@ function reconcilePdf(
   });
   const expectedPageSize: readonly [number, number] = [297 * MM_TO_POINTS, 210 * MM_TO_POINTS];
   if (!nearlyEqual(pdf.pageSize[0], expectedPageSize[0]) || !nearlyEqual(pdf.pageSize[1], expectedPageSize[1])
-    || pdf.textBlockCount !== svg.layers.length + 6 + safetyNotes.length) {
+    || pdf.textBlockCount !== svg.layers.length + 7 + safetyNotes.length) {
     throw new Error('Colored exploded PDF page dimensions or label cardinality do not reconcile with SVG');
   }
   const centerX = 120 * MM_TO_POINTS, baseY = 36 * MM_TO_POINTS;
@@ -2522,7 +2546,13 @@ function reconcilePdf(
     [centerX, baseY - 8 * MM_TO_POINTS],
     [centerX, topY],
   )];
-  const expectedTexts: PdfTextRecord[] = [{ text: 'Central axis', size: 8, x: centerX + 3 * MM_TO_POINTS, y: topY - 6 }];
+  const expectedTexts: PdfTextRecord[] = [
+    { text: 'Central axis', size: 8, x: centerX + 3 * MM_TO_POINTS, y: topY - 6 },
+    {
+      text: `Assembled thickness: ${svg.layers.length * (pdf.layerRecords[0].thickness ?? Number.NaN)} mm`,
+      size: 8, x: 10 * MM_TO_POINTS, y: 197 * MM_TO_POINTS,
+    },
+  ];
   svg.layers.forEach((layer, layerIndex) => {
     const bounds = exteriorBounds[layerIndex];
     const offsetX = centerX - ((bounds.maxX - bounds.minX) / 2) * drawingScale * MM_TO_POINTS
@@ -2530,7 +2560,7 @@ function reconcilePdf(
     const offsetY = baseY + layerIndex * gapMm * MM_TO_POINTS;
     const dimensions = pdf.layerRecords[layerIndex];
     expectedTexts.push({
-      text: `${layer.order}. ${layer.id}  thickness ${dimensions.thickness} X ${dimensions.width} Y ${dimensions.height} hole diameter ${dimensions.holeDiameter ?? '—'}`,
+      text: `${layer.order}. ${physicalLayerLabel(svg.layers.length, layerIndex)} (${layer.id})  thickness ${dimensions.thickness} X ${dimensions.width} Y ${dimensions.height} hole diameter ${dimensions.holeDiameter ?? '—'}`,
       size: 7, x: 184 * MM_TO_POINTS, y: offsetY + 4,
     });
     const project = (point: readonly number[]): readonly [number, number] => [
@@ -2664,6 +2694,10 @@ export async function inspectColoredArtifacts(payloads: ColoredArtifactPayloads)
   parseLauncherFitCouponArtifact(payloads.launcherCouponSvg);
   const project = parseColoredProjectJson(projectRecord.payload);
   const manifest = parseColoredManifestJson(manifestRecord.payload, zipRecords);
+  if (!nearlyEqual(explodedPdf.assembledThicknessMm, project.layers.length * project.assembly.material.thicknessMm)
+    || explodedPdf.layerRecords.some(({ thickness }) => !nearlyEqual(thickness, project.assembly.material.thicknessMm))) {
+    throw new Error('Colored exploded PDF material and assembled thickness do not reconcile with the project');
+  }
   if (exact({
     sourceHash: project.sourceHash,
     featureEvidenceFingerprint: project.featureEvidenceFingerprint,
@@ -3284,7 +3318,13 @@ export async function expectNoEngineeringControls(page: Page) {
 export async function expectResult(page: Page, status: '成功' | '需注意', mode: '精確切片' | '2.5D 外形') {
   await expect(page.getByRole('heading', { name: '轉換完成' })).toBeVisible({ timeout: 60_000 });
   await expect(page.getByText(status, { exact: true })).toBeVisible();
-  await expect(page.getByText(mode, { exact: true })).toBeVisible();
+  const modeValue = page.getByText(mode, { exact: true });
+  for (let pageIndex = 0; pageIndex < 4 && !await modeValue.isVisible(); pageIndex += 1) {
+    const next = page.getByRole('button', { name: '製作設定下一頁' });
+    if (!await next.isVisible() || await next.isDisabled()) break;
+    await next.click();
+  }
+  await expect(modeValue).toBeVisible();
   await expectNoEngineeringControls(page);
 }
 

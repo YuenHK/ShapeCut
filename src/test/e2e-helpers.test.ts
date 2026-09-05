@@ -518,7 +518,7 @@ describe('release E2E colored artifact parsers', () => {
     expect(() => expectReleaseAssemblyGeometry(shiftedCenter, inspected))
       .toThrow(/fastener.*(?:center|decision)/i);
     expect(inspected.entities.filter(({ id }) => id.includes('-launcher-clearance-'))).toHaveLength(6);
-    expect(inspected.entities.filter(({ id }) => id.includes('-fastener-hole-'))).toHaveLength(18);
+    expect(inspected.entities.filter(({ id }) => id.includes('-fastener-hole-'))).toHaveLength(9);
   }, 30_000);
 
   it('reconciles readable PDF safety notes for a warned all-layer hole omission', async () => {

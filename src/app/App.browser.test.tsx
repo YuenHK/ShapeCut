@@ -251,10 +251,12 @@ describe('App real browser one-click flow', () => {
     )).toHaveAttribute('download', 'shapecut-files.zip');
     expect(screen.getByRole('link', { name: /爆炸圖 PDF/ })).toHaveAttribute('download', 'exploded-view.pdf');
     expect(screen.getAllByRole('link', { name: /下載/ })).toHaveLength(6);
-    const technicalSummary = screen.getByText('技術資料');
+    const technicalSummary = screen.getByRole('tab', { name: '技術資料' });
+    expect(technicalSummary).toHaveAttribute('aria-selected', 'false');
     technicalSummary.focus();
     await user.keyboard('{Enter}');
-    expect(technicalSummary.closest('details')).toHaveAttribute('open');
+    expect(technicalSummary).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tabpanel')).toHaveTextContent('模式');
     expect(screen.getByRole('img', { name: /模型分層預覽/ })).toHaveAttribute('data-layer-count', '1');
     expect(services.convert).toHaveBeenCalledOnce();
     expect(screen.queryByRole('button', { name: /修復|軸心|下一步|材料|分件/ })).toBeNull();

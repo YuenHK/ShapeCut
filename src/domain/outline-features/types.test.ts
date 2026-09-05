@@ -1199,7 +1199,7 @@ describe('colored outline contracts', () => {
     })).toThrow(/migration.*match.*colored/i);
   });
 
-  it.each([1, 5])('rejects %i-layer colored, preview, and migration truncation', (count) => {
+  it.each([1, 4, 5])('rejects %i-layer colored, preview, and migration truncation', (count) => {
     expect(() => validateAutomaticColoredResult(automaticResult(coloredLayerSet(count))))
       .toThrow(/colored result.*3.*24/i);
 

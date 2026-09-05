@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
+import { CENTRAL_HOLE_OMISSION_WARNING } from '../src/domain/outline-features/hole';
 import {
   compareDownloadedOutlineBytes,
   downloadAndInspectOutline,
@@ -30,6 +31,7 @@ async function captureCompleteReleaseRun(page: Page, fixture: ReleaseFixture) {
     await expectResult(page, '需注意', '2.5D 外形');
     await expect(page.getByRole('link', { name: '下載 ZIP 製作套件' })).toBeVisible();
     await expect(page.getByTestId('apple-workbench')).toHaveAttribute('data-state', 'result');
+    await page.getByRole('tab', { name: '處理提示' }).click();
     await expect(page.getByRole('region', { name: '模型處理提示' }))
       .toContainText('模型已使用 2.5D 外形簡化');
     const viewport = page.getByRole('img', { name: /真實網格和爆炸圖/ });
@@ -37,7 +39,10 @@ async function captureCompleteReleaseRun(page: Page, fixture: ReleaseFixture) {
 
     const runtime = await readLatestWorkerResultSummary(page);
     expect(runtime).toMatchObject({ mode: 'outline-2.5d', status: 'warning' });
-    if (fixture.env === 'KNIGHT_FORTRESS_GROUP_STL') expect(runtime.removedComponentCount).toBeGreaterThan(0);
+    if (fixture.env === 'KNIGHT_FORTRESS_GROUP_STL') {
+      expect(runtime.featureWarnings).toContain(CENTRAL_HOLE_OMISSION_WARNING);
+      expect(runtime.coloredLayers.every((layer) => layer.hole.status === 'omitted')).toBe(true);
+    }
     const output = await downloadAndInspectOutline(page);
     const probe = await readWorkerProbeState(page);
     await expect(viewport).toHaveAttribute('data-layer-count', String(output.layers.length));

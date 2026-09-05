@@ -29,7 +29,10 @@ import {
   planFastenerHoles,
   type FastenerPlan,
 } from '../outline-assembly/fasteners';
-import { createPhysicalCutProtection } from '../outline-assembly/physical-cut-envelope';
+import {
+  createPhysicalCutProtection,
+  finishedRemovalEnvelope,
+} from '../outline-assembly/physical-cut-envelope';
 import { createOutlineAxisBasis, projectMesh } from '../outline-2.5d/raster';
 import type { ExactSegmentCollection, ExactSegmentSource } from '../outline-2.5d/segment-source';
 import { scheduleOutlineLayers } from '../outline-2.5d/layer-schedule';
@@ -43,6 +46,10 @@ import {
   type OutlinePreviewPayload,
   type SharedCentralHoleLayerEvidence,
 } from '../outline-features/types';
+import {
+  CENTRAL_HOLE_OMISSION_WARNING,
+  type CentralHoleSelection,
+} from '../outline-features/hole';
 import {
   copyInternalLauncherDecorationEvidence,
   type InternalLauncherDecorationEvidence,
@@ -383,6 +390,7 @@ type PlannedAssembly = {
   readonly summary: Omit<AutomaticOutlineAssembly, 'topFeatures' | 'decorationOmissions'>;
   readonly cuts: OutlineExtraction['blackCuts'];
   readonly warnings: readonly string[];
+  readonly holeSelections: readonly CentralHoleSelection[];
 };
 
 function materializeLauncherCuts(
@@ -401,13 +409,42 @@ type FixedLauncherPlanningContext = OutlineBlackCutPlanningContext & {
   readonly launcherFitOffsetMm: number;
 };
 
+function isUnsafeOptionalHoleEnvelope(error: unknown): boolean {
+  if (!(error instanceof RangeError)) return false;
+  return /Offset collapsed or self-intersected the polygon|Offset cannot resolve a folded or numerically unstable polygon vertex|Offset miter exceeds the bounded geometry limit|Physical cut toolpath must produce one finite simple removal envelope/.test(error.message);
+}
+
+function materialAwareHoleSelections(
+  selections: readonly CentralHoleSelection[],
+  material: ManufacturingGeometryProfile,
+  deadline: number,
+  checkpoint: (label?: string) => void,
+): readonly CentralHoleSelection[] {
+  const selected = selections.find((selection) => selection.hole !== undefined);
+  if (!selected?.hole) return selections;
+  try {
+    finishedRemovalEnvelope(selected.hole.outer, material.kerfMm, deadline, checkpoint);
+    return selections;
+  } catch (error) {
+    if (!isUnsafeOptionalHoleEnvelope(error)) throw error;
+    return selections.map(() => ({
+      hole: undefined,
+      omissionReason: 'NO_RELIABLE_CENTRAL_HOLE' as const,
+      warning: CENTRAL_HOLE_OMISSION_WARNING,
+    }));
+  }
+}
+
 function planAssemblyBlackCuts(
   context: FixedLauncherPlanningContext,
   material: ManufacturingGeometryProfile,
 ): PlannedAssembly {
   const checkpoint = () => checkEvidenceDeadline(context.deadline);
+  const holeSelections = materialAwareHoleSelections(
+    context.holeSelections, material, context.deadline, checkpoint,
+  );
   const bareLayers = colorizeExteriorLayers(
-    context.layers, context.cellSizeMm, context.deadline, checkpoint, context.holeSelections,
+    context.layers, context.cellSizeMm, context.deadline, checkpoint, holeSelections,
   );
   const top = bareLayers.at(-1), second = bareLayers.at(-2);
   if (!top || !second) throw new RangeError('Assembly planning requires at least two ordered layers');
@@ -470,6 +507,7 @@ function planAssemblyBlackCuts(
   return {
     cuts,
     warnings,
+    holeSelections,
     summary: {
       material,
       launcher: {
@@ -505,12 +543,20 @@ function extractionOptions(
   material: ManufacturingGeometryProfile,
   launcherFitOffsetMm: number,
   receive: (assembly: PlannedAssembly) => void,
-): { readonly planBlackCuts: (context: OutlineBlackCutPlanningContext) => { readonly cuts: OutlineExtraction['blackCuts']; readonly warnings: readonly string[] } } {
+): { readonly planBlackCuts: (context: OutlineBlackCutPlanningContext) => {
+  readonly cuts: OutlineExtraction['blackCuts'];
+  readonly warnings: readonly string[];
+  readonly holeSelections: readonly CentralHoleSelection[];
+} } {
   return {
     planBlackCuts: (context) => {
       const assembly = planAssemblyBlackCuts({ ...context, launcherFitOffsetMm }, material);
       receive(assembly);
-      return { cuts: assembly.cuts, warnings: assembly.warnings };
+      return {
+        cuts: assembly.cuts,
+        warnings: assembly.warnings,
+        holeSelections: assembly.holeSelections,
+      };
     },
   };
 }

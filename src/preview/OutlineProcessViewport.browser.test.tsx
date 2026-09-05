@@ -209,7 +209,8 @@ describe('OutlineProcessViewport in Chromium', () => {
     const active = activeConversionServices();
     const view = render(<OneClickConverter services={active.services} />);
     await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'live-motion.stl'));
-    await user.selectOptions(await screen.findByLabelText('選擇製作材料'), READY_TEST_MATERIAL.id);
+    await user.selectOptions(await screen.findByLabelText('選擇製作材料'), 'acrylic-6');
+    await user.click(screen.getByRole('button', { name: '開始製作' }));
     await act(async () => {
       active.report()?.({ stage: 'analyzing', preview: browserPayload() });
     });
@@ -296,7 +297,8 @@ describe('OutlineProcessViewport in Chromium', () => {
       screen.getByLabelText('選擇 STL 模型'),
       new File([PRESENTATION_STL], 'settled-failure.stl', { type: 'model/stl' }),
     );
-    await user.selectOptions(await screen.findByLabelText('選擇製作材料'), READY_TEST_MATERIAL.id);
+    await user.selectOptions(await screen.findByLabelText('選擇製作材料'), 'acrylic-6');
+    await user.click(screen.getByRole('button', { name: '開始製作' }));
     await screen.findByRole('alert');
 
     const retained = view.container.querySelector<HTMLElement>('.failure-retained-preview')!;
@@ -382,7 +384,8 @@ describe('OutlineProcessViewport in Chromium', () => {
     const view = render(<OneClickConverter services={services} />);
     try {
       await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'fallback-result.stl'));
-      await user.selectOptions(await screen.findByLabelText('選擇製作材料'), READY_TEST_MATERIAL.id);
+      await user.selectOptions(await screen.findByLabelText('選擇製作材料'), 'acrylic-6');
+      await user.click(screen.getByRole('button', { name: '開始製作' }));
 
       const fallback = await screen.findByRole('img', { name: /SVG fallback/ });
       expect(screen.getByRole('figure')).toHaveAttribute('data-renderer', 'fallback');
@@ -419,7 +422,8 @@ describe('OutlineProcessViewport in Chromium', () => {
     const active = activeConversionServices();
     const view = render(<OneClickConverter services={active.services} />);
     await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['old'], 'old-model.stl'));
-    await user.selectOptions(await screen.findByLabelText('選擇製作材料'), READY_TEST_MATERIAL.id);
+    await user.selectOptions(await screen.findByLabelText('選擇製作材料'), 'acrylic-6');
+    await user.click(screen.getByRole('button', { name: '開始製作' }));
     await act(async () => {
       active.report()?.({ stage: 'analyzing', preview: browserPayload() });
     });

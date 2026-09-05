@@ -1,5 +1,6 @@
 import type { Point2 } from '../decomposition/types';
 import { validatePolygon } from '../engraving/geometry';
+import { roundedLauncherLoops } from './rounded-launcher';
 
 export const LAUNCHER_TEMPLATE_MAX_POINTS = 4_096;
 export const LAUNCHER_RADIUS_TOLERANCE_RATIO = 0.05;
@@ -1612,8 +1613,13 @@ export const KNIGHT_FORTRESS_LAUNCHER_TEMPLATE = {
   ]
 } as const satisfies LauncherTemplate;
 
-export const OFFICIAL_THREE_PRONG_TEMPLATE_VERSION = 1 as const;
-export const OFFICIAL_THREE_PRONG_TEMPLATE = KNIGHT_FORTRESS_LAUNCHER_TEMPLATE;
+export const OFFICIAL_THREE_PRONG_TEMPLATE_VERSION = 2 as const;
+export const OFFICIAL_THREE_PRONG_TEMPLATE: LauncherTemplate = Object.freeze({
+  version: OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+  loops: roundedLauncherLoops(),
+  // Provenance identifies the source of the fit, not a claim of exact reproduction.
+  provenanceHashes: KNIGHT_FORTRESS_LAUNCHER_TEMPLATE.provenanceHashes,
+});
 
 function templateFingerprint(template: Pick<LauncherTemplate, 'version' | 'loops'>): string {
   const serialized = JSON.stringify({ version: template.version, loops: template.loops });

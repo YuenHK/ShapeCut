@@ -335,7 +335,9 @@ export function OutlineProcessViewport({
             onChange={(event) => setSelectedLayerId(event.currentTarget.value || undefined)}
           >
             {payload.layers.map((layer, index) => (
-              <option key={layer.id} value={layer.id}>第 {index + 1} 層：{layer.id}</option>
+              <option key={layer.id} value={layer.id}>
+                {payload.layers.length === 3 ? ['下層', '中層', '上層'][index] : `第 ${index + 1} 層`}：{layer.id}
+              </option>
             ))}
           </select>
         </label>

@@ -43,6 +43,7 @@ import { MotionSurface } from './MotionSurface';
 import { useEffectLevel, type EffectLevel } from './effect-level';
 import { ProcessingLoadingPanel } from './ProcessingLoadingPanel';
 import { sampleModels, sampleModelUrl } from './sample-models';
+import { DetailPages, WorkbenchDetails } from './WorkbenchDetails';
 
 export type DownloadFile = { readonly href: string; readonly fileName: string };
 export type OutlineDownloads = {
@@ -802,9 +803,10 @@ export function OneClickConverter({
 
   if (view.kind === 'material') return frame(
     <section className="converter-card material-card" aria-labelledby="material-title">
-      <p className="eyebrow">選擇製作材料</p>
+      <div className="material-heading"><p className="eyebrow">選擇製作材料</p>
       <h1 id="material-title">{view.fileName}</h1>
-      <p>請選擇本次製作的材料，系統只會把所需的幾何資料傳送到處理程序。</p>
+      <p>請選擇本次製作的材料，系統只會把所需的幾何資料傳送到處理程序。</p></div>
+      <div className="material-controls">
       {savedProject && (
         <section aria-label="已儲存專案重新產生">
           {savedSourceReattached ? (
@@ -832,11 +834,7 @@ export function OneClickConverter({
           </button>
         </section>
       )}
-      {presentationPreview && (
-        <div className="material-presentation-preview">
-          <OutlineProcessViewport payload={presentationPreview} stage="reading" effectLevel={effectLevel} />
-        </div>
-      )}
+
       <label className="material-picker">
         三爪配合微調
         <input
@@ -879,6 +877,12 @@ export function OneClickConverter({
         </button>
       )}
       <ModelInput compact level={effectLevel} onFile={(file) => void selectFile(file)} />
+      </div>
+      {presentationPreview && (
+        <div className="material-presentation-preview">
+          <OutlineProcessViewport payload={presentationPreview} stage="reading" effectLevel={effectLevel} />
+        </div>
+      )}
     </section>
   );
 
@@ -948,7 +952,7 @@ export function OneClickConverter({
         {view.result && presentationWarnings(view.result).length > 0 && (
           <section className="warning-panel" aria-label="模型處理提示">
             <strong>已保留的處理提示</strong>
-            <ul>{presentationWarnings(view.result).map((item) => <li key={item}>{item}</li>)}</ul>
+            <DetailPages label="已保留的處理提示" pageSize={2}><ul>{presentationWarnings(view.result).map((item) => <li key={item}>{item}</li>)}</ul></DetailPages>
           </section>
         )}
         <MotionSurface
@@ -990,35 +994,20 @@ export function OneClickConverter({
           <p className="file-name">{view.fileName}</p>
         </div>
       </div>
-      {warnings.length > 0 && (
-        <section className="warning-panel" aria-label="模型處理提示">
-          <strong>處理提示</strong>
-          <ul>{warnings.map((item) => <li key={item}>{item}</li>)}</ul>
-        </section>
-      )}
-      {assembly.decorationOmissions.length > 0 && (
-        <section className="warning-panel" aria-label="紅藍裝飾省略提示">
-          <strong>{PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING}</strong>
-          <ul>
-            {assembly.decorationOmissions.map((omission) => (
-              <li key={omission.layerId}>受影響層：{omission.layerId}</li>
-            ))}
-          </ul>
-          <p>官方三爪孔及黑色切割幾何已保留</p>
-        </section>
-      )}
       <div className="result-grid">
         <div className="result-viewport">
           <OutlineProcessViewport payload={result.preview} stage="result" effectLevel={effectLevel} />
+          <p className="launcher-calibration-note">分層示意，間距非實際厚度</p>
         </div>
-        <dl className="result-summary">
-          <div><dt>處理方式</dt><dd>{result.mode === 'exact' ? '精確切片' : '2.5D 外形'}</dd></div>
+        <WorkbenchDetails settings={<DetailPages label="製作設定"><dl className="result-summary">
           <div><dt>切片數量</dt><dd>{result.layers.length} 層</dd></div>
+            <div><dt>製作材料</dt><dd>{assembly.material.name} ({assembly.material.thicknessMm} mm，kerf {assembly.material.kerfMm} mm)</dd></div>
+          <div><dt>成品總厚度</dt><dd>{result.layers.length * assembly.material.thicknessMm} mm</dd></div>
+          <div><dt>模型軸向高度</dt><dd>{presentation ? `總高度 ${presentation.totalZ} mm` : '不可用'}</dd></div>
+          <div><dt>處理方式</dt><dd>{result.mode === 'exact' ? '精確切片' : '2.5D 外形'}</dd></div>
           <div><dt>平面尺寸 X × Y</dt><dd>{presentation ? `${presentation.width} × ${presentation.height} mm` : '不可用'}</dd></div>
-          <div><dt>原始 Z 範圍</dt><dd>{presentation ? `總高度 ${presentation.totalZ} mm` : '不可用'}</dd></div>
           <div><dt>輸出內容</dt><dd>切割外形與相對深淺層級</dd></div>
           {assembly && <>
-            <div><dt>製作材料</dt><dd>{assembly.material.name} ({assembly.material.thicknessMm} mm，kerf {assembly.material.kerfMm} mm)</dd></div>
             <div><dt>發射器相容性</dt><dd>{launcherSummary(assembly.launcher.status)}</dd></div>
             <div><dt>三爪樣板</dt><dd>模板版本 {assembly.launcher.templateVersion}</dd></div>
             <div><dt>三爪配合</dt><dd>配合微調 {signedMillimeters(assembly.launcher.fitOffsetMm)}</dd></div>
@@ -1034,9 +1023,33 @@ export function OneClickConverter({
             <div><dt>三爪區紅色處理</dt><dd>已裁切紅色 {assembly.topFeatures.launcherOverlap.clipped.red}，已移除紅色 {assembly.topFeatures.launcherOverlap.removed.red}</dd></div>
             <div><dt>三爪區藍色處理</dt><dd>已裁切藍色 {assembly.topFeatures.launcherOverlap.clipped.blue}，已移除藍色 {assembly.topFeatures.launcherOverlap.removed.blue}</dd></div>
           </>}
-        </dl>
+        </dl></DetailPages>} warnings={<>
+          <section className="warning-panel" aria-label="模型處理提示">
+            <strong>處理提示</strong>
+            <DetailPages label="處理提示" pageSize={2}><ul>
+              {warnings.length ? warnings.map((item) => <li key={item}>{item}</li>) : <li>沒有額外提示。</li>}
+              {assembly.decorationOmissions.length > 0 && <li aria-label="紅藍裝飾省略提示">{PROTECTED_CUT_WORK_BUDGET_OMISSION_WARNING}。官方三爪孔及黑色切割幾何已保留</li>}
+              {assembly.decorationOmissions.map((omission) => <li key={omission.layerId}>受影響層：{omission.layerId}</li>)}
+            </ul></DetailPages>
+          </section>
+          <p className="launcher-calibration-note">依 Knight Fortress 樣本建立，待官方發射器實物校準</p>
+        </>} technical={<section className="technical-details"><DetailPages label="技術資料">
+        <dl>
+          <div><dt>模式</dt><dd>{result.mode}</dd></div>
+          <div><dt>狀態</dt><dd>{result.status}</dd></div>
+          <div><dt>來源 fingerprint</dt><dd><code>{result.sourceHash}</code></dd></div>
+          <div><dt>切片數量</dt><dd>{result.layers.length}</dd></div>
+          <div><dt>原始三角形</dt><dd>{result.diagnostics.topology.triangleCount}</dd></div>
+          <div><dt>修復決定</dt><dd>{result.diagnostics.repairDecision === 'accepted' ? '已接受安全修復' : '使用原始模型投影'}</dd></div>
+          <div><dt>Raster cell</dt><dd>{result.diagnostics.rasterCellSizeMm === null ? '精確模式不適用' : `${result.diagnostics.rasterCellSizeMm} mm`}</dd></div>
+          <div><dt>最大外形偏差</dt><dd>{`${(Math.max(...result.diagnostics.layers.map((item) => Math.max(item.boundsDriftRatio, item.areaDriftRatio))) * 100).toFixed(2)}%`}</dd></div>
+          {holeDiameter && <div><dt>偵測中央孔直徑</dt><dd>{holeDiameter}</dd></div>}
+          {redThreshold && <div><dt>紅色深層門檻</dt><dd>{redThreshold}</dd></div>}
+          {blueThreshold && <div><dt>藍色淺層門檻</dt><dd>{blueThreshold}</dd></div>}
+        </dl></DetailPages>
+        <p>ZIP 內含 cut-and-engrave.svg、cut-and-engrave.dxf、preview.pdf、exploded-view.pdf、launcher-fit-coupon.svg、project.json 及 manifest.json 七項檔案。</p>
+      </section>} />
       </div>
-      <p className="launcher-calibration-note">依 Knight Fortress 樣本建立，待官方發射器實物校準</p>
       <div className="color-legend" aria-label="相對顏色圖例">
         <strong>顏色圖例</strong>
         <ul>
@@ -1046,7 +1059,7 @@ export function OneClickConverter({
         </ul>
         <p>顏色只表示相對深淺層級，不代表實際雷射功率、速度或走刀次數。</p>
       </div>
-      <MotionSurface
+      <div className="result-actions"><MotionSurface
         as="a"
         level={effectLevel}
         className="primary-button download-primary"
@@ -1078,30 +1091,6 @@ export function OneClickConverter({
           </MotionSurface>
         ))}
       </nav>
-      <details className="technical-details">
-        <summary onKeyDown={(event) => {
-          if (event.key !== 'Enter' && event.key !== ' ') return;
-          event.preventDefault();
-          const details = event.currentTarget.parentElement as HTMLDetailsElement;
-          details.open = !details.open;
-        }}>技術資料</summary>
-        <dl>
-          <div><dt>模式</dt><dd>{result.mode}</dd></div>
-          <div><dt>狀態</dt><dd>{result.status}</dd></div>
-          <div><dt>來源 fingerprint</dt><dd><code>{result.sourceHash}</code></dd></div>
-          <div><dt>切片數量</dt><dd>{result.layers.length}</dd></div>
-          <div><dt>原始三角形</dt><dd>{result.diagnostics.topology.triangleCount}</dd></div>
-          <div><dt>修復決定</dt><dd>{result.diagnostics.repairDecision === 'accepted' ? '已接受安全修復' : '使用原始模型投影'}</dd></div>
-          <div><dt>Raster cell</dt><dd>{result.diagnostics.rasterCellSizeMm === null ? '精確模式不適用' : `${result.diagnostics.rasterCellSizeMm} mm`}</dd></div>
-          <div><dt>最大外形偏差</dt><dd>{`${(Math.max(...result.diagnostics.layers.map((item) => Math.max(item.boundsDriftRatio, item.areaDriftRatio))) * 100).toFixed(2)}%`}</dd></div>
-          {holeDiameter && <div><dt>偵測中央孔直徑</dt><dd>{holeDiameter}</dd></div>}
-          {redThreshold && <div><dt>紅色深層門檻</dt><dd>{redThreshold}</dd></div>}
-          {blueThreshold && <div><dt>藍色淺層門檻</dt><dd>{blueThreshold}</dd></div>}
-        </dl>
-        <h2>處理提示</h2>
-        {warnings.length > 0 ? <ul>{warnings.map((item) => <li key={item}>{item}</li>)}</ul> : <p>沒有額外提示。</p>}
-        <p>ZIP 內含 cut-and-engrave.svg、cut-and-engrave.dxf、preview.pdf、exploded-view.pdf、launcher-fit-coupon.svg、project.json 及 manifest.json 七項檔案。</p>
-      </details>
       {savedProject ? (
         <button type="button" onClick={() => void discardSavedProject()}>
           捨棄已儲存專案並選擇另一個模型
@@ -1109,6 +1098,7 @@ export function OneClickConverter({
       ) : (
         <ModelInput compact level={effectLevel} onFile={(file) => void selectFile(file)} />
       )}
+      </div>
     </section>
   );
 }

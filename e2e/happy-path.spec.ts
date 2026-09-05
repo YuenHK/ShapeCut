@@ -83,7 +83,7 @@ test('serialized worker probe accepts the fixed public result without internal e
   expect(runtime.assembly?.launcher).toMatchObject({
     status: 'fixed',
     cutCount: 3,
-    templateVersion: 1,
+    templateVersion: 2,
     templateFingerprint: expect.stringMatching(/^[0-9a-f]{32}$/),
     fitOffsetMm: 0,
   });
@@ -199,12 +199,16 @@ test('synthetic holed and stepped geometry reconciles assembly and retained role
 
   const output = await downloadAndInspectOutline(page);
   const runtime = await readLatestWorkerResultSummary(page);
-  expect(output.layers).toHaveLength(6);
+  expect(output.layers).toHaveLength(3);
   expectSharedCentralHoleGeometry(runtime);
   expectReleaseAssemblyGeometry(runtime, output);
+  const previousSettings = page.getByRole('button', { name: '製作設定上一頁' });
+  while (await previousSettings.isEnabled()) await previousSettings.click();
   await expect(page.locator('.result-summary div').filter({ hasText: '製作材料' }))
     .toContainText(`${runtime.material!.thicknessMm} mm`);
+  await page.getByRole('button', { name: '製作設定下一頁' }).click();
   await expect(page.locator('.result-summary div').filter({ hasText: '發射器相容性' })).toBeVisible();
+  await page.getByRole('button', { name: '製作設定下一頁' }).click();
   await expect(page.locator('.result-summary div').filter({ hasText: '固定螺絲孔' }))
     .toContainText(runtime.assembly!.fastener.count === 0 ? '已安全省略' : `${runtime.assembly!.fastener.count} 個`);
   const blackByLayer = output.layers.map((layer) => output.entities.filter((entity) => (

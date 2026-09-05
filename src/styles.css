@@ -1538,3 +1538,91 @@ progress::-webkit-progress-value {
     width: 100% !important;
   }
 }
+
+/* Workbench layout: preserve the existing typography and palette. */
+.workbench-tabs, .detail-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .5rem;
+}
+.workbench-tabs { margin-bottom: .5rem; }
+.workbench-tabs > button { flex: 1; padding-inline: .5rem; }
+.workbench-tabs [aria-selected="true"] { outline: 2px solid var(--accent-strong); outline-offset: -2px; }
+.workbench-details, .detail-pages, .detail-page-content { min-width: 0; min-height: 0; }
+.detail-pages { display: flex; flex-direction: column; gap: .5rem; }
+.detail-pagination { margin-top: auto; }
+.detail-pagination button { padding-inline: .75rem; }
+.detail-pagination button:disabled { cursor: default; opacity: .5; }
+.material-controls { display: grid; gap: .75rem; min-width: 0; }
+.material-controls > button { min-height: 48px; }
+.material-heading { min-width: 0; overflow-wrap: anywhere; }
+.workbench-details [role="tabpanel"]:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.workbench-details [role="tabpanel"][hidden] { display: none; }
+
+@media (min-width: 1000px) and (min-height: 680px) {
+  .app-shell { height: 100svh; min-height: 0; }
+  .site-header { position: relative; top: auto; flex: 0 0 auto; }
+  main { flex: 1; min-height: 0; margin: 0 auto; padding: .75rem 0; display: flex; flex-direction: column; }
+  footer { flex: 0 0 auto; padding: .25rem 1.25rem .5rem; }
+  .apple-workbench { flex: 1; min-height: 0; display: flex; }
+  .workbench-stage { width: 100%; min-height: 0; height: 100%; padding: .75rem; }
+  .converter-card { height: 100%; min-height: 0; padding: .75rem 1.25rem; }
+  .upload-card { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: minmax(0, 1fr) auto auto; gap: .75rem 1.5rem; }
+  .upload-card .hero-copy { margin: 0; align-self: center; }
+  .upload-card .hero-copy > p:last-child { margin-top: .75rem; }
+  .upload-card .upload-zone { min-height: 0; padding: 1rem; }
+  .upload-card .sample-models { grid-column: 1 / -1; grid-template-columns: auto 1fr; gap: .5rem 1rem; }
+  .upload-card .sample-models p { grid-column: 1 / -1; }
+  .upload-card .feature-list { grid-column: 1 / -1; margin: 0; }
+  .material-card { grid-template-columns: 1fr 1fr; grid-template-rows: auto minmax(0, 1fr); gap: .75rem 1.5rem; }
+  .material-heading { grid-column: 1 / -1; }
+  .material-heading p { margin-block: .25rem; }
+  .material-controls { grid-column: 2; grid-row: 2; align-content: center; }
+  .material-presentation-preview { grid-column: 1; grid-row: 2; min-height: 0; height: 100%; }
+  .material-card:not(:has(.material-presentation-preview)) .material-controls { grid-column: 1 / -1; width: min(100%, 32.5rem); justify-self: center; }
+  .material-presentation-preview .outline-process-viewport { min-height: 0; height: 100%; grid-template-rows: minmax(0, 1fr) auto; }
+  .material-presentation-preview .outline-process-webgl, .material-presentation-preview .outline-process-canvas, .material-presentation-preview .outline-process-fallback { min-height: 0; height: 100%; }
+  .material-controls .material-picker { width: 100%; }
+  .material-controls .material-field-help, .material-controls .material-field-error { margin: 0; }
+  .processing-card, .processing-card.has-preview { min-height: 0; max-width: none; }
+  .processing-viewport .outline-process-webgl, .processing-viewport .outline-process-canvas, .processing-viewport .outline-process-fallback { min-height: 0; }
+  .result-card { display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; gap: .5rem; }
+  .result-heading .file-name { margin: .125rem 0 0; }
+  .result-heading [role="status"] { display: grid; grid-template-columns: auto 1fr; align-items: center; column-gap: .5rem; }
+  .result-heading .file-name { grid-column: 1 / -1; }
+  .result-heading .result-badge { margin: 0; }
+  .result-heading .result-symbol { width: 3.875rem; height: 3.875rem; }
+  .result-grid { margin: 0; gap: 1rem; min-height: 0; }
+  .result-viewport { min-height: 0; grid-template-rows: minmax(0, 1fr) auto; }
+  .result-viewport .outline-process-viewport { min-height: 0; grid-template-rows: minmax(0, 1fr) auto; }
+  .result-viewport .outline-process-webgl, .result-viewport .outline-process-canvas, .result-viewport .outline-process-fallback { min-height: 0; height: 100%; }
+  .result-viewport .launcher-calibration-note { margin: .125rem 0 0; }
+  .workbench-details { display: flex; flex-direction: column; }
+  .workbench-details [role="tabpanel"] { flex: 1; min-height: 0; overflow: auto; }
+  .workbench-details [role="tabpanel"] > .detail-pages { min-height: 100%; }
+  .result-summary { align-content: start; }
+  .result-summary div { min-height: 2.625rem; padding: .375rem .75rem; gap: .5rem; }
+  .result-summary dd { max-width: 70%; overflow-wrap: anywhere; }
+  .workbench-details .warning-panel { margin: 0; padding: .5rem .75rem; }
+  .workbench-details .launcher-calibration-note { margin: .5rem 0 0; }
+  .workbench-details .technical-details { margin: 0; }
+  .workbench-details .technical-details > :not(summary) { margin-inline: .5rem; }
+  .workbench-details .technical-details dl { margin-block: 0; }
+  .workbench-details .technical-details dl div { padding: .375rem .5rem; }
+  .workbench-details .technical-details p { margin-block: .5rem; overflow-wrap: anywhere; }
+  .color-legend { margin: 0; padding: .375rem .75rem; }
+  .color-legend > strong { margin-bottom: 0; }
+  .color-legend li { min-height: 1.5rem; }
+  .color-legend p { margin: .125rem 0 0; }
+  .result-actions { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 3.8fr) minmax(0, 1.2fr); gap: .5rem; }
+  .result-actions .download-primary { grid-column: 1; min-height: 48px; }
+  .result-actions > .change-file-button, .result-actions > button { grid-column: 3; grid-row: 1; }
+  .result-actions .secondary-downloads { grid-column: 2; grid-row: 1; margin: 0; }
+  .failure-card { max-width: none; display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: auto minmax(0, 1fr) auto; gap: .5rem 1rem; align-items: center; }
+  .failure-card > .result-symbol { display: none; }
+  .failure-card > [role="alert"] { grid-column: 1 / -1; }
+  .failure-card .failure-retained-preview { grid-column: 1; grid-row: 2; height: 100%; margin: 0; }
+  .failure-card .warning-panel { grid-column: 2; grid-row: 2; margin: 0; }
+  .failure-card > .primary-button { grid-column: 1 / -1; justify-self: center; margin: 0; }
+}

@@ -90,6 +90,8 @@ type LauncherDecorationDecision = LauncherDecorationOverlap & {
 export type OutlineBlackCutPlan = {
   readonly cuts: readonly ExistingBlackCuts[];
   readonly warnings?: readonly string[];
+  /** A material-aware planner may conservatively omit the shared optional hole. */
+  readonly holeSelections?: readonly CentralHoleSelection[];
 };
 
 export type HoleCandidateProbeEvidence = {
@@ -346,9 +348,24 @@ function resolveBlackCuts(
     throw new RangeError('Contour extraction accepts either existing cuts or one black-cut planner');
   }
   const plan = options?.planBlackCuts?.(context) ?? { cuts: options?.existingBlackCuts ?? [] };
+  const holeSelections = plan.holeSelections ?? context.holeSelections;
+  if (holeSelections.length !== context.layers.length) {
+    throw new RangeError('Black-cut planner hole decisions must match the extracted layer count');
+  }
+  if (plan.holeSelections && !holeSelections.every((selection, index) => (
+    selection === context.holeSelections[index]
+    || (
+      selection.hole === undefined
+      && selection.omissionReason === 'NO_RELIABLE_CENTRAL_HOLE'
+      && selection.warning === CENTRAL_HOLE_OMISSION_WARNING
+    )
+  ))) {
+    throw new RangeError('Black-cut planner may only omit the optional shared central hole');
+  }
   return {
     cuts: boundedBlackCutsForLayers(plan.cuts, context.layers, context.deadline),
     warnings: plan.warnings ?? [],
+    holeSelections,
   };
 }
 
@@ -580,7 +597,7 @@ export function extractProjectedContours(
     emitHoleCandidatesForTesting({ extractionMode: 'projected', layerId: layer.id, ...holeRequest });
     holeRequests.push(holeRequest);
   }
-  const holeSelections = selectSharedCentralHole(holeRequests);
+  let holeSelections = selectSharedCentralHole(holeRequests);
   const provisional = provisionalDepthFeatures(
     projected, layers, specs, holeSelections, cellSizeMm, budgets, deadline,
   );
@@ -592,6 +609,7 @@ export function extractProjectedContours(
     cellSizeMm,
     deadline,
   });
+  holeSelections = blackCutPlan.holeSelections ?? holeSelections;
   const blackCuts = blackCutPlan.cuts;
   const depthFeatures = layers.map((layer, index) => extractDepthFeaturesForLayer(
     projected, layer, specs[index], index, layers.length, holeSelections[index],
@@ -878,7 +896,7 @@ export function extractExactContours(
     emitHoleCandidatesForTesting({ extractionMode: 'exact', layerId: layer.id, ...holeRequest });
     holeRequests.push(holeRequest);
   }
-  const holeSelections = selectSharedCentralHole(holeRequests);
+  let holeSelections = selectSharedCentralHole(holeRequests);
   const provisional = provisionalDepthFeatures(
     projected, layers, specs, holeSelections, cellSizeMm, budgets, deadline,
   );
@@ -890,6 +908,7 @@ export function extractExactContours(
     cellSizeMm,
     deadline,
   });
+  holeSelections = blackCutPlan.holeSelections ?? holeSelections;
   const blackCuts = blackCutPlan.cuts;
   const depthFeatures = layers.map((layer, index) => extractDepthFeaturesForLayer(
     projected, layer, specs[index], index, layers.length, holeSelections[index],

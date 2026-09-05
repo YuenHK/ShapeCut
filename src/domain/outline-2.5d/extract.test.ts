@@ -476,6 +476,29 @@ describe('extractProjectedContours', () => {
     expect(result.blackCuts).not.toHaveProperty('launcherDecorationEvidence');
   });
 
+  test('allows a material-aware black-cut planner to omit an unsafe shared central hole', () => {
+    const frame = combine(
+      sheet(0, -4.5, 12, 3), sheet(0, 4.5, 12, 3),
+      sheet(-4.5, 0, 3, 7), sheet(4.5, 0, 3, 7),
+    );
+    const result = extractProjectedContours(
+      frame, selection, specs, DEFAULT_OUTLINE_BUDGETS, undefined, {
+        planBlackCuts: (context) => ({
+          cuts: context.layers.map(() => ({ launcherCuts: [], fastenerHoles: [] })),
+          holeSelections: context.holeSelections.map(() => ({
+            hole: undefined,
+            omissionReason: 'NO_RELIABLE_CENTRAL_HOLE' as const,
+            warning: CENTRAL_HOLE_OMISSION_WARNING,
+          })),
+        }),
+      },
+    );
+
+    expect(result.holeSelections).toHaveLength(1);
+    expect(result.holeSelections[0].hole).toBeUndefined();
+    expect(result.featureWarnings).toContain(CENTRAL_HOLE_OMISSION_WARNING);
+  });
+
   test.each([0.1, 0.2, 1])('fails closed when a %s mm projected dimension cannot stay within three percent', (size) => {
     expect(() => extractProjectedContours(box(0, 0, size, size, 2, 3), selection, specs, DEFAULT_OUTLINE_BUDGETS))
       .toThrow(/projected.*drift|three percent|resolution/i);

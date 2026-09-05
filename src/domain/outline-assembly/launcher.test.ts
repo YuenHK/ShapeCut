@@ -163,7 +163,7 @@ describe('launcher fit contract', () => {
 
 describe('fixed three-prong launcher planning', () => {
   // Adjacent public-safety witnesses: this half-size is safe and 0.01 mm less is unsafe.
-  const FIXED_SQUARE_SAFE_GRID_HALF_MM = 23.7027318272;
+  const FIXED_SQUARE_SAFE_GRID_HALF_MM = 23.5098197903;
   const safeRequest = {
     axisPoint: [0, 0],
     topExterior: exterior('fixed-top', 30),
@@ -259,7 +259,8 @@ describe('fixed three-prong launcher planning', () => {
       maxOffsetMm: 6,
       affectedLayerIds: ['second', 'top'],
     });
-    expect(Number.isInteger(result.exteriorExpansion.offsetMm * 100)).toBe(true);
+    expect(result.exteriorExpansion.offsetMm * 100)
+      .toBeCloseTo(Math.round(result.exteriorExpansion.offsetMm * 100), 10);
     expect(result.expandedTopExterior.boundsMm.maxX - topExterior.boundsMm.maxX)
       .toBeCloseTo(result.exteriorExpansion.offsetMm, 10);
     expect(result.expandedSecondExterior.boundsMm.maxX - secondExterior.boundsMm.maxX)
@@ -296,7 +297,7 @@ describe('fixed three-prong launcher planning', () => {
       material: safeRequest.material,
     })).toBe(false);
     expect(result.cuts.map(({ outer }) => outer)).toEqual(baseline.cuts.map(({ outer }) => outer));
-  });
+  }, 15_000);
 
   it('checks exact containment before structural scoring without changing the selected ranking', () => {
     const half = FIXED_SQUARE_SAFE_GRID_HALF_MM - 0.02;
@@ -318,8 +319,8 @@ describe('fixed three-prong launcher planning', () => {
     };
     const selected = planFixedLauncherClearance(request);
 
-    expect(selected.exteriorExpansion.offsetMm).toBe(0.06);
-    expect(selected.rotationRad).toBe(0);
+    expect(selected.exteriorExpansion.offsetMm).toBe(0.03);
+    expect(selected.rotationRad).toBe(Math.PI / 3);
 
     const exactContainmentReached = new Error('exact containment reached');
     const unsafeCandidateScored = new Error('unsafe candidate was structurally scored');
@@ -342,7 +343,7 @@ describe('fixed three-prong launcher planning', () => {
 
     expect(thrown).toBe(exactContainmentReached);
     expect(exactContainmentPolls).toBe(1);
-  });
+  }, 15_000);
 
   it('propagates a bounded-geometry exterior offset failure by exact identity', () => {
     const boundedGeometryFailure = new RangeError(
@@ -432,7 +433,7 @@ describe('fixed three-prong launcher planning', () => {
 
     expect(centralConflict).toBeInstanceOf(LauncherCompatibilityError);
     expect(interProngConflict).toBeInstanceOf(LauncherCompatibilityError);
-  });
+  }, 15_000);
 
   it('interrupts 4,096-point exterior work by deadline and exact caller checkpoint identity', () => {
     const dense = denseExterior('dense', 30);

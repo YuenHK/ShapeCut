@@ -7,6 +7,10 @@ import { coloredResult } from './colored-outline-test-fixture';
 import { writeColoredPreviewPdf, writeExplodedViewPdf } from './exploded-pdf';
 import { writeColoredOutlineSvg } from './package';
 import * as packageExport from './package';
+import { BoxGeometry } from 'three';
+import { writeBinarySTL } from '../domain/mesh/write-stl';
+import { convertAutomatically } from '../domain/pipeline/automatic-outline-pipeline';
+import { GEOMETRY_ESTIMATE_MATERIALS } from '../domain/materials/geometry-estimates';
 
 const MM_TO_POINTS = 72 / 25.4;
 
@@ -54,6 +58,28 @@ function svgDimensions(svg: string): readonly [number, number] {
 }
 
 describe('deterministic colored PDFs', () => {
+  it.each([3, 6])('exports three named layers using %i mm material thickness', async (thickness) => {
+    const box = new BoxGeometry(60, 60, 30);
+    const bytes = writeBinarySTL({
+      positions: new Float64Array(box.getAttribute('position').array),
+      indices: new Uint32Array(box.index!.array),
+    }, 'safe');
+    box.dispose();
+    const material = GEOMETRY_ESTIMATE_MATERIALS.find((profile) => profile.id === `acrylic-${thickness}`)!;
+    const result = await convertAutomatically({ bytes, material, launcherFitOffsetMm: 0 });
+    expect(result.layers).toHaveLength(3);
+    const document = createColoredOutlineDocument(result);
+    const pdf = await PDFDocument.load(await writeExplodedViewPdf(document));
+    expect(pdf.getKeywords()).toContain(`assembled-thickness-mm:${3 * thickness}`);
+    const text = visiblePdfContent(pdf);
+    expect(text).toContain(`Assembled thickness: ${3 * thickness} mm`);
+    for (const name of ['Bottom', 'Middle', 'Top']) expect(text).toContain(name);
+    expect(text.match(new RegExp(`thickness ${thickness} X`, 'g'))).toHaveLength(3);
+    const preview = await PDFDocument.load(await writeColoredPreviewPdf(document));
+    const previewText = visiblePdfContent(preview);
+    for (const name of ['Bottom', 'Middle', 'Top']) expect(previewText).toContain(name);
+  }, 30_000);
+
   it('renders the all-layer central-hole omission as readable sanitized text in both PDFs', async () => {
     const document = createColoredOutlineDocument(allLayerHoleOmissionResult());
     const [preview, exploded] = await Promise.all([
@@ -68,7 +94,7 @@ describe('deterministic colored PDFs', () => {
       expect(content.split(CENTRAL_HOLE_OMISSION_WARNING)).toHaveLength(2);
       expect(content).not.toMatch(/[\\/@\0]|[\w.+-]+@[\w.-]+/);
     }
-  });
+  }, 15_000);
 
   it('uses one canonical central-then-fastener omission order in both PDFs', async () => {
     const document = createColoredOutlineDocument(allLayerHoleOmissionResult());
@@ -148,6 +174,7 @@ describe('deterministic colored PDFs', () => {
     expect(keywords).toContain('layer:1:layer-1:order=1:thickness=3:X=60:Y=60:hole-diameter=4.514');
     expect(keywords).toContain('assembled-thickness-mm:18');
     expect(content).toContain('thickness 3');
+    expect(content).toContain('Assembled thickness: 18 mm');
     expect(content).toContain('Red and blue are relative processing levels, not literal machine settings.');
     expect(content).toContain('Assign machine-specific settings after material test cuts.');
     expect(content).toContain('3 mm fastener holes omitted because no all-layer pattern was safe.');

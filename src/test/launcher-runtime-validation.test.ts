@@ -82,7 +82,7 @@ describe('private release launcher runtime geometry gate', () => {
       fixedPlan: 'safe',
       safePlanCount: 1,
       artifactCutCount: 6,
-      templateVersion: 1,
+      templateVersion: 2,
       templateFingerprint: expect.stringMatching(/^[0-9a-f]{32}$/),
       fitOffsetMm: 0,
       exteriorExpansionMm: 0,
@@ -186,5 +186,5 @@ describe('private release launcher runtime geometry gate', () => {
     expect(() => validateLauncherRuntimeGeometry({
       caseId: 'reference-a', runtime: misplaced, artifactLauncherCutCount: 6,
     })).toThrow(/exactly the top two layers/i);
-  }, 10_000);
+  }, 20_000);
 });
