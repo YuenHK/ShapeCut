@@ -1606,7 +1606,8 @@ progress::-webkit-progress-value {
   .result-summary dd { max-width: 70%; overflow-wrap: anywhere; }
   .workbench-details .warning-panel { margin: 0; padding: .5rem .75rem; }
   .workbench-details .launcher-calibration-note { margin: .5rem 0 0; }
-  .workbench-details .technical-details { margin: 0; }
+  .workbench-details .technical-details { height: 100%; min-height: 0; margin: 0; overflow: hidden; }
+  .workbench-details .technical-details > .detail-pages { height: 100%; }
   .workbench-details .technical-details > :not(summary) { margin-inline: .5rem; }
   .workbench-details .technical-details dl { margin-block: 0; }
   .workbench-details .technical-details dl div { padding: .375rem .5rem; }

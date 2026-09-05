@@ -35,6 +35,8 @@ for (const [width, height] of [[1280, 720], [1440, 900]]) {
       expect(document.documentElement.scrollHeight).toBeLessThanOrEqual(height);
       const panel = screen.getByRole('tabpanel');
       expect(panel.scrollHeight).toBeLessThanOrEqual(panel.clientHeight);
+      const detailPage = panel.querySelector<HTMLElement>('.detail-pages');
+      if (detailPage) expect(detailPage.scrollHeight).toBeLessThanOrEqual(detailPage.clientHeight);
       for (const el of document.querySelectorAll('.result-actions a, .result-actions label')) {
         const rect = el.getBoundingClientRect();
         expect(rect.top).toBeGreaterThanOrEqual(0);
@@ -59,5 +61,9 @@ for (const [width, height] of [[1280, 720], [1440, 900]]) {
     fireEvent.keyDown(screen.getByRole('tab', { name: '處理提示' }), { key: 'ArrowRight' });
     expect(screen.getByRole('tab', { name: '技術資料' })).toHaveFocus();
     assertBounds();
+    expect(screen.queryByText(/ZIP 內含 cut-and-engrave\.svg/)).not.toBeInTheDocument();
+    const technicalNext = screen.getByRole('button', { name: '技術資料下一頁' });
+    while (!(technicalNext as HTMLButtonElement).disabled) { fireEvent.click(technicalNext); assertBounds(); }
+    expect(screen.getByText(/ZIP 內含 cut-and-engrave\.svg/)).toBeVisible();
   });
 }

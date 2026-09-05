@@ -1046,8 +1046,8 @@ export function OneClickConverter({
           {holeDiameter && <div><dt>偵測中央孔直徑</dt><dd>{holeDiameter}</dd></div>}
           {redThreshold && <div><dt>紅色深層門檻</dt><dd>{redThreshold}</dd></div>}
           {blueThreshold && <div><dt>藍色淺層門檻</dt><dd>{blueThreshold}</dd></div>}
+          <div><dt>下載套件</dt><dd>ZIP 內含 cut-and-engrave.svg、cut-and-engrave.dxf、preview.pdf、exploded-view.pdf、launcher-fit-coupon.svg、project.json 及 manifest.json 七項檔案。</dd></div>
         </dl></DetailPages>
-        <p>ZIP 內含 cut-and-engrave.svg、cut-and-engrave.dxf、preview.pdf、exploded-view.pdf、launcher-fit-coupon.svg、project.json 及 manifest.json 七項檔案。</p>
       </section>} />
       </div>
       <div className="color-legend" aria-label="相對顏色圖例">
