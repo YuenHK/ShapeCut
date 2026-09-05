@@ -650,12 +650,17 @@ describe('geometry worker boundary', () => {
   it('terminates in-flight outline packaging when a replacement conversion starts', async () => {
     const client = createGeometryWorkerClient();
     clients.push(client);
-    const runtime = await client.convertAutomatically({ bytes: writeBinarySTL(launcherCompatibleCylinder(256), 'safe') });
+    // This is a pending-RPC replacement contract, not the separate feature-rich PDF stress test.
+    // Bound fixture preparation so two real conversions fit the unchanged functional timeout on CI.
+    const runtime = await client.convertAutomatically({ bytes: writeBinarySTL(launcherCompatibleCylinder(64), 'safe') });
     const terminate = vi.spyOn(Worker.prototype, 'terminate');
     const postMessage = vi.spyOn(Worker.prototype, 'postMessage');
     const priorApplyCount = postMessage.mock.calls.length;
-    const first = client.packageOutline(runtime).catch((error: unknown) => error);
+    let packagingSettled = false;
+    const first = client.packageOutline(runtime).catch((error: unknown) => error)
+      .finally(() => { packagingSettled = true; });
     await vi.waitFor(() => expect(postMessage.mock.calls.length).toBeGreaterThan(priorApplyCount));
+    expect(packagingSettled).toBe(false);
 
     const replacement = client.convertAutomatically({ bytes: writeBinarySTL(launcherCompatibleCylinder(), 'safe') });
 
