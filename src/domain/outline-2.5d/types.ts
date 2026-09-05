@@ -13,7 +13,7 @@ export type OutlineLayerSpec = {
   readonly zMid: number;
 };
 export type OutlineBudgets = {
-  readonly minLayers: 6;
+  readonly minLayers: 3;
   readonly maxLayers: 24;
   readonly maxRasterWidth: 1024;
   readonly maxRasterHeight: 1024;
@@ -24,7 +24,7 @@ export type OutlineBudgets = {
 };
 
 export const DEFAULT_OUTLINE_BUDGETS: OutlineBudgets = Object.freeze({
-  minLayers: 6,
+  minLayers: 3,
   maxLayers: 24,
   maxRasterWidth: 1024,
   maxRasterHeight: 1024,

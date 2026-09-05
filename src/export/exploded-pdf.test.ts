@@ -144,8 +144,10 @@ describe('deterministic colored PDFs', () => {
     expect(keywords).toContain('view:isometric-exploded');
     expect(keywords).toContain('axis:central');
     expect(keywords).toContain('legend:CUT_BLACK:#000000,DEEP_RED:#E5484D,LIGHT_BLUE:#3A78D4');
-    expect(keywords).toContain('layer:3:layer-3:order=3:thickness=2:X=60:Y=60:hole-diameter=4.514');
-    expect(keywords).toContain('layer:1:layer-1:order=1:thickness=2:X=60:Y=60:hole-diameter=4.514');
+    expect(keywords).toContain('layer:3:layer-3:order=3:thickness=3:X=60:Y=60:hole-diameter=4.514');
+    expect(keywords).toContain('layer:1:layer-1:order=1:thickness=3:X=60:Y=60:hole-diameter=4.514');
+    expect(keywords).toContain('assembled-thickness-mm:18');
+    expect(content).toContain('thickness 3');
     expect(content).toContain('Red and blue are relative processing levels, not literal machine settings.');
     expect(content).toContain('Assign machine-specific settings after material test cuts.');
     expect(content).toContain('3 mm fastener holes omitted because no all-layer pattern was safe.');

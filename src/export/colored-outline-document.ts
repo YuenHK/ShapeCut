@@ -237,7 +237,7 @@ function assertCanonicalShape(
     || !/^[0-9a-f]{32}$/i.test(document.featureEvidenceFingerprint)
     || !/^[0-9a-f]{32}$/i.test(document.diagnosticsFingerprint)
     || !Array.isArray(document.layers)
-    || document.layers.length < 6
+    || (document.layers.length !== 3 && document.layers.length < 6)
     || document.layers.length > 24) {
     throw new RangeError('Colored canonical document fingerprint or layer count is invalid');
   }

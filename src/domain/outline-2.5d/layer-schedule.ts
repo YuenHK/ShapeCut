@@ -66,10 +66,13 @@ export function scheduleOutlineLayers(
     throw new RangeError('Outline layers require non-zero-volume mesh bounds');
   }
 
-  const [planarWidth, planarHeight, axialHeight] = extents;
-  const planarDiameter = Math.hypot(planarWidth, planarHeight);
-  const requestedLayers = Math.ceil(12 * (axialHeight / Math.max(planarDiameter, axialHeight)));
-  const layerCount = Math.min(budgets.maxLayers, Math.max(budgets.minLayers, requestedLayers));
+  const axialHeight = extents[2];
+  // Sampling spans describe the source model, not the selected sheet thickness.
+  // Keep the wider validation budget so previously saved stacks remain readable.
+  const layerCount = 3;
+  if (layerCount < budgets.minLayers || layerCount > budgets.maxLayers) {
+    throw new RangeError('Three-layer schedule is outside the supported layer budget');
+  }
   if (mesh.indices.length / 3 * layerCount > budgets.maxTriangleLayerTests) {
     throw new RangeError('Outline layer schedule exceeds the triangle-layer test budget');
   }

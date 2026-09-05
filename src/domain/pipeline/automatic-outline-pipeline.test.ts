@@ -64,12 +64,12 @@ function cylinder(segments = 32): TriangleMesh {
   return { positions: new Float64Array(positions), indices: new Uint32Array(indices) };
 }
 
-function steppedCylinder(segments = 32): TriangleMesh {
+function steppedCylinder(segments = 32, stepZ = 0.5): TriangleMesh {
   const positions: number[] = [0, 0, -3, 0, 0, 3];
   const rings = [
     { radius: 40, z: -3 },
-    { radius: 40, z: 0.5 },
-    { radius: 30, z: 0.5 },
+    { radius: 40, z: stepZ },
+    { radius: 30, z: stepZ },
     { radius: 30, z: 3 },
   ];
   for (const ring of rings) for (let index = 0; index < segments; index += 1) {
@@ -746,7 +746,7 @@ describe('automatic outline pipeline', { timeout: 20_000 }, () => {
         areaMm2: selectedHole.areaMm2,
       } : undefined;
       const retained: FeatureContour = {
-        id: `${extracted.layers[2].id}-deep-retained`,
+        id: `${extracted.layers[0].id}-deep-retained`,
         role: 'DEEP_RED',
         outer: [[-20, 14], [-20, 15], [-19, 15], [-19, 14]],
         boundsMm: { minX: -20, minY: 14, maxX: -19, maxY: 15 },
@@ -770,7 +770,7 @@ describe('automatic outline pipeline', { timeout: 20_000 }, () => {
           },
           evidence: { red: [], blue: [] },
         };
-        if (index === 2) return {
+        if (index === 0) return {
           ...feature,
           red: [retained],
           blue: [],
@@ -881,7 +881,7 @@ describe('automatic outline pipeline', { timeout: 20_000 }, () => {
       axis: { source: 'candidate' },
       warnings: [],
     });
-    expect(result.layers).toHaveLength(6);
+    expect(result.layers).toHaveLength(3);
     expect(result.removedComponentCount).toBe(0);
     expect(result.layers.every((layer) => layer.removedComponentCount === 0)).toBe(true);
     expect(result.layers.every((layer) => layer.sourceBoundsMm !== undefined)).toBe(true);
@@ -944,7 +944,8 @@ describe('automatic outline pipeline', { timeout: 20_000 }, () => {
   });
 
   it('falls back to projection when a safe mesh has an ambiguous exact slice', async () => {
-    const result = await convertAutomatically({ bytes: writeBinarySTL(steppedCylinder(), 'safe') });
+    // The middle sample is now z=0; put the coplanar step on that slice.
+    const result = await convertAutomatically({ bytes: writeBinarySTL(steppedCylinder(32, 0), 'safe') });
 
     expect(result).toMatchObject({ mode: 'outline-2.5d', status: 'warning', repairAccepted: true });
     expect(result.warnings).toContain('精確切片失敗，已改用 2.5D 外形模式');

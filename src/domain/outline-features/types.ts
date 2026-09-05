@@ -214,7 +214,7 @@ export function migrateColoredOutlineLayer(value: unknown): ColoredOutlineLayer 
 }
 
 function validLayerCount(count: number): boolean {
-  return count >= DEFAULT_OUTLINE_BUDGETS.minLayers && count <= DEFAULT_OUTLINE_BUDGETS.maxLayers;
+  return count === 3 || (count >= 6 && count <= DEFAULT_OUTLINE_BUDGETS.maxLayers);
 }
 
 function checkRuntimeBudget(deadline: number, checkpoint: (label?: string) => void, label?: string): void {
@@ -261,7 +261,7 @@ export function validateSharedCentralHoleDecision(
 ): void {
   checkRuntimeBudget(deadline, checkpoint);
   if (!validLayerCount(layers.length)) {
-    throw new RangeError(`${context} evidence requires 6 to 24 ordered layers`);
+    throw new RangeError(`${context} evidence requires 3 or 6 to 24 ordered layers`);
   }
   const retained: SharedCentralHoleLayerEvidence[] = [];
   for (const layer of layers) {
@@ -1089,7 +1089,7 @@ function previewReasons(
   } else {
     const previewLayers = value.layers as readonly ColoredOutlineLayer[];
     if (!validLayerCount(previewLayers.length)) {
-      reasons.push('Preview layers must contain 6 to 24 ordered layer records');
+      reasons.push('Preview layers must contain 3 or 6 to 24 ordered layer records');
     }
     const previewValid = validLayerCount(previewLayers.length)
       && previewLayers.every((layer) => {
@@ -1748,7 +1748,7 @@ export function validateAutomaticColoredResult(
   const legacyLayers = Array.isArray(value.layers) ? value.layers : undefined;
   if (!legacyLayers) reasons.push('Migration exterior layers must be an array');
   if (!Array.isArray(value.coloredLayers) || !validLayerCount(value.coloredLayers.length)) {
-    reasons.push('Colored result requires 6 to 24 ordered layers with exactly one exterior each');
+    reasons.push('Colored result requires 3 or 6 to 24 ordered layers with exactly one exterior each');
   } else {
     const layerIds = new Set<string>(), featureIds = new Set<string>(), allIds = new Set<string>();
     let previous: ColoredOutlineLayer | undefined;
@@ -1883,7 +1883,7 @@ export function validateAutomaticColoredResult(
 
   if (legacyLayers) {
     if (!validLayerCount(legacyLayers.length)) {
-      reasons.push('Migration exterior layers must contain 6 to 24 ordered layer records');
+      reasons.push('Migration exterior layers must contain 3 or 6 to 24 ordered layer records');
     }
     if (legacyLayers.length !== coloredLayers.length) {
       reasons.push('Migration exterior layers must match the colored layer count and order');

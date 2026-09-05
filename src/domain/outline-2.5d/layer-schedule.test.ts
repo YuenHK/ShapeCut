@@ -54,8 +54,7 @@ describe('scheduleOutlineLayers', () => {
   it('covers the complete axial extent with bounded contiguous layers', () => {
     const layers = scheduleOutlineLayers(boxMesh(6, 8, 4), zAxis, DEFAULT_OUTLINE_BUDGETS);
 
-    expect(layers.length).toBeGreaterThanOrEqual(6);
-    expect(layers.length).toBeLessThanOrEqual(24);
+    expect(layers).toHaveLength(3);
     expect(layers[0].zStart).toBeCloseTo(-2);
     expect(layers.at(-1)?.zEnd).toBeCloseTo(2);
     for (let index = 0; index < layers.length; index += 1) {
@@ -65,9 +64,15 @@ describe('scheduleOutlineLayers', () => {
     }
   });
 
-  it('uses the specified clamped layer-count formula', () => {
-    expect(scheduleOutlineLayers(boxMesh(10, 10, 1), zAxis, DEFAULT_OUTLINE_BUDGETS)).toHaveLength(6);
-    expect(scheduleOutlineLayers(boxMesh(1, 1, 10), zAxis, DEFAULT_OUTLINE_BUDGETS)).toHaveLength(12);
+  it('samples bottom, middle and top thirds regardless of model aspect ratio', () => {
+    for (const height of [1, 18, 100]) {
+      const layers = scheduleOutlineLayers(boxMesh(10, 10, height), zAxis, DEFAULT_OUTLINE_BUDGETS);
+      expect(layers).toHaveLength(3);
+      layers.forEach((layer, index) => {
+        expect(layer.zStart).toBeCloseTo(-height / 2 + index * height / 3);
+        expect(layer.zEnd).toBeCloseTo(-height / 2 + (index + 1) * height / 3);
+      });
+    }
   });
 
   it('is deterministic under triangle-order reversal', () => {
@@ -89,7 +94,7 @@ describe('scheduleOutlineLayers', () => {
     expect(layers.every((layer) => Number.isFinite(layer.zStart)
       && Number.isFinite(layer.zEnd)
       && Number.isFinite(layer.zMid))).toBe(true);
-    expect(layers).toHaveLength(12);
+    expect(layers).toHaveLength(3);
     expect(layers[0].zStart).toBe(zStart);
     expect(layers.at(-1)?.zEnd).toBe(zEnd);
     for (let index = 0; index < layers.length; index += 1) {
@@ -104,7 +109,7 @@ describe('scheduleOutlineLayers', () => {
     nonFinite.positions[0] = Number.POSITIVE_INFINITY;
     const tinyBudget = {
       ...DEFAULT_OUTLINE_BUDGETS,
-      maxTriangleLayerTests: 71,
+      maxTriangleLayerTests: 35,
     } as unknown as OutlineBudgets;
 
     expect(() => scheduleOutlineLayers(empty, zAxis, DEFAULT_OUTLINE_BUDGETS)).toThrow(RangeError);

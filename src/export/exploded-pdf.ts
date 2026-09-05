@@ -59,7 +59,7 @@ function layerDimensionKeyword(
   const diameter = central
     ? Number((2 * Math.sqrt(central.areaMm2 / Math.PI)).toFixed(3))
     : '—';
-  return `layer:${layer.order}:${layer.id}:order=${layer.order}:thickness=${layer.zEnd - layer.zStart}:X=${width}:Y=${height}:hole-diameter=${diameter}`;
+  return `layer:${layer.order}:${layer.id}:order=${layer.order}:thickness=${document.assembly.material.thicknessMm}:X=${width}:Y=${height}:hole-diameter=${diameter}`;
 }
 
 function drawLoop(
@@ -172,6 +172,7 @@ export async function writeExplodedViewPdf(
     `feature-evidence:${document.featureEvidenceFingerprint}`,
     `diagnostics-evidence:${document.diagnosticsFingerprint}`,
     'view:isometric-exploded',
+    `assembled-thickness-mm:${document.layers.length * document.assembly.material.thicknessMm}`,
     'axis:central',
     'legend:CUT_BLACK:#000000,DEEP_RED:#E5484D,LIGHT_BLUE:#3A78D4',
     'levels:relative-machine-settings-after-test-cuts',
@@ -215,7 +216,7 @@ export async function writeExplodedViewPdf(
       const height = exteriorBounds.maxY - exteriorBounds.minY;
       const central = centralHoleForLayer(document, layerIndex);
       const diameter = central ? Number((2 * Math.sqrt(central.areaMm2 / Math.PI)).toFixed(3)) : '—';
-      page.drawText(`${layer.order}. ${layer.id}  thickness ${layer.zEnd - layer.zStart} X ${width} Y ${height} hole diameter ${diameter}`, {
+      page.drawText(`${layer.order}. ${layer.id}  thickness ${document.assembly.material.thicknessMm} X ${width} Y ${height} hole diameter ${diameter}`, {
         x: 184 * MM_TO_POINTS, y: offsetY + 4, size: 7, font,
       });
     }

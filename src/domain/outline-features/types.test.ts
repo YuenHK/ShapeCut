@@ -1201,21 +1201,25 @@ describe('colored outline contracts', () => {
 
   it.each([1, 5])('rejects %i-layer colored, preview, and migration truncation', (count) => {
     expect(() => validateAutomaticColoredResult(automaticResult(coloredLayerSet(count))))
-      .toThrow(/colored result.*6.*24/i);
+      .toThrow(/colored result.*3.*24/i);
 
     const valid = automaticResult();
     expect(() => validateAutomaticColoredResult({
       ...valid, preview: { ...valid.preview, layers: valid.preview.layers.slice(0, count) },
-    })).toThrow(/preview layers.*6.*24/i);
+    })).toThrow(/preview layers.*3.*24/i);
     expect(() => validateAutomaticColoredResult({
       ...valid, layers: valid.layers.slice(0, count),
-    })).toThrow(/migration exterior layers.*6.*24/i);
+    })).toThrow(/migration exterior layers.*3.*24/i);
+  });
+
+  it('accepts the three-layer fabrication stack', () => {
+    expect(() => validateAutomaticColoredResult(automaticResult(coloredLayerSet(3)))).not.toThrow();
   });
 
   it('accepts 24 ordered layers and rejects 25', () => {
     expect(() => validateAutomaticColoredResult(automaticResult(coloredLayerSet(24)))).not.toThrow();
     expect(() => validateAutomaticColoredResult(automaticResult(coloredLayerSet(25))))
-      .toThrow(/colored result.*6.*24/i);
+      .toThrow(/colored result.*3.*24/i);
   });
 
   it('requires the preview axis to match the selected automatic axis', () => {
