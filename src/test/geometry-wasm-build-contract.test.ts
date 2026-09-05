@@ -16,6 +16,32 @@ import { afterEach, describe, expect, it } from 'vitest';
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const temporaryDirectories: string[] = [];
 
+function unsignedLeb128(value: number): Buffer {
+  const bytes: number[] = [];
+  do {
+    const remainder = value & 0x7f;
+    value >>>= 7;
+    bytes.push(remainder | (value === 0 ? 0 : 0x80));
+  } while (value !== 0);
+  return Buffer.from(bytes);
+}
+
+function wasmString(value: string): Buffer {
+  const bytes = Buffer.from(value);
+  return Buffer.concat([unsignedLeb128(bytes.length), bytes]);
+}
+
+function producerSection(producers: readonly (readonly [string, string])[]): Buffer {
+  const payload = Buffer.concat([
+    wasmString('producers'),
+    unsignedLeb128(1),
+    wasmString('processed-by'),
+    unsignedLeb128(producers.length),
+    ...producers.flatMap(([name, version]) => [wasmString(name), wasmString(version)]),
+  ]);
+  return Buffer.concat([Buffer.from([0]), unsignedLeb128(payload.length), payload]);
+}
+
 afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) {
     rmSync(directory, { recursive: true, force: true });
@@ -23,6 +49,72 @@ afterEach(() => {
 });
 
 describe('geometry WASM build contract', () => {
+  it('removes only allowlisted non-executable producer metadata from generated WASM', () => {
+    const directory = mkdtempSync(resolve(tmpdir(), 'geometry-wasm-producers-'));
+    temporaryDirectories.push(directory);
+    const fakeWasmPack = resolve(directory, 'wasm-pack');
+    writeFileSync(fakeWasmPack, `#!/usr/bin/env node
+import { copyFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+if (process.argv[2] === '--version') {
+  process.stdout.write('wasm-pack 0.15.0\\n');
+  process.exit(0);
+}
+const output = process.argv[process.argv.indexOf('--out-dir') + 1];
+const source = resolve(process.env.REPOSITORY_ROOT, 'src/wasm/generated');
+mkdirSync(output, { recursive: true });
+for (const name of readdirSync(source)) {
+  if (name !== 'geometry_wasm.manifest.json') copyFileSync(resolve(source, name), resolve(output, name));
+}
+const wasmPath = resolve(output, 'geometry_wasm_bg.wasm');
+let wasm = readFileSync(wasmPath);
+const marker = wasm.lastIndexOf(Buffer.from('producers'));
+if (marker >= 3) wasm = wasm.subarray(0, marker - 3);
+writeFileSync(wasmPath, Buffer.concat([wasm, Buffer.from(process.env.PRODUCER_SECTION_BASE64, 'base64')]));
+`);
+    chmodSync(fakeWasmPack, 0o755);
+    const original = readFileSync(resolve(repositoryRoot, 'src/wasm/generated/geometry_wasm_bg.wasm'));
+    const producerMarker = original.lastIndexOf(Buffer.from('producers'));
+    const executableAndNameSections = producerMarker >= 3 ? original.subarray(0, producerMarker - 3) : original;
+    const invoke = (name: string, metadata: Buffer) => {
+      const output = resolve(directory, name);
+      const result = spawnSync(process.execPath, [resolve(repositoryRoot, 'scripts/build-geometry-wasm.mjs')], {
+        cwd: repositoryRoot,
+        env: {
+          ...process.env,
+          GEOMETRY_WASM_OUTPUT_DIR: output,
+          PRODUCER_SECTION_BASE64: metadata.toString('base64'),
+          REPOSITORY_ROOT: repositoryRoot,
+          WASM_PACK: fakeWasmPack,
+        },
+        encoding: 'utf8',
+      });
+      return { output, result };
+    };
+    const mac = producerSection([['walrus', '0.26.5'], ['wasm-bindgen', '0.2.127']]);
+    const linux = producerSection([['walrus', '0.26.4'], ['wasm-bindgen', '0.2.127 (a579ee62b)']]);
+    for (const [name, metadata] of [['mac', mac], ['linux', linux]] as const) {
+      const { output, result } = invoke(name, metadata);
+      expect(result.status, result.stderr).toBe(0);
+      const normalized = readFileSync(resolve(output, 'geometry_wasm_bg.wasm'));
+      expect(normalized).toEqual(executableAndNameSections);
+      expect(normalized.includes(Buffer.from('producers'))).toBe(false);
+    }
+
+    const unknown = producerSection([['walrus', '0.26.5'], ['wasm-bindgen', '0.2.128']]);
+    const malformed = [
+      ['unknown', unknown, 'unrecognized producer metadata'],
+      ['missing', Buffer.alloc(0), 'Expected one Geometry WASM producer section'],
+      ['duplicate', Buffer.concat([mac, mac]), 'received 2'],
+      ['truncated', mac.subarray(0, -1), 'truncated section'],
+    ] as const;
+    for (const [name, metadata, error] of malformed) {
+      const { result } = invoke(name, metadata);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain(error);
+    }
+  });
+
   it('preserves existing encoded Rust flags and appends path remaps as unit-separated flags', () => {
     const directory = mkdtempSync(resolve(tmpdir(), 'geometry-wasm-flags-'));
     temporaryDirectories.push(directory);
