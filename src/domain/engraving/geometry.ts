@@ -80,6 +80,10 @@ function signedArea(polygon: Polygon2, checkpoint: GeometryCheckpoint = noCheckp
 }
 
 function pointOnSegment(point: Point2, start: Point2, end: Point2, tolerance: number): boolean {
+  if (point[0] < Math.min(start[0], end[0]) - tolerance
+    || point[0] > Math.max(start[0], end[0]) + tolerance
+    || point[1] < Math.min(start[1], end[1]) - tolerance
+    || point[1] > Math.max(start[1], end[1]) + tolerance) return false;
   const scale = Math.max(1, Math.hypot(end[0] - start[0], end[1] - start[1]));
   if (Math.abs(cross(start, end, point)) > tolerance * scale) return false;
   return point[0] >= Math.min(start[0], end[0]) - tolerance
