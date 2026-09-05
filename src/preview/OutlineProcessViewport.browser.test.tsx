@@ -120,6 +120,7 @@ function completedConversionServices(): OneClickConverterServices {
 
 describe('OutlineProcessViewport in Chromium', () => {
   afterEach(async () => {
+    vi.restoreAllMocks();
     disposeOutlineProcessRendererPool();
     await cdp().send('Emulation.setEmulatedMedia', { features: [] });
   });
@@ -199,7 +200,11 @@ describe('OutlineProcessViewport in Chromium', () => {
     view.unmount();
   });
 
-  it('holds a live downgrade until active processing exits', async () => {
+  it.each([
+    { cores: 2, restoredLevel: 'energy-saving' },
+    { cores: 8, restoredLevel: 'full' },
+  ] as const)('holds a live downgrade until active processing exits on $cores cores', async ({ cores, restoredLevel }) => {
+    vi.spyOn(navigator, 'hardwareConcurrency', 'get').mockReturnValue(cores);
     const user = userEvent.setup();
     const active = activeConversionServices();
     const view = render(<OneClickConverter services={active.services} />);
@@ -216,6 +221,7 @@ describe('OutlineProcessViewport in Chromium', () => {
     });
     const workbench = screen.getByTestId('apple-workbench');
     expect(workbench).toHaveAttribute('data-state', 'processing');
+    expect(workbench).toHaveAttribute('data-effect-level', restoredLevel);
 
     await cdp().send('Emulation.setEmulatedMedia', {
       features: [{ name: 'prefers-reduced-motion', value: 'reduce' }],
@@ -242,7 +248,7 @@ describe('OutlineProcessViewport in Chromium', () => {
     });
     await waitFor(() => {
       expect(workbench).toHaveAttribute('data-state', 'failure');
-      expect(workbench).toHaveAttribute('data-effect-level', 'full');
+      expect(workbench).toHaveAttribute('data-effect-level', restoredLevel);
     });
     view.unmount();
   });
