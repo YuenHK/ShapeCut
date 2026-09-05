@@ -182,6 +182,18 @@ function openSquarePlate(): TriangleMesh {
 }
 
 describe('automatic outline pipeline', { timeout: 20_000 }, () => {
+  it('bypasses the exact segment source when safe repair rejects an open mesh', async () => {
+    const collect = vi.fn(() => { throw new Error('Rejected repair must use projected extraction'); });
+    const result = await convertAutomaticOutline({
+      bytes: writeBinarySTL(openCylinder(), 'safe'),
+      material: testMaterial,
+      launcherFitOffsetMm: 0,
+    }, undefined, { exactSegmentSource: { collect } });
+    expect(result.repairAccepted).toBe(false);
+    expect(result.mode).toBe('outline-2.5d');
+    expect(collect).not.toHaveBeenCalled();
+  });
+
   it('reports actual STL, parsed mesh, accepted safe-repair mesh, extraction mesh, and retained preview ownership', async () => {
     const observations: GeometryLiveByteObservation[] = [];
     const tracker = new GeometryLiveByteTracker((observation) => observations.push(observation));

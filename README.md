@@ -42,7 +42,7 @@ npm run typecheck
 npm run build
 ```
 
-Rust WASM 幾何核心及最多四個 Web Workers 已納入測試，但 production 仍預設使用 TypeScript 路徑。2026-09-04 的固定 Apple Silicon／Chromium release gate 發現兩個外部參考模型均因投影後座標未能通過 exact Float32 安全條件而在啟動 slice workers 前回到 TypeScript；純轉換中位數分別為 15.523 秒及 16.534 秒。因此現階段沒有把實驗性 WASM rollout 設為 production 預設，也沒有聲稱取得 WASM 加速。完整、可機器驗證的結果見 [WASM geometry release evidence](docs/validation/wasm-geometry-release-evidence.json)。
+Rust WASM 幾何核心及最多四個 Web Workers 已納入測試，但 production 仍預設使用 TypeScript 路徑。2026-09-04 的固定 Apple Silicon／Chromium release gate 量得兩個外部參考模型的純轉換中位數為 15.523 秒及 16.534 秒，均沒有 WASM publication。2026-09-05 重新檢查原檔確認：兩者安全修復均未被接受，直接使用 TypeScript 的 2.5D 投影分支，沒有進入 exact segment source 或其 Float32 檢查。因此改善這兩個模型需針對 2.5D 路徑；只擴展 exact WASM 的投影輸入並不會加速它們。完整、可機器驗證的結果見 [WASM geometry release evidence](docs/validation/wasm-geometry-release-evidence.json)。
 
 `validate:fixtures` 是發佈用 gate，必須同時提供兩個外部驗收輸入；本機日常開發只驗證公開 fixtures 時，請使用上述獨立的 `validate:fixtures:public` 命令。
 
