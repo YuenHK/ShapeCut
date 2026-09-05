@@ -38,6 +38,14 @@ export type CentralHoleSelection =
   };
 
 type Segment = readonly [Point2, Point2];
+type PreparedEdge = {
+  readonly start: Point2;
+  readonly end: Point2;
+  readonly minX: number;
+  readonly minY: number;
+  readonly maxX: number;
+  readonly maxY: number;
+};
 type QualifiedCandidate = SelectedCentralHole & {
   readonly minimum: Point2;
   readonly evidenceAreaMm2: number;
@@ -79,6 +87,21 @@ function scaleOf(...loops: readonly (readonly Point2[])[]): number {
   return scale;
 }
 
+function prepareEdges(points: readonly Point2[], deadline: number): readonly PreparedEdge[] {
+  return points.map((start, index) => {
+    if ((index & 63) === 0) checkDeadline(deadline);
+    const end = points[(index + 1) % points.length];
+    return {
+      start,
+      end,
+      minX: Math.min(start[0], end[0]),
+      minY: Math.min(start[1], end[1]),
+      maxX: Math.max(start[0], end[0]),
+      maxY: Math.max(start[1], end[1]),
+    };
+  });
+}
+
 function onSegment(a: Point2, b: Point2, point: Point2, areaTolerance: number, lengthTolerance: number): boolean {
   return point[0] >= Math.min(a[0], b[0]) - lengthTolerance
     && point[0] <= Math.max(a[0], b[0]) + lengthTolerance
@@ -104,6 +127,28 @@ function segmentsIntersect(
     || onSegment(a, b, d, areaTolerance, lengthTolerance)
     || onSegment(c, d, a, areaTolerance, lengthTolerance)
     || onSegment(c, d, b, areaTolerance, lengthTolerance);
+}
+
+function segmentsIntersectPrepared(
+  first: PreparedEdge,
+  second: PreparedEdge,
+  areaTolerance: number,
+  lengthTolerance: number,
+): boolean {
+  if (first.maxX + lengthTolerance < second.minX
+    || second.maxX + lengthTolerance < first.minX
+    || first.maxY + lengthTolerance < second.minY
+    || second.maxY + lengthTolerance < first.minY) return false;
+  const abC = cross(first.start, first.end, second.start);
+  const abD = cross(first.start, first.end, second.end);
+  const cdA = cross(second.start, second.end, first.start);
+  const cdB = cross(second.start, second.end, first.end);
+  if (((abC > areaTolerance && abD < -areaTolerance) || (abC < -areaTolerance && abD > areaTolerance))
+    && ((cdA > areaTolerance && cdB < -areaTolerance) || (cdA < -areaTolerance && cdB > areaTolerance))) return true;
+  return onSegment(first.start, first.end, second.start, areaTolerance, lengthTolerance)
+    || onSegment(first.start, first.end, second.end, areaTolerance, lengthTolerance)
+    || onSegment(second.start, second.end, first.start, areaTolerance, lengthTolerance)
+    || onSegment(second.start, second.end, first.end, areaTolerance, lengthTolerance);
 }
 
 function isFiniteSimpleLoop(points: readonly Point2[], deadline: number): boolean {
@@ -135,13 +180,19 @@ function isFiniteSimpleLoop(points: readonly Point2[], deadline: number): boolea
   return true;
 }
 
-function pointLocation(point: Point2, polygon: readonly Point2[], deadline: number): -1 | 0 | 1 {
-  const scale = scaleOf(polygon, [point]), areaTolerance = scale * scale * 64 * Number.EPSILON;
+function pointLocation(
+  point: Point2,
+  polygon: readonly PreparedEdge[],
+  polygonScale: number,
+  deadline: number,
+): -1 | 0 | 1 {
+  const scale = Math.max(polygonScale, Math.abs(point[0]), Math.abs(point[1]));
+  const areaTolerance = scale * scale * 64 * Number.EPSILON;
   const lengthTolerance = scale * 64 * Number.EPSILON;
   let inside = false;
   for (let index = 0; index < polygon.length; index += 1) {
     if ((index & 63) === 0) checkDeadline(deadline);
-    const a = polygon[index], b = polygon[(index + 1) % polygon.length];
+    const { start: a, end: b } = polygon[index];
     if (onSegment(a, b, point, areaTolerance, lengthTolerance)) return 0;
     if ((a[1] > point[1]) !== (b[1] > point[1])) {
       const x = a[0] + (point[1] - a[1]) * (b[0] - a[0]) / (b[1] - a[1]);
@@ -160,28 +211,42 @@ function distancePointToSegment(point: Point2, a: Point2, b: Point2): number {
   return Math.hypot(point[0] - (a[0] + parameter * dx), point[1] - (a[1] + parameter * dy));
 }
 
-function boundaryClearance(inner: readonly Point2[], outer: readonly Point2[], deadline: number): number {
+function hasBoundaryClearance(
+  inner: readonly Point2[],
+  outer: readonly PreparedEdge[],
+  minimumClearance: number,
+  deadline: number,
+): boolean {
   let distance = Infinity;
-  const consider = (point: Point2, start: Point2, end: Point2): void => {
-    if (point[0] < Math.min(start[0], end[0]) - distance
-      || point[0] > Math.max(start[0], end[0]) + distance
-      || point[1] < Math.min(start[1], end[1]) - distance
-      || point[1] > Math.max(start[1], end[1]) + distance) return;
-    distance = Math.min(distance, distancePointToSegment(point, start, end));
+  const consider = (point: Point2, edge: PreparedEdge): boolean => {
+    if (point[0] < edge.minX - distance
+      || point[0] > edge.maxX + distance
+      || point[1] < edge.minY - distance
+      || point[1] > edge.maxY + distance) return true;
+    distance = Math.min(distance, distancePointToSegment(point, edge.start, edge.end));
+    return distance + 1e-12 >= minimumClearance;
   };
   for (let innerIndex = 0; innerIndex < inner.length; innerIndex += 1) {
     checkDeadline(deadline);
     const innerStart = inner[innerIndex], innerEnd = inner[(innerIndex + 1) % inner.length];
+    const innerEdge: PreparedEdge = {
+      start: innerStart,
+      end: innerEnd,
+      minX: Math.min(innerStart[0], innerEnd[0]),
+      minY: Math.min(innerStart[1], innerEnd[1]),
+      maxX: Math.max(innerStart[0], innerEnd[0]),
+      maxY: Math.max(innerStart[1], innerEnd[1]),
+    };
     for (let outerIndex = 0; outerIndex < outer.length; outerIndex += 1) {
       if ((outerIndex & 63) === 0) checkDeadline(deadline);
-      const outerStart = outer[outerIndex], outerEnd = outer[(outerIndex + 1) % outer.length];
-      consider(innerStart, outerStart, outerEnd);
-      consider(innerEnd, outerStart, outerEnd);
-      consider(outerStart, innerStart, innerEnd);
-      consider(outerEnd, innerStart, innerEnd);
+      const outerEdge = outer[outerIndex];
+      if (!consider(innerStart, outerEdge)
+        || !consider(innerEnd, outerEdge)
+        || !consider(outerEdge.start, innerEdge)
+        || !consider(outerEdge.end, innerEdge)) return false;
     }
   }
-  return distance;
+  return true;
 }
 
 export function isStrictlyContainedLoop(
@@ -193,26 +258,41 @@ export function isStrictlyContainedLoop(
 ): boolean {
   checkDeadline(deadline, checkpoint);
   if (!Number.isFinite(minimumClearance) || minimumClearance < 0) return false;
-  const scale = scaleOf(exterior, candidate);
+  const exteriorScale = scaleOf(exterior);
+  const exteriorEdges = prepareEdges(exterior, deadline);
+  const scale = Math.max(exteriorScale, scaleOf(candidate));
   const areaTolerance = scale * scale * 64 * Number.EPSILON;
   const lengthTolerance = scale * 64 * Number.EPSILON;
   for (let candidateIndex = 0; candidateIndex < candidate.length; candidateIndex += 1) {
     checkDeadline(deadline, checkpoint);
     const start = candidate[candidateIndex], end = candidate[(candidateIndex + 1) % candidate.length];
-    if (pointLocation(start, exterior, deadline) !== 1
-      || pointLocation([(start[0] + end[0]) / 2, (start[1] + end[1]) / 2], exterior, deadline) !== 1) return false;
+    const candidateEdge: PreparedEdge = {
+      start,
+      end,
+      minX: Math.min(start[0], end[0]),
+      minY: Math.min(start[1], end[1]),
+      maxX: Math.max(start[0], end[0]),
+      maxY: Math.max(start[1], end[1]),
+    };
+    if (pointLocation(start, exteriorEdges, exteriorScale, deadline) !== 1
+      || pointLocation(
+        [(start[0] + end[0]) / 2, (start[1] + end[1]) / 2],
+        exteriorEdges,
+        exteriorScale,
+        deadline,
+      ) !== 1) return false;
     for (let exteriorIndex = 0; exteriorIndex < exterior.length; exteriorIndex += 1) {
       if ((exteriorIndex & 63) === 0) checkDeadline(deadline, checkpoint);
-      if (segmentsIntersect(
-        [start, end],
-        [exterior[exteriorIndex], exterior[(exteriorIndex + 1) % exterior.length]],
+      if (segmentsIntersectPrepared(
+        candidateEdge,
+        exteriorEdges[exteriorIndex],
         areaTolerance,
         lengthTolerance,
       )) return false;
     }
   }
   checkDeadline(deadline, checkpoint);
-  return boundaryClearance(candidate, exterior, deadline) + 1e-12 >= minimumClearance;
+  return hasBoundaryClearance(candidate, exteriorEdges, minimumClearance, deadline);
 }
 
 function centroid(points: readonly Point2[], area: number, deadline: number): Point2 {

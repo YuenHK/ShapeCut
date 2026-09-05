@@ -2,11 +2,97 @@ import { describe, expect, test } from 'vitest';
 import type { Point2 } from '../decomposition/types';
 import {
   CENTRAL_HOLE_OMISSION_WARNING,
+  isStrictlyContainedLoop,
   selectCentralHole,
   selectSharedCentralHole,
   type CentralHoleCandidate,
   type CentralHoleRequest,
 } from './hole';
+
+function referenceStrictContainment(
+  exterior: readonly Point2[],
+  candidate: readonly Point2[],
+  minimumClearance: number,
+): boolean {
+  if (!Number.isFinite(minimumClearance) || minimumClearance < 0) return false;
+  const allPoints = [...exterior, ...candidate];
+  const scale = allPoints.reduce((largest, [x, y]) => Math.max(largest, Math.abs(x), Math.abs(y)), 1);
+  const areaTolerance = scale * scale * 64 * Number.EPSILON;
+  const lengthTolerance = scale * 64 * Number.EPSILON;
+  const cross = (a: Point2, b: Point2, point: Point2): number =>
+    (b[0] - a[0]) * (point[1] - a[1]) - (b[1] - a[1]) * (point[0] - a[0]);
+  const onSegment = (a: Point2, b: Point2, point: Point2): boolean =>
+    point[0] >= Math.min(a[0], b[0]) - lengthTolerance
+    && point[0] <= Math.max(a[0], b[0]) + lengthTolerance
+    && point[1] >= Math.min(a[1], b[1]) - lengthTolerance
+    && point[1] <= Math.max(a[1], b[1]) + lengthTolerance
+    && Math.abs(cross(a, b, point)) <= areaTolerance;
+  const location = (point: Point2): -1 | 0 | 1 => {
+    const pointScale = exterior.reduce(
+      (largest, [x, y]) => Math.max(largest, Math.abs(x), Math.abs(y)),
+      Math.max(1, Math.abs(point[0]), Math.abs(point[1])),
+    );
+    const pointAreaTolerance = pointScale * pointScale * 64 * Number.EPSILON;
+    const pointLengthTolerance = pointScale * 64 * Number.EPSILON;
+    const pointOnSegment = (a: Point2, b: Point2): boolean =>
+      point[0] >= Math.min(a[0], b[0]) - pointLengthTolerance
+      && point[0] <= Math.max(a[0], b[0]) + pointLengthTolerance
+      && point[1] >= Math.min(a[1], b[1]) - pointLengthTolerance
+      && point[1] <= Math.max(a[1], b[1]) + pointLengthTolerance
+      && Math.abs(cross(a, b, point)) <= pointAreaTolerance;
+    let inside = false;
+    for (let index = 0; index < exterior.length; index += 1) {
+      const start = exterior[index], end = exterior[(index + 1) % exterior.length];
+      if (pointOnSegment(start, end)) return 0;
+      if ((start[1] > point[1]) !== (end[1] > point[1])) {
+        const crossingX = start[0]
+          + (point[1] - start[1]) * (end[0] - start[0]) / (end[1] - start[1]);
+        if (crossingX > point[0]) inside = !inside;
+      }
+    }
+    return inside ? 1 : -1;
+  };
+  const intersects = (a: Point2, b: Point2, c: Point2, d: Point2): boolean => {
+    if (Math.max(a[0], b[0]) + lengthTolerance < Math.min(c[0], d[0])
+      || Math.max(c[0], d[0]) + lengthTolerance < Math.min(a[0], b[0])
+      || Math.max(a[1], b[1]) + lengthTolerance < Math.min(c[1], d[1])
+      || Math.max(c[1], d[1]) + lengthTolerance < Math.min(a[1], b[1])) return false;
+    const abC = cross(a, b, c), abD = cross(a, b, d), cdA = cross(c, d, a), cdB = cross(c, d, b);
+    if (((abC > areaTolerance && abD < -areaTolerance) || (abC < -areaTolerance && abD > areaTolerance))
+      && ((cdA > areaTolerance && cdB < -areaTolerance) || (cdA < -areaTolerance && cdB > areaTolerance))) return true;
+    return onSegment(a, b, c) || onSegment(a, b, d) || onSegment(c, d, a) || onSegment(c, d, b);
+  };
+  const segmentDistance = (point: Point2, start: Point2, end: Point2): number => {
+    const dx = end[0] - start[0], dy = end[1] - start[1];
+    const denominator = dx * dx + dy * dy;
+    const parameter = denominator === 0 ? 0 : Math.max(0, Math.min(1,
+      ((point[0] - start[0]) * dx + (point[1] - start[1]) * dy) / denominator,
+    ));
+    return Math.hypot(point[0] - (start[0] + parameter * dx), point[1] - (start[1] + parameter * dy));
+  };
+
+  for (let index = 0; index < candidate.length; index += 1) {
+    const start = candidate[index], end = candidate[(index + 1) % candidate.length];
+    if (location(start) !== 1
+      || location([(start[0] + end[0]) / 2, (start[1] + end[1]) / 2]) !== 1) return false;
+    for (let outerIndex = 0; outerIndex < exterior.length; outerIndex += 1) {
+      if (intersects(start, end, exterior[outerIndex], exterior[(outerIndex + 1) % exterior.length])) return false;
+    }
+  }
+  let clearance = Infinity;
+  for (let innerIndex = 0; innerIndex < candidate.length; innerIndex += 1) {
+    const innerStart = candidate[innerIndex], innerEnd = candidate[(innerIndex + 1) % candidate.length];
+    for (let outerIndex = 0; outerIndex < exterior.length; outerIndex += 1) {
+      const outerStart = exterior[outerIndex], outerEnd = exterior[(outerIndex + 1) % exterior.length];
+      clearance = Math.min(clearance,
+        segmentDistance(innerStart, outerStart, outerEnd),
+        segmentDistance(innerEnd, outerStart, outerEnd),
+        segmentDistance(outerStart, innerStart, innerEnd),
+        segmentDistance(outerEnd, innerStart, innerEnd));
+    }
+  }
+  return clearance + 1e-12 >= minimumClearance;
+}
 
 function square(size: number, cx = 0, cy = 0): readonly Point2[] {
   const half = size / 2;
@@ -36,6 +122,92 @@ const request = (
   layerWidthMm: 20,
   planarDiameterMm: 20,
   cellSizeMm: 0.1,
+});
+
+describe('isStrictlyContainedLoop', () => {
+  const concave: readonly Point2[] = [
+    [-6, -6], [6, -6], [6, 6], [2, 6], [2, -1], [-2, -1], [-2, 6], [-6, 6],
+  ];
+  const cases: readonly (readonly [string, readonly Point2[], readonly Point2[], number])[] = [
+    ['strict concave containment', concave, square(2, 0, -3), 0.5],
+    ['edge crossing a concave notch', concave, [[-3, 0], [-3, 1], [3, 1], [3, 0]], 0],
+    ['midpoint escaping a concave notch', concave, [[-3, 0], [3, 0], [0, -4]], 0],
+    ['touching the exterior', square(10), square(2, 4), 0],
+    ['crossing the exterior', square(10), square(4, 4), 0],
+    ['clearance exactly accepted by the allowance', square(10), square(8), 1 + 1e-12],
+    ['clearance just beyond the allowance', square(10), square(8), 1 + 2e-12],
+    ['mixed coordinate scales', square(2e9, 3e12, -4e12), square(2e6, 3e12, -4e12), 1],
+    ['empty candidate legacy behavior', square(10), [], 1],
+    ['empty exterior', [], square(2), 0],
+    ['degenerate candidate', square(10), [[0, 0], [0, 0], [0, 0]], 0],
+  ];
+
+  test.each(cases)('matches the independent reference for %s', (_name, exterior, candidate, clearance) => {
+    expect(isStrictlyContainedLoop(exterior, candidate, clearance)).toBe(
+      referenceStrictContainment(exterior, candidate, clearance),
+    );
+  });
+
+  test('matches the reference after translation and loop reversal', () => {
+    const translate = (points: readonly Point2[]): readonly Point2[] =>
+      points.map(([x, y]) => [x + 12_345.5, y - 98_765.25] as const);
+    const exterior = translate([...concave].reverse());
+    const candidate = translate([...square(2, 0, -3)].reverse());
+    expect(isStrictlyContainedLoop(exterior, candidate, 0.5)).toBe(
+      referenceStrictContainment(exterior, candidate, 0.5),
+    );
+  });
+
+  test('matches the reference over deterministic positions, scales, translations, and windings', () => {
+    for (const scale of [1e-6, 1, 1e6]) {
+      for (const [dx, dy] of [[0, 0], [1e9, -1e9]] as const) {
+        const move = (points: readonly Point2[]): readonly Point2[] => points.map(([x, y]) =>
+          [x * scale + dx, y * scale + dy] as const);
+        for (const reverse of [false, true]) {
+          const exterior = move(reverse ? [...concave].reverse() : concave);
+          for (const [x, y] of [[0, -3], [0, 0], [-3, 2], [5.5, -5.5]] as const) {
+            const original = square(1.25, x, y);
+            const candidate = move(reverse ? [...original].reverse() : original);
+            for (const clearance of [0, 0.1 * scale, 0.625 * scale, 0.625 * scale + 2e-12]) {
+              expect(isStrictlyContainedLoop(exterior, candidate, clearance)).toBe(
+                referenceStrictContainment(exterior, candidate, clearance),
+              );
+            }
+          }
+        }
+      }
+    }
+  });
+
+  test.each([Number.NaN, -1, Infinity])('preserves malformed clearance rejection for %s', (clearance) => {
+    expect(isStrictlyContainedLoop(square(10), square(2), clearance)).toBe(false);
+  });
+
+  test('preserves checkpoint cancellation', () => {
+    expect(() => isStrictlyContainedLoop(square(10), square(2), 0, Infinity, () => {
+      throw new Error('cancelled');
+    })).toThrow('cancelled');
+  });
+
+  test('prepares exterior coordinates once instead of rescanning them for every point tolerance', () => {
+    let coordinateReads = 0;
+    const counted = (points: readonly Point2[]): readonly Point2[] => points.map(([x, y]) => {
+      const point: number[] = [];
+      Object.defineProperties(point, {
+        0: { get: () => { coordinateReads += 1; return x; }, enumerable: true },
+        1: { get: () => { coordinateReads += 1; return y; }, enumerable: true },
+        length: { value: 2 },
+      });
+      return point as unknown as Point2;
+    });
+    const exterior = counted(Array.from({ length: 256 }, (_, index): Point2 => {
+      const angle = index / 256 * Math.PI * 2;
+      return [10 * Math.cos(angle), 10 * Math.sin(angle)];
+    }));
+
+    expect(isStrictlyContainedLoop(exterior, square(2), 0.1)).toBe(true);
+    expect(coordinateReads).toBeLessThan(40_000);
+  });
 });
 
 describe('selectCentralHole', () => {
