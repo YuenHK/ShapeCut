@@ -64,18 +64,18 @@ manifest.json
 
 ```mermaid
 flowchart TB
-    UI[React 單頁介面] --> CLIENT[Geometry Client]
-    CLIENT -->|Comlink RPC| WORKER[Geometry Web Worker]
-    WORKER --> PIPELINE[自動外形 Pipeline]
-    PIPELINE --> MESH[STL 解析與網格診斷]
-    PIPELINE --> GEOMETRY[軸心、三層、精確切片或 2.5D]
-    GEOMETRY --> FEATURES[可靠特徵與三爪幾何]
-    FEATURES --> EXPORT[Canonical 輸出器]
-    EXPORT --> FILES[SVG / DXF / PDF / JSON / ZIP]
-    PIPELINE -. 可選 rollout .-> WASM[Rust WASM + Slice Workers]
-    UI --> PREVIEW[Three.js / SVG 預覽]
-    UI --> DB[(IndexedDB / Dexie)]
-    PAGES[GitHub Pages 靜態檔] --> UI
+    UI["React 單頁介面"] --> CLIENT["Geometry Client"]
+    CLIENT -->|"Comlink RPC"| WORKER["Geometry Web Worker"]
+    WORKER --> PIPELINE["自動外形 Pipeline"]
+    PIPELINE --> MESH["STL 解析與網格診斷"]
+    PIPELINE --> GEOMETRY["軸心、三層、精確切片或 2.5D"]
+    GEOMETRY --> FEATURES["可靠特徵與三爪幾何"]
+    FEATURES --> EXPORT["Canonical 輸出器"]
+    EXPORT --> FILES["SVG、DXF、PDF、JSON、ZIP"]
+    PIPELINE -.->|"可選 rollout"| WASM["Rust WASM 與 Slice Workers"]
+    UI --> PRE["Three.js 或 SVG 預覽"]
+    UI --> DB["IndexedDB 與 Dexie"]
+    PAGES["GitHub Pages 靜態檔"] --> UI
 ```
 
 正式網站是純靜態 GitHub Pages，沒有 Node.js 幾何後端或上載 API。React 負責流程；幾何及封裝在 Web Worker 執行；IndexedDB 只在本機保存材料及專案決策。
@@ -84,16 +84,16 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    A[本機 STL] --> B[格式與資源檢查]
-    B --> C[網格診斷]
-    C --> D{安全修復可接受?}
-    D -->|是| E[精確切片]
-    D -->|否| F[2.5D 投影回退]
-    E --> G[上中下三層]
+    A["本機 STL"] --> B["格式與資源檢查"]
+    B --> C["網格診斷"]
+    C --> D{"安全修復可接受"}
+    D -->|"是"| E["精確切片"]
+    D -->|"否"| F["2.5D 投影回退"]
+    E --> G["上中下三層"]
     F --> G
-    G --> H[中央孔與深淺特徵]
-    H --> I[三爪孔、kerf、配合]
-    I --> J[Canonical 驗證與輸出]
+    G --> H["中央孔與深淺特徵"]
+    H --> I["三爪孔、kerf、配合"]
+    I --> J["Canonical 驗證與輸出"]
 ```
 
 ### STL、網格與資源
@@ -215,6 +215,6 @@ npm run dev
 
 `localhost`／`127.0.0.1` 只代表本機；開發伺服器停止或連接埠不同時，瀏覽器會拒絕連線。
 
-## 授權
+## 開源授權
 
-Repository 目前未聲明開源授權。公開可讀不等於授權複製、修改或再散布；加入 LICENSE 前請先聯絡專案擁有人。
+ShapeCut 以 [MIT License](LICENSE) 開源。任何人均可在保留版權及授權聲明的前提下使用、複製、修改、合併、出版、散布、再授權及銷售軟件副本。軟件按「現狀」提供，不附帶任何明示或默示保證。
