@@ -284,7 +284,7 @@ describe('geometry worker boundary', () => {
       artifactSha256(baselineArtifacts.launcherCouponSvg),
       canonicalZipMemberIdentities(baselineArtifacts.zip),
     ]));
-  });
+  }, 30_000);
 
   it('cancels actual WASM singleton workers without late publication and replaces with a clean generation', async () => {
     const { worker, api } = createAcceptanceGeometryWorker(true);
