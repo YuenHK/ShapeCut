@@ -1561,20 +1561,22 @@ progress::-webkit-progress-value {
 .workbench-details [role="tabpanel"][hidden] { display: none; }
 
 @media (min-width: 1000px) and (min-height: 680px) {
+  main { width: min(calc(100% - 3rem), 80rem); }
   .app-shell { height: 100svh; min-height: 0; }
   .site-header { position: relative; top: auto; flex: 0 0 auto; }
   main { flex: 1; min-height: 0; margin: 0 auto; padding: .75rem 0; display: flex; flex-direction: column; }
   footer { flex: 0 0 auto; padding: .25rem 1.25rem .5rem; }
   .apple-workbench { flex: 1; min-height: 0; display: flex; }
-  .workbench-stage { width: 100%; min-height: 0; height: 100%; padding: .75rem; }
+  .workbench-stage { width: 100%; max-width: 76rem; min-height: 0; height: 100%; padding: .75rem; }
+  .workbench-stage:has(.upload-card), .workbench-stage:has(.processing-card) { padding: 1.5rem; }
   .converter-card { height: 100%; min-height: 0; padding: .75rem 1.25rem; }
-  .upload-card { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: minmax(0, 1fr) auto auto; gap: .75rem 1.5rem; }
+  .upload-card { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); grid-template-rows: minmax(0, 1fr) auto auto; gap: 1.5rem 2.5rem; padding: 1.5rem 2rem; }
   .upload-card .hero-copy { margin: 0; align-self: center; }
   .upload-card .hero-copy > p:last-child { margin-top: .75rem; }
-  .upload-card .upload-zone { min-height: 0; padding: 1rem; }
-  .upload-card .sample-models { grid-column: 1 / -1; grid-template-columns: auto 1fr; gap: .5rem 1rem; }
+  .upload-card .upload-zone { min-height: 0; padding: 2rem; }
+  .upload-card .sample-models { grid-column: 1 / -1; grid-template-columns: auto 1fr; gap: .75rem 1.5rem; padding-top: .5rem; }
   .upload-card .sample-models p { grid-column: 1 / -1; }
-  .upload-card .feature-list { grid-column: 1 / -1; margin: 0; }
+  .upload-card .feature-list { grid-column: 1 / -1; margin: 0; padding-top: .5rem; }
   .material-card { grid-template-columns: 1fr 1fr; grid-template-rows: auto minmax(0, 1fr); gap: .75rem 1.5rem; }
   .material-heading { grid-column: 1 / -1; }
   .material-heading p { margin-block: .25rem; }
@@ -1585,7 +1587,42 @@ progress::-webkit-progress-value {
   .material-presentation-preview .outline-process-webgl, .material-presentation-preview .outline-process-canvas, .material-presentation-preview .outline-process-fallback { min-height: 0; height: 100%; }
   .material-controls .material-picker { width: 100%; }
   .material-controls .material-field-help, .material-controls .material-field-error { margin: 0; }
-  .processing-card, .processing-card.has-preview { min-height: 0; max-width: none; }
+  .processing-card { min-height: 0; max-width: none; }
+  .processing-card.has-preview {
+    display: grid;
+    grid-template-columns: minmax(0, 2fr) minmax(18rem, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
+    gap: 1.5rem;
+    padding: 1.5rem;
+    text-align: center;
+  }
+  .processing-card.has-preview .processing-viewport {
+    position: relative;
+    inset: auto;
+    grid-column: 1;
+    grid-row: 1 / -1;
+    overflow: hidden;
+    border: 1px solid rgba(96, 137, 184, .2);
+    border-radius: 1.5rem;
+  }
+  .processing-card.has-preview .processing-status-overlay {
+    position: relative;
+    inset: auto;
+    grid-column: 2;
+    grid-row: 1;
+    width: 100%;
+    align-self: center;
+    transform: none;
+  }
+  .processing-card.has-preview .processing-loading-panel { padding: 1.5rem; }
+  .processing-card.has-preview > .change-file-button {
+    position: relative;
+    right: auto;
+    bottom: auto;
+    grid-column: 2;
+    grid-row: 2;
+    width: 100%;
+  }
   .processing-viewport .outline-process-webgl, .processing-viewport .outline-process-canvas, .processing-viewport .outline-process-fallback { min-height: 0; }
   .result-card { display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; gap: .5rem; }
   .result-heading .file-name { margin: .125rem 0 0; }

@@ -215,23 +215,33 @@ describe('App real browser one-click flow', () => {
     const processingPreview = await screen.findByRole('img', { name: /模型分層預覽/ });
     const card = document.querySelector<HTMLElement>('.processing-card.has-preview');
     const overlay = document.querySelector<HTMLElement>('.processing-status-overlay');
-    expect(card && overlay).toBeTruthy();
+    const viewport = document.querySelector<HTMLElement>('.processing-viewport');
+    expect(card && overlay && viewport).toBeTruthy();
     const cardBox = card!.getBoundingClientRect();
     const overlayBox = overlay!.getBoundingClientRect();
-    expect(overlayBox.x + overlayBox.width / 2).toBeCloseTo(cardBox.x + cardBox.width / 2, 0);
-    expect(overlayBox.y + overlayBox.height / 2).toBeCloseTo(cardBox.y + cardBox.height / 2, 0);
+    const viewportBox = viewport!.getBoundingClientRect();
+    expect(viewportBox.width).toBeGreaterThan(overlayBox.width * 1.5);
+    expect(viewportBox.right).toBeLessThan(overlayBox.left);
+    expect(overlayBox.x + overlayBox.width / 2).toBeGreaterThan(cardBox.x + cardBox.width / 2);
+    expect(overlayBox.top).toBeGreaterThan(cardBox.top);
+    expect(overlayBox.bottom).toBeLessThan(cardBox.bottom);
     expect(overlayBox.width * overlayBox.height).toBeLessThan(cardBox.width * cardBox.height * 0.8);
     expect(getComputedStyle(processingPreview).cursor).toBe('auto');
+    await page.screenshot({ path: '../../.superpowers/workbench-processing-1024.png' });
 
     await page.viewport(390, 844);
     await vi.waitFor(() => expect(window.matchMedia('(max-width: 640px)').matches).toBe(true));
     const mobileCard = document.querySelector<HTMLElement>('.processing-card.has-preview');
     const mobileOverlay = document.querySelector<HTMLElement>('.processing-status-overlay');
     expect(mobileCard && mobileOverlay).toBeTruthy();
+    await vi.waitFor(() => {
+      const mobileCardBox = mobileCard!.getBoundingClientRect();
+      const mobileOverlayBox = mobileOverlay!.getBoundingClientRect();
+      expect(mobileOverlayBox.x + mobileOverlayBox.width / 2).toBeCloseTo(mobileCardBox.x + mobileCardBox.width / 2, 0);
+      expect(mobileOverlayBox.y + mobileOverlayBox.height / 2).toBeCloseTo(mobileCardBox.y + mobileCardBox.height / 2, 0);
+    });
     const mobileCardBox = mobileCard!.getBoundingClientRect();
     const mobileOverlayBox = mobileOverlay!.getBoundingClientRect();
-    expect(mobileOverlayBox.x + mobileOverlayBox.width / 2).toBeCloseTo(mobileCardBox.x + mobileCardBox.width / 2, 0);
-    expect(mobileOverlayBox.y + mobileOverlayBox.height / 2).toBeCloseTo(mobileCardBox.y + mobileCardBox.height / 2, 0);
     expect(mobileOverlayBox.width * mobileOverlayBox.height).toBeLessThan(mobileCardBox.width * mobileCardBox.height * 0.8);
     const changeFile = document.querySelector<HTMLElement>('.processing-card > .change-file-button');
     expect(changeFile).toBeVisible();

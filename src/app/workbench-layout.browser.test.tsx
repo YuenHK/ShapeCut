@@ -11,6 +11,13 @@ it('fits upload and material controls within a 1280 by 720 desktop viewport', as
   render(<App services={{ convert: () => new Promise(() => {}), package: () => new Promise(() => {}), cancel: vi.fn() }} oneClickProjectRepository={{ load: async () => undefined, save: vi.fn(), delete: vi.fn() }} />);
   await screen.findByLabelText('選擇 STL 模型');
   await waitFor(() => expect(document.documentElement.scrollHeight).toBeLessThanOrEqual(window.innerHeight));
+  const stage = screen.getByTestId('apple-workbench').querySelector<HTMLElement>('.workbench-stage')!;
+  const uploadCard = stage.querySelector<HTMLElement>('.upload-card')!;
+  const uploadZone = uploadCard.querySelector<HTMLElement>('.upload-zone')!;
+  expect(getComputedStyle(stage).paddingInlineStart).toBe('24px');
+  expect(getComputedStyle(uploadCard).columnGap).toBe('40px');
+  expect(getComputedStyle(uploadCard).paddingInlineStart).toBe('32px');
+  expect(getComputedStyle(uploadZone).paddingInlineStart).toBe('32px');
   await page.screenshot({ path: '../../.superpowers/workbench-upload-1280.png' });
   fireEvent.change(screen.getByLabelText('選擇 STL 模型'), { target: { files: [new File(['mesh'], 'test.stl')] } });
   await screen.findByRole('button', { name: '開始製作' });
