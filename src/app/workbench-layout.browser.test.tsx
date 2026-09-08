@@ -17,13 +17,25 @@ it('fits upload and material controls within a 1280 by 720 desktop viewport', as
   const eyebrow = uploadCard.querySelector<HTMLElement>('.eyebrow')!;
   const heroHeading = uploadCard.querySelector<HTMLElement>('#converter-title')!;
   const heroDescription = uploadCard.querySelectorAll<HTMLElement>('.hero-copy > p')[1]!;
+  const heroTitleLines = [...uploadCard.querySelectorAll<HTMLElement>('.hero-title-line')];
   expect(getComputedStyle(stage).paddingInlineStart).toBe('24px');
   expect(getComputedStyle(uploadCard).columnGap).toBe('40px');
   expect(getComputedStyle(uploadCard).paddingInlineStart).toBe('32px');
   expect(getComputedStyle(uploadZone).paddingInlineStart).toBe('32px');
   expect(heroHeading.getBoundingClientRect().top - eyebrow.getBoundingClientRect().bottom).toBeGreaterThanOrEqual(18);
   expect(heroDescription.getBoundingClientRect().top - heroHeading.getBoundingClientRect().bottom).toBeGreaterThanOrEqual(22);
+  expect(heroTitleLines).toHaveLength(3);
+  expect(heroTitleLines[0].getBoundingClientRect().bottom).toBeLessThanOrEqual(heroTitleLines[1].getBoundingClientRect().top);
+  expect(heroTitleLines[1].getBoundingClientRect().bottom).toBeLessThanOrEqual(heroTitleLines[2].getBoundingClientRect().top);
   await page.screenshot({ path: '../../.superpowers/workbench-upload-1280.png' });
+
+  await page.viewport(390, 844);
+  await waitFor(() => expect(window.matchMedia('(max-width: 640px)').matches).toBe(true));
+  expect(heroTitleLines.every((line) => getComputedStyle(line).display === 'inline')).toBe(true);
+  expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
+  await page.screenshot({ path: '../../.superpowers/workbench-upload-390.png' });
+  await page.viewport(1280, 720);
+
   fireEvent.change(screen.getByLabelText('選擇 STL 模型'), { target: { files: [new File(['mesh'], 'test.stl')] } });
   await screen.findByRole('button', { name: '開始製作' });
   expect(document.documentElement.scrollHeight).toBeLessThanOrEqual(window.innerHeight);

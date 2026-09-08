@@ -438,6 +438,10 @@ h1 {
   line-height: 1.7;
 }
 
+.hero-title-line {
+  display: block;
+}
+
 .upload-zone {
   display: flex;
   min-height: 18.125rem;
@@ -755,7 +759,7 @@ summary:focus-visible {
 .processing-message {
   position: relative;
   display: grid;
-  width: min(18rem, 100%);
+  width: min(20rem, 100%);
   min-height: 0;
   padding: 2.5rem 1.5rem 2rem;
   aspect-ratio: 1;
@@ -766,8 +770,8 @@ summary:focus-visible {
 .processing-orbit {
   position: absolute;
   inset: 0;
-  width: 100%;
-  height: 100%;
+  width: auto;
+  height: auto;
   margin: auto;
   border: 2px solid rgba(10, 132, 255, .22);
   border-top-color: var(--accent);
@@ -1460,6 +1464,10 @@ progress::-webkit-progress-value {
     margin-bottom: 1.5rem;
   }
 
+  .hero-title-line {
+    display: inline;
+  }
+
   .hero-description,
   .hero-status {
     margin-top: 1rem;
@@ -1594,9 +1602,10 @@ progress::-webkit-progress-value {
   .workbench-stage:has(.upload-card), .workbench-stage:has(.processing-card) { padding: 1.5rem; }
   .converter-card { height: 100%; min-height: 0; padding: .75rem 1.25rem; }
   .upload-card { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); grid-template-rows: minmax(0, 1fr) auto auto; gap: 1.5rem 2.5rem; padding: 1.5rem 2rem; }
-  .upload-card .hero-copy { margin: 0; padding-inline: 1rem; align-self: center; }
+  .upload-card .hero-copy { width: 100%; max-width: 31rem; margin: 0; padding-inline: 1.5rem; align-self: center; justify-self: center; }
+  .upload-card .hero-copy h1 { max-width: 29rem; margin-inline: auto; }
   .upload-card .eyebrow { margin-bottom: 1.125rem; }
-  .upload-card .hero-description { margin-top: 1.5rem; line-height: 1.85; }
+  .upload-card .hero-description { max-width: 27rem; margin-top: 1.75rem; line-height: 1.85; }
   .upload-card .hero-status { margin-top: 1.25rem; line-height: 1.75; }
   .upload-card .upload-zone { min-height: 0; padding: 2rem; }
   .upload-card .sample-models { grid-column: 1 / -1; grid-template-columns: auto 1fr; gap: .75rem 1.5rem; padding-top: .5rem; }
@@ -1615,9 +1624,9 @@ progress::-webkit-progress-value {
   .processing-card { min-height: 0; max-width: none; }
   .processing-card.has-preview {
     display: grid;
-    grid-template-columns: minmax(0, 2fr) minmax(18rem, 1fr);
+    grid-template-columns: minmax(0, 2fr) minmax(20.375rem, 1fr);
     grid-template-rows: minmax(0, 1fr) auto;
-    gap: 1.5rem;
+    gap: 2rem;
     padding: 1.5rem;
     text-align: center;
   }
@@ -1639,7 +1648,9 @@ progress::-webkit-progress-value {
     align-self: center;
     transform: none;
   }
+  .processing-card.has-preview .processing-status-overlay { gap: 1.25rem; }
   .processing-card.has-preview .processing-loading-panel { width: 100%; padding: 1.5rem .75rem; }
+  .processing-card.has-preview .processing-orbit { inset: -1.0625rem; }
   .processing-card.has-preview > .change-file-button {
     position: relative;
     right: auto;

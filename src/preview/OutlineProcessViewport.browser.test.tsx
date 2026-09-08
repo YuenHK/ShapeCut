@@ -311,7 +311,7 @@ describe('OutlineProcessViewport in Chromium', () => {
     expect(requestFrame).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole('button', { name: '選擇另一個模型' }));
-    expect(screen.getByRole('heading', { name: '把 3D 陀螺 STL 模型轉換成 Laser Cut 平面切片' })).toBeVisible();
+    expect(screen.getByRole('heading', { name: '把陀螺模型 變成可製作的 三層切片' })).toBeVisible();
     requestFrame.mockRestore();
     view.unmount();
   });

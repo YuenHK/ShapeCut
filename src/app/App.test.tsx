@@ -61,6 +61,21 @@ describe('App', () => {
     status: 'ready',
   };
 
+  it('presents the approved balanced hero copy', async () => {
+    render(
+      <App
+        services={services}
+        materialRepository={emptyMaterialRepository}
+        oneClickProjectRepository={emptyProjectRepository}
+      />,
+    );
+
+    expect(await screen.findByText('3D → LASER CUT')).toBeVisible();
+    expect(screen.getByRole('heading', { name: '把陀螺模型 變成可製作的 三層切片' })).toBeVisible();
+    expect(screen.getByText('從 STL 到 Laser Cut 製作檔案，一次完成分析、簡化與分層。')).toBeVisible();
+    expect(document.querySelectorAll('.hero-title-line')).toHaveLength(3);
+  });
+
   it('links to project information and the related Beyblade simulator safely', async () => {
     render(
       <App
@@ -233,7 +248,7 @@ describe('App', () => {
   it('renders only the ShapeCut one-click experience', async () => {
     render(<App services={services} oneClickProjectRepository={emptyProjectRepository} />);
     expect(screen.getByRole('banner')).toHaveTextContent('ShapeCut');
-    expect(await screen.findByRole('heading', { name: '把 3D 陀螺 STL 模型轉換成 Laser Cut 平面切片' })).toBeVisible();
+    expect(await screen.findByRole('heading', { name: '把陀螺模型 變成可製作的 三層切片' })).toBeVisible();
     expect(screen.queryByText('匯入與修復')).toBeNull();
     expect(screen.queryByText('材料設定')).toBeNull();
   });

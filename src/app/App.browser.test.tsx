@@ -240,6 +240,11 @@ describe('App real browser one-click flow', () => {
       expect(box.top).toBeGreaterThanOrEqual(orbitBox.top + 12);
       expect(box.bottom).toBeLessThanOrEqual(orbitBox.bottom - 12);
     }
+    const progressBox = screen.getByRole('progressbar', { name: '轉換進度' }).getBoundingClientRect();
+    const changeFileBox = document.querySelector<HTMLElement>('.processing-card > .change-file-button')!.getBoundingClientRect();
+    expect(orbitBox.width).toBeGreaterThanOrEqual(300);
+    expect(progressBox.top - orbitBox.bottom).toBeGreaterThanOrEqual(16);
+    expect(changeFileBox.top - progressBox.bottom).toBeGreaterThanOrEqual(24);
     expect(getComputedStyle(processingPreview).cursor).toBe('auto');
     await page.screenshot({ path: '../../.superpowers/workbench-processing-1024.png' });
 

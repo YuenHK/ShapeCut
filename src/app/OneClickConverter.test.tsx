@@ -242,10 +242,10 @@ describe('OneClickConverter', () => {
 
     expect(screen.getByRole('heading', {
       level: 1,
-      name: '把 3D 陀螺 STL 模型轉換成 Laser Cut 平面切片',
+      name: '把陀螺模型 變成可製作的 三層切片',
     })).toBeVisible();
     expect(screen.getByText(
-      '放入 3D 陀螺 STL 模型，ShapeCut 會自動分析、簡化和分層切片，並準備可供 Laser Cut 使用的平面外形與製作檔案。',
+      '從 STL 到 Laser Cut 製作檔案，一次完成分析、簡化與分層。',
     )).toBeVisible();
 
     const samples = screen.getByRole('region', { name: '範例模型' });
@@ -1864,7 +1864,7 @@ describe('OneClickConverter', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent('模型太複雜，超出這次可處理的上限');
     await user.click(screen.getByRole('button', { name: '選擇另一個模型' }));
-    expect(screen.getByRole('heading', { name: '把 3D 陀螺 STL 模型轉換成 Laser Cut 平面切片' })).toBeVisible();
+    expect(screen.getByRole('heading', { name: '把陀螺模型 變成可製作的 三層切片' })).toBeVisible();
   });
 
   it('maps an incompatible fixed launcher to a blocking Traditional Chinese failure', async () => {
@@ -1938,7 +1938,7 @@ describe('OneClickConverter', () => {
     expect(screen.queryByRole('link', { name: /下載/ })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: '選擇另一個模型' }));
-    expect(screen.getByRole('heading', { name: '把 3D 陀螺 STL 模型轉換成 Laser Cut 平面切片' })).toBeVisible();
+    expect(screen.getByRole('heading', { name: '把陀螺模型 變成可製作的 三層切片' })).toBeVisible();
   });
 
   it('retains completed evidence without inventing an artifact identity for a packaging timeout', async () => {
