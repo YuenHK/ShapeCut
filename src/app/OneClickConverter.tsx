@@ -767,9 +767,9 @@ export function OneClickConverter({
       <div className="hero-copy">
         <p className="eyebrow">一鍵轉換工具</p>
         <h1 id="converter-title">把 3D 陀螺 STL 模型轉換成 Laser Cut 平面切片</h1>
-        <p>放入 3D 陀螺 STL 模型，ShapeCut 會自動分析、簡化和分層切片，並準備可供 Laser Cut 使用的平面外形與製作檔案。</p>
+        <p className="hero-description">放入 3D 陀螺 STL 模型，ShapeCut 會自動分析、簡化和分層切片，並準備可供 Laser Cut 使用的平面外形與製作檔案。</p>
         {savedProject && (
-          <p role="status">已儲存專案需要重新連結原本 STL，並明確重新產生正式輸出。</p>
+          <p className="hero-status" role="status">已儲存專案需要重新連結原本 STL，並明確重新產生正式輸出。</p>
         )}
       </div>
       <ModelInput

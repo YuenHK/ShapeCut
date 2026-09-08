@@ -14,15 +14,41 @@ it('fits upload and material controls within a 1280 by 720 desktop viewport', as
   const stage = screen.getByTestId('apple-workbench').querySelector<HTMLElement>('.workbench-stage')!;
   const uploadCard = stage.querySelector<HTMLElement>('.upload-card')!;
   const uploadZone = uploadCard.querySelector<HTMLElement>('.upload-zone')!;
+  const eyebrow = uploadCard.querySelector<HTMLElement>('.eyebrow')!;
+  const heroHeading = uploadCard.querySelector<HTMLElement>('#converter-title')!;
+  const heroDescription = uploadCard.querySelectorAll<HTMLElement>('.hero-copy > p')[1]!;
   expect(getComputedStyle(stage).paddingInlineStart).toBe('24px');
   expect(getComputedStyle(uploadCard).columnGap).toBe('40px');
   expect(getComputedStyle(uploadCard).paddingInlineStart).toBe('32px');
   expect(getComputedStyle(uploadZone).paddingInlineStart).toBe('32px');
+  expect(heroHeading.getBoundingClientRect().top - eyebrow.getBoundingClientRect().bottom).toBeGreaterThanOrEqual(18);
+  expect(heroDescription.getBoundingClientRect().top - heroHeading.getBoundingClientRect().bottom).toBeGreaterThanOrEqual(22);
   await page.screenshot({ path: '../../.superpowers/workbench-upload-1280.png' });
   fireEvent.change(screen.getByLabelText('選擇 STL 模型'), { target: { files: [new File(['mesh'], 'test.stl')] } });
   await screen.findByRole('button', { name: '開始製作' });
   expect(document.documentElement.scrollHeight).toBeLessThanOrEqual(window.innerHeight);
   await page.screenshot({ path: '../../.superpowers/workbench-material-1280.png' });
+
+  const relatedLinks = [
+    screen.getByRole('link', { name: 'GitHub 專案介紹' }),
+    screen.getByRole('link', { name: '延伸體驗：陀螺對戰模擬器' }),
+  ];
+  for (const link of relatedLinks) {
+    const rect = link.getBoundingClientRect();
+    expect(rect.left).toBeGreaterThanOrEqual(0);
+    expect(rect.right).toBeLessThanOrEqual(window.innerWidth);
+  }
+
+  await page.viewport(390, 844);
+  await waitFor(() => expect(window.matchMedia('(max-width: 640px)').matches).toBe(true));
+  expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
+  for (const link of relatedLinks) {
+    const rect = link.getBoundingClientRect();
+    expect(rect.left).toBeGreaterThanOrEqual(0);
+    expect(rect.right).toBeLessThanOrEqual(window.innerWidth);
+  }
+  await page.screenshot({ path: '../../.superpowers/workbench-related-links-390.png' });
+  await page.viewport(1280, 720);
 });
 
 for (const [width, height] of [[1280, 720], [1440, 900]]) {

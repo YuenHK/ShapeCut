@@ -61,6 +61,25 @@ describe('App', () => {
     status: 'ready',
   };
 
+  it('links to project information and the related Beyblade simulator safely', async () => {
+    render(
+      <App
+        services={services}
+        materialRepository={emptyMaterialRepository}
+        oneClickProjectRepository={emptyProjectRepository}
+      />,
+    );
+
+    const github = await screen.findByRole('link', { name: 'GitHub 專案介紹' });
+    const simulator = screen.getByRole('link', { name: '延伸體驗：陀螺對戰模擬器' });
+    expect(github).toHaveAttribute('href', 'https://github.com/YuenHK/ShapeCut');
+    expect(simulator).toHaveAttribute('href', 'https://yuenhk.github.io/Bayblad-Simulator/');
+    for (const link of [github, simulator]) {
+      expect(link).toHaveAttribute('target', '_blank');
+      expect(link).toHaveAttribute('rel', 'noreferrer');
+    }
+  });
+
   it('does not expose conversion while saved-project loading is unsettled', async () => {
     const pending = deferred<StoredOneClickProjectV3 | undefined>();
     render(<App services={services} materialRepository={emptyMaterialRepository} oneClickProjectRepository={{

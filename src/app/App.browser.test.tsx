@@ -226,6 +226,20 @@ describe('App real browser one-click flow', () => {
     expect(overlayBox.top).toBeGreaterThan(cardBox.top);
     expect(overlayBox.bottom).toBeLessThan(cardBox.bottom);
     expect(overlayBox.width * overlayBox.height).toBeLessThan(cardBox.width * cardBox.height * 0.8);
+    const orbitBox = document.querySelector<HTMLElement>('.processing-orbit')!.getBoundingClientRect();
+    const orbitContents = [
+      document.querySelector<HTMLElement>('.processing-message h1')!,
+      document.querySelector<HTMLElement>('.processing-message .file-name')!,
+      document.querySelector<HTMLElement>('.processing-elapsed')!,
+      document.querySelector<HTMLElement>('.processing-cancel-button')!,
+    ];
+    for (const element of orbitContents) {
+      const box = element.getBoundingClientRect();
+      expect(box.left).toBeGreaterThanOrEqual(orbitBox.left + 12);
+      expect(box.right).toBeLessThanOrEqual(orbitBox.right - 12);
+      expect(box.top).toBeGreaterThanOrEqual(orbitBox.top + 12);
+      expect(box.bottom).toBeLessThanOrEqual(orbitBox.bottom - 12);
+    }
     expect(getComputedStyle(processingPreview).cursor).toBe('auto');
     await page.screenshot({ path: '../../.superpowers/workbench-processing-1024.png' });
 
