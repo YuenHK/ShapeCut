@@ -827,6 +827,7 @@ export function OneClickConverter({
           <button
             type="button"
             disabled={!savedSourceReattached}
+            className="primary-button"
             onClick={() => void processFile(
               view.fileName,
               view.bytes,
@@ -875,6 +876,7 @@ export function OneClickConverter({
         <button
           type="button"
           onClick={startSelectedMaterial}
+          className="primary-button"
           disabled={parsedLauncherFitOffset(launcherFitInput) === undefined}
         >
           開始製作
