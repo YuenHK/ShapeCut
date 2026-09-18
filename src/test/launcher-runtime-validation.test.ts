@@ -82,7 +82,7 @@ describe('private release launcher runtime geometry gate', () => {
       fixedPlan: 'safe',
       safePlanCount: 1,
       artifactCutCount: 6,
-      templateVersion: 2,
+      templateVersion: 3,
       templateFingerprint: expect.stringMatching(/^[0-9a-f]{32}$/),
       fitOffsetMm: 0,
       exteriorExpansionMm: 0,

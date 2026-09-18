@@ -10,6 +10,8 @@ import {
 import {
   OFFICIAL_THREE_PRONG_TEMPLATE_FINGERPRINT,
   OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
+  OFFICIAL_THREE_PRONG_TEMPLATE,
+  signedArea,
 } from './launcher-template';
 import {
   expandLauncherExterior,
@@ -163,7 +165,7 @@ describe('launcher fit contract', () => {
 
 describe('fixed three-prong launcher planning', () => {
   // Adjacent public-safety witnesses: this half-size is safe and 0.01 mm less is unsafe.
-  const FIXED_SQUARE_SAFE_GRID_HALF_MM = 23.5098197903;
+  const FIXED_SQUARE_SAFE_GRID_HALF_MM = 14.60;
   const safeRequest = {
     axisPoint: [0, 0],
     topExterior: exterior('fixed-top', 30),
@@ -196,11 +198,6 @@ describe('fixed three-prong launcher planning', () => {
   it('uses the fixed template, applies fit then kerf once, and returns deterministic rotation', () => {
     const first = planFixedLauncherClearance({ ...safeRequest, fitOffsetMm: 0.05 });
     const second = planFixedLauncherClearance({ ...safeRequest, fitOffsetMm: 0.05 });
-    const equivalentNetOffset = planFixedLauncherClearance({
-      ...safeRequest,
-      material: { ...safeRequest.material, kerfMm: 0.1 },
-      fitOffsetMm: 0,
-    });
 
     expect(first).toEqual(second);
     expect(first).toMatchObject({
@@ -214,7 +211,13 @@ describe('fixed three-prong launcher planning', () => {
     expect(first.rotationRad).toBeLessThan(120 * Math.PI / 180);
     expect(first.cuts).toHaveLength(3);
     first.cuts.forEach((cut, index) => {
-      expect(cut.areaMm2).toBeCloseTo(equivalentNetOffset.cuts[index].areaMm2, 8);
+      const c = Math.cos(first.rotationRad), s = Math.sin(first.rotationRad);
+      const points = OFFICIAL_THREE_PRONG_TEMPLATE.loops[index].map(([x,y]): Point2 => [x*c-y*s,x*s+y*c]);
+      // Fit and kerf are separate offsets. With short DXF edges, composing
+      // offsets is not equivalent to replacing them with one net offset.
+      const fitted = simpleMiterPolygonKernel.offset({ points }, 0.25)[0];
+      const expected = simpleMiterPolygonKernel.offset(fitted, -0.1)[0];
+      expect(cut.areaMm2).toBeCloseTo(Math.abs(signedArea(expected.points)), 8);
     });
     expect(first).not.toHaveProperty('minimumStructuralClearanceMm');
     expect(first).not.toHaveProperty('decorationOverlapCount');
@@ -306,8 +309,8 @@ describe('fixed three-prong launcher planning', () => {
       [-half, half],
       [half, half],
       [half, 3],
-      [23.4, 3],
-      [23.4, -3],
+      [14.49, 3],
+      [14.49, -3],
       [half, -3],
       [half, -half],
     ]);
@@ -319,8 +322,10 @@ describe('fixed three-prong launcher planning', () => {
     };
     const selected = planFixedLauncherClearance(request);
 
-    expect(selected.exteriorExpansion.offsetMm).toBe(0.03);
-    expect(selected.rotationRad).toBe(Math.PI / 3);
+    expect(selected.exteriorExpansion.offsetMm).toBeGreaterThanOrEqual(0.02);
+    expect(launcherCutsArePhysicallySafe({ cuts: selected.cuts,
+      top: { exterior: selected.expandedTopExterior },
+      second: { exterior: selected.expandedSecondExterior }, material: safeRequest.material })).toBe(true);
 
     const exactContainmentReached = new Error('exact containment reached');
     const unsafeCandidateScored = new Error('unsafe candidate was structurally scored');

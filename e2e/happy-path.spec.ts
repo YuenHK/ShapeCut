@@ -83,7 +83,7 @@ test('serialized worker probe accepts the fixed public result without internal e
   expect(runtime.assembly?.launcher).toMatchObject({
     status: 'fixed',
     cutCount: 3,
-    templateVersion: 2,
+    templateVersion: 3,
     templateFingerprint: expect.stringMatching(/^[0-9a-f]{32}$/),
     fitOffsetMm: 0,
   });

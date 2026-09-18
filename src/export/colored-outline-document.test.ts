@@ -120,6 +120,13 @@ function protectedWorkOmissionResult() {
 }
 
 function activeAssemblyResult() {
+  // Keep this ordering fixture's engraving outside the active v3 cut radius.
+  const awayFromLauncher = (contour: FeatureContour, id: string): FeatureContour => {
+    const dx = contour.boundsMm.minX < 0 ? -12 : 12;
+    return { ...contour, id,
+      outer: contour.outer.map(([x,y]): Point2 => [x+dx,y]),
+      boundsMm: { ...contour.boundsMm, minX: contour.boundsMm.minX+dx, maxX: contour.boundsMm.maxX+dx } };
+  };
   const result = coloredResult();
   const layer = result.coloredLayers[5], featured = result.coloredLayers[2];
   const launcherCuts = layer.launcherCuts;
@@ -133,10 +140,10 @@ function activeAssemblyResult() {
       circle48(center, 2.85 / 2, `${candidate.id}-fastener-${fastenerIndex + 1}`)
     )),
     deepFeatures: index === 5
-      ? featured.deepFeatures.map((contour) => ({ ...contour, id: 'top-deep-1' }))
+      ? featured.deepFeatures.map((contour) => awayFromLauncher(contour, 'top-deep-1'))
       : candidate.deepFeatures,
     lightFeatures: index === 5
-      ? featured.lightFeatures.map((contour) => ({ ...contour, id: 'top-light-1' }))
+      ? featured.lightFeatures.map((contour) => awayFromLauncher(contour, 'top-light-1'))
       : candidate.lightFeatures,
   }));
   const changed = {

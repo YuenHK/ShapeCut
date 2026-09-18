@@ -296,7 +296,7 @@ export type ParsedColoredManifest = {
 };
 
 export type ParsedLauncherFitCoupon = {
-  readonly templateVersion: 2;
+  readonly templateVersion: typeof OFFICIAL_THREE_PRONG_TEMPLATE_VERSION;
   readonly templateFingerprint: string;
   readonly materialId: string;
   readonly kerfMm: number;
@@ -2296,7 +2296,7 @@ export function parseLauncherFitCouponArtifact(svg: string): ParsedLauncherFitCo
   const publicText = svg.replace(/\sdata-material-id="[^"]*"/, '');
   assertPublicText(publicText, 'Launcher fit coupon SVG');
   return {
-    templateVersion: 2,
+    templateVersion: OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
     templateFingerprint,
     materialId,
     kerfMm,

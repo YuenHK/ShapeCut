@@ -360,7 +360,7 @@ describe('automatic outline pipeline', { timeout: 20_000 }, () => {
 
   it('carries only the required shared top-two exterior expansion into canonical geometry', async () => {
     const result = await convertAutomatically({
-      bytes: writeBinarySTL(rectangularPrism(45, 45), 'safe'),
+      bytes: writeBinarySTL(rectangularPrism(27, 27), 'safe'),
     });
     const originalColoredLayers = extraction.colorizeExteriorLayers(
       result.layers, 0, Infinity, () => undefined,
@@ -398,8 +398,8 @@ describe('automatic outline pipeline', { timeout: 20_000 }, () => {
     const decoration: FeatureContour = {
       id: 'retained-decoration',
       role: 'DEEP_RED',
-      outer: [[15, 15], [15, 16], [16, 16], [16, 15]],
-      boundsMm: { minX: 15, minY: 15, maxX: 16, maxY: 16 },
+      outer: [[8, 8], [8, 9], [9, 9], [9, 8]],
+      boundsMm: { minX: 8, minY: 8, maxX: 9, maxY: 9 },
       areaMm2: 1,
     };
     const sharedRequest = {
@@ -505,7 +505,7 @@ describe('automatic outline pipeline', { timeout: 20_000 }, () => {
 
   it('reports a typed error when the required shared expansion exceeds 6.00 mm', async () => {
     await expect(convertAutomatically({
-      bytes: writeBinarySTL(rectangularPrism(34, 34), 'safe'),
+      bytes: writeBinarySTL(rectangularPrism(16, 16), 'safe'),
     })).rejects.toMatchObject({
       code: 'LAUNCHER_EXTERIOR_EXPANSION_EXCEEDED',
       message: expect.stringMatching(/required|requires|6\.00 mm/i),

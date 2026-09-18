@@ -1,6 +1,6 @@
 import type { Point2 } from '../decomposition/types';
 import { validatePolygon } from '../engraving/geometry';
-import { roundedLauncherLoops } from './rounded-launcher';
+import { DXF_LAUNCHER_LOOPS, DXF_LAUNCHER_SOURCE_SHA256 } from './dxf-launcher';
 
 export const LAUNCHER_TEMPLATE_MAX_POINTS = 4_096;
 export const LAUNCHER_RADIUS_TOLERANCE_RATIO = 0.05;
@@ -1613,12 +1613,12 @@ export const KNIGHT_FORTRESS_LAUNCHER_TEMPLATE = {
   ]
 } as const satisfies LauncherTemplate;
 
-export const OFFICIAL_THREE_PRONG_TEMPLATE_VERSION = 2 as const;
+export const OFFICIAL_THREE_PRONG_TEMPLATE_VERSION = 3 as const;
 export const OFFICIAL_THREE_PRONG_TEMPLATE: LauncherTemplate = Object.freeze({
   version: OFFICIAL_THREE_PRONG_TEMPLATE_VERSION,
-  loops: roundedLauncherLoops(),
-  // Provenance identifies the source of the fit, not a claim of exact reproduction.
-  provenanceHashes: KNIGHT_FORTRESS_LAUNCHER_TEMPLATE.provenanceHashes,
+  loops: DXF_LAUNCHER_LOOPS,
+  // Both references are the same physically tested DXF, not the older STL pair.
+  provenanceHashes: [DXF_LAUNCHER_SOURCE_SHA256, DXF_LAUNCHER_SOURCE_SHA256] as const,
 });
 
 function templateFingerprint(template: Pick<LauncherTemplate, 'version' | 'loops'>): string {

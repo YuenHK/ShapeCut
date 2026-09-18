@@ -1521,7 +1521,7 @@ describe('OneClickConverter', () => {
     render(<OneClickConverter services={api} />);
 
     await user.upload(screen.getByLabelText('選擇 STL 模型'), new File([bytes], 'saved-cancel.stl'));
-    expect(screen.getByRole('option', { name: `${savedMaterial.name} (${savedMaterial.thicknessMm} mm)` })).toBeVisible();
+    expect(await screen.findByRole('option', { name: `${savedMaterial.name} (${savedMaterial.thicknessMm} mm)` })).toBeVisible();
     await user.click(await screen.findByRole('button', { name: '重新產生正式輸出' }));
     expect(api.convert).toHaveBeenCalledWith(expect.any(ArrayBuffer), savedMaterial, 0, expect.any(Function));
     await user.click(screen.getByRole('button', { name: '取消處理' }));

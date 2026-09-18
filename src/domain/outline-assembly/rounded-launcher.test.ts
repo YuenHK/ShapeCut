@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { Point2 } from '../decomposition/types';
 import { validatePolygon } from '../engraving/geometry';
-import { KNIGHT_FORTRESS_LAUNCHER_TEMPLATE, OFFICIAL_THREE_PRONG_TEMPLATE, signedArea } from './launcher-template';
+import { KNIGHT_FORTRESS_LAUNCHER_TEMPLATE, signedArea } from './launcher-template';
+import { roundedLauncherLoops } from './rounded-launcher';
+// Retain regression coverage of the historical v2 shape, not the active DXF template.
+const OFFICIAL_THREE_PRONG_TEMPLATE = { version: 2, loops: roundedLauncherLoops() };
 
 function distanceToLoop(point: Point2, loop: readonly Point2[]): number {
   return Math.min(...loop.map((start,index)=>{
