@@ -1038,7 +1038,7 @@ export function OneClickConverter({
               {assembly.decorationOmissions.map((omission) => <li key={omission.layerId}>受影響層：{omission.layerId}</li>)}
             </ul></DetailPages>
           </section>
-          <p className="launcher-calibration-note">依 Knight Fortress 樣本建立，待官方發射器實物校準</p>
+          <p className="launcher-calibration-note">以已實測配合官方發射器的 DXF 為基準；新輸出仍須試切校準片確認配合。</p>
         </>} technical={<section className="technical-details"><DetailPages label="技術資料">
         <dl>
           <div><dt>模式</dt><dd>{result.mode}</dd></div>

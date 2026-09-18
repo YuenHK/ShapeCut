@@ -967,7 +967,7 @@ describe('OneClickConverter', () => {
     expect(screen.getByText('需注意')).toHaveClass('warning');
     expect(screen.queryByText('成功')).not.toBeInTheDocument();
     expect(screen.getByText(
-      '依 Knight Fortress 樣本建立，待官方發射器實物校準',
+      '以已實測配合官方發射器的 DXF 為基準；新輸出仍須試切校準片確認配合。',
     )).toBeVisible();
   });
 
@@ -1165,7 +1165,7 @@ describe('OneClickConverter', () => {
     expect(await showResultDetail(user, '製作設定', '頂部兩層外框已共同擴大 0.00 mm')).toBeVisible();
     expect(await showResultDetail(user, '製作設定', /已裁切紅色 1/)).toBeVisible();
     await user.click(screen.getByRole('tab', { name: '處理提示' }));
-    expect(screen.getByText('依 Knight Fortress 樣本建立，待官方發射器實物校準')).toBeVisible();
+    expect(screen.getByText('以已實測配合官方發射器的 DXF 為基準；新輸出仍須試切校準片確認配合。')).toBeVisible();
     expect(screen.getByRole('link', { name: '下載三爪尺寸測試片' })).toBeVisible();
   });
 
