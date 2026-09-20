@@ -327,6 +327,7 @@ describe('OneClickConverter', () => {
       decorationOmissions: result.assembly.decorationOmissions,
     }));
 
+    expect(screen.getByRole('button', { name: '捨棄已儲存專案並選擇另一個模型' })).toHaveClass('change-file-button');
     await user.click(screen.getByRole('button', { name: '捨棄已儲存專案並選擇另一個模型' }));
     expect(deleteSavedProject).toHaveBeenCalledOnce();
     await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['different'], 'different.stl'));

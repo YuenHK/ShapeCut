@@ -1098,7 +1098,7 @@ export function OneClickConverter({
         ))}
       </nav>
       {savedProject ? (
-        <button type="button" onClick={() => void discardSavedProject()}>
+        <button className="change-file-button" type="button" onClick={() => void discardSavedProject()}>
           捨棄已儲存專案並選擇另一個模型
         </button>
       ) : (
