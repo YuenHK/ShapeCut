@@ -28,6 +28,7 @@ import { classifyMaterialReadiness, type MaterialProfileV1 } from '../domain/mat
 import { validateLauncherFitOffsetMm } from '../domain/outline-assembly/launcher-fit';
 import type { LauncherExteriorExpansion } from '../domain/outline-assembly/launcher-exterior-expansion';
 import { sha256Hex } from '../persistence/project-repository';
+import { startBaybladReceiver, type BaybladTransfer } from './bayblad-transfer';
 import type { StoredOneClickProjectV3 } from '../persistence/one-click-project-repository';
 import {
   OutlineProcessViewport,
@@ -376,11 +377,15 @@ function ModelInput({
 export function OneClickConverter({
   services,
   chromeTarget,
+  baybladTransfer,
 }: {
   readonly services: OneClickConverterServices;
   readonly chromeTarget?: Element | null;
+  readonly baybladTransfer?: BaybladTransfer;
 }) {
   const [view, setView] = useState<OneClickViewState>({ kind: 'upload' });
+  const [transferError, setTransferError] = useState<string>();
+  const transferImported = useRef<((accepted: boolean) => void) | undefined>(undefined);
   const [dragActive, setDragActive] = useState(false);
   const [presentationPreview, setPresentationPreview] = useState<OutlinePreviewPayload | undefined>(undefined);
   const [launcherFitInput, setLauncherFitInput] = useState('0.00');
@@ -642,7 +647,7 @@ export function OneClickConverter({
     }
   }, [releaseCurrentDownloads, runtimeServices, savedProject, services, sourceSha256]);
 
-  const selectFile = useCallback(async (file: File) => {
+  const selectFile = useCallback(async (file: File): Promise<boolean> => {
     const current = ++requestId.current;
     setLauncherFitInput('0.00');
     setSelectedMaterialId('acrylic-6');
@@ -655,23 +660,23 @@ export function OneClickConverter({
     releaseCurrentDownloads();
     if (!/\.stl$/iu.test(file.name)) {
       setView({ kind: 'failure', message: '只支援 STL 檔案，請選擇副檔名為 .stl 的模型。' });
-      return;
+      return false;
     }
     if (file.size > MAX_STL_BYTES) {
       setView({ kind: 'failure', fileName: file.name, message: failureMessage(new AutomaticOutlineError('RESOURCE_LIMIT', '模型超出安全處理資源上限')) });
-      return;
+      return false;
     }
     setView({ kind: 'reading', fileName: file.name });
     try {
       const bytes = await readFile(file);
-      if (current !== requestId.current) return;
+      if (current !== requestId.current) return false;
       if (savedProject || services.saveProject) {
         const fingerprint = await sha256Hex(bytes);
-        if (current !== requestId.current) return;
+        if (current !== requestId.current) return false;
         setSourceSha256(fingerprint);
         if (savedProject && fingerprint !== savedProject.sourceSha256) {
           setView({ kind: 'failure', fileName: file.name, message: 'STL 指紋不符；請重新連結原本的模型。' });
-          return;
+          return false;
         }
         if (savedProject) {
           setLauncherFitInput(savedProject.launcherFitOffsetMm.toFixed(2));
@@ -682,12 +687,37 @@ export function OneClickConverter({
       activeFileRef.current = { fileName: file.name, bytes };
       setView({ kind: 'material', fileName: file.name, bytes });
       schedulePresentationPreview(bytes, current);
+      return true;
     } catch (error) {
-      if (current !== requestId.current) return;
+      if (current !== requestId.current) return false;
       processingStartedAtRef.current = undefined;
       setView({ kind: 'failure', fileName: file.name, message: failureMessage(error) });
+      return false;
     }
   }, [clearPresentationPreview, releaseCurrentDownloads, runtimeServices, savedProject, schedulePresentationPreview, services.saveProject]);
+
+  const selectTransferredFile = useRef(selectFile);
+  selectTransferredFile.current = selectFile;
+  useEffect(() => {
+    if (!baybladTransfer) return;
+    const stop = startBaybladReceiver(baybladTransfer, (file) => new Promise<boolean>((resolve) => {
+      transferImported.current = resolve;
+      void selectTransferredFile.current(file).then((accepted) => {
+        if (!accepted) { resolve(false); transferImported.current = undefined; }
+      });
+    }), setTransferError);
+    return () => {
+      stop();
+      transferImported.current?.(false);
+      transferImported.current = undefined;
+    };
+  }, [baybladTransfer]);
+  useEffect(() => {
+    if (view.kind === 'material') {
+      transferImported.current?.(true);
+      transferImported.current = undefined;
+    }
+  }, [view]);
 
   const startSelectedMaterial = useCallback(() => {
     if (view.kind !== 'material') return;
@@ -757,6 +787,7 @@ export function OneClickConverter({
       level={effectLevel}
       chromeTarget={chromeTarget}
     >
+      {transferError && <p role="alert">{transferError}</p>}
       {content}
     </AppleWorkbench>
   );

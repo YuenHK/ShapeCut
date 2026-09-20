@@ -6,6 +6,7 @@ import { OneClickConverter, type OneClickConverterServices, type OutlineDownload
 import { listMaterialCatalog, type MaterialRepositoryPort } from './material-catalog';
 import { MaterialRepository } from '../persistence/material-repository';
 import type { MaterialProfileV1 } from '../domain/materials/schema';
+import { getBaybladTransfer, TRANSFER_FALLBACK } from './bayblad-transfer';
 import {
   OneClickProjectRepository,
   type OneClickProjectRepositoryPort,
@@ -77,6 +78,10 @@ export function App({
   readonly materialRepository?: MaterialRepositoryPort;
   readonly oneClickProjectRepository?: OneClickProjectRepositoryPort;
 }) {
+  const [handoff] = useState(() => ({
+    requested: window.location.hash.startsWith('#bayblad-transfer='),
+    transfer: getBaybladTransfer(window.location.hash, window.opener),
+  }));
   const geometryRef = useRef<GeometryClient | undefined>(undefined);
   const services = useMemo(() => suppliedServices ?? createOneClickServices(
     () => geometryRef.current ??= createGeometryWorkerClient(),
@@ -119,6 +124,10 @@ export function App({
   }, [materialRepository]);
   useEffect(() => {
     let active = true;
+    if (handoff.requested) {
+      setProjectLoad({ status: 'loaded' });
+      return;
+    }
     setProjectLoad({ status: 'loading' });
     setUnreadableProjectDeleteFailed(false);
     void projectRepository.load().then((project) => {
@@ -127,7 +136,7 @@ export function App({
       if (active) setProjectLoad({ status: 'failed' });
     });
     return () => { active = false; };
-  }, [projectLoadAttempt, projectRepository]);
+  }, [handoff.requested, projectLoadAttempt, projectRepository]);
   const discardUnreadableProject = async () => {
     if (projectLoad.status !== 'failed' || discardingUnreadableProject) return;
     setDiscardingUnreadableProject(true);
@@ -154,7 +163,12 @@ export function App({
       await projectRepository.delete();
       setProjectLoad({ status: 'loaded' });
     },
-  }), [projectRepository, savedProject, services, storedProfiles]);
+    ...(handoff.requested ? {
+      savedProject: undefined,
+      saveProject: undefined,
+      deleteSavedProject: undefined,
+    } : {}),
+  }), [handoff.requested, projectRepository, savedProject, services, storedProfiles]);
   useEffect(() => () => geometryRef.current?.dispose(), []);
   return (
     <div className="app-shell">
@@ -164,6 +178,8 @@ export function App({
         <div className="current-step-slot" ref={setChromeTarget} />
       </header>
       <main>
+        {handoff.requested && <p role="status">本次傳送不會覆寫已儲存專案；轉換結果請直接下載。</p>}
+        {handoff.requested && !handoff.transfer && <p role="alert">{TRANSFER_FALLBACK}</p>}
         {materialLoadFailed && <p role="alert">已儲存的材料設定檔未能載入；請稍後重試。</p>}
         {projectLoad.status === 'loading' && (
           <section className="converter-card" role="status">正在載入已儲存專案…</section>
@@ -189,7 +205,7 @@ export function App({
           </section>
         )}
         {projectLoad.status === 'loaded' && (
-          <OneClickConverter services={oneClickServices} chromeTarget={chromeTarget} />
+          <OneClickConverter services={oneClickServices} chromeTarget={chromeTarget} baybladTransfer={handoff.transfer} />
         )}
       </main>
       <footer>
