@@ -100,7 +100,7 @@ export type GeometryApi = {
     request: AutomaticOutlineRequest,
     onProgress?: AutomaticOutlineProgressTransport,
   ): Promise<PublicAutomaticOutlineResult>;
-  packageOutline(result: PublicAutomaticOutlineResult, deadline?: number): Promise<OutlinePackageTransfer>;
+  packageOutline(result: PublicAutomaticOutlineResult, deadline?: number, engraving?: import('../domain/part-engraving/settings').EngravingSettings): Promise<OutlinePackageTransfer>;
   inspectAndFindAxes(input: ArrayBuffer): Promise<ImportAnalysis>;
   analyzeAndRepairForImport(input: ArrayBuffer): Promise<ImportRepairAnalysis>;
   repairAdvanced(original: SerializedMesh, safeMesh: SerializedMesh): Promise<MeshRepairResult>;

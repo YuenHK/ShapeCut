@@ -54,9 +54,10 @@ export type ColoredOutlineEntityRecord = {
   readonly points: readonly (readonly number[])[];
 };
 
-const COLORED_ACI = Object.freeze({ CUT_BLACK: 7, DEEP_RED: 1, LIGHT_BLUE: 5 } as const);
-const COLORED_TRUE_COLOR = Object.freeze({ CUT_BLACK: 0, DEEP_RED: 0xE5484D, LIGHT_BLUE: 0x3A78D4 } as const);
+const COLORED_ACI = Object.freeze({ CUT_BLACK: 7, DEEP_RED: 1, LIGHT_BLUE: 5, ENGRAVE_TEXT: 4 } as const);
+const COLORED_TRUE_COLOR = Object.freeze({ CUT_BLACK: 0, DEEP_RED: 0xE5484D, LIGHT_BLUE: 0x3A78D4, ENGRAVE_TEXT: 0x008080 } as const);
 const COLORED_ROLES = Object.freeze(Object.keys(COLORED_ROLE_COLORS) as ColoredOutlineRole[]);
+const activeRoles = (engraving: boolean) => COLORED_ROLES.filter(role => role !== 'ENGRAVE_TEXT' || engraving);
 
 function xmlEscape(value: string): string {
   return value.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
@@ -85,7 +86,7 @@ export function createColoredExportLayout(
       cursorY += rowHeight + gap;
       rowHeight = 0;
     }
-    for (const role of COLORED_ROLES) for (const contour of layer.roles[role]) {
+    for (const role of COLORED_ROLES) for (const contour of layer.roles[role] ?? []) {
       checkpoint('colored-layout:contour-loop');
       entities.push({
         physicalLayerId: layer.id,
@@ -110,7 +111,7 @@ export function createColoredExportLayout(
 }
 
 function coloredEntityCounts(layout: ColoredExportLayout): string {
-  return COLORED_ROLES.map((role) => `${role}:${layout.entities.filter((entity) => entity.role === role).length}`).join(',');
+  return activeRoles(layout.entities.some(entity => entity.role === 'ENGRAVE_TEXT')).map((role) => `${role}:${layout.entities.filter((entity) => entity.role === role).length}`).join(',');
 }
 
 function entityRecords(layout: ColoredExportLayout): ColoredOutlineEntityRecord[] {
@@ -134,7 +135,7 @@ export function writeColoredOutlineSvg(
   const layout = createColoredExportLayout(document, checkpoint), counts = coloredEntityCounts(layout);
   const physicalGroups = document.layers.map((layer) => {
     checkpoint('svg:physical-layer-loop');
-    const roleGroups = COLORED_ROLES.map((role) => {
+    const roleGroups = activeRoles(Boolean(document.engraving)).map((role) => {
       const contours = layout.entities.filter((entity) => entity.order === layer.order && entity.role === role);
       const polygons = contours.map((entity) => {
         checkpoint('svg:entity-loop');
@@ -144,12 +145,13 @@ export function writeColoredOutlineSvg(
         }).join(' ');
         return `<polygon id="${xmlEscape(entity.id)}" data-physical-layer="${xmlEscape(entity.physicalLayerId)}" data-order="${entity.order}" data-index="${entity.index}" data-z-start="${entity.zStart}" data-z-end="${entity.zEnd}" data-role="${role}" points="${points}" fill="none" stroke="${COLORED_ROLE_COLORS[role]}"/>`;
       }).join('');
-      return `<g id="${role}" data-role="${role}" data-color="${COLORED_ROLE_COLORS[role]}" data-entity-count="${contours.length}">${polygons}</g>`;
+      return `<g id="${role}" data-role="${role}" data-color="${COLORED_ROLE_COLORS[role]}" data-entity-count="${contours.length}"${role === 'ENGRAVE_TEXT' ? ' stroke-width="0.06"' : ''}>${polygons}</g>`;
     }).join('');
     return `<g id="physical-layer-${layer.order}" data-layer-id="${xmlEscape(layer.id)}" data-order="${layer.order}" data-index="${layer.index}" data-z-start="${layer.zStart}" data-z-end="${layer.zEnd}">${roleGroups}</g>`;
   }).join('');
   checkpoint('svg:return');
-  return `<?xml version="1.0" encoding="UTF-8"?><svg xmlns="http://www.w3.org/2000/svg" width="${layout.width}mm" height="${layout.height}mm" viewBox="0 0 ${layout.width} ${layout.height}" data-outline-source-hash="${document.sourceHash}" data-feature-evidence-fingerprint="${document.featureEvidenceFingerprint}" data-diagnostics-fingerprint="${document.diagnosticsFingerprint}" data-entity-counts="${counts}">${physicalGroups}</svg>`;
+  const visibleGroups = document.engraving ? `<g transform="translate(0 ${layout.height}) scale(1 -1)">${physicalGroups}</g>` : physicalGroups;
+  return `<?xml version="1.0" encoding="UTF-8"?><svg xmlns="http://www.w3.org/2000/svg" width="${layout.width}mm" height="${layout.height}mm" viewBox="0 0 ${layout.width} ${layout.height}" data-outline-source-hash="${document.sourceHash}" data-feature-evidence-fingerprint="${document.featureEvidenceFingerprint}" data-diagnostics-fingerprint="${document.diagnosticsFingerprint}" data-entity-counts="${counts}">${visibleGroups}</svg>`;
 }
 
 export function parseColoredOutlineSvg(
@@ -159,7 +161,7 @@ export function parseColoredOutlineSvg(
   checkpoint('svg-parse:start');
   const rootCounts = svg.match(/\bdata-entity-counts="([^"]+)"/i)?.[1];
   if (!rootCounts) throw new RangeError('Colored SVG is missing exact entity counts');
-  const records = [...svg.matchAll(/<polygon id="([^"]+)" data-physical-layer="([^"]+)" data-order="(\d+)" data-index="(\d+)" data-z-start="([^"]+)" data-z-end="([^"]+)" data-role="(CUT_BLACK|DEEP_RED|LIGHT_BLUE)" points="([^"]+)" fill="none" stroke="(#[0-9A-F]{6})"\/>/g)].map((match) => {
+  const records = [...svg.matchAll(/<polygon id="([^"]+)" data-physical-layer="([^"]+)" data-order="(\d+)" data-index="(\d+)" data-z-start="([^"]+)" data-z-end="([^"]+)" data-role="(CUT_BLACK|DEEP_RED|LIGHT_BLUE|ENGRAVE_TEXT)" points="([^"]+)" fill="none" stroke="(#[0-9A-F]{6})"\/>/g)].map((match) => {
     checkpoint('svg-parse:entity-loop');
     const role = match[7] as ColoredOutlineRole;
     if (match[9] !== COLORED_ROLE_COLORS[role]) throw new RangeError('Colored SVG role color is inconsistent');
@@ -174,7 +176,7 @@ export function parseColoredOutlineSvg(
       zStart: Number(match[5]), zEnd: Number(match[6]), role, id: match[1], points,
     };
   });
-  const counts = COLORED_ROLES.map((role) => `${role}:${records.filter((record) => record.role === role).length}`).join(',');
+  const counts = activeRoles(records.some(record => record.role === 'ENGRAVE_TEXT')).map((role) => `${role}:${records.filter((record) => record.role === role).length}`).join(',');
   if (records.length === 0 || counts !== rootCounts) throw new RangeError('Colored SVG entity counts are inconsistent');
   checkpoint('svg-parse:return');
   return records;
@@ -185,7 +187,8 @@ export function writeColoredOutlineDxf(
   checkpoint: ColoredDocumentCheckpoint = () => undefined,
 ): string {
   const layout = createColoredExportLayout(document, checkpoint), counts = coloredEntityCounts(layout);
-  const layerTable = COLORED_ROLES.map((role) => `0\nLAYER\n2\n${role}\n70\n0\n62\n${COLORED_ACI[role]}\n420\n${COLORED_TRUE_COLOR[role]}\n6\nCONTINUOUS\n`).join('');
+  const roles = activeRoles(Boolean(document.engraving));
+  const layerTable = roles.map((role) => `0\nLAYER\n2\n${role}\n70\n0\n62\n${COLORED_ACI[role]}\n420\n${COLORED_TRUE_COLOR[role]}\n6\nCONTINUOUS\n`).join('');
   const entities = layout.entities.map((entity) => {
     checkpoint('dxf:entity-loop');
     const vertices = entity.points.map(([x, y], index) => {
@@ -195,7 +198,7 @@ export function writeColoredOutlineDxf(
     return `999\nENTITY_ID:${dxfComment(entity.id)}\n999\nPHYSICAL_LAYER:${dxfComment(entity.physicalLayerId)}:${entity.order}:${entity.index}:${entity.zStart}:${entity.zEnd}\n0\nLWPOLYLINE\n8\n${entity.role}\n62\n${COLORED_ACI[entity.role]}\n420\n${COLORED_TRUE_COLOR[entity.role]}\n90\n${entity.points.length}\n70\n1\n${vertices}`;
   }).join('');
   checkpoint('dxf:return');
-  return `0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n9\n$EXTMIN\n10\n0\n20\n0\n30\n0\n9\n$EXTMAX\n10\n${layout.width}\n20\n${layout.height}\n30\n0\n999\nOUTLINE_SOURCE_HASH:${document.sourceHash}\n999\nFEATURE_EVIDENCE_FINGERPRINT:${document.featureEvidenceFingerprint}\n999\nDIAGNOSTICS_FINGERPRINT:${document.diagnosticsFingerprint}\n999\nENTITY_COUNTS:${counts}\n0\nENDSEC\n0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n70\n3\n${layerTable}0\nENDTAB\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n${entities}0\nENDSEC\n0\nEOF\n`;
+  return `0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n9\n$EXTMIN\n10\n0\n20\n0\n30\n0\n9\n$EXTMAX\n10\n${layout.width}\n20\n${layout.height}\n30\n0\n999\nOUTLINE_SOURCE_HASH:${document.sourceHash}\n999\nFEATURE_EVIDENCE_FINGERPRINT:${document.featureEvidenceFingerprint}\n999\nDIAGNOSTICS_FINGERPRINT:${document.diagnosticsFingerprint}\n999\nENTITY_COUNTS:${counts}\n0\nENDSEC\n0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n70\n${roles.length}\n${layerTable}0\nENDTAB\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n${entities}0\nENDSEC\n0\nEOF\n`;
 }
 
 export function parseColoredOutlineDxf(
@@ -205,7 +208,7 @@ export function parseColoredOutlineDxf(
   checkpoint('dxf-parse:start');
   const declaredCounts = dxf.match(/999\nENTITY_COUNTS:([^\n]+)\n/)?.[1];
   if (!declaredCounts) throw new RangeError('Colored DXF is missing exact entity counts');
-  const records = [...dxf.matchAll(/999\nENTITY_ID:([^\n]+)\n999\nPHYSICAL_LAYER:([^:\n]+):(\d+):(\d+):([^:\n]+):([^\n]+)\n0\nLWPOLYLINE\n8\n(CUT_BLACK|DEEP_RED|LIGHT_BLUE)\n62\n(\d+)\n420\n(\d+)\n90\n(\d+)\n70\n1\n((?:10\n[^\n]+\n20\n[^\n]+\n)+)/g)].map((match) => {
+  const records = [...dxf.matchAll(/999\nENTITY_ID:([^\n]+)\n999\nPHYSICAL_LAYER:([^:\n]+):(\d+):(\d+):([^:\n]+):([^\n]+)\n0\nLWPOLYLINE\n8\n(CUT_BLACK|DEEP_RED|LIGHT_BLUE|ENGRAVE_TEXT)\n62\n(\d+)\n420\n(\d+)\n90\n(\d+)\n70\n1\n((?:10\n[^\n]+\n20\n[^\n]+\n)+)/g)].map((match) => {
     checkpoint('dxf-parse:entity-loop');
     const role = match[7] as ColoredOutlineRole;
     if (Number(match[8]) !== COLORED_ACI[role] || Number(match[9]) !== COLORED_TRUE_COLOR[role]) {
@@ -223,7 +226,7 @@ export function parseColoredOutlineDxf(
       zStart: Number(match[5]), zEnd: Number(match[6]), role, id: match[1], points,
     };
   });
-  const counts = COLORED_ROLES.map((role) => `${role}:${records.filter((record) => record.role === role).length}`).join(',');
+  const counts = activeRoles(records.some(record => record.role === 'ENGRAVE_TEXT')).map((role) => `${role}:${records.filter((record) => record.role === role).length}`).join(',');
   if (records.length === 0 || counts !== declaredCounts) throw new RangeError('Colored DXF entity counts are inconsistent');
   checkpoint('dxf-parse:return');
   return records;

@@ -230,7 +230,7 @@ const geometryApi: GeometryApi = {
       progressProxy?.[releaseProxy]();
     }
   },
-  async packageOutline(result, deadline = Date.now() + DEFAULT_OUTLINE_BUDGETS.maxRuntimeMs) {
+  async packageOutline(result, deadline = Date.now() + DEFAULT_OUTLINE_BUDGETS.maxRuntimeMs, engraving) {
     let output: Awaited<ReturnType<typeof createOutlinePackage>>;
     let acknowledgedPdfStart = false;
     let activeArtifact: OutlineArtifactId = 'colored-outline-document';
@@ -250,6 +250,7 @@ const geometryApi: GeometryApi = {
       };
       nearLimitPackageWorkload = undefined;
       output = await createOutlinePackage(packageInput, deadline, {
+        engraving,
         onCheckpoint: (label) => {
           activeArtifact = artifactForPackageCheckpoint(label, activeArtifact);
           if (acknowledgedPdfStart || label !== 'pdf:create:before') return;
@@ -258,6 +259,9 @@ const geometryApi: GeometryApi = {
         },
       });
     } catch (error) {
+      if (error instanceof Error && error.name === 'EngravingError') {
+        throw { name: 'EngravingError', message: error.message };
+      }
       if (error instanceof Error && /deadline|runtime|time limit/i.test(error.message)) {
         throw { name: 'AutomaticOutlineError', code: 'TIME_LIMIT', message: '模型處理超出時間上限' };
       }

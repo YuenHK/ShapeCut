@@ -28,5 +28,7 @@ describe('geometry client production build fixture', () => {
     expect(worker.fileName).not.toMatch(/\.ts$/);
     const entry = chunks.find((chunk) => chunk.isEntry);
     expect(entry?.code).toContain(worker.fileName);
-  });
+  // Bundling now includes the fixed CJK font asset; shared CI runners can exceed
+  // Vitest's 5 s default even though all worker/entry assertions still succeed.
+  }, 20_000);
 });

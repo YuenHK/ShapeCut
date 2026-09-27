@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
+import { EngravingError } from '../domain/part-engraving/settings';
 import {
   AutomaticOutlineError,
   type AutomaticOutlineProgressEvent,
@@ -189,6 +190,49 @@ function services(overrides: Partial<OneClickConverterServices> = {}): OneClickC
     ...overrides,
   };
 }
+
+it('passes optional personal engraving settings to packaging without changing STL conversion', async () => {
+  const user = userEvent.setup();
+  const api = services();
+  render(<OneClickConverter services={api} />);
+  await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'named.stl'));
+  await user.type(await screen.findByLabelText('名稱／學號'), '1A99');
+  await user.type(screen.getByLabelText('作品名'), '破滅魔劍');
+  await user.click(screen.getByRole('button', { name: '開始製作' }));
+  expect(await screen.findByRole('heading', { name: '轉換完成' })).toBeVisible();
+  expect(api.package).toHaveBeenCalledWith(result, 'named.stl', { name: '1A99', workName: '破滅魔劍' });
+  expect(api.convert).toHaveBeenCalledTimes(1);
+  await user.click(screen.getByRole('button', { name: '刻字預覽／修改' }));
+  await user.clear(screen.getByLabelText('作品名'));
+  await user.type(screen.getByLabelText('作品名'), '星劍');
+  await user.click(screen.getByRole('button', { name: '更新刻字及輸出' }));
+  expect(await screen.findByRole('heading', { name: '轉換完成' })).toBeVisible();
+  expect(api.convert).toHaveBeenCalledTimes(1);
+  expect(api.package).toHaveBeenLastCalledWith(result, 'named.stl', { name: '1A99', workName: '星劍' });
+  await user.click(screen.getByRole('button', { name: '刻字預覽／修改' }));
+  await user.type(screen.getByLabelText('作品名'), '不保存');
+  await user.click(screen.getByRole('button', { name: '返回結果（不套用修改）' }));
+  await user.click(screen.getByRole('button', { name: '刻字預覽／修改' }));
+  expect(screen.getByLabelText('作品名')).toHaveValue('星劍');
+  expect(api.package).toHaveBeenCalledTimes(2);
+});
+
+it('recovers from engraving placement failure without recomputing the STL', async () => {
+  const user = userEvent.setup();
+  const api = services({ package: vi.fn().mockRejectedValueOnce(new EngravingError('PartA 空間不足')).mockResolvedValue(downloads) });
+  render(<OneClickConverter services={api} />);
+  await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['mesh'], 'named.stl'));
+  await user.type(await screen.findByLabelText('名稱／學號'), '1A99');
+  await user.click(screen.getByRole('button', { name: '開始製作' }));
+  expect(await screen.findByText('PartA 空間不足')).toBeVisible();
+  expect(screen.queryByRole('link', { name: /下載 ZIP/ })).toBeNull();
+  await user.click(screen.getByRole('button', { name: '修改刻字並重新輸出' }));
+  await user.clear(screen.getByLabelText('名稱／學號'));
+  await user.click(screen.getByRole('button', { name: '更新刻字及輸出' }));
+  expect(await screen.findByRole('heading', { name: '轉換完成' })).toBeVisible();
+  expect(api.convert).toHaveBeenCalledTimes(1);
+  expect(api.package).toHaveBeenLastCalledWith(result, 'named.stl', { name: '', workName: '' });
+});
 
 async function uploadAndSelectMaterial(user: ReturnType<typeof userEvent.setup>, file: File): Promise<void> {
   await user.upload(screen.getByLabelText('選擇 STL 模型'), file);

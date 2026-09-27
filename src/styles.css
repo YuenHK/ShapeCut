@@ -850,6 +850,22 @@ progress::-webkit-progress-value {
   background: #fff;
 }
 
+.engraving-fields {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: .5rem;
+  text-align: left;
+}
+.engraving-editor { overflow: auto; display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 1rem 2rem; align-content: start; }
+.engraving-editor > h1 { grid-column: 1 / -1; }
+.engraving-editor > figure { min-width: 0; margin: 0; align-self: center; }
+.engraving-editor-controls { border: 0; padding: 0; min-width: 0; display: grid; gap: .75rem; }
+.engraving-vector-preview { display: block; width: 100%; max-height: 48vh; object-fit: contain; }
+@media (max-width: 760px) {
+  .engraving-editor { grid-template-columns: minmax(0, 1fr); }
+}
 .material-card {
   display: grid;
   gap: 1rem;

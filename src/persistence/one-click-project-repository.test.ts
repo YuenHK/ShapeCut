@@ -85,6 +85,26 @@ describe('one-click project persistence', () => {
     await expect(repository.load()).resolves.toEqual(noOmissions);
   });
 
+  it('round-trips explicit engraving settings and removes them on discard', async () => {
+    const name = `one-click-${crypto.randomUUID()}`;
+    names.push(name);
+    const repository = new OneClickProjectRepository(trackedDatabase(name));
+    const personalized = { ...record(), engraving: { name: '1A99', workName: '破滅魔劍' } };
+    await repository.save(personalized);
+    expect((await repository.load())?.engraving).toEqual(personalized.engraving);
+    await repository.delete();
+    expect(await repository.load()).toBeUndefined();
+  });
+
+  it('rejects unsafe and overlong persisted engraving settings', async () => {
+    const name = `one-click-${crypto.randomUUID()}`;
+    names.push(name);
+    const repository = new OneClickProjectRepository(trackedDatabase(name));
+    await expect(repository.save({ ...record(), engraving: { name: 'x'.repeat(25), workName: '' } })).rejects.toThrow();
+    await expect(repository.save({ ...record(), engraving: { name: 'a\u0000', workName: '' } })).rejects.toThrow();
+    expect(await repository.load()).toBeUndefined();
+  });
+
   it('migrates a strict v2 record to a regeneration-required v3 shell without inventing omission decisions', async () => {
     const name = `one-click-${crypto.randomUUID()}`;
     names.push(name);

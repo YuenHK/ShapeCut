@@ -8,6 +8,8 @@ import {
   type DragEvent,
   type ReactNode,
 } from 'react';
+import { EngravingFields } from './EngravingFields';
+import { EngravingError, normalizeEngravingSettings, hasEngravingText, validateEngravingSettings, type EngravingSettings } from '../domain/part-engraving/settings';
 import {
   AutomaticOutlineError,
   type AutomaticOutlineProgressEvent,
@@ -79,7 +81,7 @@ export type OneClickConverterServices = {
     launcherFitOffsetMm: number,
     onProgress?: (event: AutomaticOutlineProgressEvent) => void | Promise<void>,
   ) => Promise<PublicAutomaticOutlineResult>;
-  readonly package: (result: PublicAutomaticOutlineResult, fileName?: string) => Promise<OutlineDownloads>;
+  readonly package: (result: PublicAutomaticOutlineResult, fileName?: string, engraving?: EngravingSettings) => Promise<OutlineDownloads>;
   readonly cancel: () => void;
   /** Test seam; production uses the cancellable wall-clock presentation timeline. */
   readonly createTimeline?: (clock: ProcessingTimelineClock<number>) => ProcessingTimeline;
@@ -113,6 +115,7 @@ function selectableMaterials(savedProfiles: readonly MaterialProfileV1[] = []): 
 }
 
 function failureMessage(error: unknown): string {
+  if (error instanceof EngravingError) return error.message;
   if (error instanceof AutomaticOutlineError) {
     return {
       INVALID_STL: '這個檔案不是可讀取的 STL，請選擇另一個模型。',
@@ -390,6 +393,12 @@ export function OneClickConverter({
   const [presentationPreview, setPresentationPreview] = useState<OutlinePreviewPayload | undefined>(undefined);
   const [launcherFitInput, setLauncherFitInput] = useState('0.00');
   const [selectedMaterialId, setSelectedMaterialId] = useState('acrylic-6');
+  const [engraving, setEngraving] = useState<EngravingSettings>({ name: '', workName: '' });
+  const engravingError = validateEngravingSettings(engraving);
+  const [repackBusy, setRepackBusy] = useState(false);
+  const [repackError, setRepackError] = useState<string>();
+  const [editingEngraving, setEditingEngraving] = useState(false);
+  const appliedEngravingRef = useRef<EngravingSettings>({ name: '', workName: '' });
   const [sourceSha256, setSourceSha256] = useState<string | undefined>();
   const [savedSourceReattached, setSavedSourceReattached] = useState(false);
   const [savedDecisionMismatchCause, setSavedDecisionMismatchCause] = useState<
@@ -524,6 +533,7 @@ export function OneClickConverter({
     timelineRef.current = timeline;
     timeline.advance('reading');
     try {
+      const normalizedEngraving = normalizeEngravingSettings(engraving);
       const result = await runtimeServices.convert(bytes, material, launcherFitOffsetMm, (event) => {
         if (current !== requestId.current || workerFinished) return;
         if ('preview' in event) latestPreview = event.preview;
@@ -575,6 +585,7 @@ export function OneClickConverter({
             decorationOmissions,
             canonicalSourceHash: result.sourceHash,
             status: 'regeneration-required',
+            ...(hasEngravingText(normalizedEngraving) ? { engraving: normalizedEngraving } : {}),
           });
         }
         setSavedDecisionMismatchCause(
@@ -589,7 +600,9 @@ export function OneClickConverter({
         setView({ kind: 'material', fileName, bytes });
         return;
       }
-      const packaged = runtimeServices.package(result, fileName).then((downloads) => {
+      const packaged = (hasEngravingText(normalizedEngraving)
+        ? runtimeServices.package(result, fileName, normalizedEngraving)
+        : runtimeServices.package(result, fileName)).then((downloads) => {
         if (current !== requestId.current) {
           revokeDownloads(downloads);
           throw new SupersededError(current);
@@ -619,9 +632,11 @@ export function OneClickConverter({
           decorationOmissions,
           canonicalSourceHash: result.sourceHash,
           status: 'ready',
+          ...(hasEngravingText(normalizedEngraving) ? { engraving: normalizedEngraving } : {}),
         });
       }
       processingStartedAtRef.current = undefined;
+      appliedEngravingRef.current = normalizedEngraving;
       setView({ kind: 'result', fileName, result, downloads });
     } catch (error) {
       if (current !== requestId.current || error instanceof SupersededError) return;
@@ -645,12 +660,15 @@ export function OneClickConverter({
         } : {}),
       });
     }
-  }, [releaseCurrentDownloads, runtimeServices, savedProject, services, sourceSha256]);
+  }, [engraving, releaseCurrentDownloads, runtimeServices, savedProject, services, sourceSha256]);
 
   const selectFile = useCallback(async (file: File): Promise<boolean> => {
     const current = ++requestId.current;
     setLauncherFitInput('0.00');
     setSelectedMaterialId('acrylic-6');
+    setEngraving(savedProject?.engraving ?? { name: '', workName: '' });
+    setEditingEngraving(false);
+    setRepackError(undefined);
     setSavedDecisionMismatchCause(undefined);
     clearPresentationPreview();
     processingStartedAtRef.current = Date.now();
@@ -744,10 +762,52 @@ export function OneClickConverter({
     releaseCurrentDownloads();
     setLauncherFitInput('0.00');
     setSelectedMaterialId('acrylic-6');
+    setEngraving({ name: '', workName: '' });
+    setEditingEngraving(false);
+    setRepackError(undefined);
     setSourceSha256(undefined);
     setSavedSourceReattached(false);
     setSavedDecisionMismatchCause(undefined);
     setView({ kind: 'upload' });
+  };
+
+  const repackEngraving = async () => {
+    if (repackBusy || engravingError || !('result' in view) || !view.result) return;
+    const result = view.result, fileName = view.fileName ?? 'model.stl';
+    const current = ++requestId.current;
+    setRepackBusy(true);
+    setRepackError(undefined);
+    releaseCurrentDownloads();
+    try {
+      const normalized = normalizeEngravingSettings(engraving);
+      const downloads = await runtimeServices.package(result, fileName, normalized);
+      if (current !== requestId.current) { revokeDownloads(downloads); return; }
+      downloadsRef.current = downloads;
+      if (sourceSha256 && services.saveProject) {
+        await services.saveProject({
+          schemaVersion: 3, id: 'one-click-current', updatedAt: new Date().toISOString(),
+          sourceSha256, material: result.assembly.material,
+          launcherFitOffsetMm: result.assembly.launcher.fitOffsetMm,
+          launcherTemplateVersion: result.assembly.launcher.templateVersion,
+          launcherTemplateFingerprint: result.assembly.launcher.templateFingerprint,
+          launcherExteriorExpansion: structuredClone(result.assembly.launcher.exteriorExpansion),
+          decorationOmissions: structuredClone(result.assembly.decorationOmissions),
+          canonicalSourceHash: result.sourceHash, status: 'ready',
+          ...(hasEngravingText(normalized) ? { engraving: normalized } : {}),
+        });
+      }
+      if (current !== requestId.current) return;
+      appliedEngravingRef.current = normalized;
+      setView({ kind: 'result', fileName, result, downloads });
+      setEditingEngraving(false);
+    } catch (error) {
+      if (current !== requestId.current) return;
+      releaseCurrentDownloads();
+      setRepackError(failureMessage(error));
+      setView({ kind: 'failure', fileName, result, preview: result.preview, message: failureMessage(error) });
+    } finally {
+      if (current === requestId.current) setRepackBusy(false);
+    }
   };
 
   const cancelProcessing = useCallback(() => {
@@ -792,6 +852,30 @@ export function OneClickConverter({
     </AppleWorkbench>
   );
   const processingStartedAt = processingStartedAtRef.current!;
+
+  if (editingEngraving && 'result' in view && view.result) return frame(
+    <section className="converter-card engraving-editor" aria-labelledby="engraving-title">
+      <h1 id="engraving-title">刻字預覽／修改</h1>
+      {view.kind === 'result' && !repackBusy && <figure>
+        <img className="engraving-vector-preview" src={view.downloads.svg.href} alt="上次輸出的實際切片與刻字向量預覽" />
+        <figcaption>上次輸出預覽；修改欄位後請更新輸出，再檢查字形位置。PartA 為上層、PartB 為中層、PartC 為下層。</figcaption>
+      </figure>}
+      <fieldset disabled={repackBusy} className="engraving-editor-controls">
+        <EngravingFields value={engraving} onChange={setEngraving} error={engravingError} />
+        <p>刻字須在雷射軟件將 ENGRAVE_TEXT 圖層指定為雕刻，不可當作切割線；正式製作前先試刻。</p>
+        {repackError && <p role="alert">{repackError}</p>}
+        <button className="primary-button" type="button" disabled={Boolean(engravingError)} onClick={() => void repackEngraving()}>更新刻字及輸出</button>
+        {view.kind === 'result' && <button className="change-file-button" type="button" onClick={() => {
+          setEngraving(appliedEngravingRef.current);
+          setEditingEngraving(false);
+        }}>返回結果（不套用修改）</button>}
+        <button className="change-file-button" type="button" onClick={savedProject ? () => void discardSavedProject() : reset}>
+          {savedProject ? '捨棄已儲存專案並選擇另一個模型' : '選擇另一個模型'}
+        </button>
+      </fieldset>
+      {repackBusy && <p role="status">正在排版及更新輸出，無須重新分析 STL。</p>}
+    </section>,
+  );
 
   if (view.kind === 'upload') return frame(
     <section className="converter-card upload-card" aria-labelledby="converter-title">
@@ -842,6 +926,7 @@ export function OneClickConverter({
       <h1 id="material-title">{view.fileName}</h1>
       <p>請選擇本次製作的材料，系統只會把所需的幾何資料傳送到處理程序。</p></div>
       <div className="material-controls">
+      <EngravingFields value={engraving} onChange={setEngraving} error={engravingError} />
       {savedProject && (
         <section aria-label="已儲存專案重新產生">
           {savedSourceReattached ? (
@@ -857,7 +942,7 @@ export function OneClickConverter({
           )}
           <button
             type="button"
-            disabled={!savedSourceReattached}
+            disabled={!savedSourceReattached || Boolean(engravingError)}
             className="primary-button"
             onClick={() => void processFile(
               view.fileName,
@@ -908,7 +993,7 @@ export function OneClickConverter({
           type="button"
           onClick={startSelectedMaterial}
           className="primary-button"
-          disabled={parsedLauncherFitOffset(launcherFitInput) === undefined}
+          disabled={parsedLauncherFitOffset(launcherFitInput) === undefined || Boolean(engravingError)}
         >
           開始製作
         </button>
@@ -992,6 +1077,7 @@ export function OneClickConverter({
             <DetailPages label="已保留的處理提示" pageSize={2}><ul>{presentationWarnings(view.result).map((item) => <li key={item}>{item}</li>)}</ul></DetailPages>
           </section>
         )}
+        {view.result && <button className="change-file-button" type="button" onClick={() => { setRepackError(undefined); setEditingEngraving(true); }}>修改刻字並重新輸出</button>}
         <MotionSurface
           as="button"
           level={effectLevel}
@@ -1035,6 +1121,7 @@ export function OneClickConverter({
         <div className="result-viewport">
           <OutlineProcessViewport payload={result.preview} stage="result" effectLevel={effectLevel} />
           <p className="launcher-calibration-note">分層示意，間距非實際厚度</p>
+          <button className="change-file-button" type="button" onClick={() => { setRepackError(undefined); setEditingEngraving(true); }}>刻字預覽／修改</button>
         </div>
         <WorkbenchDetails settings={<DetailPages label="製作設定"><dl className="result-summary">
           <div><dt>切片數量</dt><dd>{result.layers.length} 層</dd></div>
@@ -1089,6 +1176,7 @@ export function OneClickConverter({
       </div>
       <div className="color-legend" aria-label="相對顏色圖例">
         <strong>顏色圖例</strong>
+        {hasEngravingText(appliedEngravingRef.current) && <p>ENGRAVE_TEXT：個人識別刻字。請在雷射軟件指定為雕刻，不可切割，並先試刻；中下層組裝後可能被遮住。</p>}
         <ul>
           <li><span className="legend-swatch black" aria-hidden="true" />黑色：切割外框及中央孔</li>
           <li><span className="legend-swatch red" aria-hidden="true" />紅色：相對較深層特徵</li>

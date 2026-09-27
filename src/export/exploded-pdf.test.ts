@@ -1,4 +1,4 @@
-import { decodePDFRawStream, PDFArray, PDFDocument, PDFRawStream, StandardFonts } from 'pdf-lib';
+import { decodePDFRawStream, PDFArray, PDFDocument, PDFPage, PDFRawStream, StandardFonts } from 'pdf-lib';
 import { describe, expect, it, vi } from 'vitest';
 import { CENTRAL_HOLE_OMISSION_WARNING } from '../domain/outline-features/hole';
 import { featureEvidenceFingerprint } from '../domain/outline-features/types';
@@ -58,6 +58,28 @@ function svgDimensions(svg: string): readonly [number, number] {
 }
 
 describe('deterministic colored PDFs', () => {
+  it('fits engraved sidebar labels without shrinking and includes the engraving legend swatch', async () => {
+    const base = createColoredOutlineDocument(coloredResult());
+    const document = { ...base, engraving: {
+      settings: {name:'A',workName:''},fontId:'test',fontSha256:'test',emMm:3 as const,clearanceMm:1 as const,parts:[],
+    }, layers: base.layers.map(layer => ({...layer,id:'layer-'+'a'.repeat(72),roles:{...layer.roles,
+      CUT_BLACK:layer.roles.CUT_BLACK.map((contour,index)=>index ? contour : {...contour,boundsMm:{...contour.boundsMm,maxX:15.527344519674074,maxY:16.67188670033627}}),
+    }})) };
+    const drawText=vi.spyOn(PDFPage.prototype,'drawText');
+    try {
+      const pdf=await PDFDocument.load(await writeExplodedViewPdf(document));
+      const visible=visiblePdfContent(pdf);
+      expect(visible).toContain('ENGRAVE_TEXT #008080');
+      expect(visible).toContain('X 45.53 Y 46.67');
+      expect(visible).not.toContain('527344519674074');
+      const labelCalls=drawText.mock.calls.filter(([,options])=>options?.x===184*MM_TO_POINTS && options.y! < 180*MM_TO_POINTS);
+      expect(labelCalls.length).toBeGreaterThan(document.layers.length);
+      for (const [text,options] of labelCalls) {
+        expect(options!.size).toBe(7);
+        expect(options!.font!.widthOfTextAtSize(text,7)).toBeLessThanOrEqual(103*MM_TO_POINTS);
+      }
+    } finally { drawText.mockRestore(); }
+  });
   it.each([3, 6])('exports three named layers using %i mm material thickness', async (thickness) => {
     const box = new BoxGeometry(60, 60, 30);
     const bytes = writeBinarySTL({

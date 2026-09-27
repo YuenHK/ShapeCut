@@ -1,4 +1,6 @@
 import JSZip from 'jszip';
+import { loadEngravingFont } from '../domain/part-engraving/font';
+import { hasEngravingText, normalizeEngravingSettings, type EngravingSettings } from '../domain/part-engraving/settings';
 import { PDFDocument } from 'pdf-lib';
 import { AUTOMATIC_AXIS_CONFIDENCE_THRESHOLD } from '../domain/axis/find-axis';
 import { polygonMassProperties, polygonsIntersectOrTouch, validatePolygon } from '../domain/engraving/geometry';
@@ -73,7 +75,7 @@ const EXACT_FALLBACK_WARNING = '精確切片失敗，已改用 2.5D 外形模式
 const checkPackageDeadline = (deadline: number, now: () => number = Date.now): void => {
   if ((deadline !== Number.POSITIVE_INFINITY && !Number.isFinite(deadline)) || now() > deadline) throw new RangeError('Outline package exceeded the shared deadline');
 };
-type PackageDeadlineOptions = { readonly now?: () => number; readonly onCheckpoint?: (label: string) => void };
+type PackageDeadlineOptions = { readonly now?: () => number; readonly onCheckpoint?: (label: string) => void; readonly engraving?: EngravingSettings };
 type PackageDeadlineInput = PackageDeadlineOptions | (() => number);
 type PackageCheckpoint = (label: string) => void;
 const packageCheckpoint = (deadline: number, input: PackageDeadlineInput): PackageCheckpoint => (label) => {
@@ -728,8 +730,11 @@ export async function verifyLegacyOutlinePackage(output: OutlinePackage, deadlin
   checkpoint('verify:return');
 }
 
-function coloredDeadlineOptions(input: PackageDeadlineInput): ColoredDocumentDeadlineOptions {
-  return typeof input === 'function' ? { now: input } : input;
+async function coloredDeadlineOptions(input: PackageDeadlineInput, deadline: number): Promise<ColoredDocumentDeadlineOptions> {
+  const options = typeof input === 'function' ? { now: input } : input;
+  const engraving = normalizeEngravingSettings(options.engraving);
+  const remainingMs = deadline - (options.now ?? Date.now)();
+  return hasEngravingText(engraving) ? { ...options, engraving, engravingFont: await loadEngravingFont(remainingMs) } : options;
 }
 
 function bytesEqual(
@@ -964,6 +969,7 @@ function coloredProjectJson(document: ReturnType<typeof createColoredOutlineDocu
     sourceHash: document.sourceHash,
     featureEvidenceFingerprint: document.featureEvidenceFingerprint,
     diagnosticsFingerprint: document.diagnosticsFingerprint,
+    ...(document.engraving ? { engraving: document.engraving } : {}),
     safetyNotes: document.safetyNotes,
     assembly: {
       material: {
@@ -1040,8 +1046,10 @@ export async function createOutlinePackage(
   deadline = Date.now() + DEFAULT_OUTLINE_BUDGETS.maxRuntimeMs,
   options: PackageDeadlineInput = {},
 ): Promise<ColoredOutlinePackage> {
-  const checkpoint = packageCheckpoint(deadline, options), documentOptions = coloredDeadlineOptions(options);
+  const checkpoint = packageCheckpoint(deadline, options);
   checkpoint('colored-package:create:start');
+  const documentOptions = await coloredDeadlineOptions(options, deadline);
+  checkpoint('colored-package:create:font-ready');
   const document = createColoredOutlineDocument(result, deadline, documentOptions);
   checkpoint('colored-package:document:after');
   checkpoint('colored-package:svg:before');
@@ -1100,8 +1108,10 @@ export async function verifyOutlinePackage(
   deadline = Date.now() + DEFAULT_OUTLINE_BUDGETS.maxRuntimeMs,
   options: PackageDeadlineInput = {},
 ): Promise<void> {
-  const checkpoint = packageCheckpoint(deadline, options), documentOptions = coloredDeadlineOptions(options);
+  const checkpoint = packageCheckpoint(deadline, options);
   checkpoint('colored-package:verify:start');
+  const documentOptions = await coloredDeadlineOptions(options, deadline);
+  checkpoint('colored-package:verify:font-ready');
   assertExactColoredOutputKeys(output);
   const document = createColoredOutlineDocument(result, deadline, documentOptions);
   validateColoredOutlineDocument(document, result, deadline, documentOptions);

@@ -62,7 +62,7 @@ export type GeometryClient = {
     request: AutomaticOutlineRequest,
     onProgress?: AutomaticOutlineProgress,
   ): Promise<PublicAutomaticOutlineResult>;
-  packageOutline(result: PublicAutomaticOutlineResult, deadline?: number): Promise<OutlinePackageTransfer>;
+  packageOutline(result: PublicAutomaticOutlineResult, deadline?: number, engraving?: import('../domain/part-engraving/settings').EngravingSettings): Promise<OutlinePackageTransfer>;
   analyzeForImport(input: ArrayBuffer): Promise<ImportAnalysis>;
   analyzeAndRepairForImport(input: ArrayBuffer): Promise<ImportRepairAnalysis>;
   repairAdvanced(original: SerializedMesh, safeMesh: SerializedMesh): Promise<MeshRepairResult>;
@@ -140,7 +140,7 @@ export function makeGeometryClient(api: GeometryApi, options: GeometryClientOpti
         gatedProgress,
       );
     }),
-    packageOutline: (result, deadline) => run(() => api.packageOutline(result, deadline)),
+    packageOutline: (result, deadline, engraving) => run(() => engraving === undefined ? api.packageOutline(result, deadline) : api.packageOutline(result, deadline, engraving)),
     analyzeForImport: (input) => run(() => api.inspectAndFindAxes(options.transferInput?.(input) ?? input)),
     analyzeAndRepairForImport: (input) => run(() => (
       api.analyzeAndRepairForImport(options.transferInput?.(input) ?? input)
@@ -251,9 +251,14 @@ function dynamicApi(
         throw error;
       }
     },
-    packageOutline: async (result, deadline) => {
-      try { return await getRemote().packageOutline(result, deadline); }
+    packageOutline: async (result, deadline, engraving) => {
+      try { return await getRemote().packageOutline(result, deadline, engraving); }
       catch (error) {
+        if (error && typeof error === 'object' && 'name' in error && error.name === 'EngravingError'
+          && 'message' in error && typeof error.message === 'string' && error.message.length < 500) {
+          const { EngravingError } = await import('../domain/part-engraving/settings');
+          throw new EngravingError(error.message);
+        }
         if (isSerializedAutomaticOutlineError(error)) throw new AutomaticOutlineError(error.code, error.message);
         if (isSerializedOutlineArtifactError(error)) throw new OutlineArtifactError(error.artifact);
         throw error;

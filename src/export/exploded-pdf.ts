@@ -14,11 +14,32 @@ const ROLE_RGB = Object.freeze({
   CUT_BLACK: rgb(0, 0, 0),
   DEEP_RED: rgb(0xe5 / 255, 0x48 / 255, 0x4d / 255),
   LIGHT_BLUE: rgb(0x3a / 255, 0x78 / 255, 0xd4 / 255),
+  ENGRAVE_TEXT: rgb(0, 0x80 / 255, 0x80 / 255),
 });
 const ROLE_LEGEND_LABEL = 'BLACK CUT | RED DEEP | BLUE LIGHT';
 const RELATIVE_LEVEL_GUIDANCE = 'Red and blue are relative processing levels, not literal machine settings.';
 const TEST_CUT_GUIDANCE = 'Assign machine-specific settings after material test cuts.';
 const PREVIEW_SAFETY_NOTE_MINIMUM_WIDTH_MM = 80;
+
+function wrapSidebarText(text: string, font: PDFFont): string[] {
+  const maximumWidth = 103 * MM_TO_POINTS, size = 7;
+  const lines: string[] = [];
+  let line = '';
+  for (const word of text.split(/\s+/)) {
+    const combined = line ? `${line} ${word}` : word;
+    if (font.widthOfTextAtSize(combined, size) <= maximumWidth) { line = combined; continue; }
+    if (line) { lines.push(line); line = ''; }
+    // Canonical IDs may be long unbroken tokens: split without reducing the approved font size.
+    for (const character of word) {
+      if (line && font.widthOfTextAtSize(line + character, size) > maximumWidth) {
+        lines.push(line); line = '';
+      }
+      line += character;
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
 
 function physicalLayerName(layerCount: number, layerIndex: number): string {
   if (layerCount === 3) return ['Bottom', 'Middle', 'Top'][layerIndex];
@@ -26,7 +47,7 @@ function physicalLayerName(layerCount: number, layerIndex: number): string {
 }
 
 function assemblySafetyNotes(document: ColoredOutlineDocument): readonly string[] {
-  return publicSafetyNotesFromWarnings(document.safetyNotes);
+  return [...publicSafetyNotesFromWarnings(document.safetyNotes), ...(document.engraving ? ['ENGRAVE_TEXT: engrave, never cut.', 'Lower labels may be covered after assembly.'] : [])];
 }
 
 function configure(pdf: PDFDocument, title: string, keywords: readonly string[]): void {
@@ -79,7 +100,7 @@ function drawLoop(
     const [x1, y1] = map(points[index]), [x2, y2] = map(points[(index + 1) % points.length]);
     page.drawLine({
       start: { x: x1, y: y1 }, end: { x: x2, y: y2 },
-      thickness: role === 'CUT_BLACK' ? 0.8 : 1.2,
+      thickness: role === 'ENGRAVE_TEXT' ? 0.17 : role === 'CUT_BLACK' ? 0.8 : 1.2,
       color: ROLE_RGB[role],
     });
   }
@@ -114,7 +135,7 @@ export async function writeColoredPreviewPdf(
   document: ColoredOutlineDocument,
   checkpoint: ColoredDocumentCheckpoint = () => undefined,
 ): Promise<Uint8Array> {
-  const roleKeyword = 'roles:CUT_BLACK:#000000,DEEP_RED:#E5484D,LIGHT_BLUE:#3A78D4';
+  const roleKeyword = 'roles:CUT_BLACK:#000000,DEEP_RED:#E5484D,LIGHT_BLUE:#3A78D4' + (document.engraving ? ',ENGRAVE_TEXT:#008080' : '');
   return createPdf('ShapeCut colored preview', [
     `outline-source:${document.sourceHash}`,
     `feature-evidence:${document.featureEvidenceFingerprint}`,
@@ -127,8 +148,9 @@ export async function writeColoredPreviewPdf(
   ], (pdf, font, drawCheckpoint) => {
     const layout = createColoredExportLayout(document, drawCheckpoint);
     const safetyNotes = assemblySafetyNotes(document);
+    const engravingFooterExtra = document.engraving ? Math.max(0, safetyNotes.length * 3 - 8) : 0;
     const pageWidthMm = Math.max(layout.width, safetyNotes.length > 0 ? PREVIEW_SAFETY_NOTE_MINIMUM_WIDTH_MM : 0);
-    const page = pdf.addPage([pageWidthMm * MM_TO_POINTS, (layout.height + 24) * MM_TO_POINTS]);
+    const page = pdf.addPage([pageWidthMm * MM_TO_POINTS, (layout.height + 24 + engravingFooterExtra) * MM_TO_POINTS]);
     const map = ([x, y]: readonly [number, number]) => [x * MM_TO_POINTS, y * MM_TO_POINTS] as const;
     const layerLabels = document.layers.map((layer) => {
       const exterior = layout.entities.find((entity) => entity.physicalLayerId === layer.id && entity.role === 'CUT_BLACK');
@@ -137,7 +159,7 @@ export async function writeColoredPreviewPdf(
       return {
         layer,
         x: (Math.min(...xs) + 1) * MM_TO_POINTS,
-        y: (Math.max(...ys) - 3) * MM_TO_POINTS,
+        y: (Math.max(...ys) + (document.engraving ? 1 : -3)) * MM_TO_POINTS,
       };
     });
     for (const entity of layout.entities) {
@@ -147,7 +169,7 @@ export async function writeColoredPreviewPdf(
     for (const [layerIndex, { x, y }] of layerLabels.entries()) {
       page.drawText(physicalLayerName(document.layers.length, layerIndex), { x, y, size: 7, font });
     }
-    const guidanceY = layout.height * MM_TO_POINTS;
+    const guidanceY = (layout.height + engravingFooterExtra) * MM_TO_POINTS;
     page.drawText(`Scale 1:1 | ${ROLE_LEGEND_LABEL}`, {
       x: 5 * MM_TO_POINTS, y: guidanceY + 21 * MM_TO_POINTS, size: 8, font,
     });
@@ -179,7 +201,7 @@ export async function writeExplodedViewPdf(
     'view:isometric-exploded',
     `assembled-thickness-mm:${document.layers.length * document.assembly.material.thicknessMm}`,
     'axis:central',
-    'legend:CUT_BLACK:#000000,DEEP_RED:#E5484D,LIGHT_BLUE:#3A78D4',
+    'legend:CUT_BLACK:#000000,DEEP_RED:#E5484D,LIGHT_BLUE:#3A78D4' + (document.engraving ? ',ENGRAVE_TEXT:#008080' : ''),
     'levels:relative-machine-settings-after-test-cuts',
     ...document.layers.map((_, index) => layerDimensionKeyword(document, index)),
   ], (pdf, font, drawCheckpoint) => {
@@ -217,19 +239,30 @@ export async function writeExplodedViewPdf(
         offsetY + (y - box.minY) * 0.5 * drawingScale * MM_TO_POINTS,
       ] as const;
       for (const role of Object.keys(COLORED_ROLE_COLORS) as ColoredOutlineRole[]) {
-        for (const contour of layer.roles[role]) drawLoop(page, contour.outer, project, role, drawCheckpoint);
+        for (const contour of layer.roles[role] ?? []) drawLoop(page, contour.outer, project, role, drawCheckpoint);
       }
       const exteriorBounds = layer.roles.CUT_BLACK[0].boundsMm;
       const width = exteriorBounds.maxX - exteriorBounds.minX;
       const height = exteriorBounds.maxY - exteriorBounds.minY;
       const central = centralHoleForLayer(document, layerIndex);
       const diameter = central ? Number((2 * Math.sqrt(central.areaMm2 / Math.PI)).toFixed(3)) : '—';
-      page.drawText(`${layer.order}. ${physicalLayerName(document.layers.length, layerIndex)} (${layer.id})  thickness ${document.assembly.material.thicknessMm} X ${width} Y ${height} hole diameter ${diameter}`, {
-        x: 184 * MM_TO_POINTS, y: offsetY + 4, size: 7, font,
-      });
+      const heading = `${layer.order}. ${physicalLayerName(document.layers.length, layerIndex)} (${layer.id})`;
+      if (document.engraving) {
+        const format = (value: number) => String(Number(value.toFixed(2)));
+        const dimensions = `thickness ${format(document.assembly.material.thicknessMm)} X ${format(width)} Y ${format(height)} hole diameter ${typeof diameter === 'number' ? format(diameter) : diameter}`;
+        const lines = [...wrapSidebarText(heading, font), ...wrapSidebarText(dimensions, font)];
+        for (const [lineIndex, text] of lines.entries()) page.drawText(text, {
+          x: 184 * MM_TO_POINTS, y: offsetY + 4 - lineIndex * 9, size: 7, font,
+        });
+      } else {
+        page.drawText(`${heading}  thickness ${document.assembly.material.thicknessMm} X ${width} Y ${height} hole diameter ${diameter}`, {
+          x: 184 * MM_TO_POINTS, y: offsetY + 4, size: 7, font,
+        });
+      }
     }
     const legend = [
       ['CUT_BLACK', '#000000'], ['DEEP_RED', '#E5484D'], ['LIGHT_BLUE', '#3A78D4'],
+      ...(document.engraving ? [['ENGRAVE_TEXT', '#008080'] as const] : []),
     ] as const;
     for (const [index, [role, hex]] of legend.entries()) {
       page.drawLine({

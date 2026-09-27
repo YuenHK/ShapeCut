@@ -494,4 +494,14 @@ describe('geometry worker client', () => {
     await expect(first).rejects.toBeInstanceOf(SupersededError);
     await expect(replacement).resolves.toMatchObject({ sourceHash: 'replacement' });
   });
+
+  it('forwards explicit engraving settings to the packaging worker unchanged', async () => {
+    const api = inspectOnly(vi.fn());
+    api.packageOutline = vi.fn().mockResolvedValue({});
+    const client = makeGeometryClient(api);
+    const result = automaticResult('engraving');
+    const settings = { name: '1A99', workName: '破滅魔劍' };
+    await client.packageOutline(result, 123, settings);
+    expect(api.packageOutline).toHaveBeenCalledWith(result, 123, settings);
+  });
 });

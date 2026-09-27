@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { normalizeEngravingSettings, type EngravingSettings } from '../domain/part-engraving/settings';
 import {
   validateManufacturingGeometryProfile,
   type ManufacturingGeometryProfile,
@@ -32,6 +33,7 @@ export type StoredOneClickProjectV2 = {
 };
 
 export type StoredOneClickProjectV3 = {
+  readonly engraving?: EngravingSettings;
   readonly schemaVersion: 3;
   readonly id: 'one-click-current';
   readonly updatedAt: string;
@@ -122,6 +124,11 @@ const currentRecordSchema = z.object({
   ...commonRecordShape,
   launcherExteriorExpansion: launcherExteriorExpansionSchema,
   decorationOmissions: decorationOmissionsSchema.nullable(),
+  engraving: z.object({ name: z.string(), workName: z.string() }).strict().optional().transform((value, context) => {
+    if (value === undefined) return undefined;
+    try { return normalizeEngravingSettings(value); }
+    catch { context.addIssue({ code: 'custom', message: 'Invalid engraving settings' }); return z.NEVER; }
+  }),
 }).strict().refine((record) => (
   record.decorationOmissions !== null || record.status === 'regeneration-required'
 ), {

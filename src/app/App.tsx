@@ -65,7 +65,7 @@ export function createOneClickServices(
       material,
       launcherFitOffsetMm,
     }, onProgress),
-    package: (result, fileName) => getGeometry().packageOutline(result).then((files) => createDownloadUrls(files, fileName)),
+    package: (result, fileName, engraving) => getGeometry().packageOutline(result, undefined, engraving).then((files) => createDownloadUrls(files, fileName)),
   };
 }
 

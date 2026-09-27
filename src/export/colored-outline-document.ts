@@ -1,4 +1,8 @@
 import type { AutomaticOutlineAssembly, FeatureContour } from '../domain/outline-features/types';
+import type { Font } from 'opentype.js';
+import { ENGRAVING_FONT_ID, ENGRAVING_FONT_SHA256 } from '../domain/part-engraving/font';
+import { EngravingError, hasEngravingText, normalizeEngravingSettings, type EngravingSettings } from '../domain/part-engraving/settings';
+import { planPartEngraving, type EngravingContour } from '../domain/part-engraving/layout';
 import { validateManufacturingGeometryProfile } from '../domain/materials/manufacturing-profile';
 import {
   validateAutomaticColoredResult,
@@ -26,6 +30,7 @@ export const COLORED_ROLE_COLORS = Object.freeze({
   CUT_BLACK: '#000000',
   DEEP_RED: '#E5484D',
   LIGHT_BLUE: '#3A78D4',
+  ENGRAVE_TEXT: '#008080',
 } as const);
 
 export type ColoredOutlineRole = keyof typeof COLORED_ROLE_COLORS;
@@ -36,6 +41,7 @@ export type ColoredOutlineDocument = {
   readonly diagnosticsFingerprint: string;
   readonly safetyNotes: readonly string[];
   readonly assembly: AutomaticOutlineAssembly;
+  readonly engraving?: { readonly settings: EngravingSettings; readonly fontId: string; readonly fontSha256: string; readonly emMm: 3; readonly clearanceMm: 1; readonly parts: readonly { readonly layerId: string; readonly part: string }[] };
   readonly layers: readonly {
     readonly id: string;
     readonly order: number;
@@ -46,6 +52,7 @@ export type ColoredOutlineDocument = {
       CUT_BLACK: readonly FeatureContour[];
       DEEP_RED: readonly FeatureContour[];
       LIGHT_BLUE: readonly FeatureContour[];
+      ENGRAVE_TEXT?: readonly EngravingContour[];
     }>;
   }[];
 };
@@ -53,6 +60,8 @@ export type ColoredOutlineDocument = {
 export type ColoredDocumentDeadlineOptions = {
   readonly now?: () => number;
   readonly onCheckpoint?: (label: string) => void;
+  readonly engraving?: EngravingSettings;
+  readonly engravingFont?: Font;
 };
 
 export type ColoredDocumentCheckpoint = (label: string) => void;
@@ -182,7 +191,15 @@ function copyAssembly(
 function documentFromValidatedResult(
   result: AutomaticOutlineResult,
   checkpoint: ColoredDocumentCheckpoint,
+  options: ColoredDocumentDeadlineOptions = {},
 ): ColoredOutlineDocument {
+  const settings = normalizeEngravingSettings(options.engraving);
+  if (hasEngravingText(settings) && !options.engravingFont) throw new EngravingError('刻字字型尚未載入');
+  const engraving = hasEngravingText(settings) ? planPartEngraving(result.coloredLayers.map(layer => ({
+    id: layer.id, zStart: layer.zStart, zEnd: layer.zEnd,
+    cuts: [layer.exterior, ...(layer.centralHole ? [layer.centralHole] : []), ...layer.launcherCuts, ...layer.fastenerHoles].map(c => c.outer),
+    decorations: [...layer.deepFeatures, ...layer.lightFeatures].map(c => c.outer),
+  })), settings, options.engravingFont!, () => checkpoint('canonical:engraving-layout')) : [];
   const layers = result.coloredLayers.map((layer, index) => {
     checkpoint('canonical:layer-loop');
     return {
@@ -200,6 +217,7 @@ function documentFromValidatedResult(
         ],
         DEEP_RED: layer.deepFeatures.map((contour) => copyContour(contour, checkpoint)),
         LIGHT_BLUE: layer.lightFeatures.map((contour) => copyContour(contour, checkpoint)),
+        ...(engraving.length ? { ENGRAVE_TEXT: engraving[index].contours } : {}),
       },
     };
   });
@@ -210,6 +228,10 @@ function documentFromValidatedResult(
     diagnosticsFingerprint: diagnosticsFingerprint(result.diagnostics),
     safetyNotes: copySafetyNotes(result.featureWarnings, checkpoint),
     assembly: copyAssembly(result.assembly, checkpoint),
+    ...(engraving.length ? { engraving: {
+      settings, fontId: ENGRAVING_FONT_ID, fontSha256: ENGRAVING_FONT_SHA256, emMm: 3 as const, clearanceMm: 1 as const,
+      parts: engraving.map(({layerId, part}) => ({layerId, part})),
+    } } : {}),
     layers,
   };
 }
@@ -324,7 +346,7 @@ function assertCanonicalShape(
       || layer.zEnd <= layer.zStart
       || position > 0 && (layer.index <= document.layers[position - 1].index
         || layer.zStart < document.layers[position - 1].zEnd)
-      || exactRecord(Object.keys(layer.roles)) !== exactRecord(['CUT_BLACK', 'DEEP_RED', 'LIGHT_BLUE'])
+      || exactRecord(Object.keys(layer.roles)) !== exactRecord(['CUT_BLACK', 'DEEP_RED', 'LIGHT_BLUE', ...(document.engraving ? ['ENGRAVE_TEXT'] : [])])
       || layer.roles.CUT_BLACK.length < 1
       || layer.roles.CUT_BLACK.length > 8
       || layer.roles.DEEP_RED.length > 12
@@ -333,7 +355,7 @@ function assertCanonicalShape(
     }
     layerIds.add(layer.id);
     for (const role of Object.keys(COLORED_ROLE_COLORS) as ColoredOutlineRole[]) {
-      const contours = layer.roles[role];
+      const contours = layer.roles[role] ?? [];
       for (const [contourIndex, contour] of contours.entries()) {
         checkpoint('canonical:validate-contour-loop');
         if (contour.role !== role
@@ -345,7 +367,7 @@ function assertCanonicalShape(
         const area = signedArea(contour.outer, checkpoint);
         const expectedCounterClockwise = role === 'CUT_BLACK' && contourIndex > 0;
         if (!Number.isFinite(area) || area === 0
-          || (expectedCounterClockwise ? area <= 0 : area >= 0)) {
+          || (role !== 'ENGRAVE_TEXT' && (expectedCounterClockwise ? area <= 0 : area >= 0))) {
           throw new RangeError('Colored canonical contour orientation is invalid');
         }
       }
@@ -432,7 +454,7 @@ export function createColoredOutlineDocument(
   const checkpoint = coloredDocumentCheckpoint(deadline, options);
   checkpoint('canonical:create:start');
   runColoredResultValidation(result, deadline, options, checkpoint);
-  const document = documentFromValidatedResult(result, checkpoint);
+  const document = documentFromValidatedResult(result, checkpoint, options);
   assertCanonicalShape(document, checkpoint);
   checkpoint('canonical:create:return');
   return document;
@@ -448,7 +470,7 @@ export function validateColoredOutlineDocument(
   checkpoint('canonical:verify:start');
   runColoredResultValidation(result, deadline, options, checkpoint);
   assertCanonicalShape(document, checkpoint);
-  const expected = documentFromValidatedResult(result, checkpoint);
+  const expected = documentFromValidatedResult(result, checkpoint, options);
   if (exactRecord(document) !== exactRecord(expected)) {
     throw new RangeError('Colored canonical document geometry, role, order, span, or fingerprint mismatch');
   }
