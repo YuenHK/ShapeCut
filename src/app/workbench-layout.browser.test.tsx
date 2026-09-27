@@ -4,7 +4,56 @@ import { it, expect, vi } from 'vitest';
 import { App } from './App';
 import '../styles.css';
 import { workbenchResult } from '../test/workbench-result';
-import type { OutlineDownloads } from './OneClickConverter';
+import type { OutlineDownloads, OneClickConverterServices } from './OneClickConverter';
+import type { StoredOneClickProjectV3 } from '../persistence/one-click-project-repository';
+
+it('keeps engraving and restored-project settings below the heading and reachable in short viewports', async () => {
+  let saved: StoredOneClickProjectV3 | undefined;
+  const repository = { load: async () => saved, save: async (value: StoredOneClickProjectV3) => { saved = value; }, delete: vi.fn() };
+  const downloads = Object.fromEntries(['zip', 'svg', 'dxf', 'previewPdf', 'explodedPdf', 'launcherCoupon'].map(key => [key, { href: 'blob:' + key, fileName: key }])) as OutlineDownloads;
+  const services: OneClickConverterServices = { convert: async () => workbenchResult, package: async () => downloads, cancel: vi.fn(),
+    present: async () => workbenchResult.preview,
+    createTimeline: (clock) => ({ advance: (stage, preview) => clock.onStage(stage, preview), finish: async () => {}, cancel: vi.fn() }),
+  };
+  for (const restored of [false, true]) {
+    await page.viewport(1280, 720);
+    const view = render(<App services={services} oneClickProjectRepository={repository} />);
+    fireEvent.change(await screen.findByLabelText('選擇 STL 模型'), { target: { files: [new File(['mesh'], 'sample1 (2).stl')] } });
+    const action = await screen.findByRole('button', { name: restored ? '重新產生正式輸出' : '開始製作' });
+    await screen.findByLabelText('名稱／學號');
+    for (const [width, height] of [[1280, 720], [1440, 825], [1440, 900]]) {
+      await page.viewport(width, height);
+      const heading = document.querySelector('.material-heading')!;
+      const controls = document.querySelector<HTMLElement>('.material-controls')!;
+      controls.scrollTop = 0;
+      await waitFor(() => {
+        expect(controls.getBoundingClientRect().top).toBeGreaterThanOrEqual(heading.getBoundingClientRect().bottom);
+        expect(screen.getByLabelText('名稱／學號').getBoundingClientRect().top).toBeGreaterThanOrEqual(heading.getBoundingClientRect().bottom);
+        expect(controls.getBoundingClientRect().bottom).toBeLessThanOrEqual(document.querySelector('.material-card')!.getBoundingClientRect().bottom);
+      });
+      expect(document.documentElement.scrollHeight).toBeLessThanOrEqual(height);
+      for (const el of [action, screen.getByLabelText('選擇製作材料'), controls.querySelector<HTMLElement>('.change-file-button')!]) {
+        el.scrollIntoView({ block: 'nearest' });
+        const bounds = el.getBoundingClientRect();
+        expect(bounds.top).toBeGreaterThanOrEqual(controls.getBoundingClientRect().top);
+        expect(bounds.bottom).toBeLessThanOrEqual(controls.getBoundingClientRect().bottom + 1);
+      }
+      controls.scrollTop = 0;
+      await page.screenshot({ path: `../../.superpowers/material-layout-${restored ? 'restored' : 'new'}-${width}-${height}.png` });
+    }
+    await page.viewport(390, 844);
+    await waitFor(() => expect(window.matchMedia('(max-width: 640px)').matches).toBe(true));
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
+    expect(screen.getByLabelText('名稱／學號').getBoundingClientRect().top).toBeGreaterThanOrEqual(document.querySelector('.material-heading')!.getBoundingClientRect().bottom);
+    await page.screenshot({ path: `../../.superpowers/material-layout-${restored ? 'restored' : 'new'}-mobile.png` });
+    if (!restored) {
+      fireEvent.click(action);
+      await screen.findByRole('heading', { name: '轉換完成' });
+      await waitFor(() => expect(saved).toBeDefined());
+    }
+    view.unmount();
+  }
+});
 
 it('fits upload and material controls within a 1280 by 720 desktop viewport', async () => {
   await page.viewport(1280, 720);

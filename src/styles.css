@@ -1630,7 +1630,15 @@ progress::-webkit-progress-value {
   .material-card { grid-template-columns: 1fr 1fr; grid-template-rows: auto minmax(0, 1fr); gap: .75rem 1.5rem; }
   .material-heading { grid-column: 1 / -1; }
   .material-heading p { margin-block: .25rem; }
-  .material-controls { grid-column: 2; grid-row: 2; align-content: center; }
+  .material-controls {
+    grid-column: 2;
+    grid-row: 2;
+    min-height: 0;
+    align-content: start;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+    padding: .25rem .75rem .75rem .25rem;
+  }
   .material-presentation-preview { grid-column: 1; grid-row: 2; min-height: 0; height: 100%; }
   .material-card:not(:has(.material-presentation-preview)) .material-controls { grid-column: 1 / -1; width: min(100%, 32.5rem); justify-self: center; }
   .material-presentation-preview .outline-process-viewport { min-height: 0; height: 100%; grid-template-rows: minmax(0, 1fr) auto; }
