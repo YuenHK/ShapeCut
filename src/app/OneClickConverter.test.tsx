@@ -433,6 +433,9 @@ describe('OneClickConverter', () => {
 
     const replacement = vi.mocked(saveProject).mock.calls.at(-1)![0];
     view.rerender(<OneClickConverter services={{ ...api, savedProject: replacement }} />);
+    expect(screen.getByText('重新連結原模型')).toBeVisible();
+    expect(screen.getByText('請先重新選取同一個 STL 檔案，驗證完成後才可繼續；這不是運算當機。')).toBeVisible();
+    expect(screen.getByText('重新連結原模型').closest('.material-controls')?.firstElementChild).toHaveAttribute('aria-label', '已儲存專案重新產生');
     await user.upload(screen.getByLabelText('選擇 STL 模型'), file);
     await user.click(await screen.findByRole('button', { name: '下一步：開始製作' }));
 

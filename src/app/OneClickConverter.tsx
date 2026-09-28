@@ -285,6 +285,7 @@ function decorationOmissionsEqual(
 
 type ModelInputProps = Readonly<{
   compact?: boolean;
+  compactLabel?: string;
   dragActive?: boolean;
   level: EffectLevel;
   onDragEnter?: () => void;
@@ -295,6 +296,7 @@ type ModelInputProps = Readonly<{
 
 function ModelInput({
   compact = false,
+  compactLabel = '更換模型',
   dragActive = false,
   level,
   onDragEnter,
@@ -336,7 +338,7 @@ function ModelInput({
   };
   if (compact) return (
     <label className="change-file-button">
-      更換模型
+      {compactLabel}
       <input ref={input} className="visually-hidden" type="file" accept=".stl,model/stl" aria-label="選擇 STL 模型" onChange={select} />
     </label>
   );
@@ -401,11 +403,17 @@ export function OneClickConverter({
   const appliedEngravingRef = useRef<EngravingSettings>({ name: '', workName: '' });
   const [sourceSha256, setSourceSha256] = useState<string | undefined>();
   const [savedSourceReattached, setSavedSourceReattached] = useState(false);
+  const materialControlsRef = useRef<HTMLDivElement>(null);
   const [savedDecisionMismatchCause, setSavedDecisionMismatchCause] = useState<
     'template' | 'expansion' | 'decoration' | undefined
   >();
   const [savedProjectDiscarded, setSavedProjectDiscarded] = useState(false);
   const savedProject = savedProjectDiscarded ? undefined : services.savedProject;
+  useEffect(() => {
+    if (view.kind === 'material' && savedDecisionMismatchCause && !savedSourceReattached) {
+      materialControlsRef.current?.scrollTo?.({ top: 0 });
+    }
+  }, [view.kind, savedDecisionMismatchCause, savedSourceReattached]);
   const savedDecorationOmissionKey = JSON.stringify(
     services.savedProject?.decorationOmissions,
   );
@@ -925,8 +933,7 @@ export function OneClickConverter({
       <div className="material-heading"><p className="eyebrow">選擇製作材料</p>
       <h1 id="material-title">{view.fileName}</h1>
       <p>請選擇本次製作的材料，系統只會把所需的幾何資料傳送到處理程序。</p></div>
-      <div className="material-controls">
-      <EngravingFields value={engraving} onChange={setEngraving} error={engravingError} />
+      <div className="material-controls" ref={materialControlsRef}>
       {savedProject && (
         <section aria-label="已儲存專案重新產生">
           {savedSourceReattached ? (
@@ -940,9 +947,14 @@ export function OneClickConverter({
           ) : (
             <p role="status">已儲存的發射器決策需要重新連結原本 STL 後再次產生正式輸出。</p>
           )}
+          {!savedSourceReattached && <>
+            <p id="relink-required-help">請先重新選取同一個 STL 檔案，驗證完成後才可繼續；這不是運算當機。</p>
+            <ModelInput compact compactLabel="重新連結原模型" level={effectLevel} onFile={(file) => void selectFile(file)} />
+          </>}
           <button
             type="button"
             disabled={!savedSourceReattached || Boolean(engravingError)}
+            aria-describedby={!savedSourceReattached ? 'relink-required-help' : undefined}
             className="primary-button"
             onClick={() => void processFile(
               view.fileName,
@@ -955,6 +967,7 @@ export function OneClickConverter({
           </button>
         </section>
       )}
+      <EngravingFields value={engraving} onChange={setEngraving} error={engravingError} />
 
       <label className="material-picker">
         三爪配合微調
@@ -998,7 +1011,7 @@ export function OneClickConverter({
           開始製作
         </button>
       )}
-      <ModelInput compact level={effectLevel} onFile={(file) => void selectFile(file)} />
+      {(!savedProject || savedSourceReattached) && <ModelInput compact level={effectLevel} onFile={(file) => void selectFile(file)} />}
       </div>
       {presentationPreview && (
         <div className="material-presentation-preview">

@@ -16,6 +16,7 @@ it('keeps engraving and restored-project settings below the heading and reachabl
     createTimeline: (clock) => ({ advance: (stage, preview) => clock.onStage(stage, preview), finish: async () => {}, cancel: vi.fn() }),
   };
   for (const restored of [false, true]) {
+    if (restored && saved) saved = { ...saved, launcherExteriorExpansion: { ...saved.launcherExteriorExpansion, offsetMm: 2.35 } };
     await page.viewport(1280, 720);
     const view = render(<App services={services} oneClickProjectRepository={repository} />);
     fireEvent.change(await screen.findByLabelText('選擇 STL 模型'), { target: { files: [new File(['mesh'], 'sample1 (2).stl')] } });
@@ -50,6 +51,21 @@ it('keeps engraving and restored-project settings below the heading and reachabl
       fireEvent.click(action);
       await screen.findByRole('heading', { name: '轉換完成' });
       await waitFor(() => expect(saved).toBeDefined());
+    } else {
+      await page.viewport(1280, 720);
+      fireEvent.click(action);
+      await screen.findByText('重新連結原模型');
+      const controls = document.querySelector<HTMLElement>('.material-controls')!;
+      expect(controls.scrollTop).toBe(0);
+      const relink = screen.getByText('重新連結原模型').getBoundingClientRect();
+      expect(relink.top).toBeGreaterThanOrEqual(document.querySelector('.material-heading')!.getBoundingClientRect().bottom);
+      expect(relink.bottom).toBeLessThanOrEqual(controls.getBoundingClientRect().bottom);
+      expect(screen.getByRole('button', { name: '下一步：開始製作' })).toBeDisabled();
+      await page.screenshot({ path: '../../.superpowers/material-relink-required.png' });
+      fireEvent.change(screen.getByLabelText('選擇 STL 模型'), { target: { files: [new File(['mesh'], 'sample1 (2).stl')] } });
+      await waitFor(() => expect(screen.getByRole('button', { name: '下一步：開始製作' })).toBeEnabled());
+      fireEvent.click(screen.getByRole('button', { name: '下一步：開始製作' }));
+      await screen.findByRole('heading', { name: '轉換完成' });
     }
     view.unmount();
   }
