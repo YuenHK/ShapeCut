@@ -19,7 +19,7 @@ it('keeps engraving and restored-project settings below the heading and reachabl
     await page.viewport(1280, 720);
     const view = render(<App services={services} oneClickProjectRepository={repository} />);
     fireEvent.change(await screen.findByLabelText('選擇 STL 模型'), { target: { files: [new File(['mesh'], 'sample1 (2).stl')] } });
-    const action = await screen.findByRole('button', { name: restored ? '重新產生正式輸出' : '開始製作' });
+    const action = await screen.findByRole('button', { name: restored ? '下一步：開始製作' : '開始製作' });
     await screen.findByLabelText('名稱／學號');
     for (const [width, height] of [[1280, 720], [1440, 825], [1440, 900]]) {
       await page.viewport(width, height);

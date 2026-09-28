@@ -352,10 +352,10 @@ describe('OneClickConverter', () => {
 
     await user.upload(screen.getByLabelText('選擇 STL 模型'), file);
 
-    expect(await screen.findByRole('button', { name: '重新產生正式輸出' })).toBeEnabled();
+    expect(await screen.findByRole('button', { name: '下一步：開始製作' })).toBeEnabled();
     expect(convert).not.toHaveBeenCalled();
     expect(screen.queryByRole('link', { name: /下載/ })).not.toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: '重新產生正式輸出' }));
+    await user.click(screen.getByRole('button', { name: '下一步：開始製作' }));
     expect(await screen.findByRole('heading', { name: '轉換完成' })).toBeVisible();
     expect(convert).toHaveBeenCalledWith(
       expect.any(ArrayBuffer),
@@ -420,7 +420,7 @@ describe('OneClickConverter', () => {
     const file = new File([bytes], 'reattached.stl');
 
     await user.upload(screen.getByLabelText('選擇 STL 模型'), file);
-    await user.click(await screen.findByRole('button', { name: '重新產生正式輸出' }));
+    await user.click(await screen.findByRole('button', { name: '下一步：開始製作' }));
 
     expect(api.package).not.toHaveBeenCalled();
     expect(screen.queryByRole('link', { name: /下載/ })).not.toBeInTheDocument();
@@ -429,12 +429,12 @@ describe('OneClickConverter', () => {
       launcherExteriorExpansion: result.assembly.launcher.exteriorExpansion,
       decorationOmissions: result.assembly.decorationOmissions,
     }));
-    expect(screen.getByRole('button', { name: '重新產生正式輸出' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '下一步：開始製作' })).toBeDisabled();
 
     const replacement = vi.mocked(saveProject).mock.calls.at(-1)![0];
     view.rerender(<OneClickConverter services={{ ...api, savedProject: replacement }} />);
     await user.upload(screen.getByLabelText('選擇 STL 模型'), file);
-    await user.click(await screen.findByRole('button', { name: '重新產生正式輸出' }));
+    await user.click(await screen.findByRole('button', { name: '下一步：開始製作' }));
 
     expect(await screen.findByRole('heading', { name: '轉換完成' })).toBeVisible();
     expect(api.package).toHaveBeenCalledOnce();
@@ -472,7 +472,7 @@ describe('OneClickConverter', () => {
     const file = new File([bytes], 'reattached.stl');
 
     await user.upload(screen.getByLabelText('選擇 STL 模型'), file);
-    await user.click(await screen.findByRole('button', { name: '重新產生正式輸出' }));
+    await user.click(await screen.findByRole('button', { name: '下一步：開始製作' }));
 
     expect(api.package).not.toHaveBeenCalled();
     expect(saveProject).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -483,12 +483,12 @@ describe('OneClickConverter', () => {
     expect(screen.getByText(
       '紅藍裝飾省略決策已更新；請重新連結原本 STL 後再次產生正式輸出。',
     )).toBeVisible();
-    expect(screen.getByRole('button', { name: '重新產生正式輸出' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '下一步：開始製作' })).toBeDisabled();
 
     const replacement = vi.mocked(saveProject).mock.calls.at(-1)![0];
     view.rerender(<OneClickConverter services={{ ...api, savedProject: replacement }} />);
     await user.upload(screen.getByLabelText('選擇 STL 模型'), file);
-    await user.click(await screen.findByRole('button', { name: '重新產生正式輸出' }));
+    await user.click(await screen.findByRole('button', { name: '下一步：開始製作' }));
 
     expect(await screen.findByRole('heading', { name: '轉換完成' })).toBeVisible();
     expect(api.package).toHaveBeenCalledOnce();
@@ -526,7 +526,7 @@ describe('OneClickConverter', () => {
       screen.getByLabelText('選擇 STL 模型'),
       new File([bytes], 'reattached.stl'),
     );
-    await user.click(await screen.findByRole('button', { name: '重新產生正式輸出' }));
+    await user.click(await screen.findByRole('button', { name: '下一步：開始製作' }));
 
     expect(api.package).not.toHaveBeenCalled();
     expect(saveProject).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -564,7 +564,7 @@ describe('OneClickConverter', () => {
       screen.getByLabelText('選擇 STL 模型'),
       new File([bytes], 'reattached.stl'),
     );
-    expect(await screen.findByRole('button', { name: '重新產生正式輸出' })).toBeEnabled();
+    expect(await screen.findByRole('button', { name: '下一步：開始製作' })).toBeEnabled();
 
     view.rerender(<OneClickConverter services={{
       ...api,
@@ -577,7 +577,7 @@ describe('OneClickConverter', () => {
       },
     }} />);
 
-    expect(screen.getByRole('button', { name: '重新產生正式輸出' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '下一步：開始製作' })).toBeDisabled();
   });
 
   it('re-arms source reattachment when only the stored decoration-omission decision is replaced', async () => {
@@ -604,7 +604,7 @@ describe('OneClickConverter', () => {
       screen.getByLabelText('選擇 STL 模型'),
       new File([bytes], 'reattached.stl'),
     );
-    expect(await screen.findByRole('button', { name: '重新產生正式輸出' })).toBeEnabled();
+    expect(await screen.findByRole('button', { name: '下一步：開始製作' })).toBeEnabled();
 
     view.rerender(<OneClickConverter services={{
       ...api,
@@ -614,7 +614,7 @@ describe('OneClickConverter', () => {
       },
     }} />);
 
-    expect(screen.getByRole('button', { name: '重新產生正式輸出' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '下一步：開始製作' })).toBeDisabled();
   });
 
   it('keeps every workflow state inside one workbench without changing actions', async () => {
@@ -1567,7 +1567,7 @@ describe('OneClickConverter', () => {
 
     await user.upload(screen.getByLabelText('選擇 STL 模型'), new File([bytes], 'saved-cancel.stl'));
     expect(await screen.findByRole('option', { name: `${savedMaterial.name} (${savedMaterial.thicknessMm} mm)` })).toBeVisible();
-    await user.click(await screen.findByRole('button', { name: '重新產生正式輸出' }));
+    await user.click(await screen.findByRole('button', { name: '下一步：開始製作' }));
     expect(api.convert).toHaveBeenCalledWith(expect.any(ArrayBuffer), savedMaterial, 0, expect.any(Function));
     await user.click(screen.getByRole('button', { name: '取消處理' }));
 

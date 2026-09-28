@@ -930,7 +930,7 @@ export function OneClickConverter({
       {savedProject && (
         <section aria-label="已儲存專案重新產生">
           {savedSourceReattached ? (
-            <p role="status">重新連結完成；下載仍被鎖定，直至 canonical 正式輸出重新產生。</p>
+            <p role="status">模型已重新連結。請按「下一步：開始製作」，完成處理後即可下載切片。</p>
           ) : savedDecisionMismatchCause === 'template' ? (
             <p role="status">三爪樣板決策已更新；請重新連結原本 STL 後再次產生正式輸出。</p>
           ) : savedDecisionMismatchCause === 'expansion' ? (
@@ -951,7 +951,7 @@ export function OneClickConverter({
               savedProject.launcherFitOffsetMm,
             )}
           >
-            重新產生正式輸出
+            下一步：開始製作
           </button>
         </section>
       )}

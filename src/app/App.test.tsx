@@ -164,7 +164,7 @@ describe('App', () => {
     const file = new File([bytes], 'reattached.stl');
 
     await user.upload(await screen.findByLabelText('選擇 STL 模型'), file);
-    await user.click(await screen.findByRole('button', { name: '重新產生正式輸出' }));
+    await user.click(await screen.findByRole('button', { name: '下一步：開始製作' }));
 
     expect(activeServices.package).not.toHaveBeenCalled();
     expect(save).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -172,12 +172,12 @@ describe('App', () => {
       launcherExteriorExpansion: result.assembly.launcher.exteriorExpansion,
       decorationOmissions: result.assembly.decorationOmissions,
     }));
-    expect(screen.getByRole('button', { name: '重新產生正式輸出' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '下一步：開始製作' })).toBeDisabled();
     expect(screen.queryByRole('link', { name: /下載/ })).not.toBeInTheDocument();
 
     await user.upload(screen.getByLabelText('選擇 STL 模型'), file);
-    expect(screen.getByRole('button', { name: '重新產生正式輸出' })).toBeEnabled();
-    await user.click(screen.getByRole('button', { name: '重新產生正式輸出' }));
+    expect(screen.getByRole('button', { name: '下一步：開始製作' })).toBeEnabled();
+    await user.click(screen.getByRole('button', { name: '下一步：開始製作' }));
 
     expect(await screen.findByRole('heading', { name: '轉換完成' })).toBeVisible();
     expect(activeServices.package).toHaveBeenCalledOnce();
