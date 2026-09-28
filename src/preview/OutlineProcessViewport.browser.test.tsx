@@ -418,6 +418,7 @@ describe('OutlineProcessViewport in Chromium', () => {
   });
 
   it('disposes an active converter scene and its RAF when a model replaces it', async () => {
+    const requestFrame = vi.spyOn(window, 'requestAnimationFrame');
     const user = userEvent.setup();
     const active = activeConversionServices();
     const view = render(<OneClickConverter services={active.services} />);
@@ -433,6 +434,9 @@ describe('OutlineProcessViewport in Chromium', () => {
       expect(candidate).not.toBeNull();
       return candidate!;
     });
+    // Canvas attachment precedes the asynchronous visibility observer that starts
+    // scene animation. Require an active scene before testing RAF cancellation.
+    await waitFor(() => expect(requestFrame.mock.calls.some(([callback]) => callback.name === 'tick')).toBe(true));
     const cancelFrame = vi.spyOn(window, 'cancelAnimationFrame');
     const geometryDispose = vi.spyOn(BufferGeometry.prototype, 'dispose');
     const materialDispose = vi.spyOn(Material.prototype, 'dispose');
