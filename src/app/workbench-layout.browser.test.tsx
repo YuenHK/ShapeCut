@@ -6,6 +6,48 @@ import '../styles.css';
 import { workbenchResult } from '../test/workbench-result';
 import type { OutlineDownloads, OneClickConverterServices } from './OneClickConverter';
 import type { StoredOneClickProjectV3 } from '../persistence/one-click-project-repository';
+import layoutProbeFontUrl from '../domain/part-engraving/assets/NotoSansCJKtc-Regular.otf?url';
+
+it('fits mobile chrome and desktop result details with Noto CJK fallback font metrics', async () => {
+  const font = await new FontFace('Layout Probe CJK', `url(${layoutProbeFontUrl})`).load();
+  document.fonts.add(font);
+  const downloads = Object.fromEntries(['zip', 'svg', 'dxf', 'previewPdf', 'explodedPdf', 'launcherCoupon'].map(key => [key, { href: 'blob:' + key, fileName: key }])) as OutlineDownloads;
+  const view = render(<div style={{ fontFamily: 'Arial, "Layout Probe CJK", sans-serif' }}><App services={{
+    convert: async () => workbenchResult, package: async () => downloads, cancel: vi.fn(),
+    present: async () => workbenchResult.preview,
+    createTimeline: (clock) => ({ advance: (stage, preview) => clock.onStage(stage, preview), finish: async () => {}, cancel: vi.fn() }),
+  }} oneClickProjectRepository={{ load: async () => undefined, save: vi.fn(), delete: vi.fn() }} /></div>);
+  try {
+    await page.viewport(390, 844);
+    await screen.findByLabelText('選擇 STL 模型');
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(390);
+    expect(document.querySelector('.guided-wayfinding')!.getBoundingClientRect().right).toBeLessThanOrEqual(document.querySelector('.current-step-slot')!.getBoundingClientRect().right);
+    await page.screenshot({ path: '../../.superpowers/guided-font-metrics-mobile.png' });
+    await page.viewport(1280, 720);
+    fireEvent.change(screen.getByLabelText('選擇 STL 模型'), { target: { files: [new File(['mesh'], 'font-metrics.stl')] } });
+    fireEvent.click(await screen.findByRole('button', { name: '開始製作' }));
+    await screen.findByRole('heading', { name: '轉換完成' });
+    expect(document.querySelector('.site-header')!.getBoundingClientRect().height).toBeLessThanOrEqual(72);
+    for (const label of ['製作設定', '處理提示', '技術資料']) {
+      fireEvent.click(screen.getByRole('tab', { name: label }));
+      const assertFits = () => {
+        const panel = screen.getByRole('tabpanel');
+        expect(panel.scrollHeight).toBeLessThanOrEqual(panel.clientHeight);
+        expect(document.documentElement.scrollHeight).toBeLessThanOrEqual(720);
+      };
+      assertFits();
+      const next = screen.queryByRole('button', { name: `${label}下一頁` });
+      while (next && !(next as HTMLButtonElement).disabled) {
+        fireEvent.click(next);
+        assertFits();
+      }
+    }
+    await page.screenshot({ path: '../../.superpowers/guided-font-metrics-desktop.png' });
+  } finally {
+    view.unmount();
+    document.fonts.delete(font);
+  }
+});
 
 it('keeps the same preview and footer bounds while making slices and exposes one cancel action', async () => {
   await page.viewport(1280, 720);
