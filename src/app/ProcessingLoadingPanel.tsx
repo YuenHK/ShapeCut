@@ -17,12 +17,14 @@ export function ProcessingLoadingPanel({
   fileName,
   startedAt,
   onCancel,
+  guided = false,
 }: {
   readonly title: string;
   readonly titleId?: string;
   readonly fileName: string;
   readonly startedAt: number;
-  readonly onCancel: () => void;
+  readonly onCancel?: () => void;
+  readonly guided?: boolean;
 }) {
   const [elapsed, setElapsed] = useState(() => elapsedLabel(startedAt));
   const [announcement, setAnnouncement] = useState(
@@ -54,16 +56,16 @@ export function ProcessingLoadingPanel({
 
   return (
     <div className="processing-loading-panel">
-      <div className="neutral-loading" aria-hidden="true"><span /><span /><span /></div>
+      {!guided && <div className="neutral-loading" aria-hidden="true"><span /><span /><span /></div>}
       <div className="processing-message">
-        <div className="processing-orbit" aria-hidden="true" />
+        {!guided && <div className="processing-orbit" aria-hidden="true" />}
         <h1 id={titleId}>{title}</h1>
         <p className="file-name">{fileName}</p>
         <p className="processing-elapsed">{elapsed}</p>
         <span className="visually-hidden processing-elapsed-announcement" aria-live="polite" aria-atomic="true">
           {announcement}
         </span>
-        <button className="change-file-button processing-cancel-button" type="button" onClick={onCancel}>取消處理</button>
+        {onCancel && <button className="change-file-button processing-cancel-button" type="button" onClick={onCancel}>取消處理</button>}
       </div>
     </div>
   );

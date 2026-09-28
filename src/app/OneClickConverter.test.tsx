@@ -435,7 +435,9 @@ describe('OneClickConverter', () => {
     view.rerender(<OneClickConverter services={{ ...api, savedProject: replacement }} />);
     expect(screen.getByText('重新連結原模型')).toBeVisible();
     expect(screen.getByText('請先重新選取同一個 STL 檔案，驗證完成後才可繼續；這不是運算當機。')).toBeVisible();
-    expect(screen.getByText('重新連結原模型').closest('.material-controls')?.firstElementChild).toHaveAttribute('aria-label', '已儲存專案重新產生');
+    expect(screen.getByText('重新連結原模型').closest('.guided-action-bar')).toHaveAttribute('aria-label', '製作操作');
+    expect(screen.getByRole('region', { name: '已儲存專案重新產生' })).toBeVisible();
+    expect(within(document.querySelector<HTMLElement>('.guided-preview')!).getByRole('img', { name: /模型分層預覽/ })).toBeInTheDocument();
     await user.upload(screen.getByLabelText('選擇 STL 模型'), file);
     await user.click(await screen.findByRole('button', { name: '下一步：開始製作' }));
 
@@ -1299,7 +1301,8 @@ describe('OneClickConverter', () => {
 
     await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['malformed'], 'malformed.stl'));
     expect(await screen.findByLabelText('選擇製作材料')).toBeVisible();
-    expect(container.querySelector('.material-presentation-preview')).toBeNull();
+    expect(container.querySelector('.guided-preview-placeholder')).toBeInTheDocument();
+    expect(container.querySelector('[data-preview-mesh]')).toBeNull();
 
     await user.selectOptions(screen.getByLabelText('選擇製作材料'), READY_TEST_MATERIAL.id);
     await user.click(screen.getByRole('button', { name: '開始製作' }));
@@ -1330,7 +1333,8 @@ describe('OneClickConverter', () => {
       await replacementRead.promise;
     });
     expect(await screen.findByLabelText('選擇製作材料')).toBeVisible();
-    expect(container.querySelector('.material-presentation-preview')).toBeNull();
+    expect(container.querySelector('.guided-preview-placeholder')).toBeInTheDocument();
+    expect(container.querySelector('[data-preview-mesh]')).toBeNull();
   });
 
   it('does not leave an old material selection actionable while a replacement file is still reading', async () => {
@@ -1592,27 +1596,29 @@ describe('OneClickConverter', () => {
     render(<OneClickConverter services={api} />);
 
     await user.upload(screen.getByLabelText('選擇 STL 模型'), selected);
-    expect(await screen.findByRole('heading', { name: 'selected.stl' })).toBeVisible();
+    expect(await screen.findByRole('heading', { name: '設定你的製作' })).toBeVisible();
+    expect(document.querySelector('.guided-heading .file-name')).toHaveTextContent('selected.stl');
     await user.upload(screen.getByLabelText('選擇 STL 模型'), replacement);
     expect(screen.getByRole('heading', { name: '正在讀取模型' })).toBeVisible();
 
     await user.click(screen.getByRole('button', { name: '取消處理' }));
 
-    expect(await screen.findByRole('heading', { name: 'selected.stl' })).toBeVisible();
+    expect(await screen.findByRole('heading', { name: '設定你的製作' })).toBeVisible();
+    expect(document.querySelector('.guided-heading .file-name')).toHaveTextContent('selected.stl');
     expect(screen.getByLabelText('選擇製作材料')).toBeVisible();
     await act(async () => {
       replacementRead.resolve(replacementBytes);
       await replacementRead.promise;
     });
-    expect(screen.getByRole('heading', { name: 'selected.stl' })).toBeVisible();
-    expect(screen.queryByRole('heading', { name: 'replacement.stl' })).toBeNull();
+    expect(document.querySelector('.guided-heading .file-name')).toHaveTextContent('selected.stl');
+    expect(document.querySelector('.guided-heading .file-name')).not.toHaveTextContent('replacement.stl');
 
     await user.selectOptions(screen.getByLabelText('選擇製作材料'), READY_TEST_MATERIAL.id);
     await user.click(screen.getByRole('button', { name: '開始製作' }));
     expect(api.convert).toHaveBeenCalledWith(selectedBytes, expect.any(Object), 0, expect.any(Function));
   });
 
-  it('keeps pre-geometry progress neutral, then announces monotonic stages through the preview status', async () => {
+  it('announces the actual monotonic processing stage even before preview geometry arrives', async () => {
     const user = userEvent.setup();
     const conversion = deferred<AutomaticOutlineResult>();
     let report: ((event: AutomaticOutlineProgressEvent) => void) | undefined;
@@ -1624,12 +1630,14 @@ describe('OneClickConverter', () => {
     expect(container.querySelector('.processing-loading-panel')).not.toHaveAttribute('role');
     expect(container.querySelector('.processing-loading-panel')).not.toHaveAttribute('aria-live');
     expect(container.querySelectorAll('[aria-live="polite"]')).toHaveLength(2);
-    expect(container.querySelector('.processing-status-overlay')).toBeNull();
+    expect(container.querySelector('.guided-preview-placeholder')).toBeInTheDocument();
     report?.({ stage: 'simplifying' });
-    await vi.waitFor(() => expect(screen.getByRole('heading', { name: '正在讀取模型' })).toBeVisible());
-    expect(container.querySelector('.processing-status-overlay')).toBeNull();
+    await vi.waitFor(() => expect(screen.getByRole('heading', { name: '正在簡化' })).toBeVisible());
+    expect(container.querySelector('.processing-elapsed-announcement')).toHaveTextContent(/正在簡化，已處理 \d{2}:\d{2}/);
+    expect(container.querySelector('.guided-preview-placeholder')).toBeInTheDocument();
     report?.({ stage: 'reading' });
-    await vi.waitFor(() => expect(container.querySelector('.processing-status-overlay')).toBeNull());
+    await vi.waitFor(() => expect(container.querySelector('.guided-preview-placeholder')).toBeInTheDocument());
+    expect(screen.getByRole('heading', { name: '正在簡化' })).toBeVisible();
     report?.({ stage: 'slicing', preview: result.preview });
     await vi.waitFor(() => expect(screen.getByRole('heading', { name: '正在產生切片' })).toBeVisible());
     expect(container.querySelectorAll('[aria-live="polite"]')).toHaveLength(2);
@@ -1650,7 +1658,7 @@ describe('OneClickConverter', () => {
     expect(container.querySelector('.processing-card')).not.toHaveClass('has-preview');
     const loadingPanel = container.querySelector('.processing-loading-panel');
     expect(loadingPanel).toBeInTheDocument();
-    expect(container.querySelector('.processing-status-overlay')).not.toBeInTheDocument();
+    expect(container.querySelector('.guided-preview-placeholder')).toBeInTheDocument();
     expect(screen.queryByRole('img', { name: /模型分層預覽/ })).toBeNull();
     expect(container.querySelector('.spinner')).toBeNull();
 

@@ -1,11 +1,84 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { page } from 'vitest/browser';
+import { page, userEvent } from 'vitest/browser';
 import { it, expect, vi } from 'vitest';
 import { App } from './App';
 import '../styles.css';
 import { workbenchResult } from '../test/workbench-result';
 import type { OutlineDownloads, OneClickConverterServices } from './OneClickConverter';
 import type { StoredOneClickProjectV3 } from '../persistence/one-click-project-repository';
+
+it('keeps the same preview and footer bounds while making slices and exposes one cancel action', async () => {
+  await page.viewport(1280, 720);
+  const cancel = vi.fn();
+  render(<App services={{
+    present: async () => workbenchResult.preview,
+    convert: (_bytes, _material, _fit, onProgress) => {
+      void onProgress?.({ stage: 'analyzing', preview: workbenchResult.preview });
+      return new Promise(() => {});
+    },
+    package: () => new Promise(() => {}), cancel,
+    createTimeline: (clock) => ({ advance: (stage, preview) => clock.onStage(stage, preview), finish: async () => {}, cancel: vi.fn() }),
+  }} oneClickProjectRepository={{ load: async () => undefined, save: vi.fn(), delete: vi.fn() }} />);
+  fireEvent.change(await screen.findByLabelText('選擇 STL 模型'), { target: { files: [new File(['mesh'], 'processing.stl')] } });
+  await screen.findByRole('button', { name: '開始製作' });
+  const before = document.querySelector('.guided-preview')!.getBoundingClientRect();
+  fireEvent.click(screen.getByRole('button', { name: '開始製作' }));
+  await screen.findByRole('heading', { name: '正在分析模型' });
+  const after = document.querySelector('.guided-preview')!.getBoundingClientRect();
+  expect(after.x).toBe(before.x);
+  expect(after.y).toBe(before.y);
+  expect(after.width).toBe(before.width);
+  expect(after.height).toBe(before.height);
+  expect(screen.getAllByRole('button', { name: '取消處理' })).toHaveLength(1);
+  expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+  for (const [width, height] of [[1280, 720], [1440, 900]]) {
+    await page.viewport(width, height);
+    expect(screen.getByRole('button', { name: '取消處理' }).getBoundingClientRect().bottom).toBeLessThanOrEqual(height);
+    expect(document.documentElement.scrollHeight).toBeLessThanOrEqual(height);
+    const heading = document.querySelector('.guided-heading')!.getBoundingClientRect();
+    expect(document.querySelector('.guided-preview')!.getBoundingClientRect().top).toBeGreaterThanOrEqual(heading.bottom);
+    expect(document.querySelector('.guided-settings')!.getBoundingClientRect().top).toBeGreaterThanOrEqual(heading.bottom);
+    await page.screenshot({ path: `../../.superpowers/guided-processing-${width}-${height}.png` });
+  }
+  fireEvent.click(screen.getByRole('button', { name: '取消處理' }));
+  await screen.findByRole('button', { name: '開始製作' });
+  expect(cancel).toHaveBeenCalled();
+});
+
+it('keeps guided actions outside scrolling settings with material first and advanced fit collapsed', async () => {
+  await page.viewport(1280, 720);
+  render(<App services={{ convert: () => new Promise(() => {}), package: () => new Promise(() => {}), cancel: vi.fn(), present: async () => workbenchResult.preview }} oneClickProjectRepository={{ load: async () => undefined, save: vi.fn(), delete: vi.fn() }} />);
+  fireEvent.change(await screen.findByLabelText('選擇 STL 模型'), { target: { files: [new File(['mesh'], 'guided.stl')] } });
+  const action = await screen.findByRole('button', { name: '開始製作' });
+  const settings = document.querySelector<HTMLElement>('.guided-settings');
+  const footer = document.querySelector<HTMLElement>('.guided-action-bar');
+  expect(settings).not.toBeNull();
+  expect(footer).not.toBeNull();
+  expect(settings!.contains(action)).toBe(false);
+  expect(footer!.contains(action)).toBe(true);
+  const material = screen.getByLabelText('選擇製作材料');
+  const engraving = screen.getByLabelText('名稱／學號');
+  expect(material.compareDocumentPosition(engraving) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  const details = screen.getByText(/進階配合設定/).closest('details')!;
+  expect(details).not.toHaveAttribute('open');
+  expect(details.querySelector('summary')).toHaveTextContent('0.00 mm');
+  for (const [width, height] of [[1280, 720], [1440, 900]]) {
+    await page.viewport(width, height);
+    settings!.scrollTop = settings!.scrollHeight;
+    expect(action.getBoundingClientRect().bottom).toBeLessThanOrEqual(height);
+    expect(action.getBoundingClientRect().top).toBeGreaterThanOrEqual(settings!.getBoundingClientRect().bottom);
+    expect(document.documentElement.scrollHeight).toBeLessThanOrEqual(height);
+  }
+  await page.viewport(390, 844);
+  await userEvent.click(details.querySelector('summary')!);
+  await userEvent.tab();
+  const fit = screen.getByLabelText('三爪配合微調');
+  expect(fit).toHaveFocus();
+  expect(fit.getBoundingClientRect().bottom).toBeLessThanOrEqual(footer!.getBoundingClientRect().top);
+  expect(fit.getBoundingClientRect().height).toBeGreaterThanOrEqual(44);
+  expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(390);
+  await page.screenshot({ path: '../../.superpowers/guided-mobile-focus.png' });
+});
 
 it('keeps engraving and restored-project settings below the heading and reachable in short viewports', async () => {
   let saved: StoredOneClickProjectV3 | undefined;
@@ -33,11 +106,12 @@ it('keeps engraving and restored-project settings below the heading and reachabl
         expect(controls.getBoundingClientRect().bottom).toBeLessThanOrEqual(document.querySelector('.material-card')!.getBoundingClientRect().bottom);
       });
       expect(document.documentElement.scrollHeight).toBeLessThanOrEqual(height);
-      for (const el of [action, screen.getByLabelText('選擇製作材料'), controls.querySelector<HTMLElement>('.change-file-button')!]) {
-        el.scrollIntoView({ block: 'nearest' });
+      const footer = document.querySelector<HTMLElement>('.guided-action-bar')!;
+      for (const el of [action, footer.querySelector<HTMLElement>('.change-file-button')!]) {
         const bounds = el.getBoundingClientRect();
-        expect(bounds.top).toBeGreaterThanOrEqual(controls.getBoundingClientRect().top);
-        expect(bounds.bottom).toBeLessThanOrEqual(controls.getBoundingClientRect().bottom + 1);
+        expect(bounds.top).toBeGreaterThanOrEqual(footer.getBoundingClientRect().top);
+        expect(bounds.bottom).toBeLessThanOrEqual(height);
+        expect(controls.contains(el)).toBe(false);
       }
       controls.scrollTop = 0;
       await page.screenshot({ path: `../../.superpowers/material-layout-${restored ? 'restored' : 'new'}-${width}-${height}.png` });
@@ -55,12 +129,18 @@ it('keeps engraving and restored-project settings below the heading and reachabl
       await page.viewport(1280, 720);
       fireEvent.click(action);
       await screen.findByText('重新連結原模型');
+      expect(screen.getByText('重新連結原模型')).toHaveClass('primary-button');
       const controls = document.querySelector<HTMLElement>('.material-controls')!;
       expect(controls.scrollTop).toBe(0);
       const relink = screen.getByText('重新連結原模型').getBoundingClientRect();
       expect(relink.top).toBeGreaterThanOrEqual(document.querySelector('.material-heading')!.getBoundingClientRect().bottom);
-      expect(relink.bottom).toBeLessThanOrEqual(controls.getBoundingClientRect().bottom);
+      expect(relink.bottom).toBeLessThanOrEqual(window.innerHeight);
+      expect(document.querySelector('.guided-preview canvas')).not.toBeNull();
+      expect(screen.getByRole('heading', { name: '需要你的操作' })).toBeVisible();
       expect(screen.getByRole('button', { name: '下一步：開始製作' })).toBeDisabled();
+      expect(getComputedStyle(screen.getByRole('button', { name: '下一步：開始製作' })).cursor).toBe('not-allowed');
+      expect(screen.getAllByRole('heading', { name: '需要你的操作' })).toHaveLength(1);
+      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
       await page.screenshot({ path: '../../.superpowers/material-relink-required.png' });
       fireEvent.change(screen.getByLabelText('選擇 STL 模型'), { target: { files: [new File(['mesh'], 'sample1 (2).stl')] } });
       await waitFor(() => expect(screen.getByRole('button', { name: '下一步：開始製作' })).toBeEnabled());

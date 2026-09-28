@@ -276,7 +276,8 @@ describe('OutlineProcessViewport in Chromium', () => {
     await user.upload(screen.getByLabelText('選擇 STL 模型'), new File(['malformed'], 'replacement.stl'));
     await waitFor(() => {
       expect(screen.getByLabelText('選擇製作材料')).toBeVisible();
-      expect(view.container.querySelector('.material-presentation-preview')).toBeNull();
+      expect(view.container.querySelector('.guided-preview-placeholder')).toBeInTheDocument();
+      expect(view.container.querySelector('.guided-preview canvas')).toBeNull();
       expect(canvas.isConnected).toBe(false);
       expect(geometryDispose.mock.calls.length).toBeGreaterThan(disposeCount);
     });

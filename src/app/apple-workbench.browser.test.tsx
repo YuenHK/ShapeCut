@@ -149,6 +149,7 @@ describe('Apple workbench visual contracts', () => {
     });
 
     const fitInput = await screen.findByLabelText('三爪配合微調');
+    fireEvent.click(screen.getByText(/進階配合設定/));
     expect(fitInput).toHaveAttribute('type', 'number');
     expect(fitInput).toHaveAttribute('min', '-0.20');
     expect(fitInput).toHaveAttribute('max', '0.20');
@@ -180,6 +181,7 @@ describe('Apple workbench visual contracts', () => {
       new File(['mesh'], 'raw-decimal-fit.stl', { type: 'model/stl' }),
     );
     const fitInput = await screen.findByLabelText('三爪配合微調');
+    await userEvent.click(screen.getByText(/進階配合設定/));
     const materialPicker = screen.getByLabelText('選擇製作材料');
 
     await userEvent.clear(fitInput);

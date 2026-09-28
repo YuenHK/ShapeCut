@@ -42,11 +42,17 @@ function CurrentStepWayfinding({
   stage,
   fileName,
 }: Pick<AppleWorkbenchProps, 'state' | 'stage' | 'fileName'>) {
+  const current = state === 'upload' || state === 'reading' ? 0 : state === 'material' ? 1 : state === 'result' ? 3 : 2;
   return (
     <nav className="current-step" aria-label="目前步驟" aria-live="polite" aria-atomic="true">
       <span className="current-step-kicker">目前步驟</span>
       <strong aria-current="step">{currentStepLabel(state, stage)}</strong>
       {fileName && <span className="current-step-file">模型：{fileName}</span>}
+      <ol className="guided-wayfinding" aria-label="製作流程">
+        {['模型', '設定', '製作', '下載'].map((label, index) => <li key={label} data-current={index === current ? 'true' : undefined}>
+          <span aria-hidden="true">{index + 1}</span> {label}
+        </li>)}
+      </ol>
     </nav>
   );
 }

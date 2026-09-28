@@ -210,7 +210,7 @@ describe('App real browser one-click flow', () => {
     expect(services.convert).toHaveBeenCalledWith(expect.any(ArrayBuffer), material, 0, expect.any(Function));
 
     expect(document.querySelector('.processing-loading-panel')).toBeInTheDocument();
-    expect(document.querySelector('.processing-status-overlay')).not.toBeInTheDocument();
+    expect(document.querySelector('.processing-status-overlay')).toBeInTheDocument();
     report?.({ stage: 'analyzing', preview: result.preview });
     const processingPreview = await screen.findByRole('img', { name: /模型分層預覽/ });
     const card = document.querySelector<HTMLElement>('.processing-card.has-preview');
@@ -220,31 +220,19 @@ describe('App real browser one-click flow', () => {
     const cardBox = card!.getBoundingClientRect();
     const overlayBox = overlay!.getBoundingClientRect();
     const viewportBox = viewport!.getBoundingClientRect();
-    expect(viewportBox.width).toBeGreaterThan(overlayBox.width * 1.5);
+    expect(viewportBox.width).toBeGreaterThan(overlayBox.width * 1.4);
     expect(viewportBox.right).toBeLessThan(overlayBox.left);
     expect(overlayBox.x + overlayBox.width / 2).toBeGreaterThan(cardBox.x + cardBox.width / 2);
     expect(overlayBox.top).toBeGreaterThan(cardBox.top);
     expect(overlayBox.bottom).toBeLessThan(cardBox.bottom);
     expect(overlayBox.width * overlayBox.height).toBeLessThan(cardBox.width * cardBox.height * 0.8);
-    const orbitBox = document.querySelector<HTMLElement>('.processing-orbit')!.getBoundingClientRect();
-    const orbitContents = [
-      document.querySelector<HTMLElement>('.processing-message h1')!,
-      document.querySelector<HTMLElement>('.processing-message .file-name')!,
-      document.querySelector<HTMLElement>('.processing-elapsed')!,
-      document.querySelector<HTMLElement>('.processing-cancel-button')!,
-    ];
-    for (const element of orbitContents) {
-      const box = element.getBoundingClientRect();
-      expect(box.left).toBeGreaterThanOrEqual(orbitBox.left + 12);
-      expect(box.right).toBeLessThanOrEqual(orbitBox.right - 12);
-      expect(box.top).toBeGreaterThanOrEqual(orbitBox.top + 12);
-      expect(box.bottom).toBeLessThanOrEqual(orbitBox.bottom - 12);
-    }
-    const progressBox = screen.getByRole('progressbar', { name: '轉換進度' }).getBoundingClientRect();
-    const changeFileBox = document.querySelector<HTMLElement>('.processing-card > .change-file-button')!.getBoundingClientRect();
-    expect(orbitBox.width).toBeGreaterThanOrEqual(300);
-    expect(progressBox.top - orbitBox.bottom).toBeGreaterThanOrEqual(16);
-    expect(changeFileBox.top - progressBox.bottom).toBeGreaterThanOrEqual(24);
+    expect(document.querySelector('.processing-orbit')).not.toBeInTheDocument();
+    expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+    expect(screen.getByRole('list', { name: '製作階段' }).children).toHaveLength(5);
+    const footer = document.querySelector<HTMLElement>('.guided-action-bar')!;
+    const cancel = screen.getByRole('button', { name: '取消處理' });
+    expect(footer.contains(cancel)).toBe(true);
+    expect(cancel.getBoundingClientRect().bottom).toBeLessThanOrEqual(window.innerHeight);
     expect(getComputedStyle(processingPreview).cursor).toBe('auto');
     await page.screenshot({ path: '../../.superpowers/workbench-processing-1024.png' });
 
@@ -257,14 +245,14 @@ describe('App real browser one-click flow', () => {
       const mobileCardBox = mobileCard!.getBoundingClientRect();
       const mobileOverlayBox = mobileOverlay!.getBoundingClientRect();
       expect(mobileOverlayBox.x + mobileOverlayBox.width / 2).toBeCloseTo(mobileCardBox.x + mobileCardBox.width / 2, 0);
-      expect(mobileOverlayBox.y + mobileOverlayBox.height / 2).toBeCloseTo(mobileCardBox.y + mobileCardBox.height / 2, 0);
+      expect(mobileOverlayBox.top).toBeGreaterThanOrEqual(document.querySelector('.guided-preview')!.getBoundingClientRect().bottom);
     });
     const mobileCardBox = mobileCard!.getBoundingClientRect();
     const mobileOverlayBox = mobileOverlay!.getBoundingClientRect();
     expect(mobileOverlayBox.width * mobileOverlayBox.height).toBeLessThan(mobileCardBox.width * mobileCardBox.height * 0.8);
-    const changeFile = document.querySelector<HTMLElement>('.processing-card > .change-file-button');
+    const changeFile = document.querySelector<HTMLElement>('.guided-action-bar > .change-file-button');
     expect(changeFile).toBeVisible();
-    expect(getComputedStyle(changeFile!).zIndex).toBe('3');
+    expect(getComputedStyle(footer).position).toBe('sticky');
     expect(changeFile!.getBoundingClientRect().right).toBeLessThanOrEqual(window.innerWidth);
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
     await page.viewport(1024, 768);

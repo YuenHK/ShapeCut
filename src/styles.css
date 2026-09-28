@@ -1724,3 +1724,61 @@ progress::-webkit-progress-value {
   .failure-card .warning-panel { grid-column: 2; grid-row: 2; margin: 0; }
   .failure-card > .primary-button { grid-column: 1 / -1; justify-self: center; margin: 0; }
 }
+
+/* Guided configuration, processing and recovery share one stable layout. */
+.guided-wayfinding { display: flex; gap: .65rem; list-style: none; margin: .3rem 0 0; padding: 0; font-size: .72rem; color: var(--muted); }
+.guided-wayfinding li[data-current="true"] { color: var(--accent-strong); font-weight: 800; }
+.guided-workbench.converter-card { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto auto auto; gap: 1rem; max-width: none; min-height: 0; overflow: visible; text-align: left; }
+.guided-workbench .guided-heading { grid-column: 1 / -1; grid-row: 1; }
+.guided-heading h1 { font-size: clamp(1.5rem, 2.5vw, 2rem); margin: .25rem 0; }
+.guided-heading p { margin: .25rem 0; }
+.guided-heading .file-name { font-size: .86rem; }
+.guided-workbench .guided-preview { grid-column: 1; grid-row: 2; position: relative; inset: auto; min-height: 18rem; height: 20rem; overflow: hidden; border: 1px solid rgba(96, 137, 184, .2); border-radius: 1rem; background: rgba(239, 246, 254, .72); }
+.guided-workbench .guided-preview .outline-process-viewport { display: grid; grid-template-rows: minmax(0, 1fr) auto; min-height: 0; height: 100%; margin: 0; border: 0; }
+.guided-workbench .guided-preview .outline-process-webgl,
+.guided-workbench .guided-preview .outline-process-canvas,
+.guided-workbench .guided-preview .outline-process-fallback { min-height: 0; height: 100%; }
+.guided-preview-placeholder { display: grid; align-content: center; justify-items: center; height: 100%; padding: 1.5rem; text-align: center; color: var(--muted); }
+.guided-workbench .guided-settings { display: grid; grid-column: 1; grid-row: 3; position: relative; inset: auto; transform: none; width: 100%; min-width: 0; min-height: 0; align-content: start; align-self: stretch; gap: 1rem; padding: .25rem; overflow: visible; pointer-events: auto; text-align: left; }
+.guided-settings .material-picker { width: 100%; }
+.guided-settings .engraving-fields { margin: 0; }
+.guided-settings .material-field-help, .guided-settings .material-field-error { width: 100%; margin: 0; }
+.guided-settings .engraving-fields a { display: inline-flex; min-height: 44px; align-items: center; }
+.engraving-example { margin: 0; padding: .75rem; border-radius: .65rem; background: #edf5ff; color: var(--muted); font-size: .86rem; overflow-wrap: anywhere; }
+.guided-fit-settings { border-top: 1px solid var(--glass-edge); padding-top: .25rem; }
+.guided-fit-settings summary { min-height: 44px; padding: .7rem .25rem; cursor: pointer; font-weight: 700; }
+.guided-fit-settings summary span { float: right; font-weight: 500; }
+.guided-fit-settings[open] .material-picker { margin-block: .5rem; }
+.guided-action-bar { grid-column: 1 / -1; grid-row: 4; display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; padding-top: 1rem; border-top: 1px solid var(--glass-edge); background: #fff; z-index: 3; }
+.guided-action-bar > .change-file-button, .guided-action-bar > .primary-button { min-height: 48px; margin: 0; }
+.guided-action-bar > .change-file-button.primary-button { color: #fff; background: linear-gradient(180deg, var(--accent-strong), #0052a4); }
+.guided-action-bar button:disabled { color: #63758a; background: #e8eef5; border-color: #d4deea; box-shadow: none; cursor: not-allowed; }
+.guided-material-summary { flex: 1; margin: 0; color: var(--muted); font-size: .86rem; text-align: center; }
+.guided-workbench .processing-loading-panel { width: 100%; margin: 0; padding: 1rem; box-shadow: none; }
+.guided-workbench .processing-message { width: 100%; padding: 0; aspect-ratio: auto; justify-items: start; text-align: left; }
+.guided-workbench .processing-message h1 { font-size: 1.35rem; }
+.guided-workbench .processing-message .file-name { display: none; }
+.guided-workbench .processing-elapsed { margin-bottom: 0; }
+.guided-stage-list { list-style: none; padding: 0; margin: 0; display: grid; gap: .25rem; }
+.guided-stage-list li { display: flex; gap: .75rem; align-items: center; min-height: 32px; color: var(--muted); }
+.guided-stage-list li > span { width: 1.75rem; height: 1.75rem; display: grid; place-items: center; border: 1px solid var(--glass-edge); border-radius: 50%; }
+.guided-stage-list small { margin-left: auto; }
+.guided-stage-list li[data-status="current"] { color: var(--accent-strong); font-weight: 800; }
+.guided-stage-list li[data-status="complete"] { color: var(--ink); }
+.apple-workbench:has(.guided-workbench) .workbench-orbit { display: none; }
+@media (min-width: 1000px) and (min-height: 680px) {
+  .workbench-stage:has(.guided-workbench) { padding: .75rem; }
+  .guided-workbench.converter-card { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); grid-template-rows: auto minmax(0, 1fr) auto; gap: .75rem 1.5rem; padding: 1rem 1.25rem; }
+  .guided-workbench.converter-card .guided-preview { grid-row: 2; grid-column: 1; height: 100%; min-height: 0; }
+  .guided-workbench.converter-card .guided-settings { grid-column: 2; grid-row: 2; align-self: stretch; place-content: start stretch; gap: 1rem; overflow-y: auto; scrollbar-gutter: stable; scrollbar-color: #8ca6c2 #edf4fc; scrollbar-width: thin; padding: .25rem .75rem .75rem .25rem; }
+  .guided-workbench.processing-card .processing-loading-panel { padding: .75rem; }
+  .guided-action-bar { grid-row: 3; }
+}
+@media (max-width: 999px), (max-height: 679px) {
+  .guided-wayfinding { gap: .4rem; white-space: nowrap; }
+  .guided-workbench .guided-action-bar { position: sticky; bottom: 0; padding: .75rem; margin-inline: -.25rem; box-shadow: 0 -.4rem 1.2rem rgba(39, 80, 130, .08); }
+  .guided-action-bar .guided-material-summary { flex-basis: 100%; order: -1; }
+  .guided-action-bar > .change-file-button, .guided-action-bar > .primary-button { flex: 1; padding-inline: .75rem; }
+  html:has(.guided-workbench) { scroll-padding-bottom: 10rem; }
+  .guided-settings :is(input, select, summary, a) { scroll-margin-block: 1rem 10rem; }
+}

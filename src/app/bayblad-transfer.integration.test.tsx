@@ -24,7 +24,9 @@ it('imports at 6 mm material selection without conversion or touching an existin
   });
   await waitFor(() => expect(opener.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'accepted' }), location.origin));
   expect(screen.getByRole('combobox')).toHaveValue('acrylic-6');
-  expect(screen.getByText('bayblad-3layers-6mm-mm.stl')).toBeVisible();
+  const fileName = rendered.container.querySelector('.guided-heading .file-name');
+  expect(fileName).toBeVisible();
+  expect(fileName).toHaveTextContent('模型：bayblad-3layers-6mm-mm.stl');
   expect(services.convert).not.toHaveBeenCalled();
   expect(repository.load).not.toHaveBeenCalled();
   expect(repository.save).not.toHaveBeenCalled();

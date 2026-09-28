@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from 'react';
 import { EngravingFields } from './EngravingFields';
+import { GuidedWorkbench } from './GuidedWorkbench';
 import { EngravingError, normalizeEngravingSettings, hasEngravingText, validateEngravingSettings, type EngravingSettings } from '../domain/part-engraving/settings';
 import {
   AutomaticOutlineError,
@@ -94,7 +95,7 @@ export type OneClickConverterServices = {
 
 const STAGES: readonly AutomaticOutlineProgressStage[] = ['reading', 'analyzing', 'simplifying', 'slicing', 'packaging'];
 const STAGE_LABELS: Record<AutomaticOutlineProgressStage, string> = {
-  reading: '模型已讀取',
+  reading: '正在讀取模型',
   analyzing: '正在分析模型',
   simplifying: '正在簡化',
   slicing: '正在產生切片',
@@ -285,6 +286,7 @@ function decorationOmissionsEqual(
 
 type ModelInputProps = Readonly<{
   compact?: boolean;
+  compactPrimary?: boolean;
   compactLabel?: string;
   dragActive?: boolean;
   level: EffectLevel;
@@ -296,6 +298,7 @@ type ModelInputProps = Readonly<{
 
 function ModelInput({
   compact = false,
+  compactPrimary = false,
   compactLabel = '更換模型',
   dragActive = false,
   level,
@@ -337,7 +340,7 @@ function ModelInput({
     event.target.value = '';
   };
   if (compact) return (
-    <label className="change-file-button">
+    <label className={`change-file-button${compactPrimary ? ' primary-button' : ''}`}>
       {compactLabel}
       <input ref={input} className="visually-hidden" type="file" accept=".stl,model/stl" aria-label="選擇 STL 模型" onChange={select} />
     </label>
@@ -394,6 +397,7 @@ export function OneClickConverter({
   const [dragActive, setDragActive] = useState(false);
   const [presentationPreview, setPresentationPreview] = useState<OutlinePreviewPayload | undefined>(undefined);
   const [launcherFitInput, setLauncherFitInput] = useState('0.00');
+  const [fitSettingsOpen, setFitSettingsOpen] = useState(false);
   const [selectedMaterialId, setSelectedMaterialId] = useState('acrylic-6');
   const [engraving, setEngraving] = useState<EngravingSettings>({ name: '', workName: '' });
   const engravingError = validateEngravingSettings(engraving);
@@ -605,6 +609,7 @@ export function OneClickConverter({
         );
         setSavedSourceReattached(false);
         processingStartedAtRef.current = undefined;
+        setPresentationPreview(result.preview);
         setView({ kind: 'material', fileName, bytes });
         return;
       }
@@ -860,6 +865,8 @@ export function OneClickConverter({
     </AppleWorkbench>
   );
   const processingStartedAt = processingStartedAtRef.current!;
+  const selectedMaterial = savedProject?.material ?? materials.find((material) => material.id === selectedMaterialId);
+  const materialSummary = <p className="guided-material-summary">{selectedMaterial?.name} · {selectedMaterial?.thicknessMm} mm</p>;
 
   if (editingEngraving && 'result' in view && view.result) return frame(
     <section className="converter-card engraving-editor" aria-labelledby="engraving-title">
@@ -929,11 +936,19 @@ export function OneClickConverter({
   );
 
   if (view.kind === 'material') return frame(
-    <section className="converter-card material-card" aria-labelledby="material-title">
-      <div className="material-heading"><p className="eyebrow">選擇製作材料</p>
-      <h1 id="material-title">{view.fileName}</h1>
-      <p>請選擇本次製作的材料，系統只會把所需的幾何資料傳送到處理程序。</p></div>
-      <div className="material-controls" ref={materialControlsRef}>
+    <GuidedWorkbench title={savedProject && !savedSourceReattached ? '需要你的操作' : '設定你的製作'} titleId="material-title" fileName={view.fileName}
+      preview={presentationPreview && <OutlineProcessViewport payload={presentationPreview} stage="reading" effectLevel={effectLevel} />}
+      actions={<>
+        <ModelInput compact compactPrimary={Boolean(savedProject && !savedSourceReattached)} compactLabel={savedProject && !savedSourceReattached ? '重新連結原模型' : undefined} level={effectLevel} onFile={(file) => void selectFile(file)} />
+        {materialSummary}
+        <button type="button" className="primary-button"
+          disabled={Boolean(engravingError) || (savedProject ? !savedSourceReattached : parsedLauncherFitOffset(launcherFitInput) === undefined)}
+          aria-describedby={savedProject && !savedSourceReattached ? 'relink-required-help' : undefined}
+          onClick={savedProject ? () => void processFile(view.fileName, view.bytes, savedProject.material, savedProject.launcherFitOffsetMm) : startSelectedMaterial}>
+          {savedProject ? '下一步：開始製作' : '開始製作'}
+        </button>
+      </>}>
+      <div className="material-controls guided-settings" ref={materialControlsRef}>
       {savedProject && (
         <section aria-label="已儲存專案重新產生">
           {savedSourceReattached ? (
@@ -949,26 +964,19 @@ export function OneClickConverter({
           )}
           {!savedSourceReattached && <>
             <p id="relink-required-help">請先重新選取同一個 STL 檔案，驗證完成後才可繼續；這不是運算當機。</p>
-            <ModelInput compact compactLabel="重新連結原模型" level={effectLevel} onFile={(file) => void selectFile(file)} />
+            <p>材料及刻字設定已保留，完成驗證後才會重新產生輸出。</p>
           </>}
-          <button
-            type="button"
-            disabled={!savedSourceReattached || Boolean(engravingError)}
-            aria-describedby={!savedSourceReattached ? 'relink-required-help' : undefined}
-            className="primary-button"
-            onClick={() => void processFile(
-              view.fileName,
-              view.bytes,
-              savedProject.material,
-              savedProject.launcherFitOffsetMm,
-            )}
-          >
-            下一步：開始製作
-          </button>
         </section>
       )}
+      <label className="material-picker">製作材料
+        <select aria-label="選擇製作材料" value={selectedMaterialId} disabled={Boolean(savedProject)} onChange={(event) => setSelectedMaterialId(event.target.value)}>
+          {(savedProject ? [savedProject.material] : materials).map((profile) => <option key={profile.id} value={profile.id}>{profile.name} ({profile.thicknessMm} mm)</option>)}
+        </select>
+      </label>
       <EngravingFields value={engraving} onChange={setEngraving} error={engravingError} />
-
+      <p className="engraving-example">文字範例（非向量預覽）：{engraving.name.trim() || '名稱'} · {engraving.workName.trim() || '作品名'} · PartA</p>
+      <details className="guided-fit-settings" open={fitSettingsOpen || parsedLauncherFitOffset(launcherFitInput) === undefined} onToggle={(event) => setFitSettingsOpen(event.currentTarget.open)}>
+      <summary>進階配合設定 <span>{parsedLauncherFitOffset(launcherFitInput) === undefined ? '請修正數值' : signedMillimeters(Number(launcherFitInput))}</span></summary>
       <label className="material-picker">
         三爪配合微調
         <input
@@ -980,6 +988,7 @@ export function OneClickConverter({
           max="0.20"
           step="0.01"
           value={launcherFitInput}
+          disabled={Boolean(savedProject)}
           onChange={(event) => setLauncherFitInput(event.target.value)}
         />
       </label>
@@ -989,78 +998,43 @@ export function OneClickConverter({
           請輸入 -0.20 至 +0.20 mm，步進 0.01 mm。
         </p>
       )}
-      <label className="material-picker">製作材料
-        <select
-          aria-label="選擇製作材料"
-          value={selectedMaterialId}
-          disabled={Boolean(savedProject)}
-          onChange={(event) => setSelectedMaterialId(event.target.value)}
-        >
-          {(savedProject ? [savedProject.material] : materials).map((profile) => (
-            <option key={profile.id} value={profile.id}>{profile.name} ({profile.thicknessMm} mm)</option>
-          ))}
-        </select>
-      </label>
-      {!savedProject && (
-        <button
-          type="button"
-          onClick={startSelectedMaterial}
-          className="primary-button"
-          disabled={parsedLauncherFitOffset(launcherFitInput) === undefined || Boolean(engravingError)}
-        >
-          開始製作
-        </button>
-      )}
-      {(!savedProject || savedSourceReattached) && <ModelInput compact level={effectLevel} onFile={(file) => void selectFile(file)} />}
+      </details>
       </div>
-      {presentationPreview && (
-        <div className="material-presentation-preview">
-          <OutlineProcessViewport payload={presentationPreview} stage="reading" effectLevel={effectLevel} />
-        </div>
-      )}
-    </section>
+    </GuidedWorkbench>
   );
 
-  if (view.kind === 'reading') return frame(
-    <section className="converter-card processing-card" aria-labelledby="reading-title">
-      <ProcessingLoadingPanel
-        title="正在讀取模型"
-        titleId="reading-title"
-        fileName={view.fileName}
-        startedAt={processingStartedAt}
-        onCancel={cancelProcessing}
-      />
-      <ModelInput compact level={effectLevel} onFile={(file) => void selectFile(file)} />
-    </section>
-  );
-
-  if (view.kind === 'processing') {
-    const active = STAGES.indexOf(view.stage);
-    const visiblePreview = view.preview ?? presentationPreview;
+  if (view.kind === 'reading' || view.kind === 'processing') {
+    const stage = view.kind === 'reading' ? 'reading' : view.stage;
+    const active = STAGES.indexOf(stage);
+    const stagePreview = view.kind === 'processing' ? view.preview : undefined;
+    const visiblePreview = stagePreview ?? presentationPreview;
     return frame(
-      <section className={`converter-card processing-card ${visiblePreview ? 'has-preview' : ''}`} aria-labelledby="processing-title">
-        {visiblePreview && (
-          <div className="processing-viewport">
-            <OutlineProcessViewport
-              payload={visiblePreview}
-              stage={view.preview ? view.stage : 'reading'}
-              effectLevel={effectLevel}
-            />
-          </div>
-        )}
-        <div className={visiblePreview ? 'processing-status-overlay' : undefined}>
+      <GuidedWorkbench processing title="正在製作切片" titleId="guided-processing-title" fileName={view.fileName}
+        preview={visiblePreview && <OutlineProcessViewport payload={visiblePreview} stage={stagePreview ? stage : 'reading'} effectLevel={effectLevel} />}
+        actions={<>
+          <ModelInput compact level={effectLevel} onFile={(file) => void selectFile(file)} />
+          {materialSummary}
+          <button className="change-file-button processing-cancel-button" type="button" onClick={cancelProcessing}>取消處理</button>
+        </>}>
+        <div className="guided-settings processing-status-overlay">
           <ProcessingLoadingPanel
-            title={visiblePreview ? STAGE_LABELS[view.stage] : '正在讀取模型'}
+            guided
+            title={STAGE_LABELS[stage]}
             titleId="processing-title"
             fileName={view.fileName}
             startedAt={processingStartedAt}
-            onCancel={cancelProcessing}
           />
-          {visiblePreview && <progress value={active + 1} max={STAGES.length} aria-label="轉換進度" />}
+          <ol className="guided-stage-list" aria-label="製作階段">
+            {STAGES.map((item, index) => <li key={item} data-status={index < active ? 'complete' : index === active ? 'current' : 'pending'} aria-current={index === active ? 'step' : undefined}>
+              <span aria-hidden="true">{index < active ? '✓' : index + 1}</span>
+              {['讀取模型', '分析外形', '簡化模型', '產生切片', '準備下載'][index]}
+              <small>{index < active ? '已完成' : index === active ? '進行中' : '待處理'}</small>
+            </li>)}
+          </ol>
+          <p className="material-field-help">在本機處理，完成後即可檢查及下載製作檔案。</p>
         </div>
-        <ModelInput compact level={effectLevel} onFile={(file) => void selectFile(file)} />
-      </section>,
-      view.stage,
+      </GuidedWorkbench>,
+      stage,
     );
   }
 
