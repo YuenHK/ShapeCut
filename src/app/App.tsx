@@ -178,7 +178,7 @@ export function App({
         <div className="current-step-slot" ref={setChromeTarget} />
       </header>
       <main>
-        {handoff.requested && <p role="status">本次傳送不會覆寫已儲存專案；轉換結果請直接下載。</p>}
+        {handoff.requested && <p className="transfer-notice" role="status">本次傳送不會覆寫已儲存專案；轉換結果請直接下載。</p>}
         {handoff.requested && !handoff.transfer && <p role="alert">{TRANSFER_FALLBACK}</p>}
         {materialLoadFailed && <p role="alert">已儲存的材料設定檔未能載入；請稍後重試。</p>}
         {projectLoad.status === 'loading' && (
